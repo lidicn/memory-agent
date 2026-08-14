@@ -1,0 +1,32 @@
+{
+	# 本项目使用手动提供的证书（Tailscale 节点证书 或 mkcert/openssl 自签）
+	# 关闭自动证书申请，避免 Caddy 尝试验证公网域名
+	auto_https off
+	email local@local
+}
+
+# HTTPS 端点：PWA / iOS 主入口
+:443 {
+	tls /certs/cert.pem /certs/key.pem
+
+	# 关闭代理缓冲，保证 SSE / 流式助手响应实时推送
+	header {
+		X-Accel-Buffering no
+	}
+
+	reverse_proxy memory-worker:8000 {
+		flush_interval -1
+		transport http {
+			compression off
+		}
+		# 长连接超时（助手流式可能较久）
+		response_header_timeout 30m
+		dial_timeout 10s
+		keepalive 2m
+	}
+}
+
+# HTTP 80：永久跳转 HTTPS，便于从局域网旧链接平滑升级
+:80 {
+	redir https://{host}{uri} permanent
+}

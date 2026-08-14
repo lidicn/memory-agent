@@ -1,0 +1,157 @@
+[
+    {
+        "id": "water_purifier_flow",
+        "type": "tab",
+        "label": "净水器用水分析",
+        "disabled": false,
+        "info": "调用忆家管家网关分析净水器出水量"
+    },
+    {
+        "id": "inject_query",
+        "type": "inject",
+        "z": "water_purifier_flow",
+        "name": "查询最近7天",
+        "props": [],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 120,
+        "wires": [
+            [
+                "set_params"
+            ]
+        ]
+    },
+    {
+        "id": "set_params",
+        "type": "function",
+        "z": "water_purifier_flow",
+        "name": "设置查询参数",
+        "func": "const now = new Date();\nconst weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);\n\nmsg.payload = {\n    entity_id: 'event.chunmi_cn_334432105_600f2_water_out_finish_e_7_1',\n    start_time: weekAgo.toISOString().slice(0, 19),\n    end_time: now.toISOString().slice(0, 19)\n};\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 350,
+        "y": 120,
+        "wires": [
+            [
+                "http_request"
+            ]
+        ]
+    },
+    {
+        "id": "http_request",
+        "type": "http request",
+        "z": "water_purifier_flow",
+        "name": "调用网关API",
+        "method": "POST",
+        "ret": "obj",
+        "paytoqs": "ignore",
+        "url": "http://192.168.2.200:8086/api/analyze/water_purifier",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "basic",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "Content-Type",
+                "keyValue": "application/json"
+            }
+        ],
+        "x": 550,
+        "y": 120,
+        "wires": [
+            [
+                "parse_result"
+            ]
+        ]
+    },
+    {
+        "id": "parse_result",
+        "type": "function",
+        "z": "water_purifier_flow",
+        "name": "格式化报告",
+        "func": "const data = msg.payload;\n\nif (!data || !data.ok) {\n    msg.payload = '查询失败: ' + (data?.error || '未知错误');\n    return msg;\n}\n\nlet result = '=====================================\\n';\nresult += '  净水器用水分析报告\\n';\nresult += '=====================================\\n';\nresult += '实体: ' + data.entity_id + '\\n';\nresult += '时间: ' + (data.start_time||'').slice(0,10) + ' ~ ' + (data.end_time||'').slice(0,10) + '\\n';\nresult += '记录: ' + data.total_records + '条 / ' + data.days + '天\\n\\n';\n\nresult += '日期         次数   用水量   TDS入  TDS出  去除率\\n';\nresult += '-----------  ----  -------  -----  -----  ------\\n';\n\nlet totalWater = 0;\nlet totalCount = 0;\n\nfor (const day of data.daily) {\n    totalWater += day.total_l;\n    totalCount += day.count;\n    result += day.date + '   ';\n    result += String(day.count).padStart(4) + '   ';\n    result += day.total_l.toFixed(2).padStart(6) + 'L  ';\n    result += String(day.avg_tds_in).padStart(5) + '  ';\n    result += String(day.avg_tds_out).padStart(5) + '  ';\n    result += day.tds_reduction_pct + '%\\n';\n}\n\nresult += '-----------  ----  -------\\n';\nresult += '合计         ' + totalCount + '   ' + totalWater.toFixed(2) + 'L\\n';\nif (data.days > 0) {\n    result += '日均         ' + (totalCount/data.days).toFixed(1) + '   ' + (totalWater/data.days).toFixed(2) + 'L\\n';\n}\n\nmsg.payload = result;\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 750,
+        "y": 120,
+        "wires": [
+            [
+                "output_debug",
+                "ui_text_water"
+            ]
+        ]
+    },
+    {
+        "id": "output_debug",
+        "type": "debug",
+        "z": "water_purifier_flow",
+        "name": "调试输出",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": true,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "payload",
+        "statusType": "msg",
+        "x": 950,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "ui_group_water",
+        "type": "ui_group",
+        "name": "净水器分析",
+        "tab": "ui_tab_home",
+        "order": 1,
+        "disp": true,
+        "width": 24,
+        "collapse": false
+    },
+    {
+        "id": "ui_tab_home",
+        "type": "ui_tab",
+        "name": "家庭看板",
+        "icon": "dashboard",
+        "order": 1,
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "ui_text_water",
+        "type": "ui_text",
+        "z": "water_purifier_flow",
+        "group": "ui_group_water",
+        "order": 1,
+        "width": 0,
+        "height": 0,
+        "name": "用水报告",
+        "label": "",
+        "format": "{{msg.payload}}",
+        "layout": "col-spread",
+        "className": "",
+        "style": false,
+        "font": "monospace",
+        "fontSize": 14,
+        "color": "#000000",
+        "x": 950,
+        "y": 160,
+        "wires": []
+    }
+]

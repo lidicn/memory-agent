@@ -1,0 +1,23 @@
+{
+  "_comment": "本文件是 data/config.json 的脱敏模板。运行前复制为 ./data/config.json 并填入真实值；WebUI 设置页保存后也会自动写入 ./data/config.json。请勿将真实 config.json 提交到 Git。",
+  "hass_server": "http://192.168.2.200:8123",
+  "hass_token": "<HA_LONG_LIVED_TOKEN>",
+  "nr_url": "http://192.168.2.200:1990",
+  "nr_user": "lidicn",
+  "nr_pass": "<NODE_RED_PASSWORD>",
+  "llm_provider": "openai-compatible",
+  "llm_api_url": "https://api.deepseek.com/v1",
+  "llm_api_key": "<LLM_API_KEY>",
+  "llm_model": "deepseek-chat",
+  "llm_temperature": 0.3,
+  "ha_db_enabled": false,
+  "ha_db_host": "192.168.2.200",
+  "ha_db_port": 3306,
+  "ha_db_name": "homeassistant",
+  "ha_db_user": "memory_worker_ro",
+  "ha_db_password": "<HA_MARIADB_READONLY_PASSWORD>",
+  "jwt_secret": "<GENERATE_A_32_BYTE_RANDOM_SECRET>",
+  "tz_offset_hours": 8,
+  "db_path": "/data/memory_worker.db",
+  "skills_dir": "/data/skills"
+}

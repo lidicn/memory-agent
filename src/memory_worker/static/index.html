@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+<title>忆家管家 · 家庭行为记忆中枢</title>
+<meta name="theme-color" content="#0EA5E9">
+<meta name="description" content="忆家管家 · 家庭行为记忆中枢 — 采集、洞察、助手一体化 PWA">
+
+<!-- PWA / iOS 主屏幕 -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="忆家管家">
+<meta name="application-name" content="忆家管家">
+<meta name="format-detection" content="telephone=no">
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230EA5E9'/><path d='M8 20l4-9 4 6 3-4 5 7z' fill='white'/></svg>">
+<script src="/static/vendor/tailwind.min.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://cdn.tailwindcss.com/3.4.16';document.head.appendChild(s);"></script>
+<script>
+  window.tailwind = window.tailwind || {};
+  window.__twConfig = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['PingFang SC', 'Microsoft YaHei', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+          mono: ['JetBrains Mono', 'SFMono-Regular', 'Consolas', 'monospace']
+        },
+        colors: {
+          ink:    { 900: '#0B0F1A', 800: '#131826', 700: '#1B2233', 600: '#232B40', 500: '#2E374F' },
+          brand:  { 300: '#67E8F9', 400: '#38BDF8', 500: '#0EA5E9', 600: '#0284C7', 700: '#0369A1' }, /* 青色系 */
+          grape:  { 400: '#5EEAD4', 500: '#2DD4BF', 600: '#14B8A6' }, /* teal 系 */
+          aqua:   { 400: '#22D3EE', 500: '#06B6D4' },
+          txt:    { 1: '#F1F5F9', 2: '#94A3B8', 3: '#64748B', 4: '#475569' },
+          ok: '#10B981', warn: '#F59E0B', danger: '#EF4444', info: '#38BDF8'
+        },
+        boxShadow: {
+          glow: '0 0 24px rgba(6,182,212,.28)',
+          'glow-lg': '0 0 48px rgba(6,182,212,.35)',
+          panel: '0 8px 32px rgba(0,0,0,.38)'
+        },
+        borderRadius: { xl2: '18px' }
+      }
+    }
+  };
+  // Play CDN 与 fallback CDN 都读这个全局对象。
+  // 走 onerror 回退时 tailwind 尚未就位，需要轮询补挂配置，
+  // 否则自定义色板（ink/brand/grape）会整体失效。
+  (function applyTwConfig(tries) {
+    if (window.tailwind) { window.tailwind.config = window.__twConfig; return; }
+    if ((tries || 0) < 200) setTimeout(function () { applyTwConfig((tries || 0) + 1); }, 25);
+  })(0);
+</script>
+<script src="/static/vendor/marked.min.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js';document.head.appendChild(s);"></script>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+
+<body class="bg-ink-900 text-txt-1 font-sans antialiased min-h-screen" x-data="shell" x-cloak>
+
+<!-- ══════════ 登录 / 注册 ══════════ -->
+<template x-if="!$store.app.authed">
+  <div class="fixed inset-0 z-50 flex items-center justify-center px-4 auth-bg">
+    <div class="w-full max-w-[420px] glass rounded-xl2 p-8 shadow-panel anim-in">
+      <div class="flex items-center gap-3 mb-7">
+        <div class="w-12 h-12 rounded-2xl grad-brand grid place-items-center shadow-glow shrink-0">
+          <svg viewBox="0 0 24 24" class="w-6 h-6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>
+        </div>
+        <div>
+          <h1 class="text-[22px] font-bold leading-tight">忆家管家</h1>
+          <p class="text-xs text-txt-3">家庭行为记忆中枢 · v2.0</p>
+        </div>
+      </div>
+
+      <div class="flex gap-1 p-1 rounded-lg bg-ink-800/70 mb-6">
+        <button class="flex-1 py-2 text-sm rounded-md transition"
+                :class="authMode==='login' ? 'bg-brand-500 text-white shadow-glow' : 'text-txt-2 hover:text-txt-1'"
+                @click="authMode='login'; authError=''">登录</button>
+        <button class="flex-1 py-2 text-sm rounded-md transition"
+                :class="authMode==='register' ? 'bg-brand-500 text-white shadow-glow' : 'text-txt-2 hover:text-txt-1'"
+                @click="authMode='register'; authError=''">注册</button>
+      </div>
+
+      <form @submit.prevent="submitAuth()" class="space-y-4">
+        <div>
+          <label class="lbl">用户名</label>
+          <input class="inp" x-model="authForm.username" autocomplete="username" placeholder="请输入用户名" required>
+        </div>
+        <div>
+          <label class="lbl">密码</label>
+          <input class="inp" type="password" x-model="authForm.password" autocomplete="current-password" placeholder="请输入密码" required>
+        </div>
+        <p x-show="!$store.app.initialized" class="text-xs text-warn flex items-start gap-1.5">
+          <span class="mt-[3px] w-1.5 h-1.5 rounded-full bg-warn shrink-0"></span>
+          <span>系统尚未初始化，首个注册的账号将成为管理员。</span>
+        </p>
+        <p x-show="authError" x-text="authError" class="text-sm text-danger bg-danger/10 border border-danger/25 rounded-lg px-3 py-2"></p>
+        <button type="submit" class="btn-primary w-full justify-center py-2.5" :disabled="authLoading">
+          <span x-show="!authLoading" x-text="authMode==='login' ? '登录' : '注册并登录'"></span>
+          <span x-show="authLoading" class="flex items-center gap-2"><span class="spinner"></span>处理中…</span>
+        </button>
+      </form>
+    </div>
+  </div>
+</template>
+
+<!-- ══════════ 主界面 ══════════ -->
+<div x-show="$store.app.authed" class="flex min-h-screen">
+
+  <!-- 左侧导航 -->
+  <aside class="sidebar glass-r shrink-0 flex flex-col" :class="$store.app.navCollapsed ? 'w-[76px]' : 'w-[240px]'">
+    <div class="h-16 flex items-center gap-3 px-5 border-b border-white/5 shrink-0">
+      <div class="w-9 h-9 rounded-xl grad-brand grid place-items-center shadow-glow shrink-0">
+        <svg viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>
+      </div>
+      <div x-show="!$store.app.navCollapsed" class="overflow-hidden">
+        <div class="text-[15px] font-bold leading-tight whitespace-nowrap">忆家管家</div>
+        <div class="text-[10px] text-txt-3 whitespace-nowrap">memory-worker v2.0</div>
+      </div>
+    </div>
+
+    <nav class="flex-1 py-4 px-3 space-y-1 overflow-y-auto thin-scroll">
+      <template x-for="item in navItems" :key="item.id">
+        <a :href="'#/' + item.id" class="nav-item group"
+           :class="$store.app.route === item.id ? 'nav-active' : ''"
+           :title="item.label">
+          <span class="nav-bar"></span>
+          <span class="w-5 h-5 shrink-0 transition-transform group-hover:scale-110" x-html="item.icon"></span>
+          <span x-show="!$store.app.navCollapsed" class="text-sm whitespace-nowrap" x-text="item.label"></span>
+          <span x-show="!$store.app.navCollapsed && item.id==='collect' && $store.app.collecting"
+                class="ml-auto w-2 h-2 rounded-full bg-ok pulse-dot"></span>
+        </a>
+      </template>
+    </nav>
+
+    <div class="p-3 border-t border-white/5 shrink-0">
+      <div class="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-white/5 transition">
+        <div class="w-8 h-8 rounded-lg grad-violet grid place-items-center text-xs font-bold shrink-0"
+             x-text="($store.app.user.username||'?').slice(0,2).toUpperCase()"></div>
+        <div x-show="!$store.app.navCollapsed" class="min-w-0 flex-1">
+          <div class="text-xs font-medium truncate" x-text="$store.app.user.username"></div>
+          <div class="text-[10px] text-txt-3" x-text="$store.app.user.is_admin ? '管理员' : '成员'"></div>
+        </div>
+        <button x-show="!$store.app.navCollapsed" @click="logout()" title="退出登录"
+                class="p-1.5 rounded-md text-txt-3 hover:text-danger hover:bg-danger/10 transition">
+          <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
+        </button>
+      </div>
+      <button @click="$store.app.navCollapsed = !$store.app.navCollapsed"
+              class="w-full mt-1 py-1.5 rounded-lg text-txt-3 hover:text-txt-1 hover:bg-white/5 transition grid place-items-center">
+        <svg viewBox="0 0 24 24" class="w-4 h-4 transition-transform" :class="$store.app.navCollapsed && 'rotate-180'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <!-- 右侧 -->
+  <div class="flex-1 min-w-0 flex flex-col">
+    <!-- 顶栏 -->
+    <header class="h-16 shrink-0 sticky top-0 z-30 glass-b flex items-center gap-4 px-6">
+      <div class="min-w-0">
+        <h2 class="text-lg font-semibold leading-tight truncate" x-text="currentNav.label"></h2>
+        <p class="text-[11px] text-txt-3 truncate" x-text="currentNav.desc"></p>
+      </div>
+
+      <div class="ml-auto flex items-center gap-3">
+        <div x-show="$store.app.collecting" class="chip-live">
+          <span class="w-1.5 h-1.5 rounded-full bg-ok pulse-dot"></span>
+          <span class="text-[11px]">采集中</span>
+          <span class="text-[11px] font-mono text-ok" x-text="$store.app.collectProgress.total_events || 0"></span>
+        </div>
+
+        <template x-for="s in healthChips" :key="s.key">
+          <div class="chip" :title="s.title">
+            <span class="w-1.5 h-1.5 rounded-full" :class="s.on ? 'bg-ok pulse-dot' : 'bg-danger'"></span>
+            <span class="text-[11px] text-txt-2" x-text="s.label"></span>
+          </div>
+        </template>
+
+        <button @click="refreshHealth()" title="刷新状态"
+                class="p-2 rounded-lg text-txt-2 hover:text-txt-1 hover:bg-white/5 transition">
+          <svg viewBox="0 0 24 24" class="w-4 h-4" :class="healthLoading && 'animate-spin'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 内容 -->
+    <main class="flex-1 px-6 py-6 max-w-[1440px] w-full mx-auto">
+      <template x-if="$store.app.route === 'dashboard'">
+        <section x-data="dashboardPage" class="page space-y-5">
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <template x-for="(m, i) in metrics" :key="m.key">
+              <div class="card p-5 stagger" :style="`--d:${i*45}ms`">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <p class="text-xs text-txt-3 mb-2" x-text="m.label"></p>
+                    <p class="text-[28px] font-bold font-mono leading-none" x-text="m.value"></p>
+                  </div>
+                  <div class="w-9 h-9 rounded-xl grid place-items-center shrink-0" :class="m.bg" x-html="m.icon"></div>
+                </div>
+                <p class="text-[11px] text-txt-3 mt-3" x-text="m.hint"></p>
+              </div>
+            </template>
+          </div>
+
+          <div class="grid lg:grid-cols-3 gap-5">
+            <div class="card p-5 lg:col-span-2">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="font-semibold">近 30 天事件量</h3>
+                <span class="text-xs text-txt-3" x-text="`合计 ${trendTotal.toLocaleString()} 条`"></span>
+              </div>
+              <div class="h-40 flex items-end gap-[3px]" x-show="trend.length">
+                <template x-for="d in trend" :key="d.day">
+                  <div class="flex-1 rounded-t transition-all duration-300 hover:opacity-100 opacity-85 bar-grad"
+                       :style="`height:${trendMax ? Math.max(2, d.events / trendMax * 100) : 2}%`"
+                       :title="`${d.day} · ${d.events} 条`"></div>
+                </template>
+              </div>
+              <div x-show="!trend.length" class="h-40 grid place-items-center text-sm text-txt-3">暂无数据</div>
+            </div>
+
+            <div class="card p-5">
+              <h3 class="font-semibold mb-4">最近采集任务</h3>
+              <div class="space-y-3" x-show="jobs.length">
+                <template x-for="j in jobs.slice(0,5)" :key="j.id">
+                  <div class="flex items-start gap-3">
+                    <span class="w-2 h-2 rounded-full mt-1.5 shrink-0" :class="statusDot(j.status)"></span>
+                    <div class="min-w-0 flex-1">
+                      <div class="flex items-center gap-2">
+                        <span class="text-xs font-medium" x-text="j.type === 'backfill' ? '历史回填' : '增量采集'"></span>
+                        <span class="badge" :class="statusBadge(j.status)" x-text="statusText(j.status)"></span>
+                      </div>
+                      <div class="text-[11px] text-txt-3 mt-0.5 truncate"
+                           x-text="`${j.created_at.slice(5,16).replace('T',' ')} · ${(j.result&&j.result.events)||0} 条 · ${(j.progress&&j.progress.elapsed)||0}s`"></div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+              <div x-show="!jobs.length" class="text-sm text-txt-3 py-8 text-center">还没有采集记录</div>
+            </div>
+          </div>
+
+          <div class="grid md:grid-cols-3 gap-4">
+            <template x-for="q in quickActions" :key="q.label">
+              <button @click="q.run()" class="quick-card group">
+                <div class="w-10 h-10 rounded-xl grid place-items-center mb-3 transition-transform group-hover:scale-110" :class="q.bg" x-html="q.icon"></div>
+                <div class="text-sm font-semibold" x-text="q.label"></div>
+                <div class="text-[11px] text-txt-3 mt-1" x-text="q.desc"></div>
+              </button>
+            </template>
+          </div>
+        </section>
+      </template>
+
+      <template x-if="$store.app.route === 'collect'">
+        <section x-data="collectPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
+      <template x-if="$store.app.route === 'assistant'">
+        <section x-data="assistantPage" class="page" x-html="tpl"></section>
+      </template>
+
+      <template x-if="$store.app.route === 'insights'">
+        <section x-data="insightsPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
+      <template x-if="$store.app.route === 'mcp'">
+        <section x-data="mcpPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
+      <template x-if="$store.app.route === 'acp'">
+        <section x-data="acpPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
+      <template x-if="$store.app.route === 'agent_memory'">
+        <section x-data="agentMemoryPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
+      <template x-if="$store.app.route === 'members'">
+        <section x-data="membersPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
+      <template x-if="$store.app.route === 'settings'">
+        <section x-data="settingsPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+    </main>
+  </div>
+
+  <!-- 移动端底部 Tab 导航（仅窄屏显示，见 app.css） -->
+  <nav class="mobile-tabbar" x-show="$store.app.authed">
+    <template x-for="item in mobileTabs" :key="item.id">
+      <a :href="'#/' + item.id" class="tab-btn" :class="$store.app.route === item.id ? 'active' : ''">
+        <span class="w-5 h-5" x-html="item.icon"></span>
+        <span class="tab-label" x-text="item.label"></span>
+      </a>
+    </template>
+    <button class="tab-btn" @click="mobileMoreOpen = !mobileMoreOpen"
+            :class="(mobileMoreOpen || isMoreRoute) ? 'active' : ''">
+      <span class="w-5 h-5" x-html="moreIcon"></span>
+      <span class="tab-label" x-text="mobileMoreOpen ? '收起' : '更多'"></span>
+    </button>
+  </nav>
+
+  <!-- 移动端「更多」底部弹层 -->
+  <div class="mobile-sheet-mask" x-show="$store.app.authed && mobileMoreOpen" x-cloak
+       @click="mobileMoreOpen = false"></div>
+  <div class="mobile-sheet" x-show="$store.app.authed && mobileMoreOpen" x-cloak>
+    <div class="mobile-sheet-handle"></div>
+    <div class="grid grid-cols-2 gap-2 px-4 pb-[calc(env(safe-area-inset-bottom)+24px)]">
+      <template x-for="item in mobileMore" :key="item.id">
+        <a :href="'#/' + item.id" class="sheet-item" @click="mobileMoreOpen = false"
+           :class="$store.app.route === item.id ? 'active' : ''">
+          <span class="w-5 h-5 shrink-0" x-html="item.icon"></span>
+          <span class="text-sm" x-text="item.label"></span>
+        </a>
+      </template>
+      <button class="sheet-item" @click="mobileMoreOpen = false; logout()">
+        <svg viewBox="0 0 24 24" class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
+        <span class="text-sm">退出登录</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ Toast ══════════ -->
+<div class="fixed top-4 right-4 z-[100] space-y-2 w-[340px] pointer-events-none">
+  <template x-for="t in $store.app.toasts" :key="t.id">
+    <div class="toast pointer-events-auto" :class="'toast-'+t.type">
+      <span class="toast-bar"></span>
+      <div class="flex-1 min-w-0">
+        <p class="text-[13px] leading-snug break-words" x-text="t.message"></p>
+      </div>
+      <button @click="$store.app.dismiss(t.id)" class="text-txt-3 hover:text-txt-1 shrink-0">
+        <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </template>
+</div>
+
+<!-- ══════════ 确认框 ══════════ -->
+<template x-if="$store.app.confirm.open">
+  <div class="fixed inset-0 z-[90] grid place-items-center px-4 bg-black/60 backdrop-blur-sm" @click.self="$store.app.resolveConfirm(false)">
+    <div class="glass rounded-xl2 p-6 w-full max-w-[400px] shadow-panel anim-in">
+      <h3 class="font-semibold text-base mb-2" x-text="$store.app.confirm.title"></h3>
+      <p class="text-sm text-txt-2 mb-6 leading-relaxed" x-text="$store.app.confirm.message"></p>
+      <div class="flex gap-3 justify-end">
+        <button class="btn-ghost" @click="$store.app.resolveConfirm(false)">取消</button>
+        <button class="btn-danger" @click="$store.app.resolveConfirm(true)" x-text="$store.app.confirm.okText"></button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script type="module" src="/static/js/main.js"></script>
+<script defer src="/static/vendor/alpine.min.js"
+        onerror="this.onerror=null;var s=document.createElement('script');s.defer=true;s.src='https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js';document.body.appendChild(s);"></script>
+</body>
+</html>
