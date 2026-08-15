@@ -1,9 +1,9 @@
-# memory-worker ACP 对接文档
+# memory-agent ACP 对接文档
 
-> 面向 **autoflow 开发者**：本文档描述 memory-worker 暴露的 ACP（Agent Client Protocol）端点，
+> 面向 **autoflow 开发者**：本文档描述 memory-agent 暴露的 ACP（Agent Client Protocol）端点，
 > 供你实现兼容的 ACP 客户端 / 服务端，达成 **拓扑 X（peer-to-peer，2 容器）** 的双向互通。
 >
-> 版本：memory-worker ACP v1 · 传输：JSON-RPC 2.0 over HTTP + SSE
+> 版本：memory-agent ACP v1 · 传输：JSON-RPC 2.0 over HTTP + SSE
 
 ---
 
@@ -11,7 +11,7 @@
 
 ```
 ┌──────────────────────────┐         ACP JSON-RPC (HTTP+SSE)        ┌──────────────────────────┐
-│   memory-worker (ACP)    │ <───────────────────────────────────> │       autoflow (ACP)     │
+│   memory-agent (ACP)    │ <───────────────────────────────────> │       autoflow (ACP)     │
 │   /acp  server+client   │                                        │       /acp  server+client│
 └──────────────────────────┘                                        └──────────────────────────┘
         ↑ OpenCode / Zed 也可直连任一侧                                      ↑ 反之亦然
@@ -27,7 +27,7 @@
 
 | 项 | 值 |
 |---|---|
-| Base URL | `http(s)://<memory-worker-host>/acp` （`/acp/` 也接受） |
+| Base URL | `http(s)://<memory-agent-host>/acp` （`/acp/` 也接受） |
 | 协议 | JSON-RPC 2.0 |
 | 请求 | `POST` + `Content-Type: application/json`，body 为单个 JSON-RPC 请求 |
 | 非流式方法响应 | `application/json`（JSON-RPC response / error） |
@@ -51,7 +51,7 @@ x-acp-token: acp_xxxxxxxxxxxxxxxx
 
 ### 生成 ACP 令牌
 
-通过 memory-worker 既有的令牌接口（需管理员登录）：
+通过 memory-agent 既有的令牌接口（需管理员登录）：
 
 ```bash
 curl -X POST 'https://<host>/api/mcp/tokens' \
@@ -83,7 +83,7 @@ curl -X POST 'https://<host>/api/mcp/tokens' \
 {
   "jsonrpc": "2.0", "id": 1,
   "result": {
-    "agent": {"name":"memory-worker","version":"1.0.0","vendor":{"name":"memory-worker"}},
+    "agent": {"name":"memory-agent","version":"1.0.0","vendor":{"name":"memory-agent"}},
     "capabilities": {"streaming":true,"cancellation":true,"sessions":true,"tools":true},
     "tools": [
       {"name":"get_member_persona","description":"...","inputSchema":{...}},
@@ -97,7 +97,7 @@ curl -X POST 'https://<host>/api/mcp/tokens' \
 
 - `tools` 默认包含 **builtin 暴露的只读/查询类工具**（家庭记忆检索、画像、洞察等）
   以及 **`delegate_to_autoflow`**（委派工具）。
-- 如需让 agent 拥有写/变更类能力，可在 memory-worker 侧调整 `build_acp_tools()` 的
+- 如需让 agent 拥有写/变更类能力，可在 memory-agent 侧调整 `build_acp_tools()` 的
   工具面（改为暴露 mcp 类）；默认保守只给只读集。
 
 ### 4.2 `prompt`
@@ -190,7 +190,7 @@ SSE 流下发（若仍连接）。
 ```python
 import json, httpx
 
-ACP_URL = "https://<memory-worker-host>/acp"
+ACP_URL = "https://<memory-agent-host>/acp"
 ACP_TOKEN = "acp_xxxxxxxxxxxxxxxx"
 
 def acp_request(method, params=None, id_=1, stream=False):
@@ -233,32 +233,32 @@ if __name__ == "__main__":
 
 ---
 
-## 8. Peer-to-Peer 委派约定（memory-worker ↔ autoflow）
+## 8. Peer-to-Peer 委派约定（memory-agent ↔ autoflow）
 
 拓扑 X 的核心是「agent 自主委派」：当一端判断任务更适合对端处理时，调用
-**`delegate_to_autoflow`**（memory-worker 侧）/ 对等的 `delegate_to_memory_worker`
+**`delegate_to_autoflow`**（memory-agent 侧）/ 对等的 `delegate_to_memory_agent`
 （autoflow 侧）工具，把自然语言任务交给对端 agent。
 
 - **调用方式**：委派工具内部通过 HTTP 调用对端的 `/acp` `prompt`，并消费其 SSE 流，
   将对端最终 `completed` 的 `text` 块作为委派结果返回。
-- **配置（memory-worker → autoflow）**：环境变量
+- **配置（memory-agent → autoflow）**：环境变量
   - `AUTOFLOW_ACP_URL=https://<autoflow-host>/acp`
-  - `AUTOFLOW_ACP_TOKEN=acp_xxx`（autoflow 为 memory-worker 生成的 kind=acp 令牌）
+  - `AUTOFLOW_ACP_TOKEN=acp_xxx`（autoflow 为 memory-agent 生成的 kind=acp 令牌）
 - 若未配置，工具会返回友好提示而非报错，避免强耦合。
-- **对称要求**：autoflow 侧需提供等价的 `/acp` 端点，并为 memory-worker 签发 kind=acp 令牌。
+- **对称要求**：autoflow 侧需提供等价的 `/acp` 端点，并为 memory-agent 签发 kind=acp 令牌。
   两端协议完全一致（同一份本文档），谁实现 server、谁实现 client 互相对称。
 
 ### 委派消息约定（建议）
 
 ```jsonc
-// memory-worker 调用 autoflow 的 prompt
+// memory-agent 调用 autoflow 的 prompt
 {"jsonrpc":"2.0","id":1,"method":"prompt",
  "params":{"messages":[{"role":"user","content":"<自然语言任务>"}],"context":{...}}}
 // autoflow 回包：session_update(status=completed, content=[{type:"text",...}])
 ```
 
 若需带结构化上下文，可放在 `messages` 的 user content 中，或在扩展字段 `context` 透传
-（memory-worker 的 `delegate_to_autoflow` 已支持 `context` 参数，会随任务一并转发）。
+（memory-agent 的 `delegate_to_autoflow` 已支持 `context` 参数，会随任务一并转发）。
 
 ---
 
@@ -267,5 +267,5 @@ if __name__ == "__main__":
 - `prompt` 的完成以 SSE 流结束为准；部分客户端库若要求 `prompt` 也返回 JSON-RPC `result`，
   请基于 `session_update` 的 `status` 自行判定完成。
 - 会话存储为**单进程内存**实现，服务重启后会话上下文丢失（与现有 debug 会话一致）。
-- 工具面默认只读，变更/写入类能力可按 §4.1 说明在 memory-worker 侧放开。
+- 工具面默认只读，变更/写入类能力可按 §4.1 说明在 memory-agent 侧放开。
 - 本端点的任何改动都不影响既有 `/mcp`、`/api/debug/llm/*`、WebUI JWT 与 Node-RED Basic Auth。

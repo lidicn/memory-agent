@@ -1,4 +1,4 @@
-# iOS / iPad PWA 指南（忆家管家）
+# iOS / iPad PWA 指南（Memory Agent）
 
 本项目已支持作为 **PWA（渐进式 Web 应用）** 安装到 iPhone / iPad，使用 Safari「添加到主屏幕」后以独立 App 形式全屏运行，并具备离线壳（断网也能打开 App）。
 
@@ -24,7 +24,7 @@
    ```bash
    docker compose up -d caddy
    ```
-   Caddy 监听 80/443，将 HTTPS 终止后转发到 `memory-worker:8000`。当前走 `tailscale serve` 直转时无需此步。
+   Caddy 监听 80/443，将 HTTPS 终止后转发到 `memory-agent:8000`。当前走 `tailscale serve` 直转时无需此步。
 
 3. 在 iPhone / iPad 上**信任一次根 CA**（仅自签证书需要；Tailscale 证书信任 Tailscale 根）：
    - 把 `ca.pem`（自签）或 Tailscale 根证书发送到设备并安装描述文件；
@@ -37,7 +37,7 @@
 ## 二、添加到主屏幕（每台设备一次）
 
 1. iPhone / iPad 用 Safari 打开 `https://<你的主机名>.ts.net`，登录。
-2. 点击底部工具栏「分享」→ **添加到主屏幕** → 名称可用默认「忆家管家」→ 添加。
+2. 点击底部工具栏「分享」→ **添加到主屏幕** → 名称可用默认「Memory Agent」→ 添加。
 3. 回到桌面，点击图标即可全屏独立运行（无浏览器地址栏）。
 
 ---

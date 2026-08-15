@@ -19,4 +19,4 @@ EXPOSE 8000
 
 ENV PYTHONPATH=/app/src
 
-CMD ["python", "-m", "uvicorn", "memory_worker.app:combined_app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "memory_agent.app:combined_app", "--host", "0.0.0.0", "--port", "8000"]

@@ -4,7 +4,7 @@
         "type": "tab",
         "label": "净水器用水分析",
         "disabled": false,
-        "info": "调用忆家管家网关分析净水器出水量"
+        "info": "调用Memory Agent网关分析净水器出水量"
     },
     {
         "id": "inject_query",

@@ -40,8 +40,8 @@ import os
 from .runtime import get_runtime
 from .tool_schema import build_catalog, TOOL_NAMES as TOOL_NAMES_FROM_SPEC, register_simple_tools  # noqa: F401
 
-SERVER_NAME = "memory-worker"
-SERVER_INSTRUCTIONS = """忆家管家 —— 家庭行为记忆与洞察中枢。
+SERVER_NAME = "memory-agent"
+SERVER_INSTRUCTIONS = """Memory Agent —— 家庭行为记忆与洞察中枢。
 
 ## 推荐流程（不要跳过第 1 步）
 1. `get_entity_catalog(room="主卧")` —— 用人话找设备，拿到 entity_id 与友好名

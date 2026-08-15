@@ -1,7 +1,7 @@
 services:
-  memory-worker:
+  memory-agent:
     build: .
-    container_name: memory-worker
+    container_name: memory-agent
     restart: unless-stopped
     ports:
       - "8086:8000"
@@ -30,7 +30,7 @@ services:
       HA_DB_HOST: "${HA_DB_HOST:-192.168.2.200}"
       HA_DB_PORT: "${HA_DB_PORT:-3306}"
       HA_DB_NAME: "${HA_DB_NAME:-homeassistant}"
-      HA_DB_USER: "${HA_DB_USER:-memory_worker_ro}"
+      HA_DB_USER: "${HA_DB_USER:-memory_agent_ro}"
       # 密码不在此处明文注入；以 config.json 的 ha_db_password 为准
       # JWT密钥
       JWT_SECRET: "${JWT_SECRET:-change_this_to_random_string}"
@@ -57,7 +57,7 @@ services:
       - ./certs:/certs:ro
       - caddy_data:/data
     depends_on:
-      - memory-worker
+      - memory-agent
 
   redis:
     image: redis:alpine

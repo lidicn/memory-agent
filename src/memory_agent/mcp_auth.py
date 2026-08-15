@@ -1,8 +1,12 @@
-"""ACP 端点鉴权中间件：Bearer acp_xxx（kind=acp），与 WebUI JWT / mcp_ 令牌隔离。
+"""MCP 专用鉴权中间件
 
-镜像 ``mcp_auth.MCPTokenMiddleware``，但只放行 kind=="acp" 的令牌，
-并在拒绝时返回 ACP 标准的 JSON-RPC 错误体。
+与 WebUI 的 JWT ``AuthMiddleware`` 完全隔离：MCP 客户端携带的是
+``Authorization: Bearer mcp_xxx``，与浏览器会话不共享任何凭据。
+
+重构前 ``/mcp`` 直接躺在 JWT 白名单里 —— 等同于完全裸奔，
+``agent_tokens`` 从未真正生效。
 """
+
 from __future__ import annotations
 
 import json
@@ -10,13 +14,11 @@ import logging
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .acp_protocol import make_error
-
-_log = logging.getLogger("acp.auth")
+_log = logging.getLogger("mcp.auth")
 
 
-class ACPTokenMiddleware:
-    """纯 ASGI 中间件，只保护被包裹的 ACP 子应用。"""
+class MCPTokenMiddleware:
+    """纯 ASGI 中间件，只保护被包裹的 MCP 子应用。"""
 
     def __init__(self, app: ASGIApp, token_store_getter):
         self.app = app
@@ -37,28 +39,33 @@ class ACPTokenMiddleware:
 
         token = self._extract_token(scope)
         store = self._get_store()
+
         if store is None:
-            _log.warning("ACP 鉴权失败: 服务未就绪 (%s %s)", method, path)
+            _log.warning("MCP 鉴权失败: 服务未就绪 (%s %s)", method, path)
             await self._reject(send, "服务未就绪", 503)
+            return
+
+        if not store.count() and not getattr(store.config, "mcp_auth_token", ""):
+            # 尚未生成任何 Token 时明确提示，而不是让客户端看到一个空洞的 401
+            _log.warning("MCP 鉴权失败: 尚未生成 Token (%s %s)", method, path)
+            await self._reject(
+                send, "尚未生成 MCP Token，请先在 WebUI「MCP 接入」页面生成", 401
+            )
             return
 
         name = store.verify(token) if token else None
         if not name:
-            _log.warning("ACP 鉴权失败: Token 无效或缺失 (%s %s)", method, path)
-            await self._reject(
-                send, "Token 无效或缺失（需 acp_ 令牌，kind=acp）", 401
-            )
-            return
-        if store.kind(name) != "acp":
-            _log.warning("ACP 鉴权失败: Token 用途非 acp (%s, %s)", name, path)
-            await self._reject(send, "该 Token 非 ACP 用途（kind!=acp）", 403)
+            _log.warning("MCP 鉴权失败: Token 无效或缺失 (%s %s)", method, path)
+            await self._reject(send, "Token 无效或缺失", 401)
             return
 
         scope.setdefault("state", {})
         if isinstance(scope["state"], dict):
-            scope["state"]["acp_token_name"] = name
+            scope["state"]["mcp_token_name"] = name
 
-        # Mount("/acp") 会把子路径剥成空串，归一化为 "/"
+        # Mount("/mcp") 会把子路径剥成空串，而 MCP 子应用的路由注册在 "/"。
+        # 不做这一步归一化，访问 /mcp 会先吃到一个 307 重定向到 /mcp/，
+        # 对 POST 握手来说是完全没必要的风险。
         if not scope.get("path"):
             scope = dict(scope)
             scope["path"] = "/"
@@ -73,8 +80,8 @@ class ACPTokenMiddleware:
         auth = headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             return auth[7:].strip()
-        if headers.get("x-acp-token"):
-            return headers["x-acp-token"].strip()
+        if headers.get("x-mcp-token"):
+            return headers["x-mcp-token"].strip()
         # 兼容部分只支持 URL 参数的客户端
         query = scope.get("query_string", b"").decode("latin-1")
         for part in query.split("&"):
@@ -87,7 +94,12 @@ class ACPTokenMiddleware:
     @staticmethod
     async def _reject(send: Send, message: str, status: int) -> None:
         body = json.dumps(
-            make_error(None, -32000, message), ensure_ascii=False
+            {
+                "jsonrpc": "2.0",
+                "error": {"code": -32001, "message": message},
+                "id": None,
+            },
+            ensure_ascii=False,
         ).encode("utf-8")
         await send(
             {
@@ -95,7 +107,7 @@ class ACPTokenMiddleware:
                 "status": status,
                 "headers": [
                     (b"content-type", b"application/json; charset=utf-8"),
-                    (b"www-authenticate", b'Bearer realm="memory-worker-acp"'),
+                    (b"www-authenticate", b'Bearer realm="memory-agent"'),
                     (b"content-length", str(len(body)).encode()),
                 ],
             }

@@ -2,7 +2,7 @@
 
 设计要点
 --------
-* 仅使用标准库 ``sqlite3``，零额外依赖；数据库落在 ``/data/memory_worker.db``。
+* 仅使用标准库 ``sqlite3``，零额外依赖；数据库落在 ``/data/memory_agent.db``。
 * WAL 模式，读写不互斥，采集期间 WebUI 仍可正常查询。
 * **所有方法均为同步实现**，调用方负责用 ``asyncio.to_thread`` 包裹，
   避免阻塞事件循环（这是采集不把 WebUI 卡死的前提）。
@@ -239,7 +239,7 @@ def now_local(tz_offset_hours: float = 8.0) -> datetime:
 class Store:
     """行为事件与采集任务的统一存储。"""
 
-    def __init__(self, db_path: str = "/data/memory_worker.db", tz_offset_hours: float = 8.0):
+    def __init__(self, db_path: str = "/data/memory_agent.db", tz_offset_hours: float = 8.0):
         self.db_path = db_path
         self.tz_offset_hours = tz_offset_hours
         self._lock = threading.RLock()

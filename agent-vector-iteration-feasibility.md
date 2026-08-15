@@ -1,13 +1,13 @@
-# memory-worker 向量库 Agent 参与式迭代 — 可行性报告
+# memory-agent 向量库 Agent 参与式迭代 — 可行性报告
 
-> 提交对象：memory-worker 开发者
+> 提交对象：memory-agent 开发者
 > 提交方：CodeBuddy Agent（基于真实 MCP 测试体验）
 > 日期：2026-08-04
 > 说明：本报告"最小安全 MCP 接口集"与"Agent 期望新增功能"建议直接落地，可通过 `save_skill` 持续修订。
 
 ## 1. 背景与现状
 
-memory-worker 定位为"行为洞察层"：关系/时序事件表为主库，chroma 向量库为语义"副驾"，由 `semantic_used` 标识是否启用向量召回。
+memory-agent 定位为"行为洞察层"：关系/时序事件表为主库，chroma 向量库为语义"副驾"，由 `semantic_used` 标识是否启用向量召回。
 
 经多轮 MCP 实测确认：
 - 向量库**已连通**（`ask_memory` 返回 `semantic_used:true` + `semantic_hints`）。

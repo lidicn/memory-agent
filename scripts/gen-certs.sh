@@ -37,7 +37,7 @@ openssl req -x509 -newkey rsa:2048 -nodes \
 # 2) 服务端证书签名请求
 openssl req -newkey rsa:2048 -nodes \
   -keyout "$KEY" -out "$OUT_DIR/csr.pem" \
-  -subj "/CN=${HOST:-memory-worker}" 2>/dev/null
+  -subj "/CN=${HOST:-memory-agent}" 2>/dev/null
 
 # 3) 用根 CA 签发（带 SAN）
 cat > "$OUT_DIR/san.cnf" <<EOF

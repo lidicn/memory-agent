@@ -1,6 +1,6 @@
 """拓扑 X 的 ACP client：用 httpx 消费对端（autoflow）的 /acp SSE，供 delegate 工具调用。
 
-memory-worker 主动委派任务给 autoflow 时，通过此 client 调用 autoflow 的
+memory-agent 主动委派任务给 autoflow 时，通过此 client 调用 autoflow 的
 HTTP ACP 端点。目标地址 / 令牌来自环境变量（AUTOFLOW_ACP_URL / AUTOFLOW_ACP_TOKEN）。
 """
 from __future__ import annotations

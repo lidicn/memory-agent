@@ -16,7 +16,7 @@ _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
-from memory_worker.templates import (  # noqa: E402
+from memory_agent.templates import (  # noqa: E402
     BehaviorInsight,
     EntityQuery,
     run_template,
@@ -153,7 +153,7 @@ def test_run_template_count():
 
 
 def test_run_template_numeric_sum(monkeypatch):
-    from memory_worker import templates as tpl_mod
+    from memory_agent import templates as tpl_mod
 
     def _fake_num(rt, ins, eq, start_iso, end_iso):
         return {
@@ -194,7 +194,7 @@ def test_run_template_not_found():
 # ── 注册一致性（轻量，可离线）──────────────────────────────────────────────
 
 def test_run_analysis_template_registered_in_spec():
-    from memory_worker.tool_schema import SPEC_BY_NAME
+    from memory_agent.tool_schema import SPEC_BY_NAME
     assert "run_analysis_template" in SPEC_BY_NAME
     spec = SPEC_BY_NAME["run_analysis_template"]
     assert "mcp" in spec.expose
@@ -204,13 +204,13 @@ def test_run_analysis_template_registered_in_spec():
 
 
 def test_route_question_maps_to_plan_question():
-    from memory_worker.tool_schema import SPEC_BY_NAME
+    from memory_agent.tool_schema import SPEC_BY_NAME
     assert SPEC_BY_NAME["route_question"].method == "plan_question"
 
 
 mcp_server_mod = None
 try:
-    import memory_worker.mcp_server as mcp_server_mod  # noqa: E402
+    import memory_agent.mcp_server as mcp_server_mod  # noqa: E402
 except Exception:  # pragma: no cover - 本地无 mcp 时跳过
     mcp_server_mod = None
 

@@ -2,7 +2,7 @@
 
 > 状态：提案（待评审，未写代码）
 > 依据：`vector-db-agent-iteration-feasibility.md` + 对 `history.py` / `insights.py` 现状的逐行核对（行号于 2026-08-04 复核，全部成立，见 §1）
-> 范围：在现有 `memory-worker` 上引入"Agent 安全写回向量库"能力；与「全栈重构」计划正交，作为独立工作流
+> 范围：在现有 `memory-agent` 上引入"Agent 安全写回向量库"能力；与「全栈重构」计划正交，作为独立工作流
 > 修订记录：v2 补入 #1 矛盾检测、#2 trust 重排、#3 声誉回路、#4 自动晋升 sweep；夯实 #5 真溯源、#6 promote 联动、#7 force 权限；修正 #8 metadata 类型、#9 两写一致性、#10 命名。
 
 ---
@@ -89,12 +89,12 @@ CREATE INDEX IF NOT EXISTS idx_agent_mem_topic ON agent_memories(topic_key);
 
 | 文件 | 改动 | 说明 |
 |---|---|---|
-| `src/memory_worker/store.py` | **新增** `agent_memories` 建表/索引 + CRUD（`add_agent_memory` / `set_agent_memory_state` / `record_agent_feedback` / `list_agent_memories` / `list_expired_agent_memories` / `mark_mirror_dirty` / `get_session_trust`） | 元数据权威源 |
-| `src/memory_worker/agent_memory.py` | **新增** `AgentMemoryService`：封装工具逻辑 + **冲突/重复检测**（v2 #1）+ **溯源校验**（v2 #5）+ **晋升判定**（联动 insight，v2 #6）+ **re-rank**（v2 #2）+ `sweep_promote_candidates`（v2 #4）+ `reconcile`（v2 #9） | 核心业务 |
-| `src/memory_worker/history.py` | `collection` 工厂增加 `agent_collection` getter；`semantic_search` 增加 `state` / `kind` / `trust_min` 过滤参数 | 检索侧隔离 |
-| `src/memory_worker/insights.py` | `ask_memory` 接入 `agent_memory`（live + re-rank，v2 #2）；新增 `route` / `return_hints` 参数（报告 7.E）；`get_data_quality` 暴露 mirror_dirty 缺口（v2 #9） | 检索侧升级 |
-| `src/memory_worker/mcp_server.py` | **新增 8 个 MCP 工具**（§5，含 `sweep_promote_candidates` 触发入口） | 写回通道 |
-| `src/memory_worker/runtime.py` | `AppRuntime` 持有 `agent_memory: AgentMemoryService`；注册每日 sweep + reconcile 定时任务（v2 #4/#9） | 单例 + 调度打通 |
+| `src/memory_agent/store.py` | **新增** `agent_memories` 建表/索引 + CRUD（`add_agent_memory` / `set_agent_memory_state` / `record_agent_feedback` / `list_agent_memories` / `list_expired_agent_memories` / `mark_mirror_dirty` / `get_session_trust`） | 元数据权威源 |
+| `src/memory_agent/agent_memory.py` | **新增** `AgentMemoryService`：封装工具逻辑 + **冲突/重复检测**（v2 #1）+ **溯源校验**（v2 #5）+ **晋升判定**（联动 insight，v2 #6）+ **re-rank**（v2 #2）+ `sweep_promote_candidates`（v2 #4）+ `reconcile`（v2 #9） | 核心业务 |
+| `src/memory_agent/history.py` | `collection` 工厂增加 `agent_collection` getter；`semantic_search` 增加 `state` / `kind` / `trust_min` 过滤参数 | 检索侧隔离 |
+| `src/memory_agent/insights.py` | `ask_memory` 接入 `agent_memory`（live + re-rank，v2 #2）；新增 `route` / `return_hints` 参数（报告 7.E）；`get_data_quality` 暴露 mirror_dirty 缺口（v2 #9） | 检索侧升级 |
+| `src/memory_agent/mcp_server.py` | **新增 8 个 MCP 工具**（§5，含 `sweep_promote_candidates` 触发入口） | 写回通道 |
+| `src/memory_agent/runtime.py` | `AppRuntime` 持有 `agent_memory: AgentMemoryService`；注册每日 sweep + reconcile 定时任务（v2 #4/#9） | 单例 + 调度打通 |
 | `config`（新增项） | `PRIVILEGED_SESSIONS`、`AGENT_PROMOTE_MIN_DAYS=3`、`AGENT_TRUST_STEP=0.2`、`TRUST_STRICT_THRESHOLD=-0.3`、`RETRIEVE_K=20`、`CONFLICT_SIM=0.85`、`DUP_SIM=0.92` | 阈值集中管理 |
 
 > 注：`mcp_server.py` 当前为手写 `MCPServer`，重构计划将整体迁 `FastMCP`。本方案工具直接挂在**届时已存在的 MCP 框架**上，不绑死当前/目标形态，迁移时平移即可。

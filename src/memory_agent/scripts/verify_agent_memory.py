@@ -1,7 +1,7 @@
 """Agent 记忆（参与式写回）端到端验收脚本。
 
 在容器内运行：
-    docker compose exec memory-worker python -m memory_worker.scripts.verify_agent_memory
+    docker compose exec memory-agent python -m memory_agent.scripts.verify_agent_memory
 
 覆盖链路：dry_run 校验 → 写入 staging → 晋升 live → 检索命中 →
 反馈调信任 → 撤销 → 健康检查计数 → 回滚清理。
@@ -12,9 +12,9 @@ import sys
 import time
 import uuid
 
-from memory_worker.config import Config
-from memory_worker.store import SQLiteStore
-from memory_worker.agent_memory import AgentMemoryService
+from memory_agent.config import Config
+from memory_agent.store import SQLiteStore
+from memory_agent.agent_memory import AgentMemoryService
 
 
 def run() -> int:

@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, "src")
 
 from starlette.requests import Request
-from memory_worker.api import debug_routes as d
+from memory_agent.api import debug_routes as d
 
 
 def make_request(run_id: str, user=None):

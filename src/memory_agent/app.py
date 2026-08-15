@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""忆家管家 · 家庭行为记忆中枢 —— ASGI 入口
+"""Memory Agent · 家庭行为记忆中枢 —— ASGI 入口
 
 重构要点
 --------
@@ -202,7 +202,7 @@ async def homepage(request: Request):
 
 async def liveness(request: Request):
     """无需鉴权的存活探针。"""
-    return JSONResponse({"ok": True, "service": "memory-worker"})
+    return JSONResponse({"ok": True, "service": "memory-agent"})
 
 
 async def mcp_unavailable(request: Request):

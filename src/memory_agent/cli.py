@@ -5,7 +5,7 @@ import argparse
 import uvicorn
 
 def main():
-    parser = argparse.ArgumentParser(description="忆家管家 MCP服务")
+    parser = argparse.ArgumentParser(description="Memory Agent MCP服务")
     parser.add_argument("command", choices=["serve"], help="运行命令")
     parser.add_argument("--host", default="0.0.0.0", help="监听地址")
     parser.add_argument("--port", type=int, default=8000, help="监听端口")
@@ -14,7 +14,7 @@ def main():
     
     if args.command == "serve":
         uvicorn.run(
-            "memory_worker.app:combined_app",
+            "memory_agent.app:combined_app",
             host=args.host,
             port=args.port,
             reload=False

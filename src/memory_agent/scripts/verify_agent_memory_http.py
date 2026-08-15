@@ -5,7 +5,7 @@
 - 需要容器已加载最新代码（改动 agent_memory_routes 后需 restart）。
 
 运行（在能访问容器 HTTP 端口的机器上）：
-    python -m memory_worker.scripts.verify_agent_memory_http
+    python -m memory_agent.scripts.verify_agent_memory_http
 环境变量：
     MW_BASE  容器地址，默认 http://192.168.2.200:8086
 """

@@ -9,15 +9,15 @@ import json
 import os
 import sys
 
-# 让 tests/ 能 import src 下的 memory_worker 包
+# 让 tests/ 能 import src 下的 memory_agent 包
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
-import memory_worker.acp_server as acp  # noqa: E402
-from memory_worker.acp_protocol import sse_message  # noqa: E402
-from memory_worker.acp_auth import ACPTokenMiddleware  # noqa: E402
-from memory_worker.api.debug_routes import DebugRun  # noqa: E402
+import memory_agent.acp_server as acp  # noqa: E402
+from memory_agent.acp_protocol import sse_message  # noqa: E402
+from memory_agent.acp_auth import ACPTokenMiddleware  # noqa: E402
+from memory_agent.api.debug_routes import DebugRun  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -28,7 +28,7 @@ def test_build_acp_tools_contains_delegate_and_builtin():
     names = {t["name"] for t in tools}
     assert "delegate_to_autoflow" in names
     # builtin 暴露的只读工具应被包含
-    from memory_worker.tool_schema import build_openai_tools
+    from memory_agent.tool_schema import build_openai_tools
 
     builtin = {t["function"]["name"] for t in build_openai_tools(("builtin",))}
     assert builtin <= names
@@ -88,7 +88,7 @@ def test_handle_initialize():
         acp.acp_handle(None, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
     )
     assert gen is None
-    assert resp["result"]["agent"]["name"] == "memory-worker"
+    assert resp["result"]["agent"]["name"] == "memory-agent"
     assert resp["result"]["capabilities"]["streaming"] is True
     assert any(t["name"] == "delegate_to_autoflow" for t in resp["result"]["tools"])
 

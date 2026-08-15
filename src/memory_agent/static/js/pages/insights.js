@@ -210,7 +210,7 @@ export function insightsPage() {
     },
 
     exportAll() {
-      downloadJSON('memory-worker-insights.json', this.items);
+      downloadJSON('memory-agent-insights.json', this.items);
     },
 
     async copyJSON() {

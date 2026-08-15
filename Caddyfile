@@ -14,7 +14,7 @@
 		X-Accel-Buffering no
 	}
 
-	reverse_proxy memory-worker:8000 {
+	reverse_proxy memory-agent:8000 {
 		flush_interval -1
 		transport http {
 			compression off

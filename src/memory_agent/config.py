@@ -79,7 +79,7 @@ class Config:
     ha_db_host: str = "192.168.2.200"
     ha_db_port: int = 3306
     ha_db_name: str = "homeassistant"
-    ha_db_user: str = "memory_worker_ro"
+    ha_db_user: str = "memory_agent_ro"
     ha_db_password: str = ""
     ha_db_query_batch: int = 500      # 单次 SQL 查询的实体批量大小
     ha_db_query_timeout: int = 30     # 单条查询读超时（秒）
@@ -100,7 +100,7 @@ class Config:
     auto_discover_persona: bool = False  # 是否主动把发现的标签推送给用户（默认关闭：仅记录、需确认才存档）
 
     # 存储
-    db_path: str = "/data/memory_worker.db"
+    db_path: str = "/data/memory_agent.db"
     tz_offset_hours: float = 8.0  # 容器内通常无 TZ，显式声明本地时区偏移
 
     # 数据目录

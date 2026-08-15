@@ -1,4 +1,4 @@
-# 忆家管家 · memory-worker
+# Memory Agent · memory-agent
 
 家庭行为记忆中枢：采集 Home Assistant 设备状态 → 沉淀为行为事件库 → 通过 **MCP** 与**内置 LLM 助手**供 AI Agent 调用 → 联动 Node-RED 执行自动化。
 
@@ -104,7 +104,7 @@ base URL 直接填成 `/mcp`（现已支持）或 `/mcp/sse`。
 
 ### 洞察 Skill（网关为唯一真源，Agent 通过 MCP 拉取最新版）
 
-memory-worker（网关）内置并维护「洞察 skill」，**是技能的唯一真源**；连接的 Agent 通过
+memory-agent（网关）内置并维护「洞察 skill」，**是技能的唯一真源**；连接的 Agent 通过
 MCP 工具 `get_skill` 从网关**拉取最新版本**，而不是在各处维护本地副本。
 
 - `save_skill(name, content, title="", category="insight")` —— 把分析经验**写回网关**。
@@ -121,10 +121,10 @@ MCP 工具 `get_skill` 从网关**拉取最新版本**，而不是在各处维�
 > `version` 参数预留给未来多版本历史）。
 
 > `skills_dir` 默认 `/data/skills`，可通过环境变量 `SKILLS_DIR` 覆盖。网关在启动时自动把
-> 内置技能（`src/memory_worker/skills_bundle/`）种子化到该目录，确保 `get_skill` 开箱即可拉到。
+> 内置技能（`src/memory_agent/skills_bundle/`）种子化到该目录，确保 `get_skill` 开箱即可拉到。
 
 内置示例技能位于
-[`src/memory_worker/skills_bundle/insight/SKILL.md`](src/memory_worker/skills_bundle/insight/SKILL.md)，
+[`src/memory_agent/skills_bundle/insight/SKILL.md`](src/memory_agent/skills_bundle/insight/SKILL.md)，
 它指导 Agent 如何按标准流程使用上述 MCP 工具做行为洞察分析。
 
 ---
@@ -163,12 +163,12 @@ MCP 工具 `get_skill` 从网关**拉取最新版本**，而不是在各处维�
 ## 目录结构
 
 ```
-memory-worker/
+memory-agent/
 ├── Dockerfile / docker-compose.yml   # 部署
 ├── pyproject.toml                    # Python 依赖（含 mcp）
 ├── .env.example                      # 环境变量模板
 ├── data/                             # 持久化数据（config.json / *.db / users.json）
-└── src/memory_worker/
+└── src/memory_agent/
     ├── app.py                        # ASGI 入口（combined_app）+ 中间件 + 路由装配
     ├── runtime.py                    # AppRuntime 单例（配置/存储/采集/LLM/MCP Token）
     ├── config.py / auth.py / store.py

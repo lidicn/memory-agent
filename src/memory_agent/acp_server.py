@@ -253,9 +253,9 @@ async def acp_handle(
             req_id,
             {
                 "agent": {
-                    "name": "memory-worker",
+                    "name": "memory-agent",
                     "version": AGENT_VERSION,
-                    "vendor": {"name": "memory-worker"},
+                    "vendor": {"name": "memory-agent"},
                 },
                 "capabilities": {
                     "streaming": True,
@@ -392,7 +392,7 @@ async def acp_dispatcher(scope, receive, send) -> None:
     if request.method == "GET":
         resp = JSONResponse(
             {
-                "service": "memory-worker-acp",
+                "service": "memory-agent-acp",
                 "transport": "json-rpc-2.0-over-http+sse",
                 "note": "ACP 仅接受 JSON-RPC POST；详见 docs/acp-integration.md",
             }

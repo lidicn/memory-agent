@@ -1,6 +1,6 @@
 """tool_schema 一致性测试：保证内置 LLM 与 MCP 共用同一份工具定义、不再漂移。
 
-运行环境：需在能 import memory_worker 的环境执行（容器 / 安装依赖后）。
+运行环境：需在能 import memory_agent 的环境执行（容器 / 安装依赖后）。
 - 基础断言（无需 mcp）：规格完整性、内置 ⊆ MCP、build_openai_tools 数量正确。
 - 进阶断言（import mcp 成功时）：每个 catalogued MCP 工具都有对应的已注册函数，
   且内置与 MCP 共享工具的参数名完全对齐，防止"同名不同参"的割裂。
@@ -12,12 +12,12 @@ import sys
 
 import pytest
 
-# 让 tests/ 能 import src 下的 memory_worker 包
+# 让 tests/ 能 import src 下的 memory_agent 包
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
-from memory_worker.tool_schema import (  # noqa: E402
+from memory_agent.tool_schema import (  # noqa: E402
     TOOL_NAMES,
     TOOL_SPECS,
     SPEC_BY_NAME,
@@ -76,7 +76,7 @@ def test_catalog_matches_spec():
 
 mcp_server = None
 try:
-    import memory_worker.mcp_server as mcp_server  # noqa: E402
+    import memory_agent.mcp_server as mcp_server  # noqa: E402
 except Exception:  # pragma: no cover - 本地无 mcp 时跳过
     mcp_server = None
 

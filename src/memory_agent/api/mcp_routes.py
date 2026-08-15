@@ -25,7 +25,7 @@ def _client_snippets(url: str, token_placeholder: str) -> dict:
         "claude": json.dumps(
             {
                 "mcpServers": {
-                    "memory-worker": {
+                    "memory-agent": {
                         "command": "npx",
                         "args": [
                             "-y",
@@ -43,7 +43,7 @@ def _client_snippets(url: str, token_placeholder: str) -> dict:
         "cursor": json.dumps(
             {
                 "mcpServers": {
-                    "memory-worker": {
+                    "memory-agent": {
                         "url": url,
                         "headers": {"Authorization": auth},
                     }
@@ -56,7 +56,7 @@ def _client_snippets(url: str, token_placeholder: str) -> dict:
             {
                 "$schema": "https://opencode.ai/config.json",
                 "mcp": {
-                    "memory-worker": {
+                    "memory-agent": {
                         "type": "remote",
                         "url": url,
                         "enabled": True,
@@ -168,7 +168,7 @@ async def selftest(request: Request):
             "params": {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {},
-                "clientInfo": {"name": "memory-worker-selftest", "version": "1.0"},
+                "clientInfo": {"name": "memory-agent-selftest", "version": "1.0"},
             },
         }
         transport = httpx.ASGITransport(app=mcp_server.mcp_app)

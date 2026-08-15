@@ -183,7 +183,7 @@ class HistoryManager:
 
         probe_id = f"__selftest__{uuid.uuid4().hex[:12]}"
         marker = uuid.uuid4().hex[:8]
-        probe_text = f"忆家管家向量库自检探针 {marker}：书房 空调 开启"
+        probe_text = f"Memory Agent向量库自检探针 {marker}：书房 空调 开启"
         before = 0
         hit_id = ""
 

@@ -1,6 +1,6 @@
 """ACP（Agent Client Protocol）JSON-RPC 2.0 信封与内容块契约。
 
-memory-worker 对外暴露的 ACP 协议子集，作为 server 实现与对接文档
+memory-agent 对外暴露的 ACP 协议子集，作为 server 实现与对接文档
 （docs/acp-integration.md）的单一真源。传输：HTTP + SSE。
 
 内容块（content blocks）

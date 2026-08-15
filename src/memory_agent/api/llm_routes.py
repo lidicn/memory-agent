@@ -112,7 +112,7 @@ def _sanitize_messages(raw) -> list[dict]:
 
 
 # ── Function Calling 工具表（OpenAI 兼容格式）─────────────────────────────
-# 把 memory-worker InsightService 的查询方法直接暴露给 LLM，由模型自己决定
+# 把 memory-agent InsightService 的查询方法直接暴露给 LLM，由模型自己决定
 # 调哪个工具、怎么传参，取代之前脆弱的关键词硬编码路由。
 # 内置 LLM 的工具表：从单一 schema（tool_schema.py）生成，与 MCP 共用同一份定义。
 # 之前这里硬编码 5 个工具且缺 ask_memory，是"内置答不出、MCP 能答"割裂的根因；
@@ -126,7 +126,7 @@ MEMORY_TOOLS: list[dict] = build_openai_tools(("builtin",))
 # - 内置与 MCP 共用同一份，杜绝"同一问题一边能答一边答不出"的割裂。
 
 async def _run_memory_tool(rt, name: str, args: dict) -> dict:
-    """执行 LLM 选定的 memory-worker 工具，返回结果 dict。
+    """执行 LLM 选定的 memory-agent 工具，返回结果 dict。
 
     统一委托 tool_schema.dispatch：工具表与派发逻辑现已收口到单一 schema
     （tool_schema.py），内置 LLM 与 MCP 共用同一份定义。
@@ -404,7 +404,7 @@ def _clean_speak(text: str) -> str:
 
 
 async def _llm_agent_answer(rt, question: str, model: str | None):
-    """复用 memory-worker 工具的多轮 agent loop，返回 (文本, 工具名列表)。"""
+    """复用 memory-agent 工具的多轮 agent loop，返回 (文本, 工具名列表)。"""
     messages = [
         {"role": "system", "content": _VOICE_SYSTEM_PROMPT + "\n\n" + skill_prompt_for(rt)},
         {"role": "user", "content": question},
@@ -483,7 +483,7 @@ async def llm_ask(request: Request):
     model = model_override
 
     # 临时调试：收集匹配候选供诊断
-    from memory_worker.voice_util import _extract_device_query
+    from memory_agent.voice_util import _extract_device_query
     query_core = _extract_device_query(clean)
     candidates = []
     for eid, info in rt.insights.name_map().items():

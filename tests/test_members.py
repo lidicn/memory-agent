@@ -14,7 +14,7 @@ _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
-from memory_worker.store import Store  # noqa: E402
+from memory_agent.store import Store  # noqa: E402
 
 
 @pytest.fixture

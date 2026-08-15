@@ -3,7 +3,7 @@ import sys
 from types import SimpleNamespace
 
 # 1) 路由聚合是否包含 ACP
-from memory_worker.api import get_routes
+from memory_agent.api import get_routes
 paths = sorted({r.path for r in get_routes()})
 acp_paths = [p for p in paths if p.startswith("/api/acp")]
 assert acp_paths, "ACP 路由未注册!"
@@ -11,7 +11,7 @@ print("ACP routes:", acp_paths)
 
 # 2) 用 TestClient 打接口（stub auth + runtime）
 from starlette.testclient import TestClient
-import memory_worker.api.acp_routes as A
+import memory_agent.api.acp_routes as A
 
 # fake token store / config
 _store = {}
