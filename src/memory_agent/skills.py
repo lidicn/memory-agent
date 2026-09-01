@@ -34,6 +34,8 @@ _STRATEGY = """\
 5. 宏观行为洞察（「昨天家里整体情况」「作息规律」）→ get_behavior_insights。
 6. 活动识别（「昨天做了什么」「几点睡的」「洗了几次澡」）→ infer_activities。
 7. 想确认有哪些设备 / 不确定设备叫什么 → get_entity_catalog。
+8. **看摄像头 / 视觉识别（「看看谁在客厅」「门口有没有异常」「玄关有没有快递」）→ analyze_camera(room="客厅", prompt_preset="people/security/object")。**
+   默认只返回文字描述，不会把原始画面发给 LLM。先 route_question 时它会自动识别这类意图。
 
 ## 找不准设备时的标准流程（最重要）
 - 不要凭空猜设备名。先调用 get_entity_catalog(room="书房", query="电脑") 之类，从返回列表里挑出最匹配的 friendly_name。
@@ -68,6 +70,15 @@ _STRATEGY = """\
 问：「昨天房间空调开了多久」（假设 HA 里真有一个房间叫「房间」）
 → route_question 规划后，调用 get_device_usage(room="房间", query="空调", days=2)，
   只统计名字为「房间」这个 area 下的空调，而不是所有房间。
+
+问：「看看谁在客厅」
+→ route_question 会识别为视觉意图，直接推荐 analyze_camera(room="客厅", prompt_preset="people")。
+
+问：「门口有没有异常」
+→ analyze_camera(room="门口", prompt_preset="security")。
+
+问：「玄关有没有快递或宠物」
+→ analyze_camera(room="玄关", prompt_preset="object")。
 
 ## 回答风格
 - 用简洁、自然的中文，先给结论再给关键数字；不要罗列全部原始 JSON。

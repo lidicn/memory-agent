@@ -80,6 +80,20 @@ OFF_STATES: frozenset[str] = frozenset(
     {"off", "closed", "not_home", "unavailable", "unknown", "idle", "standby", "none", ""}
 )
 
+# 中文环境下常见的「关闭/开启」状态词（门窗传感器、开关等可能上报中文状态）
+_CN_OFF_STATES: frozenset[str] = frozenset({"关", "关闭", "门关", "闭合", "断开", "无", "否", "0"})
+_CN_ON_STATES: frozenset[str] = frozenset({"开", "打开", "门开", "开启", "接通", "有", "是", "1"})
+
+
+def _state_is_off(state: Any) -> bool:
+    s = _norm(state)
+    return s in OFF_STATES or s in _CN_OFF_STATES
+
+
+def _state_is_on(state: Any) -> bool:
+    s = _norm(state)
+    return s in _CN_ON_STATES
+
 #: 抖动阈值：短于该秒数的开启片段视为误触，不计入时长统计。
 DEFAULT_DEBOUNCE_SECONDS = 5
 
@@ -554,9 +568,16 @@ class InsightService:
         rooms = self.match_rooms(room)
         domains = self.domains_for(category, domain, query)
         excl = list(TELEMETRY_DOMAINS) if behavior_only else None
-        if domains and excl:
-            # 显式点名要 sensor 时，不再把它当污染源剔除
-            excl = [d for d in excl if d not in domains] or None
+        if excl:
+            # 显式点名 domain 或 entity_id 时，不把命中的域当污染源剔除：
+            # 否则用户明明指定了某实体，却因它属于 sensor/event 等遥测域被静默过滤成 0 条，
+            # 模型会误判成「没数据 / 没有 MCP 工具」。语义检索（room/category/query）命中的
+            # 域仍按原逻辑豁免；仅当用户直接给出 entity_id 时才对点名实体破例。
+            carve = set(domains or [])
+            if entity_id:
+                carve |= {e.split(".", 1)[0] for e in entities if "." in e}
+            if carve:
+                excl = [d for d in excl if d not in carve] or None
         states = [s.strip() for s in str(state or "").split(",") if s.strip()] or None
 
         if room and not entities and not rooms:
@@ -1168,6 +1189,64 @@ class InsightService:
             # 逐条规则留痕：为空到底是「真没异常」还是「规则没跑」，这里说得清清楚楚
             "anomaly_checks": anomaly["checks"],
             "hint": "需要具体设备时长请用 get_device_usage；需要原始事件请用 search_events",
+        }
+
+    def query_behavior_events(
+        self,
+        room: str = "",
+        member: str = "",
+        days: int = 7,
+        start: str = "",
+        end: str = "",
+        limit: int = 50,
+    ) -> dict:
+        """查询多模态视觉识别记录的历史行为事件（谁在哪个房间、什么时间）。"""
+        start_iso, end_iso, meta = self.resolve_range(days, start, end)
+        day_from = start_iso[:10]
+        day_to = end_iso[:10]
+
+        resolved_room = ""
+        if room:
+            matched = self.match_rooms(room)
+            if matched:
+                resolved_room = matched[0]
+            else:
+                return {
+                    "ok": False,
+                    "error": f"没有匹配到房间「{room}」",
+                    "available_rooms": list((self.config.rooms or {}).keys()),
+                }
+
+        events = self.store.list_behavior_events(
+            room=resolved_room or None,
+            member=member or None,
+            day_from=day_from,
+            day_to=day_to,
+            limit=max(1, min(int(limit or 50), 200)),
+        )
+
+        out: list[dict] = []
+        for e in events:
+            persons = e.get("persons") or []
+            names = [p.get("name") or "未识别" for p in persons]
+            out.append(
+                {
+                    "time": e.get("server_ts", ""),
+                    "room": e.get("room"),
+                    "persons": names,
+                    "scene": e.get("scene"),
+                    "action": e.get("action"),
+                    "count": e.get("count"),
+                }
+            )
+
+        return {
+            "ok": True,
+            "window": meta,
+            "room": resolved_room or room or "全部",
+            "member_filter": member or None,
+            "count": len(out),
+            "events": out,
         }
 
     @staticmethod
@@ -2327,6 +2406,16 @@ class InsightService:
             })
         events.sort(key=lambda e: e["dt"])
 
+        # ── 信号硬排除层（学习策略：teach_signal kind='hard'）──
+        # 一次加载生效中的排除规则；命中实体在对应 scope 直接跳过（无歧义硬排）。
+        _sig_excl = self.store.list_signal_exclusions(include_revoked=False)
+        _sig_all = {x["entity_id"] for x in _sig_excl if x["scope"] == "all"}
+        _sig_pair = {(x["entity_id"], x["scope"]) for x in _sig_excl}
+
+        def _signal_excluded(eid, scope):
+            """某实体在某检测维度是否被硬排除（scope='all' 或精确匹配均生效）。"""
+            return eid in _sig_all or (eid, scope) in _sig_pair
+
         inventory = {
             tag: sorted({e["name"] for e in events if tag in e["tags"]})[:8]
             for tag in self._TAG_RULES
@@ -2392,7 +2481,11 @@ class InsightService:
                 ))
             _mark("bathing", bool(bath), "卫生间无占用触发" if not bath else "命中", len(bath))
 
-            tv = [e for e in evs if "media" in e["tags"] and e["active"]]
+            tv = [
+                e for e in evs
+                if "media" in e["tags"] and e["active"]
+                and not _signal_excluded(e["eid"], "watching_tv")
+            ]
             if tv:
                 results.append(self._act(
                     day, "watching_tv", 0.7,
@@ -2413,6 +2506,8 @@ class InsightService:
                 e for e in evs
                 if e["active"] and 9 <= e["hour"] <= 19
                 and ("computer" in e["tags"] or ("书房" in e["room"] and "presence" in e["tags"]))
+                and not _signal_excluded(e["eid"], "working")
+                and not _signal_excluded(e["eid"], "presence")
             ]
             if work:
                 results.append(self._act(
@@ -2459,21 +2554,26 @@ class InsightService:
                         entities=[door_before[-1]["eid"]],
                     ))
         for night, (a, b, mins) in sorted(best_sleep.items()):
+            # 学习策略：起床锚定（静默后首个动作 b）若被硬排除为自动化信号，
+            # 则不予采信——避免「小爱音箱定时模式切换」被误当成起床。
+            b_excluded = _signal_excluded(b["eid"], "wake_anchor")
             anchor = ""
             if "cover" in a["tags"]:
                 anchor = "（入睡前有窗帘动作）"
-            elif "cover" in b["tags"]:
+            elif (not b_excluded) and "cover" in b["tags"]:
                 anchor = "（起床后有窗帘动作）"
+            who_b = "" if b_excluded else f"，静默后首个动作「{b['name']}」"
+            excl_note = "；⚠️ 起床锚定实体已被硬排除为自动化信号，不予采信" if b_excluded else ""
             results.append(self._act(
                 night, "sleeping",
                 0.75 if mins >= 300 else 0.6,
                 f"当夜最长的全屋静默区间：{a['ts'][11:16]} → {b['ts'][11:16]}，"
                 f"持续 {mins / 60:.1f} 小时{anchor}；"
-                f"静默前最后动作「{a['name']}」，静默后首个动作「{b['name']}」",
+                f"静默前最后动作「{a['name']}」{who_b}{excl_note}",
                 22, 7,
                 start_ts=a["ts"], end_ts=b["ts"],
                 duration_minutes=int(mins),
-                entities=[a["eid"], b["eid"]],
+                entities=[a["eid"]] + ([] if b_excluded else [b["eid"]]),
                 method="全屋行为事件静默间隔（无睡眠专用传感器）",
                 caveat="这是睡眠时长的**下界**：夜间任何传感器误触发都会把区间切短，"
                        "因此不能直接当作精确的入睡/起床时刻",
@@ -2771,6 +2871,27 @@ class InsightService:
                 route = "media"
                 tool = "search_events"
                 args = {"category": "media", "days": days, "summarize": True}
+            # 视觉识别（摄像头/VLM）优先于行为洞察，避免「看看谁在客厅」被错路由到传感器统计。
+            elif any(k in ql for k in ("看看", "摄像头", "监控", "摄像机", "画面", "图像",
+                                       "拍一下", "瞅瞅", "照一下")) or \
+                    (any(k in ql for k in ("谁", "有人", "没人", "异常", "快递", "包裹",
+                                           "宠物", "猫", "狗", "东西")) and
+                     any(k in ql for k in ("客厅", "房间", "门口", "玄关", "卧室", "厨房",
+                                           "阳台", "书房", "监控", "摄像头"))):
+                route = "vision"
+                tool = "analyze_camera"
+                preset = "people"
+                if any(k in ql for k in ("异常", "安全", "摔倒", "入侵", "危险", "可疑")):
+                    preset = "security"
+                elif any(k in ql for k in ("快递", "包裹", "宠物", "猫", "狗", "东西", "物品")):
+                    preset = "object"
+                resolved_room = ""
+                try:
+                    room_hint = self.resolve_room_in_text(question)
+                    resolved_room = room_hint.get("room") or ""
+                except Exception:
+                    pass
+                args = {"room": resolved_room, "prompt_preset": preset}
             elif any(k in ql for k in ("有人", "人体", "存在", "移动", "motion", "presence",
                                        "occupancy", "人在", "活动", "做了什么", "几点睡",
                                        "洗澡", "睡眠", "离家", "回家")):
@@ -2869,6 +2990,90 @@ class InsightService:
         except Exception as exc:
             return {"ok": False, "error": f"规划失败：{exc}"}
 
+    def _resolve_device_targets(self, q: str) -> tuple[list[str], bool]:
+        """从自然语言设备问题中挤出设备关键词，定位具体 entity_id。
+
+        返回 (entity_ids, resolved)。resolved=True 表示成功定位到具体实体，
+        调用方应改用 entity_id 精确查询，而不是把整句问题当 query 传下去——
+
+        否则 ``_tokens`` 会把「书房电脑今天开机了多久」当成一整个 token，
+        在实体 haystack 里匹配不到，导致 ``device_usage`` 回退成「全部实体」、
+        截断 40 个后把真正的目标设备挤掉（见 HANDOFF_memory_agent_ask_memory）。
+        """
+        import re as _re
+        filler = (
+            "今天", "昨天", "今晚", "昨日", "前天", "这周", "本周", "上周", "周末", "最近",
+            "时候", "多长时间", "了多久", "开灯", "关灯",
+            "开机", "关机", "了", "多久", "时长", "使用", "运行", "在线", "时间", "查询", "问",
+            "多少", "几", "小时", "分钟", "秒", "次", "数", "在", "是", "吗", "怎么", "什么",
+            "哪些", "哪", "些", "?", "？", "的",
+        )
+        qq = _re.sub(r"最近\s*\d+\s*天", "", q)
+        qq = _norm(qq)
+        for w in filler:
+            qq = qq.replace(_norm(w), " ")
+        qq = qq.strip()
+        if not qq:
+            return [], False
+        cat = self.entity_catalog(query=qq)
+        flat = [e for room in cat.get("rooms", {}).values() for e in room.get("entities", [])]
+        if not flat:
+            return [], False
+        # 事件最多的前 5 个作为目标（与 device_usage 的截断一致）
+        return [e["entity_id"] for e in flat[:5]], True
+
+    def _last_boot_time(self, entity_id: str, days: int = 60) -> str | None:
+        """返回该设备最近一次「off -> on」的开机时刻（跨天连续开机时用于说明起点）。"""
+        try:
+            r = self.search_events(entity_id=entity_id, days=days, order="desc", limit=300)
+            for e in r.get("events", []):
+                old = _norm(e.get("old_state") or e.get("state_before") or "")
+                new = _norm(e.get("new_state") or e.get("state_after") or "")
+                if old in OFF_STATES and new not in OFF_STATES:
+                    return e.get("ts")
+        except Exception:
+            return None
+        return None
+
+    def get_last_event(self, entity_id=None, domain=None, room=None, transition="off", days=30) -> dict:
+        """返回指定实体/域/房间最近一次状态变化事件（transition='off' 为关闭，'on' 为开启，'any' 为任意）。"""
+        try:
+            cfg = self.entity_catalog()
+            name_map = {}
+            for room_data in cfg.get("rooms", {}).values():
+                for e in room_data.get("entities", []):
+                    name_map[e["entity_id"]] = e.get("friendly_name") or e["entity_id"]
+            r = self.search_events(
+                entity_id=entity_id, domain=domain, room=room,
+                days=days, order="desc", limit=200,
+            )
+            for ev in r.get("events", []):
+                eid = ev.get("entity_id")
+                if not eid:
+                    continue
+                new = ev.get("new_state")
+                old = ev.get("old_state")
+                matched = False
+                if transition == "off" and _state_is_off(new):
+                    matched = True
+                elif transition == "on" and _state_is_off(old) and _state_is_on(new):
+                    matched = True
+                elif transition == "any":
+                    matched = True
+                if matched:
+                    return {
+                        "ok": True,
+                        "entity_id": eid,
+                        "friendly_name": name_map.get(eid, eid),
+                        "ts": ev.get("ts"),
+                        "old_state": ev.get("old_state"),
+                        "new_state": ev.get("new_state"),
+                        "transition": transition,
+                    }
+            return {"ok": False, "error": f"未找到 {transition} 事件"}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
     def ask_memory(self, question, days=7, route="auto", return_hints=False) -> dict:
         """自然语言问答：把口语问法映射到既有洞察工具；问法太模糊时回落到向量库语义检索。
 
@@ -2946,8 +3151,14 @@ class InsightService:
             return {"ok": True, "question": q, "window": meta, **data}
 
         # 设备用量：电脑/空调/灯具等开关时长、次数（注意：不包含"有人"，避免误命中电视）
-        if any(k in ql for k in ("电脑", "pc", "笔记本", "台式", "开机", "使用", "运行", "在线", "多久", "次数", "开关")):
-            data = self.device_usage(query=q, start=start_iso, end=end_iso)
+        if any(k in ql for k in ("电脑", "pc", "笔记本", "台式", "开机", "使用", "运行", "在线", "多久", "次数", "开关", "灯", "开灯", "关灯", "时长", "照明")):
+            # 先按自然语言解析具体实体，避免整句问题被当成 query 时分词失败而匹配不到设备
+            # （HANDOFF_memory_agent_ask_memory：友好名解析缺失 + 连续开机误判）。
+            eids, resolved = self._resolve_device_targets(q)
+            if resolved:
+                data = self.device_usage(entity_id=",".join(eids), start=start_iso, end=end_iso)
+            else:
+                data = self.device_usage(query=q, start=start_iso, end=end_iso)
             data["route"] = "device_usage"
             window_desc = meta.get("note", "该时段")
             if data.get("ok") and data.get("devices"):
@@ -2959,15 +3170,21 @@ class InsightService:
                     d.get("friendly_name") or d.get("entity_id", "") for d in data["devices"][:5]
                 )
                 ans = f"{window_desc}，{name} 累计运行/开启约 {human}，共 {sessions} 次会话。"
+                # 连续开机（跨天）：窗口内无 off 事件但当前仍开着 —— 不要报「算不出」，
+                # 而是说明自上次开机起持续开机，今日窗口内无新开关事件。
+                tl = primary.get("timeline") or []
+                if primary.get("switch_off_count", 0) == 0 and tl and tl[0].get("still_on"):
+                    boot = self._last_boot_time(primary["entity_id"])
+                    if boot:
+                        ans += (f"（设备当前为开，自 {boot} 起持续开机未关；"
+                                f"{window_desc}窗口内无新的开关事件，属跨天连续开机）")
+                elif primary.get("total_on_seconds", 0) == 0:
+                    ans += f"（{window_desc}未检测到该设备的开启事件）"
                 if len(data["devices"]) > 1:
                     ans += f" 此外还匹配到：{all_names}。"
             elif data.get("ok"):
-                matched = data.get("matched_entities", [])
-                if matched:
-                    hint = "，".join(matched[:10])
-                    ans = f"{window_desc}未找到与问题完全匹配的设备。系统中相似实体包括：{hint}。请尝试用这些名称重新提问。"
-                else:
-                    ans = f"{window_desc}未找到匹配的设备运行记录。可能是该设备名称不在系统中（如不叫“电脑”），或未接入 Home Assistant。"
+                ans = (f"{window_desc}未找到与问题完全匹配的设备。"
+                       f"可用 get_entity_catalog 按房间/名称定位实体后，再用 get_device_usage 查询。")
             else:
                 err = data.get("error", "设备用量查询失败")
                 ans = f"设备用量查询失败：{err}。"

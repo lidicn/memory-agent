@@ -12,6 +12,13 @@ const TAG_CATEGORIES = [
   { v: 'hygiene', label: '卫生' },
   { v: 'other', label: '其他' },
 ];
+// 外观档案选项（gender 存英文以对齐 VLM 输出 male/female）
+const GENDER_OPTIONS = [
+  { v: 'male', label: '男' },
+  { v: 'female', label: '女' },
+  { v: 'other', label: '其他' },
+];
+const BODY_TYPE_OPTIONS = ['高', '矮', '壮', '瘦', '偏瘦', '微胖', '胖', '偏胖', '中等'];
 
 const TPL = `
 <div class="space-y-5">
@@ -46,10 +53,14 @@ const TPL = `
       <div class="card p-6 flex flex-col items-center text-center cursor-pointer hover:border-brand/40 hover:shadow-glow transition group h-fit" @click="openDetail(m)">
         <!-- 大头像 -->
         <div class="relative mb-3">
-          <img x-show="m.avatar_url" :src="m.avatar_url" class="member-avatar member-avatar-sm">
-          <div x-show="!m.avatar_url" class="member-avatar member-avatar-sm grid place-items-center" :style="'background:'+(m.avatar_bg||'#0EA5E9')">
-            <span x-text="m.avatar_emoji || '🙂'"></span>
-          </div>
+          <template x-if="m.avatar_url">
+            <img :src="m.avatar_url" class="member-avatar member-avatar-sm">
+          </template>
+          <template x-if="!m.avatar_url">
+            <div class="member-avatar member-avatar-sm grid place-items-center" :style="'background:'+(m.avatar_bg||'#0EA5E9')">
+              <span x-text="m.avatar_emoji || '🙂'"></span>
+            </div>
+          </template>
           <div class="avatar-edit-hint" @click.stop="openEdit(m)" title="编辑">
             <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>
           </div>
@@ -78,50 +89,123 @@ const TPL = `
 
 <!-- 添加 / 编辑 成员弹窗 -->
 <div class="fixed inset-0 z-50 grid place-items-center" x-show="formOpen" x-cloak>
-  <div class="absolute inset-0 bg-black/60" @click="closeForm()"></div>
-  <div class="relative card w-[440px] max-w-[92vw] p-5 space-y-4 anim-in">
-    <h3 class="font-semibold" x-text="form.id ? '编辑成员' : '添加成员'"></h3>
+  <div class="absolute inset-0 bg-black/80"></div>
+  <div class="relative card bg-ink-900 w-[440px] max-w-[92vw] max-h-[85vh] flex flex-col anim-in">
+    <div class="p-5 border-b border-white/10 flex items-center justify-between shrink-0">
+      <h3 class="font-semibold" x-text="form.id ? '编辑成员' : '添加成员'"></h3>
+      <button class="icon-btn" @click="closeForm()" title="关闭">
+        <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
 
-    <!-- 头像上传预览 -->
-    <div class="flex flex-col items-center gap-3">
-      <div class="relative">
-        <img x-show="form.avatar_url" :src="form.avatar_url" class="member-avatar">
-        <div x-show="!form.avatar_url" class="member-avatar grid place-items-center" :style="'background:'+(form.avatar_bg||'#0EA5E9')">
-          <span class="text-5xl" x-text="form.avatar_emoji || '🙂'"></span>
+    <div class="flex-1 overflow-y-auto p-5 space-y-4">
+      <!-- 头像上传预览 -->
+      <div class="flex flex-col items-center gap-3">
+        <div class="relative">
+          <template x-if="form.avatar_url">
+            <img :src="form.avatar_url" class="member-avatar">
+          </template>
+          <template x-if="!form.avatar_url">
+            <div class="member-avatar grid place-items-center" :style="'background:'+(form.avatar_bg||'#0EA5E9')">
+              <span class="text-5xl" x-text="form.avatar_emoji || '🙂'"></span>
+            </div>
+          </template>
+          <label class="avatar-upload" title="上传图片">
+            <input type="file" accept="image/*" class="hidden" @change="handleAvatarUpload($event)">
+            <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </label>
         </div>
-        <label class="avatar-upload" title="上传图片">
-          <input type="file" accept="image/*" class="hidden" @change="handleAvatarUpload($event)">
-          <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        </label>
+        <button class="btn-ghost btn-sm" @click="clearAvatarUrl()" x-show="form.avatar_url">恢复默认头像</button>
       </div>
-      <button class="btn-ghost btn-sm" @click="clearAvatarUrl()" x-show="form.avatar_url">恢复默认头像</button>
+
+      <div>
+        <label class="lbl">姓名</label>
+        <input class="inp" x-model="form.name" placeholder="如 爸爸 / 小明">
+      </div>
+      <div x-show="!form.avatar_url">
+        <label class="lbl">Emoji 头像</label>
+        <div class="flex flex-wrap gap-1.5">
+          <template x-for="e in emojiPresets" :key="e">
+            <button class="w-9 h-9 rounded-xl grid place-items-center text-xl transition" :class="form.avatar_emoji===e ? 'ring-2 ring-sky-400 bg-white/10' : 'bg-white/5 hover:bg-white/10'" @click="form.avatar_emoji = e" x-text="e"></button>
+          </template>
+        </div>
+      </div>
+      <div x-show="!form.avatar_url">
+        <label class="lbl">底色</label>
+        <div class="flex flex-wrap gap-2">
+          <template x-for="c in bgPresets" :key="c">
+            <button class="w-7 h-7 rounded-full transition" :style="'background:'+c" :class="form.avatar_bg===c ? 'ring-2 ring-white scale-110' : 'hover:scale-110'" @click="form.avatar_bg = c"></button>
+          </template>
+        </div>
+      </div>
+      <div>
+        <label class="lbl">备注</label>
+        <textarea class="inp" x-model="form.note" rows="2" placeholder="可选，记录 TA 的特点"></textarea>
+      </div>
+
+      <!-- 外观特征（多模态命名识别用）-->
+      <div class="rounded-xl bg-white/5 p-3">
+        <button type="button" class="flex items-center justify-between w-full text-left" @click="apOpen = !apOpen">
+          <span class="font-medium text-sm">🎨 外观特征 <span class="text-[11px] text-txt-3 font-normal">填后可让摄像头识别到 TA 时显示姓名</span></span>
+          <svg viewBox="0 0 24 24" class="w-4 h-4 transition" :class="apOpen && 'rotate-180'" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div x-show="apOpen" class="mt-3 space-y-3 anim-in" x-cloak>
+          <p x-show="apErr" class="text-[12px] text-danger" x-text="apErr"></p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="lbl">性别</label>
+              <select class="inp" x-model="form.gender">
+                <option value="">不填</option>
+                <template x-for="g in genderOptions" :key="g.v">
+                  <option :value="g.v" x-text="g.label"></option>
+                </template>
+              </select>
+            </div>
+            <div>
+              <label class="lbl">年龄段</label>
+              <input class="inp" x-model="form.approx_age" placeholder="如 30-35 或 32">
+            </div>
+            <div>
+              <label class="lbl">身材</label>
+              <select class="inp" x-model="form.body_type">
+                <option value="">不填</option>
+                <template x-for="b in bodyTypeOptions" :key="b">
+                  <option :value="b" x-text="b"></option>
+                </template>
+              </select>
+            </div>
+            <div>
+              <label class="lbl">体重 <span class="text-txt-3 text-[10px]">（可选）</span></label>
+              <input class="inp" x-model="form.weight" placeholder="如 70kg">
+            </div>
+            <div>
+              <label class="lbl">约略身高 <span class="text-txt-3 text-[10px]">（可选）</span></label>
+              <input class="inp" x-model="form.height" placeholder="如 175cm">
+            </div>
+            <div>
+              <label class="lbl">自定义身材 <span class="text-txt-3 text-[10px]">（可选）</span></label>
+              <input class="inp" x-model="form.body_type_custom" placeholder="如 偏胖、结实">
+            </div>
+          </div>
+          <div>
+            <label class="lbl">穿搭风格 <span class="text-txt-3 text-[10px]">（颜色 / 款式 / 明显特征）</span></label>
+            <textarea class="inp" x-model="form.clothing" rows="2" placeholder="如 深色休闲上衣、牛仔裤、戴眼镜"></textarea>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="lbl">发型 / 发色 <span class="text-txt-3 text-[10px]">（可选）</span></label>
+              <input class="inp" x-model="form.hair" placeholder="如 短发 / 卷发">
+            </div>
+            <div>
+              <label class="lbl">常出现区域 <span class="text-txt-3 text-[10px]">（可选）</span></label>
+              <input class="inp" x-model="form.typical_location" placeholder="如 书房 / 客厅">
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div>
-      <label class="lbl">姓名</label>
-      <input class="inp" x-model="form.name" placeholder="如 爸爸 / 小明">
-    </div>
-    <div x-show="!form.avatar_url">
-      <label class="lbl">Emoji 头像</label>
-      <div class="flex flex-wrap gap-1.5">
-        <template x-for="e in emojiPresets" :key="e">
-          <button class="w-9 h-9 rounded-xl grid place-items-center text-xl transition" :class="form.avatar_emoji===e ? 'ring-2 ring-sky-400 bg-white/10' : 'bg-white/5 hover:bg-white/10'" @click="form.avatar_emoji = e" x-text="e"></button>
-        </template>
-      </div>
-    </div>
-    <div x-show="!form.avatar_url">
-      <label class="lbl">底色</label>
-      <div class="flex flex-wrap gap-2">
-        <template x-for="c in bgPresets" :key="c">
-          <button class="w-7 h-7 rounded-full transition" :style="'background:'+c" :class="form.avatar_bg===c ? 'ring-2 ring-white scale-110' : 'hover:scale-110'" @click="form.avatar_bg = c"></button>
-        </template>
-      </div>
-    </div>
-    <div>
-      <label class="lbl">备注</label>
-      <textarea class="inp" x-model="form.note" rows="2" placeholder="可选，记录 TA 的特点"></textarea>
-    </div>
-    <div class="flex justify-end gap-2 pt-1">
+    <div class="p-5 border-t border-white/10 flex justify-end gap-2 bg-ink-900 shrink-0">
       <button class="btn-ghost" @click="closeForm()">取消</button>
       <button class="btn-primary" @click="saveForm()" :disabled="saving"><span x-show="saving" class="spinner"></span>保存</button>
     </div>
@@ -202,6 +286,26 @@ const TPL = `
           </div>
         </div>
 
+        <!-- 外观特征 -->
+        <div x-show="Object.keys(detailAppearance).length">
+          <p class="section-title">外观特征</p>
+          <div class="rounded-lg bg-white/5 p-3 text-[12px] space-y-1.5">
+            <div class="flex flex-wrap gap-x-4 gap-y-1">
+              <span x-show="detailAppearance.gender"><b class="text-txt-3 font-normal">性别</b> <span x-text="genderLabel(detailAppearance.gender)"></span></span>
+              <span x-show="detailAppearance.approx_age"><b class="text-txt-3 font-normal">年龄</b> <span x-text="detailAppearance.approx_age"></span></span>
+              <span x-show="detailAppearance.body_type"><b class="text-txt-3 font-normal">身材</b> <span x-text="detailAppearance.body_type"></span></span>
+              <span x-show="detailAppearance.body_type_custom"><b class="text-txt-3 font-normal">自定义身材</b> <span x-text="detailAppearance.body_type_custom"></span></span>
+              <span x-show="detailAppearance.weight"><b class="text-txt-3 font-normal">体重</b> <span x-text="detailAppearance.weight"></span></span>
+              <span x-show="detailAppearance.height"><b class="text-txt-3 font-normal">身高</b> <span x-text="detailAppearance.height"></span></span>
+              <span x-show="detailAppearance.hair"><b class="text-txt-3 font-normal">发型</b> <span x-text="detailAppearance.hair"></span></span>
+              <span x-show="detailAppearance.typical_location"><b class="text-txt-3 font-normal">常出现</b> <span x-text="detailAppearance.typical_location"></span></span>
+            </div>
+            <div x-show="detailAppearance.clothing && clothingText(detailAppearance.clothing)">
+              <b class="text-txt-3 font-normal">穿搭：</b><span x-text="clothingText(detailAppearance.clothing)"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- 手动添加标签 -->
         <div>
           <div class="flex items-center justify-between">
@@ -242,11 +346,17 @@ export const membersPage = () => ({
   saving: false,
   avatarSaving: false,
   addTagOpen: false,
-  form: { id: '', name: '', avatar_emoji: '🦉', avatar_bg: '#0EA5E9', avatar_url: '', note: '' },
+  form: { id: '', name: '', avatar_emoji: '🦉', avatar_bg: '#0EA5E9', avatar_url: '', note: '',
+    gender: '', approx_age: '', body_type: '', body_type_custom: '', weight: '', height: '', clothing: '',
+    hair: '', typical_location: '' },
+  apOpen: false,
+  apErr: '',
   tagForm: { tag: '', category: 'other', emoji: '' },
   emojiPresets: EMOJI_PRESETS,
   bgPresets: BG_PRESETS,
   tagCategories: TAG_CATEGORIES,
+  genderOptions: GENDER_OPTIONS,
+  bodyTypeOptions: BODY_TYPE_OPTIONS,
 
   init() {
     this.load();
@@ -313,12 +423,52 @@ export const membersPage = () => ({
     return h;
   },
 
+  get detailAppearance() {
+    return this.parseAp(this.detail);
+  },
+
+  genderLabel(v) {
+    const g = (GENDER_OPTIONS || []).find((o) => o.v === v);
+    return g ? g.label : v;
+  },
+
+  clothingText(c) {
+    if (!c) return '';
+    if (typeof c === 'string') return c;
+    const parts = [];
+    const top = [c.top_color, c.top_style].filter(Boolean).join(' ');
+    const bottom = [c.bottom_color, c.bottom_style].filter(Boolean).join(' ');
+    if (top) parts.push('上装：' + top);
+    if (bottom) parts.push('下装：' + bottom);
+    if (c.distinctive) parts.push(c.distinctive);
+    return parts.join('；');
+  },
+
   openCreate() {
-    this.form = { id: '', name: '', avatar_emoji: '🦉', avatar_bg: '#0EA5E9', avatar_url: '', note: '' };
+    this.form = { id: '', name: '', avatar_emoji: '🦉', avatar_bg: '#0EA5E9', avatar_url: '', note: '',
+      gender: '', approx_age: '', body_type: '', body_type_custom: '', weight: '', height: '', clothing: '',
+      hair: '', typical_location: '' };
+    this.apOpen = false;
+    this.apErr = '';
     this.formOpen = true;
   },
 
+  parseAp(m) {
+    let ap = m && m.appearance_json;
+    if (typeof ap === 'string') {
+      try { ap = JSON.parse(ap); } catch (e) { ap = null; }
+    }
+    return (ap && typeof ap === 'object') ? ap : {};
+  },
+
   openEdit(m) {
+    const ap = this.parseAp(m);
+    let clothingStr = '';
+    if (typeof ap.clothing === 'string') {
+      clothingStr = ap.clothing;
+    } else if (ap.clothing && typeof ap.clothing === 'object') {
+      clothingStr = Object.values(ap.clothing).filter(Boolean).join('、');
+    }
     this.form = {
       id: m.id,
       name: m.name,
@@ -326,7 +476,18 @@ export const membersPage = () => ({
       avatar_bg: m.avatar_bg || '#0EA5E9',
       avatar_url: m.avatar_url || '',
       note: m.note || '',
+      gender: ap.gender || '',
+      approx_age: ap.approx_age || '',
+      body_type: ap.body_type || '',
+      body_type_custom: ap.body_type_custom || '',
+      weight: ap.weight || '',
+      height: ap.height || '',
+      clothing: clothingStr,
+      hair: ap.hair || '',
+      typical_location: ap.typical_location || '',
     };
+    this.apOpen = !!clothingStr || !!ap.gender || !!ap.approx_age || !!ap.hair;
+    this.apErr = '';
     this.formOpen = true;
   },
 
@@ -412,12 +573,40 @@ export const membersPage = () => ({
     this.form.avatar_url = '';
   },
 
+  buildAppearance() {
+    const f = this.form;
+    const ap = {};
+    if (f.gender) ap.gender = f.gender;
+    if (f.approx_age) ap.approx_age = f.approx_age;
+    if (f.body_type) ap.body_type = f.body_type;
+    if ((f.body_type_custom || '').trim()) ap.body_type_custom = f.body_type_custom.trim();
+    if (f.weight) ap.weight = f.weight;
+    if (f.height) ap.height = f.height;
+    if ((f.clothing || '').trim()) ap.clothing = f.clothing.trim();
+    if (f.hair) ap.hair = f.hair;
+    if (f.typical_location) ap.typical_location = f.typical_location;
+    return ap;
+  },
+
   async saveForm() {
     const name = (this.form.name || '').trim();
     if (!name) {
       this.$store.app.err('请填写成员姓名');
       return;
     }
+    const appearance = this.buildAppearance();
+    const hasGender = !!appearance.gender;
+    const hasDistinct = !!(
+      appearance.approx_age || appearance.body_type || appearance.body_type_custom ||
+      appearance.weight || appearance.hair ||
+      appearance.height || appearance.typical_location || appearance.clothing
+    );
+    if (!hasGender && !hasDistinct) {
+      this.apOpen = true;
+      this.apErr = '外观档案至少填写「性别」或一项可区分特征（年龄 / 身材 / 穿搭 / 发型）';
+      return;
+    }
+    this.apErr = '';
     this.saving = true;
     try {
       const payload = {
@@ -426,6 +615,7 @@ export const membersPage = () => ({
         avatar_bg: this.form.avatar_bg,
         avatar_url: this.form.avatar_url,
         note: this.form.note,
+        appearance_json: Object.keys(appearance).length ? appearance : '',
       };
       if (this.form.id) {
         await api.updateMember(this.form.id, payload);

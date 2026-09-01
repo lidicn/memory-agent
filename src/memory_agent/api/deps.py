@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, AsyncIterator, Callable
 
@@ -118,15 +119,33 @@ def sse_pack(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+async def _sse_gen_guard(inner: AsyncIterator[str]) -> AsyncIterator[str]:
+    """SSE 流式体兜底守卫。
+
+    吞掉客户端断开（ASGI ``CancelledError``），避免 Starlette 在已发
+    ``http.response.start`` 之后又尝试发一条错误响应（又一个 start），
+    触发 ``RuntimeError: Expected ASGI message 'http.response.body', but got
+    'http.response.start'`` 把前端响应整页吞成空白。
+
+    见 ``HANDOFF_memory_agent_asgi.md``。各 generator 自身也已改为静默 return，
+    此处作为统一兜底，根治所有经 ``sse_response`` 的流式接口。
+    """
+    try:
+        async for chunk in inner:
+            yield chunk
+    except asyncio.CancelledError:
+        return
+
+
 def sse_response(generator: Callable[[], AsyncIterator[str]] | AsyncIterator[str]):
     """构造 SSE 响应。
 
     必须显式关闭缓冲，否则经过反向代理时会「攒够一批才吐」，
-    前端表现为「不流式」。
+    前端表现为「不流式」。外层用 ``_sse_gen_guard`` 包裹，统一吞掉客户端断开异常。
     """
     iterator = generator() if callable(generator) else generator
     return StreamingResponse(
-        iterator,
+        _sse_gen_guard(iterator),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",

@@ -16,12 +16,16 @@ from . import (
     collect_routes,
     config_routes,
     debug_routes,
+    face_routes,
     ha_routes,
     insight_routes,
     llm_routes,
     mcp_routes,
     nr_routes,
     member_routes,
+    signal_routes,
+    vision_routes,
+    system_routes,
 )
 
 _MODULES = (
@@ -36,7 +40,11 @@ _MODULES = (
     nr_routes,
     agent_memory_routes,
     member_routes,
+    signal_routes,
+    vision_routes,
+    face_routes,
     debug_routes,
+    system_routes,
 )
 
 

@@ -361,8 +361,10 @@ async def acp_handle(
                     if ev in ("done", "aborted", "error"):
                         break
             except asyncio.CancelledError:
+                # 客户端断开：gen() 是 SSE 流式响应体，已发 http.response.start，
+                # 禁止 re-raise，否则 Starlette 重复发 start -> RuntimeError -> 前端空白。
                 run.abort()
-                raise
+                return
             finally:
                 try:
                     run.subscribers.remove(own)

@@ -39,6 +39,8 @@ services:
       - ./src:/app/src
       - ./data:/data
       - ./.env:/app/.env:ro
+      # 在线更新：把宿主机仓库根挂入容器，使容器内 git 能更新绑定挂载的 ./src
+      - .:/repo:rw
     depends_on:
       - redis
       - chroma

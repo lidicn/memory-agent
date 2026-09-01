@@ -270,9 +270,15 @@ async def llm_chat(request: Request):
                     elif kind == "done":
                         yield sse_pack("done", {})
         except asyncio.CancelledError:
-            raise
+            # 客户端断开：已发过 http.response.start，禁止再向 Starlette 抛错，
+            # 否则 ServerErrorMiddleware 会重复发 start -> RuntimeError -> 前端空白。
+            return
         except Exception as exc:
-            yield sse_pack("error", {"message": str(exc)})
+            # 仅当连接仍存活时才回传错误，避免向已关闭连接写入
+            try:
+                yield sse_pack("error", {"message": str(exc)})
+            except (asyncio.CancelledError, RuntimeError):
+                return
 
     return sse_response(generator)
 
@@ -337,9 +343,15 @@ async def llm_analyze(request: Request):
                 elif kind == "done":
                     yield sse_pack("done", {})
         except asyncio.CancelledError:
-            raise
+            # 客户端断开：已发过 http.response.start，禁止再向 Starlette 抛错，
+            # 否则 ServerErrorMiddleware 会重复发 start -> RuntimeError -> 前端空白。
+            return
         except Exception as exc:
-            yield sse_pack("error", {"message": str(exc)})
+            # 仅当连接仍存活时才回传错误，避免向已关闭连接写入
+            try:
+                yield sse_pack("error", {"message": str(exc)})
+            except (asyncio.CancelledError, RuntimeError):
+                return
 
     return sse_response(generator)
 

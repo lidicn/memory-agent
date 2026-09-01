@@ -1,6 +1,6 @@
 # 向量库 Agent 参与式写回 — 落地实施方案（v2，已按评审修订）
 
-> 状态：提案（待评审，未写代码）
+> 状态：**已实施 + 已端到端验收（2026-08-16）**
 > 依据：`vector-db-agent-iteration-feasibility.md` + 对 `history.py` / `insights.py` 现状的逐行核对（行号于 2026-08-04 复核，全部成立，见 §1）
 > 范围：在现有 `memory-agent` 上引入"Agent 安全写回向量库"能力；与「全栈重构」计划正交，作为独立工作流
 > 修订记录：v2 补入 #1 矛盾检测、#2 trust 重排、#3 声誉回路、#4 自动晋升 sweep；夯实 #5 真溯源、#6 promote 联动、#7 force 权限；修正 #8 metadata 类型、#9 两写一致性、#10 命名。
@@ -211,3 +211,46 @@ CREATE INDEX IF NOT EXISTS idx_agent_mem_topic ON agent_memories(topic_key);
 3. `rollback_agent_memory(session_id)` 整段置 revoked，审计视图可查。
 4. **sweep 验证（v2 关键）**：造一条带跨 3 天 `source_refs` 的 staging 记忆 → 跑 `sweep_promote_candidates` → 应自动变 live 并被 `ask_memory` 命中；声誉差（trust<-0.3）的 session 记忆应被 sweep 跳过。
 5. 兼容性红线：`behavior_history` 在 agent 全损时 `ask_memory` 仍返回结构化结果（降级）。
+
+---
+
+## 10. 实施与验收记录（2026-08-16）
+
+### 10.1 现状盘点（实施前）
+代码库已 100% 落地本方案全部模块，并随 `docker-compose.yml` 的 `./src:/app/src` bind 挂载运行于 NAS 容器 `memory-agent`：
+- `agent_memory.py`：AgentMemoryService（conflict_scan / 双路径晋升 / re-rank / feedback 信任步进 / sweep_and_reconcile / expire_overdue / rollback）。
+- `store.py`：`agent_memories` 表 + 全套 CRUD（insert/list/set_state/delete/mark_dirty/list_dirty/get_stats/expire）。
+- `history.py`：独立 `AGENT_COLLECTION = "agent_memory"` 集合（复用同一 chroma client，永不碰 `behavior_history`）；`semantic_search` 支持 state/kind/trust_min。
+- `mcp_server.py`：add/promote/revoke/rollback/feedback/list/get_session_trust/sweep/retrieve/health/get_data_quality 全部工具。
+- `api/agent_memory_routes.py`：9 个 REST 端点（已注册）。
+- `insights.py`：`ask_memory` route="semantic" 走 agent_memory.retrieve；`get_data_quality` 暴露 agent 状态 + mirror_dirty。
+- `runtime.py`：startup 中 `create_task(_periodic_agent_memory_sweep())`，周期默认 86400s。
+
+**唯一真实缺口**：从未端到端验收、零单元测试（违反 §9）、缺验证结论。
+
+### 10.2 端到端验收（真实容器，独立测试 session，全程 rollback）
+- HTTP 验收脚本 `scripts/verify_agent_memory_http.py`：**12/12 通过**（dry_run 拦截 / 写入 / force 晋升 / 检索 / 反馈 / health / 回滚 / 撤销）。
+- 经 `memory-worker` MCP 补「非 force 条件晋升 + sweep 自动晋升」两条核心路径：
+  - `add_semantic_memory`（跨 4 个真实事件日溯源）→ `promote_memory(force=False)` 因 cross_day 自动 eligible 转 live ✅
+  - `sweep_promote_candidates` 手动触发：自动晋升符合条件的 staging、reconcile `dirty:0` ✅
+  - `retrieve_agent_memories` 命中 live 记忆，re-rank 公式 `0.7*sim+0.3*trust` 正确 ✅
+  - `get_data_quality` 暴露 `agent_memory` 状态计数 + `mirror_dirty` ✅
+
+### 10.3 修复的真实缺陷（仅修 bug，不重构）
+1. **promote 护栏失效（agent_memory.py）**：原 `conflict_scan`（去重/矛盾检测）被包在 `if not eligible` 分支内，导致满足跨日条件的记忆**跳过护栏直接晋升**（重复/矛盾记忆被错误写入 live）。已将护栏前置到 `_evaluate_promotion` 之前，无论是否达标都先查重复/矛盾。
+2. **rollback 镜像未回写（agent_memory.py）**：原 `rollback_agent_memory` 用改动前的旧记录调 `_upsert_mirror`，导致 chroma 中仍是旧 live/staging 状态，已撤销记忆继续污染 live 检索与冲突检测。改为 re-fetch 更新后的记录再写镜像（与 revoke/promote 一致）。
+3. **memory_id 同秒碰撞（store.py）**：`memory_id = sha1(session_id|text|created_at)`，且 `INSERT OR REPLACE`，同 session 同 text 在**同一秒内**连写会撞出相同 id、后者静默覆盖前者（数据完整性 bug）。已加入 `uuid.uuid4().hex` 分量，杜绝碰撞；去重检测不依赖 id、无副作用。
+
+### 10.4 单元测试（新增 `tests/test_agent_memory.py`，hermetic）
+- pytest + 临时 SQLite `Store().init_schema()` + 假 HistoryManager/Collection，不依赖真实 chroma/网络。
+- 覆盖：溯源前缀校验、dry_run 不落库、staging→live 状态机、去重/矛盾护栏、re-rank 公式、信任步进、rollback 镜像回写（bug #2 回归）、TTL 过期、sweep 自动晋升跳过重复、health 计数与 mirror_dirty。
+- 结果：**14/14 通过**。
+
+### 10.5 部署
+- 改动文件：`src/memory_agent/agent_memory.py`、`src/memory_agent/store.py`、`tests/test_agent_memory.py`。
+- 部署方式：`scp` 到 NAS `/vol1/1000/docker/memory-agent/src/memory_agent/` → `docker restart memory-agent`（bind 挂载，无需重建镜像）。
+- 部署后复验：HTTP 验收 12/12、MCP `agent_memory_health` 显示 `live:0 / mirror_dirty:0 / chroma_available:true`，无测试数据泄漏。
+
+### 10.6 结论
+向量库 Agent 参与式写回功能**已生产可用**：写回链路、双路径晋升、自动 sweep、命名空间隔离、两写一致性、RAG 重排全部经真实容器验证；三个真实缺陷已修复并回归；单元测试补齐。行为知识现已能安全回流 chroma 并参与检索。
+

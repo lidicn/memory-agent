@@ -776,6 +776,157 @@ TOOL_SPECS: list = [
         example="agent_memory_health()",
         pitfall="只读诊断。",
     ),
+    ToolSpec(
+        name="get_last_event",
+        summary="查询某实体/某类设备最近一次状态变化（最后关闭/打开/任意变化）。",
+        description=(
+            "返回指定实体、域或房间最近一次状态变化事件。常用于回答『防盗门最后一次打开/关闭是什么时候』、"
+            "『卧室吸顶灯最后关闭时间』等问题。transition='off' 找『从开到关』的切换，transition='on' 找『从关到开』的切换。"
+        ),
+        group="事件",
+        service="insights", method="get_last_event",
+        expose=("mcp", "builtin"),
+        generated=False,
+        params=[
+            _p("entity_id", "string", "具体实体 ID，如 sensor.xiaomi_cn_xxx_door_state。知道 entity_id 时优先用它。"),
+            _p("domain", "string", "实体域，如 binary_sensor / switch / light / sensor。用于查一类设备。"),
+            _p("room", "string", "房间名，如 卧室 / 客厅。与 domain 联用缩小范围。"),
+            _p("transition", "string", "要找的转换：off=关闭（默认），on=开启，any=任意变化", default="off", enum=["off", "on", "any"]),
+            _p("days", "integer", "查询最近多少天，默认 30", default=30),
+        ],
+        example="get_last_event(entity_id='sensor.xiaomi_cn_xxx_door_state', transition='on')",
+        pitfall="传感器状态值可能用 open/closed 或 on/off 表示；transition 按『是否 off/closed』判定关闭，不依赖字面量。",
+    ),
+    ToolSpec(
+        name="teach_signal",
+        summary="（学习策略）教系统：某实体在某检测维度是/不是自动化信号（硬排）或写带条件软记忆。",
+        description=(
+            "学习策略入口：把『某些信号是自动化信号 / 某些信号不能作为某类判定依据』的纠正持久化，"
+            "使后续检测自动尊重。kind='hard' 写入 signal_exclusions 表（无歧义硬排，优先级高于软记忆）；"
+            "kind='soft' 走 agent 记忆（topic_key=signal_trust，参与信任闭环，用于带条件软判）。"
+            "硬排生效于 infer_activities 的起床锚定(wake_anchor)、在房/工作判定(working/presence)、看电视(watching_tv)。"
+        ),
+        group="学习",
+        service="signal_learning", method="teach_signal",
+        expose=("mcp",),
+        generated=False,
+        params=[
+            _p("entity_id", "string", "实体 ID（如 light.xiaomi_speaker），被纠正的实体", required=True),
+            _p("scope", "string", "检测维度：all|wake_anchor|presence|working|watching_tv，默认 'all'", default="all", enum=["all", "wake_anchor", "presence", "working", "watching_tv"]),
+            _p("kind", "string", "hard=硬排落表 / soft=软记忆落向量库，默认 'hard'", default="hard", enum=["hard", "soft"]),
+            _p("reason", "string", "纠正理由（如『小爱音箱定时模式切换是自动化信号，不是起床』）"),
+            _p("text", "string", "kind='soft' 时必填：软记忆正文"),
+            _p("source_refs", "array", "kind='soft' 时的真实引用列表，如 ['event:xxx']"),
+            _p("exclusion_type", "string", "hard 时：exclude(默认)|is_automation|not_automation", default="exclude", enum=["exclude", "is_automation", "not_automation"]),
+            _p("session_id", "string", "会话 ID，默认 'mcp'", default="mcp"),
+        ],
+        example="teach_signal(entity_id='light.xiaomi_speaker', scope='wake_anchor', kind='hard', reason='定时播报是自动化信号，不是起床')",
+        pitfall="kind='hard' 幂等（同 entity_id+scope 复用一条）；kind='soft' 必须提供 text，且 source_refs 不能是假 id。",
+    ),
+    ToolSpec(
+        name="list_signal_rules",
+        summary="（学习策略）列出已学会的信号规则：硬排除 + 软记忆。",
+        description=(
+            "列出学习策略已持久化的信号规则：硬排除（signal_exclusions 表）与软记忆（topic_key=signal_trust 的 agent 记忆）。"
+            "用于回顾系统已学到的纠正，或排查某实体是否已被排除。"
+        ),
+        group="学习",
+        service="signal_learning", method="list_rules",
+        expose=("mcp",),
+        generated=False,
+        params=[
+            _p("include_revoked", "boolean", "是否包含已撤销的硬排除，默认 False", default=False),
+        ],
+        example="list_signal_rules()",
+        pitfall="软记忆不参与硬排除逻辑，仅作推理上下文参考；硬排除优先级更高。",
+    ),
+
+    # ── 视觉识别（MCP + 内置 LLM 共用）─────────────────────────────────────
+    ToolSpec(
+        name="list_vision_cameras",
+        summary="列出已配置的视觉识别摄像头（房间/流名/是否启用/无TV/光线门槛）。",
+        description=(
+            "列出当前已配置的视觉识别摄像头：房间名、go2rtc 流名、是否启用、是否无 TV（靠 VLM 识别身份）、"
+            "是否开启光线门槛。调用 analyze_camera 前建议先确认房间/流名。"
+        ),
+        group="视觉",
+        service="vision", method="list_cameras",
+        expose=("mcp", "builtin"),
+        generated=True,
+        params=[
+            _p("only_enabled", "boolean", "是否只看已启用摄像头，默认 True", default=True),
+        ],
+        example="list_vision_cameras() / list_vision_cameras(only_enabled=False)",
+        pitfall="房间名用 HA 真实区域名；analyze_camera 需要它来定位流。",
+    ),
+    ToolSpec(
+        name="get_vision_status",
+        summary="视觉识别服务运行状态：各房间光线门槛、冷却、退避、最近识别结果。",
+        description=(
+            "返回视觉识别服务运行状态：总开关、光线门槛开关、巡检间隔，以及每个房间的光线门槛结果、"
+            "本小时调用次数/上限、冷却剩余、退避剩余、最近一次识别结果摘要。"
+        ),
+        group="视觉",
+        service="vision", method="status",
+        expose=("mcp", "builtin"),
+        generated=True,
+        params=[],
+        example="get_vision_status()",
+        pitfall="这是只读诊断；主动取帧/识别请用 analyze_camera。",
+    ),
+    ToolSpec(
+        name="analyze_camera",
+        summary="取一帧并用多模态模型识别，返回文字描述（默认不含图片，隐私优先）。",
+        description=(
+            "按房间或 go2rtc 流名取一帧 → 多模态模型(VLM)识别 → 返回文字描述。"
+            "preset 选 people(人员活动)/security(安全异常)/object(物品宠物快递)；"
+            "custom 或显式提供 prompt 时以 prompt 为准。"
+            "显式调用默认绕过光线门槛与每小时调用上限（bypass_limits=True），立即取帧。"
+        ),
+        group="视觉",
+        service="vision", method="analyze_scene",
+        expose=("mcp", "builtin"),
+        generated=True,
+        params=[
+            _p("room", "string", "房间名(area)，与 stream 二选一；不区分大小写", required=False),
+            _p("stream", "string", "go2rtc 流名，与 room 二选一", required=False),
+            _p("prompt_preset", "string", "people/security/object/custom，默认 people", default="people",
+               enum=["people", "security", "object", "custom"]),
+            _p("prompt", "string", "自定义提示词；preset!=custom 时若提供以它为准"),
+            _p("bypass_limits", "boolean", "是否绕过光线门槛/小时上限，默认 True", default=True),
+            _p("include_preview", "boolean", "是否附 base64 缩略图，默认 False（隐私优先）", default=False),
+        ],
+        example=(
+            "analyze_camera(room='客厅', prompt_preset='people') / "
+            "analyze_camera(room='门口', prompt_preset='security') / "
+            "analyze_camera(room='玄关', prompt_preset='object')"
+        ),
+        pitfall="room/stream 都不传时取首个启用摄像头；纯遥测类问题请用 get_device_usage 等，不要滥用取帧。"
+                "bypass_limits=True 会忽略光线门槛与冷却，频繁调用有 VLM 费用，合理节制。",
+    ),
+    ToolSpec(
+        name="query_behavior_events",
+        summary="查询多模态视觉识别的历史记录：谁在哪个房间、什么时间。",
+        description=(
+            "按房间、成员、时间区间查询 VLM 多模态识别产生的行为事件。"
+            "返回每条记录的本地时间、房间、识别到的人员姓名、场景描述、动作。"
+            "适用于『昨天下午四点有谁在书房』、『昨晚客厅有谁』等历史在场查询。"
+        ),
+        group="视觉",
+        service="insights", method="query_behavior_events",
+        expose=("mcp", "builtin"),
+        generated=True,
+        params=[
+            _p("room", "string", "房间名(area)，如'书房'；留空查全部房间", required=False),
+            _p("member", "string", "成员姓名过滤，如'lidicn'；留空查全部", required=False),
+            _p("days", "integer", "最近 N 天，默认 7", default=7),
+            _p("start", "string", "本地 ISO 开始时间（可选，如 2026-08-30T16:00:00）", required=False),
+            _p("end", "string", "本地 ISO 结束时间（可选）", required=False),
+            _p("limit", "integer", "返回条数，默认 50，最大 200", default=50),
+        ],
+        example="query_behavior_events(room='书房', start='2026-08-30T15:00:00', end='2026-08-30T17:00:00')",
+        pitfall="时间默认按天切片；精确到小时需传 start/end。结果按 server_ts 倒序。",
+    ),
 ]
 
 SPEC_BY_NAME: dict = {s.name: s for s in TOOL_SPECS}

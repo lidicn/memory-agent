@@ -492,8 +492,15 @@ class LLMRouter:
                     errors.append(chunk.get("delta") or f"[{provider.name}] 未知错误")
                     break
                 elif t == "done":
-                    yield chunk
-                    return
+                    # 关键修复：如果某个后端一个字/content/reasoning 都没产生就 done，
+                    # 说明它返回了空响应（常见于 tool-injection 关闭的 proxy 或不支持工具的模型）。
+                    # 此时不能把空响应当成成功结束，必须继续尝试下一个后端，否则后面的
+                    # deepseek2api 等真实有内容的后端永远没机会输出（# HANDOFF memory-agent ask_memory 反馈）。
+                    if produced:
+                        yield chunk
+                        return
+                    errors.append(f"[{provider.name}] 返回空响应")
+                    break
         summary = "; ".join(errors) if errors else "所有大模型后端均不可用"
         yield {"type": "error", "delta": summary}
 

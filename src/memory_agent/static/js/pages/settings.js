@@ -277,6 +277,43 @@ const TPL = `
       <p class="hint">开启后，AI 助手在对话中发现某成员的行为偏好（如夜猫子🦉）时会主动询问是否写入「生活习惯档案」；无论开关状态，写回前都会先征得确认。</p>
     </div>
 
+    <!-- 系统 / 在线更新 -->
+    <div class="card p-5">
+      <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-lg grad-brand grid place-items-center">
+            <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="white" stroke-width="2" stroke-linecap="round"><path d="M21 2v6h-6M3 22v-6h6"/><path d="M21 8a9 9 0 00-15-3.36L3 8M3 16a9 9 0 0015 3.36L21 16"/></svg>
+          </div>
+          <div>
+            <h3 class="font-semibold">系统 / 在线更新</h3>
+            <p class="text-[11px] text-txt-3" x-text="'当前：' + (sysVer.commit || '未知') + (sysVer.dirty ? ' · 有未提交改动' : '')"></p>
+          </div>
+        </div>
+        <button class="btn-ghost btn-xs" @click="checkUpdate()" :disabled="updating || checking">
+          <span x-show="checking" class="spinner"></span><span>检查更新</span>
+        </button>
+      </div>
+      <div class="text-[11px] text-txt-2 space-y-1">
+        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">分支</span><span class="font-mono truncate" x-text="sysVer.branch || '—'"></span></div>
+        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">提交</span><span class="font-mono truncate" x-text="sysVer.commit || '—'"></span></div>
+        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">标签</span><span class="font-mono truncate" x-text="sysVer.tag || '—'"></span></div>
+        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">远端</span><span class="font-mono truncate" x-text="sysVer.update_repo_url || '—'"></span></div>
+      </div>
+      <template x-if="updateInfo && updateInfo.has_update === true">
+        <div class="mt-3 rounded-lg bg-ok/10 border border-ok/25 px-3 py-2 text-[11px] text-ok">
+          有可用更新：本地 <span class="font-mono" x-text="updateInfo.local_commit"></span> → 远端 <span class="font-mono" x-text="updateInfo.latest_commit"></span>
+        </div>
+      </template>
+      <template x-if="updateInfo && updateInfo.has_update === false">
+        <div class="mt-3 rounded-lg bg-white/5 px-3 py-2 text-[11px] text-txt-3">已是最新版本</div>
+      </template>
+      <div class="mt-4">
+        <button class="btn-primary w-full" @click="doUpdate()" :disabled="!updateInfo || !updateInfo.has_update || updating"
+                x-text="updating ? '更新并重启中…' : '更新并重启'"></button>
+        <p class="hint mt-2">从 GitHub 拉取最新代码（fast-forward，且工作树需干净），随后重启服务；不触碰 /data 数据。</p>
+      </div>
+    </div>
+
     <div class="flex items-center gap-3">
       <button class="btn-primary" @click="save()" :disabled="saving">
         <span x-show="saving" class="spinner"></span>
@@ -365,6 +402,12 @@ export function settingsPage() {
     changingPwd: false,
     pwd: { old: '', next: '', confirm: '' },
 
+    // 在线更新状态
+    sysVer: { commit: '', branch: '', tag: '', dirty: null, update_repo_url: '', update_branch: '' },
+    updateInfo: null,
+    updating: false,
+    checking: false,
+
     fmtNum, fmtTime,
 
     get store() { return (this.$store.app.health || {}).store || {}; },
@@ -385,6 +428,7 @@ export function settingsPage() {
       this.load();
       this.loadUsers();
       this.loadHealth();
+      this.loadVersion();
     },
 
     async load() {
@@ -411,6 +455,43 @@ export function settingsPage() {
         this.$store.app.err('健康检查失败：' + e.message);
       } finally {
         this.healthLoading = false;
+      }
+    },
+
+    async loadVersion() {
+      try {
+        this.sysVer = await api.systemVersion();
+      } catch (e) { /* 非 git 环境可忽略 */ }
+    },
+
+    async checkUpdate() {
+      this.checking = true;
+      this.updateInfo = null;
+      try {
+        const d = await api.systemUpdateCheck();
+        if (!d.ok) { this.$store.app.err(d.error || '检查更新失败'); return; }
+        this.updateInfo = d;
+        this.$store.app.ok(d.has_update ? ('发现新版本：' + d.latest_commit) : '已是最新');
+      } catch (e) {
+        this.$store.app.err('检查更新失败：' + e.message);
+      } finally {
+        this.checking = false;
+      }
+    },
+
+    async doUpdate() {
+      if (!this.updateInfo || !this.updateInfo.has_update) return;
+      if (!confirm('确认从 GitHub 拉取最新代码并重启服务？更新不会删除 /data 数据。')) return;
+      this.updating = true;
+      try {
+        const d = await api.systemUpdate();
+        if (!d.ok) { this.$store.app.err(d.error || '更新失败'); return; }
+        this.$store.app.ok('更新完成，正在重启…页面将在数秒后自动刷新');
+        setTimeout(() => location.reload(), 4000);
+      } catch (e) {
+        this.$store.app.err('更新失败：' + e.message);
+      } finally {
+        this.updating = false;
       }
     },
 

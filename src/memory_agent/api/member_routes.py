@@ -32,6 +32,7 @@ async def member_create(request: Request):
         avatar_bg=body.get("avatar_bg", "") or "#0EA5E9",
         avatar_url=body.get("avatar_url", "") or "",
         note=body.get("note", "") or "",
+        appearance_json=body.get("appearance_json"),
     )
     return ok({"message": f"成员已创建: {member['name']}", "member": member})
 
@@ -122,6 +123,37 @@ async def member_tag_delete(request: Request):
     return ok({"message": "标签已删除"})
 
 
+async def member_appearance(request: Request):
+    """保存成员外观档案（多模态命名识别用）。
+
+    入参 ``appearance`` 为结构化对象，字段见交接卡 §2.1。校验：至少填
+    ``gender`` 或一项可区分特征（approx_age/body_type/hair/clothing 子项/height/
+    typical_location），否则拒绝，避免写入空档案。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    member_id = request.path_params.get("member_id", "")
+    body = await json_body(request)
+    appearance = body.get("appearance")
+    if not isinstance(appearance, dict):
+        appearance = body.get("appearance_json")
+    if not isinstance(appearance, dict):
+        return error("appearance 必须是对象")
+    gender = (appearance.get("gender") or "").strip()
+    clothing = appearance.get("clothing") if isinstance(appearance.get("clothing"), dict) else {}
+    distinguishing = any(
+        appearance.get(k) for k in ("approx_age", "body_type", "hair", "height", "typical_location")
+    ) or any(clothing.get(k) for k in ("top_color", "top_style", "bottom_color", "bottom_style", "distinctive"))
+    if not gender and not distinguishing:
+        return error("外观档案至少需要填写「性别」或一项可区分特征")
+    normalized = runtime(request).store._normalize_appearance(appearance)
+    member = runtime(request).store.update_member(member_id, appearance_json=normalized)
+    if not member:
+        return error("成员不存在", 404)
+    return ok({"message": "外观档案已保存", "member": member})
+
+
 ROUTES = [
     Route("/api/members", member_list, methods=["GET"]),
     Route("/api/members", member_create, methods=["POST"]),
@@ -132,4 +164,5 @@ ROUTES = [
     Route("/api/members/{member_id}/devices", member_devices, methods=["PUT"]),
     Route("/api/members/{member_id}/tags", member_tag_add, methods=["POST"]),
     Route("/api/members/{member_id}/tags/{tag}", member_tag_delete, methods=["DELETE"]),
+    Route("/api/members/{member_id}/appearance", member_appearance, methods=["PUT"]),
 ]

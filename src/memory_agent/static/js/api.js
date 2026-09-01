@@ -70,7 +70,7 @@ async function request(method, url, body) {
 const get = (url) => request('GET', url);
 const post = (url, body) => request('POST', url, body === undefined ? {} : body);
 const put = (url, body) => request('PUT', url, body === undefined ? {} : body);
-const del = (url) => request('DELETE', url);
+const del = (url, body) => request('DELETE', url, body === undefined ? undefined : body);
 
 function qs(params) {
   const sp = new URLSearchParams();
@@ -200,7 +200,7 @@ export const api = {
   acpTestOutbound: (payload) => post('/api/acp/test-outbound', payload),
   acpTokens: () => get('/api/acp/tokens'),
   acpCreateToken: (name) => post('/api/acp/tokens', { name }),
-  acpRevokeToken: (name) => post('/api/acp/tokens', { name }),
+  acpRevokeToken: (name) => del('/api/acp/tokens', { name }),
 
   // ── Agent 记忆（参与式写回）─────────────────────────────
   agentMemories: (params) => get('/api/agent/memories' + qs(params)),
@@ -214,6 +214,7 @@ export const api = {
   assignMemberDevices: (id, entity_ids) => put('/api/members/' + encodeURIComponent(id) + '/devices', { entity_ids }),
   addMemberTag: (id, body) => post('/api/members/' + encodeURIComponent(id) + '/tags', body),
   deleteMemberTag: (id, tag) => del('/api/members/' + encodeURIComponent(id) + '/tags/' + encodeURIComponent(tag)),
+  saveAppearance: (id, appearance) => put('/api/members/' + encodeURIComponent(id) + '/appearance', { appearance }),
   agentMemoryHealth: () => get('/api/agent/memories/health'),
   agentMemoryPromote: (body) => post('/api/agent/memories/promote', body),
   agentMemoryRevoke: (memory_id) => post('/api/agent/memories/revoke', { memory_id }),
@@ -221,6 +222,24 @@ export const api = {
   agentMemoryFeedback: (memory_id, useful) => post('/api/agent/memories/feedback', { memory_id, useful }),
   agentMemorySweep: () => post('/api/agent/memories/sweep'),
   agentMemoryRetrieve: (body) => post('/api/agent/memories/retrieve', body),
+
+  // ── 信号规则（学习策略）───────────────────────────────
+  signalRules: (params) => get('/api/signal-rules' + qs(params)),
+  signalTeach: (body) => post('/api/signal-rules/teach', body),
+  signalRevoke: (exclusion_id) => post('/api/signal-rules/revoke', { exclusion_id }),
+
+  // ── 视觉识别（多模态行为识别）─────────────────────────
+  visionStatus: () => get('/api/vision/status'),
+  visionLights: (room) => get('/api/vision/lights' + qs({ room })),
+  visionCameraTest: (payload) => post('/api/vision/cameras/test', payload),
+  visionTestLlm: (payload) => post('/api/vision/test-llm', payload),
+  visionAnalyze: (room, force, wait) => post('/api/vision/analyze', { room, force, wait }),
+  behaviors: (params) => get('/api/behaviors' + qs(params)),
+
+  // ── 系统 / 在线更新（从 GitHub 拉取并重启）─────────────────
+  systemVersion: () => get('/api/system/version'),
+  systemUpdateCheck: () => get('/api/system/update/check'),
+  systemUpdate: () => post('/api/system/update', {}),
 
   // ── LLM ────────────────────────────────────────────────
   llmModels: () => get('/api/llm/models'),

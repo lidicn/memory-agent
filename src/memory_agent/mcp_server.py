@@ -19,6 +19,7 @@
 6. 技能层：``save_skill`` / ``list_skills`` / ``get_skill`` —— 网关作为技能唯一真源，
    Agent 通过 ``get_skill`` 从网关拉取最新版本（带 version/updated_at），``save_skill``
    把新经验写回网关并自增版本，实现跨 Agent 的技能同步。
+7. 视觉层：``list_vision_cameras`` → ``analyze_camera`` —— 用自然语言「看」摄像头。
 
 实现注意
 --------
@@ -42,6 +43,18 @@ from .tool_schema import build_catalog, TOOL_NAMES as TOOL_NAMES_FROM_SPEC, regi
 
 SERVER_NAME = "memory-agent"
 SERVER_INSTRUCTIONS = """Memory Agent —— 家庭行为记忆与洞察中枢。
+
+## 视觉识别（看摄像头）
+用户问「看看谁在客厅」「客厅有没有异常」「玄关有没有快递」这类问题时使用：
+1. `list_vision_cameras()` —— 确认有哪些房间/流名（房间名用配置里的真实区域名）。
+2. `analyze_camera(room="客厅", prompt_preset="people")` —— 取一帧并让多模态模型识别，
+   返回**文字描述**（默认不含图片，隐私优先）。
+   - `prompt_preset`：`people`(人员活动) / `security`(安全异常) / `object`(物品宠物快递) / `custom`。
+   - 需要自定义问题就传 `prompt="..."`，或 `prompt_preset="custom"` 再传 `prompt`。
+   - 默认 `bypass_limits=True`：显式调用会绕过光线门槛与每小时调用上限，立即取帧。
+   - 极少数场景需要图片时用 `include_preview=True`（返回 base64 缩略图，费 token）。
+3. 把返回的文字描述 `description` 转述给用户即可；`ok=false` 时按 `error` 说明（多为
+   go2rtc 凭据未配、流名错或 VLM 会话失效），并提示用户在设置页检查。
 
 ## 推荐流程（不要跳过第 1 步）
 1. `get_entity_catalog(room="主卧")` —— 用人话找设备，拿到 entity_id 与友好名
@@ -491,6 +504,31 @@ TOOL_CATALOG: list[dict] = [
         "summary": "拉取某成员的生活习惯画像：成员档案 + 全屋/房间定向行为画像 + 已存档标签",
         "params": {"member_id": "成员 id", "days": "窗口，默认 14"},
         "example": "get_member_persona(member_id='abc', days=14)",
+    },
+    {
+        "name": "teach_signal",
+        "group": "学习",
+        "summary": "（学习策略）教系统：某实体在某检测维度是/不是自动化信号（硬排）或写带条件软记忆",
+        "params": {
+            "entity_id": "实体 ID（被纠正的实体，必填）",
+            "scope": "检测维度：all|wake_anchor|presence|working|watching_tv，默认 all",
+            "kind": "hard=硬排落表 / soft=软记忆落向量库，默认 hard",
+            "reason": "纠正理由",
+            "text": "kind='soft' 时必填：软记忆正文",
+            "source_refs": "kind='soft' 时的真实引用列表",
+            "exclusion_type": "hard 时：exclude|is_automation|not_automation，默认 exclude",
+            "session_id": "会话 ID，默认 mcp",
+        },
+        "example": "teach_signal(entity_id='light.xiaomi_speaker', scope='wake_anchor', kind='hard', reason='定时播报是自动化信号，不是起床')",
+        "pitfall": "kind='hard' 幂等（同 entity_id+scope 复用一条）；kind='soft' 必须提供 text 且 source_refs 不能是假 id",
+    },
+    {
+        "name": "list_signal_rules",
+        "group": "学习",
+        "summary": "（学习策略）列出已学会的信号规则：硬排除 + 软记忆",
+        "params": {"include_revoked": "是否包含已撤销的硬排除，默认 False"},
+        "example": "list_signal_rules()",
+        "pitfall": "软记忆不参与硬排除，仅作推理上下文；硬排除优先级更高",
     },
 ]
 
@@ -984,6 +1022,58 @@ def _build_server():
             session_id, text, (tags or []), (source_refs or []),
             (ttl_days or None), topic_key, dry_run,
         )
+
+    # ── 事件：最后关闭/打开时间 ─────────────────────────────────────────────
+    @mcp.tool()
+    async def get_last_event(
+        entity_id: str = "",
+        domain: str = "",
+        room: str = "",
+        transition: str = "off",
+        days: int = 30,
+    ) -> dict:
+        """查询某实体/某类设备最近一次状态变化（最后关闭/打开/任意变化）。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.insights.get_last_event,
+            (entity_id or None), (domain or None), (room or None),
+            transition, days,
+        )
+
+    # ── 学习策略（信号纠正：硬排除 + 软记忆）──────────────────────────────
+    @mcp.tool()
+    async def teach_signal(
+        entity_id: str,
+        scope: str = "all",
+        kind: str = "hard",
+        reason: str = "",
+        text: str = "",
+        source_refs: list = None,
+        exclusion_type: str = "exclude",
+        session_id: str = "mcp",
+    ) -> dict:
+        """（学习策略）教系统：把『某实体在某检测维度是/不是自动化信号』的纠正持久化。
+
+        - kind='hard'：写入 signal_exclusions 表（无歧义硬排，优先级高于软记忆）；
+          生效于 infer_activities 的起床锚定(wake_anchor)、在房/工作判定(working/presence)、
+          看电视(watching_tv)。
+        - kind='soft'：走 agent 记忆（topic_key=signal_trust，参与信任闭环，用于带条件软判）；
+          此时 text 必填，source_refs 须为可解析的真实引用。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.signal_learning.teach_signal,
+            entity_id, scope, kind, reason, text, (source_refs or []),
+            session_id, exclusion_type,
+        )
+
+    @mcp.tool()
+    async def list_signal_rules(
+        include_revoked: bool = False,
+    ) -> dict:
+        """（学习策略）列出已学会的信号规则：硬排除（signal_exclusions 表）+ 软记忆（topic_key=signal_trust）。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.signal_learning.list_rules, include_revoked)
 
     @mcp.tool()
     async def promote_memory(
@@ -1583,13 +1673,16 @@ mcp_sse_app = (
     else None
 )
 
-# 将单一 schema 中的 generated 工具动态注册到 MCP（当前的 route_question），
-# 与上方手写 @mcp.tool 并存；opencode 等外部 Agent 亦可使用规划工具。
+# 将单一 schema 中的 generated 工具动态注册到 MCP，与上方手写 @mcp.tool 并存。
+# 这里显式列出需要 schema 自动注册的工具，避免与手写工具重名冲突。
 if mcp_server is not None:
     try:
-        register_simple_tools(mcp_server, get_runtime, names=["route_question"])
+        register_simple_tools(
+            mcp_server, get_runtime,
+            names=["route_question", "list_vision_cameras", "get_vision_status", "analyze_camera"],
+        )
     except Exception as _exc:  # pragma: no cover
-        logging.getLogger(__name__).warning("注册 route_question 失败：%s", _exc)
+        logging.getLogger(__name__).warning("注册 schema 工具失败：%s", _exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

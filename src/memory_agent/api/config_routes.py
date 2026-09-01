@@ -30,14 +30,39 @@ WRITABLE_FIELDS = (
     "ha_db_password", "ha_db_query_batch", "ha_db_query_timeout",
     "autoflow_acp_url", "autoflow_acp_token",
     "auto_discover_persona",
+    # ── 视觉识别（vision-behavior-spec）────────────────────────────────
+    "vision_enabled", "vision_device_token",
+    "go2rtc_base_url", "go2rtc_user", "go2rtc_pass",
+    "vlm_base_url", "vlm_api_key", "vlm_model",
+    "vlm_timeout_s", "vlm_max_retries", "vlm_endpoint_path",
+    "vision_cameras",
+    "vision_cooldown_s", "vision_max_per_hour", "vision_no_tv_interval_s",
+    "vision_light_gate", "vision_snapshot_retention_days",
 )
 
-SECRET_FIELDS = ("hass_token", "nr_pass", "llm_api_key", "mcp_auth_token", "jwt_secret", "ha_db_password", "autoflow_acp_token")
+SECRET_FIELDS = (
+    "hass_token", "nr_pass", "llm_api_key", "mcp_auth_token", "jwt_secret",
+    "ha_db_password", "autoflow_acp_token",
+    "vision_device_token", "go2rtc_pass", "vlm_api_key",
+)
 
 
 def _is_masked(value) -> bool:
-    """判断前端回传的是否是掩码占位值，是则不覆盖真实密钥。"""
-    return isinstance(value, str) and "*" * 8 in value
+    """判断前端回传的是否是掩码占位值，是则不覆盖真实密钥。
+
+    mask_secret 对短密钥(≤8 字符)输出整串 '*'，对长密钥输出 '<前4><8个*><后4>'。
+    真实密钥几乎不会整串为星号、也不该包含 8 连星序列，据此稳健判定：
+    - 整串星号（短密钥）→ 掩码；
+    - 含 8 连星（长密钥 '<前4>********<后4>' 不论前 4 是否为明文）→ 掩码。
+    此前还要求「以 * 开头」，对长密钥误判为非掩码，导致 re-save 时把真实密码
+    覆盖成掩码占位（如 go2rtc_pass=longyin1003 → 掩码 long********in1003 被当
+    成真值写回，下次取帧即 401）。现已放宽到「含 8 连星即可判定为掩码」。
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    if set(value) == {"*"}:
+        return True
+    return "*" * 8 in value
 
 
 def _mask_backends(backends) -> list:
@@ -135,6 +160,23 @@ async def get_config_api(request: Request):
             "autoflow_acp_url": cfg.autoflow_acp_url,
             "autoflow_acp_token": mask_secret(cfg.autoflow_acp_token),
             "auto_discover_persona": cfg.auto_discover_persona,
+            "vision_enabled": cfg.vision_enabled,
+            "vision_device_token": mask_secret(cfg.vision_device_token),
+            "go2rtc_base_url": cfg.go2rtc_base_url,
+            "go2rtc_user": cfg.go2rtc_user,
+            "go2rtc_pass": mask_secret(cfg.go2rtc_pass),
+            "vlm_base_url": cfg.vlm_base_url,
+            "vlm_api_key": mask_secret(cfg.vlm_api_key),
+            "vlm_model": cfg.vlm_model,
+            "vlm_timeout_s": cfg.vlm_timeout_s,
+            "vlm_max_retries": cfg.vlm_max_retries,
+            "vlm_endpoint_path": cfg.vlm_endpoint_path,
+            "vision_cameras": cfg.vision_cameras,
+            "vision_cooldown_s": cfg.vision_cooldown_s,
+            "vision_max_per_hour": cfg.vision_max_per_hour,
+            "vision_no_tv_interval_s": cfg.vision_no_tv_interval_s,
+            "vision_light_gate": cfg.vision_light_gate,
+            "vision_snapshot_retention_days": cfg.vision_snapshot_retention_days,
             "db_path": cfg.db_path,
             "last_poll_time": cfg.last_poll_time,
             "secrets_set": {f: bool(getattr(cfg, f, "")) for f in SECRET_FIELDS},

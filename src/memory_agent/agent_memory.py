@@ -242,17 +242,20 @@ class AgentMemoryService:
             return {"ok": False, "error": "force=True 仅限特权会话（config.privileged_sessions）"}
 
         if not force:
+            # 护栏永远优先于"条件达标"：重复 / 矛盾无论是否满足晋升条件都不应进 live。
+            # 旧逻辑把 conflict_scan 放进 `if not eligible` 分支，导致满足跨日条件的记忆
+            # 直接跳过护栏被晋升（去重/矛盾失效）。
+            scan = self.conflict_scan(mem["text"], mem["topic_key"], exclude_id=memory_id)
+            if scan.get("duplicate"):
+                return {"ok": False, "state": mem["state"],
+                        "error": "与已有 live 记忆重复，禁止晋升", "conflict_scan": scan}
+            if scan.get("conflict"):
+                self.store.set_agent_memory_state(memory_id, "pending_review", mirror_dirty=1)
+                self._upsert_mirror(self.store.get_agent_memory(memory_id))
+                return {"ok": False, "state": "pending_review",
+                        "error": "检测到同 topic_key 冲突，已挂起待审", "conflict_scan": scan}
             eligible, reason = self._evaluate_promotion(mem, corroborating_insight_id)
             if not eligible:
-                scan = self.conflict_scan(mem["text"], mem["topic_key"], exclude_id=memory_id)
-                if scan.get("duplicate"):
-                    return {"ok": False, "state": mem["state"],
-                            "error": "与已有 live 记忆重复，禁止晋升", "conflict_scan": scan}
-                if scan.get("conflict"):
-                    self.store.set_agent_memory_state(memory_id, "pending_review", mirror_dirty=1)
-                    self._upsert_mirror(self.store.get_agent_memory(memory_id))
-                    return {"ok": False, "state": "pending_review",
-                            "error": "检测到同 topic_key 冲突，已挂起待审", "conflict_scan": scan}
                 return {"ok": False, "state": mem["state"], "error": f"未满足晋升条件：{reason}"}
 
         self.store.set_agent_memory_state(memory_id, "live", mirror_dirty=0)
@@ -275,7 +278,9 @@ class AgentMemoryService:
         for m in mems:
             if m["session_id"] == session_id and m["state"] != "revoked":
                 self.store.set_agent_memory_state(m["memory_id"], "revoked", mirror_dirty=0)
-                self._upsert_mirror(m)
+                # 必须用更新后的记录 re-fetch 再镜像，否则 chroma 里仍是旧状态，
+                # 导致已撤销记忆继续出现在 live 检索 / 冲突检测中（漏写镜像）。
+                self._upsert_mirror(self.store.get_agent_memory(m["memory_id"]))
                 affected += 1
         return {"ok": True, "affected": affected, "session_id": session_id}
 

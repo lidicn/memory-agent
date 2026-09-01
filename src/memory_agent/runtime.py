@@ -21,9 +21,11 @@ from typing import Any
 from .analysis import AnalysisService
 from .auth import AuthManager
 from .config import Config, get_config
+from .face_node_registry import FaceNodeRegistry
 from .ha_client import HAClient
 from .ha_db import HADBClient
 from .agent_memory import AgentMemoryService
+from .signal_learning import SignalLearningService
 from .history import HistoryManager
 from .insights import InsightService
 from .llm_client import LLMRouter
@@ -31,6 +33,7 @@ from .mcp_tokens import MCPTokenStore
 from .poller import CollectService
 from .store import Store
 from .templates import TemplateManager
+from .vision_service import VisionService
 
 
 class AppRuntime:
@@ -54,6 +57,11 @@ class AppRuntime:
         self.agent_memory = AgentMemoryService(
             self.config, self.store, self.history
         )
+        self.signal_learning = SignalLearningService(self.store, self.agent_memory)
+        # 人脸识别节点池：运行时级共享注册表，vision 与 face_routes 共用同一实例
+        self.face = FaceNodeRegistry()
+        self.vision = VisionService(self.config, self.store, self.ha)
+        self.vision.face = self.face
         self._patterns: Any = None
         self._sweep_task: Any = None
         self._started = False
@@ -84,6 +92,7 @@ class AppRuntime:
             )
 
         await self.collector.start()
+        self.vision.start()
         self._started = True
         self._sweep_task = asyncio.create_task(self._periodic_agent_memory_sweep())
         print("[Runtime] 启动完成")
@@ -124,6 +133,10 @@ class AppRuntime:
         task = getattr(self, "_sweep_task", None)
         if task is not None:
             task.cancel()
+        try:
+            await self.vision.stop()
+        except Exception as exc:
+            print(f"[Runtime] 停止视觉巡检异常: {exc}")
         try:
             await self.collector.stop()
         except Exception as exc:
@@ -193,6 +206,8 @@ class AppRuntime:
         self.analysis.config = self.config
         self.agent_memory.config = self.config
         self.collector.reconfigure(self.config, self.ha, self.ha_db)
+        self.vision.reconfigure(self.config)
+        self.vision.ha = self.ha  # HA 客户端已重建，灯态查询须跟随
         self.store.tz_offset_hours = self.config.tz_offset_hours
         return self.config
 

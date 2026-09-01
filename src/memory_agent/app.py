@@ -61,6 +61,19 @@ PUBLIC_PREFIXES = (
 )
 PUBLIC_EXACT = {"/", "/index.html", "/health", "/sw.js", "/manifest.webmanifest"}
 
+# 设备端点：TV APK / HA 自动化等用独立 vision_device_token 鉴权，不与 WebUI
+# 的 JWT 体系共享 Authorization 头。AuthMiddleware 对这些路径放行，改由路由层
+# 的 _check_device_token 独立校验（与 /mcp、/acp 用独立 Token 中间件思路一致）。
+# 否则同一 Authorization 头既无法是合法 JWT 又得是设备令牌，导致 TV 人脸事件
+# 永远进不来（详见 docs/handoff_vision_identity.md §7）。
+DEVICE_ENDPOINTS = (
+    "/api/events/face",
+    # 人脸识别节点池：节点（TV/手机）用独立设备令牌注册/心跳/同步人脸库
+    "/api/face/node/register",
+    "/api/face/node/heartbeat",
+    "/api/face/node/lib",
+)
+
 
 class AuthMiddleware:
     """纯 ASGI 鉴权中间件，支持 Bearer JWT / Basic / Cookie 三种凭据。"""
@@ -75,6 +88,11 @@ class AuthMiddleware:
 
         path = scope.get("path", "")
         if path in PUBLIC_EXACT or path.startswith(PUBLIC_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+
+        # 设备上报端点：跳过全局 JWT 鉴权，交给路由层设备令牌校验
+        if path in DEVICE_ENDPOINTS:
             await self.app(scope, receive, send)
             return
 

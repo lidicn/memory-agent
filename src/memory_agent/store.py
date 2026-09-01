@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS members (
     avatar_bg     TEXT DEFAULT '#0EA5E9',
     avatar_url    TEXT DEFAULT '',
     note          TEXT DEFAULT '',
+    appearance_json TEXT DEFAULT '',   -- 成员外观档案：{approx_age,gender,clothing,hair,note}
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
@@ -179,6 +180,43 @@ CREATE TABLE IF NOT EXISTS member_tags (
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_member_tags_member ON member_tags(member_id);
+
+-- 信号硬排除层（学习策略）：记录「某实体在某检测维度不应被采信」的纠正
+CREATE TABLE IF NOT EXISTS signal_exclusions (
+    exclusion_id TEXT PRIMARY KEY,
+    entity_id    TEXT NOT NULL,
+    scope        TEXT NOT NULL DEFAULT 'all',   -- all|wake_anchor|presence|working|watching_tv
+    exclusion_type TEXT NOT NULL DEFAULT 'exclude', -- exclude|is_automation|not_automation
+    reason       TEXT NOT NULL DEFAULT '',
+    created_by   TEXT NOT NULL DEFAULT 'user',
+    created_at   TEXT NOT NULL,
+    revoked      INTEGER NOT NULL DEFAULT 0,
+    revoked_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sig_excl_entity ON signal_exclusions(entity_id, scope);
+
+-- 视觉行为事件（多模态识别产出，vision-behavior-spec §7.1）
+-- 「人+动作」导向，与设备/实体导向的 events 表语义不同，独立建表
+CREATE TABLE IF NOT EXISTS behavior_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_ts TEXT NOT NULL,        -- ISO8601 本地时区（服务端接收时间，查询主键）
+  device_ts INTEGER,              -- 设备（TV）上报的 ms 时间戳，可空
+  day TEXT NOT NULL,              -- 'YYYY-MM-DD'，冗余列方便按天聚合/清理
+  room TEXT NOT NULL,
+  camera_src TEXT,                -- go2rtc 流名
+  persons_json TEXT NOT NULL DEFAULT '[]',
+  count INTEGER NOT NULL DEFAULT 0,
+  action TEXT,                    -- '坐在电竞沙发看书'
+  scene TEXT,                     -- 一句话场景概括
+  confidence REAL,
+  appearance_json TEXT,           -- 无TV房间的外观描述（穿搭标注原料）
+  trigger TEXT,                   -- count_change/identity_change/heartbeat/patrol/manual/face
+  vlm_latency_ms INTEGER,
+  snapshot_path TEXT,
+  raw_response TEXT,
+  status TEXT NOT NULL DEFAULT 'ok'  -- ok | vlm_failed | low_confidence | skipped
+);
+CREATE INDEX IF NOT EXISTS idx_be_day_room ON behavior_events(day, room);
 """
 
 
@@ -283,6 +321,16 @@ class Store:
             # members 表 avatar_url 列迁移
             try:
                 conn.execute("ALTER TABLE members ADD COLUMN avatar_url TEXT DEFAULT ''")
+            except Exception:
+                pass  # 列已存在
+            # members 表 appearance_json 列迁移
+            try:
+                conn.execute("ALTER TABLE members ADD COLUMN appearance_json TEXT DEFAULT ''")
+            except Exception:
+                pass  # 列已存在
+            # 人脸库中央集权：成员 ArcSoft 特征（可移植性见交接单风险项）
+            try:
+                conn.execute("ALTER TABLE members ADD COLUMN face_feature TEXT DEFAULT ''")
             except Exception:
                 pass  # 列已存在
             conn.commit()
@@ -435,21 +483,195 @@ class Store:
             conn.commit()
             return cur.rowcount
 
+    # -- 视觉行为事件（多模态识别） -------------------------------------------
+
+    def insert_behavior_event(self, payload: dict) -> int:
+        """写入一条行为事件，返回自增 id。"""
+        ts = payload.get("server_ts") or now_local(self.tz_offset_hours).isoformat(sep="T")
+        appearance = payload.get("appearance")
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                """INSERT INTO behavior_events(
+                     server_ts, device_ts, day, room, camera_src,
+                     persons_json, count, action, scene, confidence,
+                     appearance_json, trigger, vlm_latency_ms,
+                     snapshot_path, raw_response, status)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    ts,
+                    payload.get("device_ts"),
+                    payload.get("day") or str(ts)[:10],
+                    payload.get("room") or "",
+                    payload.get("camera_src") or "",
+                    json.dumps(payload.get("persons") or [], ensure_ascii=False),
+                    int(payload.get("count") or 0),
+                    payload.get("action"),
+                    payload.get("scene"),
+                    payload.get("confidence"),
+                    json.dumps(appearance, ensure_ascii=False) if appearance is not None else None,
+                    payload.get("trigger") or "manual",
+                    payload.get("vlm_latency_ms"),
+                    payload.get("snapshot_path"),
+                    payload.get("raw_response"),
+                    payload.get("status") or "ok",
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def list_behavior_events(
+        self, room: str | None = None, member: str | None = None,
+        day_from: str | None = None, day_to: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """查询行为事件。member 过滤用 JSON 解析完成（量小，见 spec §7.1）。"""
+        sql = "SELECT * FROM behavior_events"
+        conds: list[str] = []
+        args: list = []
+        if room:
+            conds.append("room = ?")
+            args.append(room)
+        if day_from:
+            conds.append("day >= ?")
+            args.append(day_from)
+        if day_to:
+            conds.append("day <= ?")
+            args.append(day_to)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY server_ts DESC LIMIT ?"
+        args.append(int(limit))
+        conn = self.connect()
+        with self._lock:
+            rows = conn.execute(sql, args).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["persons"] = json.loads(d.pop("persons_json") or "[]")
+            except Exception:
+                d["persons"] = []
+            try:
+                d["appearance"] = (
+                    json.loads(d.pop("appearance_json")) if d.get("appearance_json") else None
+                )
+            except Exception:
+                d["appearance"] = None
+            d.pop("appearance_json", None)
+            out.append(d)
+        if member:
+            out = [
+                d for d in out
+                if any(p.get("name") == member for p in d.get("persons") or [])
+            ]
+        return out
+
+    def clear_behavior_snapshots(self, before_day: str) -> list[str]:
+        """清空 before_day 之前行的 snapshot_path（文件删除由服务层做），返回被清理的路径。"""
+        conn = self.connect()
+        with self._lock:
+            rows = conn.execute(
+                "SELECT snapshot_path FROM behavior_events "
+                "WHERE snapshot_path IS NOT NULL AND snapshot_path != '' AND day < ?",
+                (before_day,),
+            ).fetchall()
+            if not rows:
+                return []
+            paths = [r["snapshot_path"] for r in rows]
+            conn.execute(
+                "UPDATE behavior_events SET snapshot_path = NULL "
+                "WHERE snapshot_path IS NOT NULL AND snapshot_path != '' AND day < ?",
+                (before_day,),
+            )
+            conn.commit()
+            return paths
+
+    def get_behavior_event(self, event_id: int) -> dict | None:
+        """按自增 id 取单条行为事件（标注闭环用）。"""
+        conn = self.connect()
+        with self._lock:
+            row = conn.execute(
+                "SELECT * FROM behavior_events WHERE id = ?", (event_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        try:
+            d["persons"] = json.loads(d.pop("persons_json") or "[]")
+        except Exception:
+            d["persons"] = []
+        ap = d.get("appearance_json")
+        try:
+            d["appearance"] = json.loads(ap) if ap else None
+        except Exception:
+            d["appearance"] = None
+        d.pop("appearance_json", None)
+        return d
+
+    def update_behavior_event_persons(
+        self, event_id: int, persons: list[dict], via: str | None = None
+    ) -> None:
+        """回写行为事件的人员列表（人工标注时改写 name/vi）。"""
+        if via:
+            for p in persons:
+                if isinstance(p, dict):
+                    p["via"] = via
+        conn = self.connect()
+        with self._lock:
+            conn.execute(
+                "UPDATE behavior_events SET persons_json = ? WHERE id = ?",
+                (json.dumps(persons, ensure_ascii=False), event_id),
+            )
+            conn.commit()
+
+    def merge_member_appearance(self, member_id: str, appearance: Any) -> dict | None:
+        """把一条未识别事件的外观并入成员档案（学习/补全）。
+
+        以「非空字段覆盖」方式合并：新外观提供的字段覆盖旧值，未提供的字段保留。
+        返回合并后的成员外观 dict。"""
+        m = self.get_member(member_id)
+        if not m:
+            return None
+        existing = m.get("appearance_json")
+        try:
+            existing = json.loads(existing) if isinstance(existing, str) else existing
+        except Exception:
+            existing = None
+        if not isinstance(existing, dict):
+            existing = {}
+        new = appearance if isinstance(appearance, dict) else {}
+        merged = dict(existing)
+        for k, v in new.items():
+            if v in (None, "", [], {}):
+                continue
+            # 保护前端结构化 clothing：若已有 dict 而新值是纯字符串（VLM 描述），保留结构
+            if k == "clothing" and isinstance(merged.get(k), dict) and not isinstance(v, dict):
+                continue
+            merged[k] = v
+        self.update_member(member_id, appearance_json=merged)
+        return merged
+
     # -- 家庭成员 / 生活习惯档案 --------------------------------------------
 
     def create_member(
         self, name: str, avatar_emoji: str = "", avatar_bg: str = "#0EA5E9",
-        avatar_url: str = "", note: str = ""
+        avatar_url: str = "", note: str = "", appearance_json: Any = None
     ) -> dict:
-        """创建家庭成员。返回新成员行 dict（含 rooms/devices/tags 空集合）。"""
+        """创建家庭成员。返回新成员行 dict（含 rooms/devices/tags 空集合）。
+
+        appearance_json 接受 dict 或已序列化的 JSON 字符串，便于从多模态识别结果
+        直接写成员外观档案。"""
         conn = self.connect()
         mid = uuid.uuid4().hex
         stamp = now_local(self.tz_offset_hours).isoformat()
+        ap = self._normalize_appearance(appearance_json)
         with self._lock:
             conn.execute(
-                """INSERT INTO members(id, name, avatar_emoji, avatar_bg, avatar_url, note, created_at, updated_at)
-                   VALUES(?,?,?,?,?,?,?,?)""",
-                (mid, name, avatar_emoji, avatar_bg, avatar_url, note, stamp, stamp),
+                """INSERT INTO members(id, name, avatar_emoji, avatar_bg, avatar_url,
+                                      note, appearance_json, created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (mid, name, avatar_emoji, avatar_bg, avatar_url, note, ap, stamp, stamp),
             )
             conn.commit()
         m = self.get_member(mid) or {}
@@ -457,6 +679,21 @@ class Store:
         m["devices"] = []
         m["tags"] = []
         return m
+
+    @staticmethod
+    def _normalize_appearance(value: Any) -> str:
+        """把外观档案规整为可入库的 JSON 字符串；非法/空值返回空串。"""
+        if value is None or value == "":
+            return ""
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except Exception:
+                return ""  # 非合法 JSON 字符串不入库存脏数据
+            value = parsed
+        if not isinstance(value, dict):
+            return ""
+        return json.dumps(value, ensure_ascii=False)
 
     def get_member(self, member_id: str) -> dict | None:
         conn = self.connect()
@@ -505,10 +742,14 @@ class Store:
         ]
 
     def update_member(self, member_id: str, **fields) -> dict | None:
-        allowed = {"name", "avatar_emoji", "avatar_bg", "avatar_url", "note"}
+        allowed = {"name", "avatar_emoji", "avatar_bg", "avatar_url", "note",
+                   "appearance_json", "face_feature"}
         sets = {k: v for k, v in fields.items() if k in allowed}
         if not sets:
             return self.get_member(member_id)
+        # appearance_json 需规整为 JSON 字符串后入库
+        if "appearance_json" in sets:
+            sets["appearance_json"] = self._normalize_appearance(sets["appearance_json"])
         sets["updated_at"] = now_local(self.tz_offset_hours).isoformat()
         cols = ", ".join(f"{k}=?" for k in sets)
         args = [*sets.values(), member_id]
@@ -526,6 +767,35 @@ class Store:
             conn.execute("DELETE FROM member_devices WHERE member_id = ?", (member_id,))
             conn.execute("DELETE FROM member_tags WHERE member_id = ?", (member_id,))
             conn.commit()
+
+    # ── 人脸库中央集权（ArcSoft 特征，下行同步给节点 / 上行回写）────────────
+
+    def set_member_face_feature(self, member_id: str, face_feature: str) -> bool:
+        """写回某成员的 ArcSoft 特征（JSON 字符串，由节点上行）。空串表示清除。"""
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                "UPDATE members SET face_feature=?, updated_at=? WHERE id=?",
+                (face_feature or "", now_local(self.tz_offset_hours).isoformat(), member_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_face_lib(self) -> list[dict]:
+        """返回已注册特征的成员清单，供节点下行同步。
+
+        每个元素：{member_id, name, face_feature}。face_feature 为节点上传的
+        JSON 字符串（ArcSoft 特征 blob / base64）。"""
+        conn = self.connect()
+        with self._lock:
+            rows = conn.execute(
+                "SELECT id, name, face_feature FROM members "
+                "WHERE face_feature IS NOT NULL AND face_feature != ''"
+            ).fetchall()
+        return [
+            {"member_id": r["id"], "name": r["name"], "face_feature": r["face_feature"]}
+            for r in rows
+        ]
 
     def set_member_rooms(self, member_id: str, rooms: list[str]) -> None:
         conn = self.connect()
@@ -1150,7 +1420,7 @@ class Store:
         created_at = created_at or now.isoformat(timespec="seconds")
         expires_at = (now + timedelta(days=ttl_days)).strftime("%Y-%m-%d")
         memory_id = memory_id or hashlib.sha1(
-            f"{session_id}|{text}|{created_at}".encode("utf-8")
+            f"{session_id}|{text}|{created_at}|{uuid.uuid4().hex}".encode("utf-8")
         ).hexdigest()[:16]
         conn = self.connect()
         with self._lock:
@@ -1394,3 +1664,96 @@ class Store:
         cur = conn.execute("DELETE FROM activity_rules WHERE name=?", (name,))
         conn.commit()
         return cur.rowcount > 0
+
+    # ── 信号硬排除层（学习策略：teach_signal kind='hard' 落表）──
+    def upsert_signal_exclusion(
+        self,
+        entity_id: str,
+        scope: str = "all",
+        reason: str = "",
+        created_by: str = "user",
+        exclusion_type: str = "exclude",
+    ) -> str:
+        """写入/更新一条信号硬排除规则（幂等：同 entity_id+scope 复用同一条，便于撤销与审计）。"""
+        entity_id = (entity_id or "").strip()
+        if not entity_id:
+            raise ValueError("signal_exclusions.entity_id 不能为空")
+        scope = (scope or "all").strip().lower()
+        exclusion_id = hashlib.sha1(
+            f"{entity_id}|{scope}".encode("utf-8")
+        ).hexdigest()[:16]
+        now = _iso(datetime.now(timezone.utc))
+        conn = self.connect()
+        with self._lock:
+            conn.execute(
+                """INSERT OR REPLACE INTO signal_exclusions
+                   (exclusion_id, entity_id, scope, exclusion_type, reason, created_by,
+                    created_at, revoked, revoked_at)
+                   VALUES (?,?,?,?,?,?,?, COALESCE((SELECT revoked FROM signal_exclusions WHERE exclusion_id=?),0),
+                           COALESCE((SELECT revoked_at FROM signal_exclusions WHERE exclusion_id=?),?))""",
+                (
+                    exclusion_id, entity_id, scope, (exclusion_type or "exclude"),
+                    (reason or ""), (created_by or "user"), now,
+                    exclusion_id, exclusion_id, None,
+                ),
+            )
+            conn.commit()
+        return exclusion_id
+
+    def list_signal_exclusions(self, include_revoked: bool = False) -> list:
+        """返回（默认仅生效的）信号硬排除规则。"""
+        conn = self.connect()
+        sql = (
+            "SELECT exclusion_id, entity_id, scope, exclusion_type, reason, "
+            "created_by, created_at, revoked, revoked_at FROM signal_exclusions"
+        )
+        if not include_revoked:
+            sql += " WHERE revoked=0"
+        rows = conn.execute(sql).fetchall()
+        return [
+            {
+                "exclusion_id": r["exclusion_id"],
+                "entity_id": r["entity_id"],
+                "scope": r["scope"],
+                "exclusion_type": r["exclusion_type"],
+                "reason": r["reason"],
+                "created_by": r["created_by"],
+                "created_at": r["created_at"],
+                "revoked": bool(r["revoked"]),
+                "revoked_at": r["revoked_at"],
+            }
+            for r in rows
+        ]
+
+    def revoke_signal_exclusion(self, exclusion_id: str) -> bool:
+        """硬排除墓碑（置 revoked=1），保留审计轨迹。"""
+        conn = self.connect()
+        now = _iso(datetime.now(timezone.utc))
+        with self._lock:
+            cur = conn.execute(
+                "UPDATE signal_exclusions SET revoked=1, revoked_at=? WHERE exclusion_id=?",
+                (now, exclusion_id),
+            )
+            conn.commit()
+        return cur.rowcount > 0
+
+    def get_signal_exclusion(self, exclusion_id: str) -> dict | None:
+        conn = self.connect()
+        r = conn.execute(
+            "SELECT exclusion_id, entity_id, scope, exclusion_type, reason, "
+            "created_by, created_at, revoked, revoked_at FROM signal_exclusions WHERE exclusion_id=?",
+            (exclusion_id,),
+        ).fetchone()
+        if not r:
+            return None
+        return {
+            "exclusion_id": r["exclusion_id"],
+            "entity_id": r["entity_id"],
+            "scope": r["scope"],
+            "exclusion_type": r["exclusion_type"],
+            "reason": r["reason"],
+            "created_by": r["created_by"],
+            "created_at": r["created_at"],
+            "revoked": bool(r["revoked"]),
+            "revoked_at": r["revoked_at"],
+        }

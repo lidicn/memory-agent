@@ -277,6 +277,14 @@
         <section x-data="agentMemoryPage" class="page space-y-5" x-html="tpl"></section>
       </template>
 
+      <template x-if="$store.app.route === 'signal_rules'">
+        <section x-data="signalRulesPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
+      <template x-if="$store.app.route === 'vision'">
+        <section x-data="visionPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
       <template x-if="$store.app.route === 'members'">
         <section x-data="membersPage" class="page space-y-5" x-html="tpl"></section>
       </template>

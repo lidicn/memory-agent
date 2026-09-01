@@ -99,9 +99,44 @@ class Config:
     # ── 家庭成员 / 生活习惯档案 ───────────────────────────────────────────
     auto_discover_persona: bool = False  # 是否主动把发现的标签推送给用户（默认关闭：仅记录、需确认才存档）
 
+    # ── 视觉识别（多模态行为识别，vision-behavior-spec）───────────────────
+    vision_enabled: bool = False
+    vision_device_token: str = ""            # TV/巡检设备上报令牌（Bearer）
+    go2rtc_base_url: str = "http://192.168.2.200:1984"
+    go2rtc_user: str = ""
+    go2rtc_pass: str = ""
+    # 多模态 LLM（doubao2api 网关，独立于 llm_backends）
+    vlm_base_url: str = "http://192.168.2.200:9090"
+    vlm_api_key: str = ""
+    vlm_model: str = "doubao"
+    vlm_timeout_s: int = 25
+    vlm_max_retries: int = 2
+    # 多模态 VLM 端点路径：默认 OpenAI 兼容 /v1/chat/completions；
+    # 使用 doubao2api 时可填其私有端点 /v1/images/analyses。
+    vlm_endpoint_path: str = "/v1/chat/completions"
+    # 摄像头注册表：[{room, stream, enabled, no_tv, light_gate, light_entities: []}]
+    vision_cameras: List[dict] = field(default_factory=list)
+    # 频率与门槛
+    vision_cooldown_s: int = 60              # 同房间两次 VLM 最小间隔
+    vision_max_per_hour: int = 20            # 每房间每小时硬上限
+    vision_no_tv_interval_s: int = 300       # 无 TV 房间巡检周期
+    vision_light_gate: bool = True           # 光线门槛全局总闸：房间开灯才轮询
+    vision_snapshot_retention_days: int = 7
+
+    # ── 人脸识别节点池（ArcFace 可插拔，face_node_pool_plan）────────────────
+    # memory-agent 持有节点注册表与统一识别路由；节点按权重选路，失败降级 VLM。
+    face_node_timeout_s: float = 3.0          # 转发到 Arcface 节点的调用超时（秒）
+    face_min_conf: float = 0.6               # 生物识别覆盖 VLM 外观匹配的最低置信度
+
     # 存储
     db_path: str = "/data/memory_agent.db"
     tz_offset_hours: float = 8.0  # 容器内通常无 TZ，显式声明本地时区偏移
+
+    # ── 在线更新（从 GitHub 拉取最新代码并自重启）──────────────────
+    # 容器内需把宿主机仓库根挂载到 REPO_DIR（见 docker-compose.yml 的 .:/repo）。
+    update_repo_url: str = "https://github.com/lidicn/memory-agent.git"
+    update_branch: str = "main"
+    restart_cmd: str = ""  # 更新后执行的重启命令；为空则通过 re-exec 重启本进程
 
     # 数据目录
     data_dir: str = "/data"
@@ -193,6 +228,10 @@ def get_config() -> Config:
         "ha_db_query_timeout": "HA_DB_QUERY_TIMEOUT",
         "autoflow_acp_url": "AUTOFLOW_ACP_URL",
         "autoflow_acp_token": "AUTOFLOW_ACP_TOKEN",
+        "vlm_endpoint_path": "VLM_ENDPOINT_PATH",
+        "update_repo_url": "UPDATE_REPO_URL",
+        "update_branch": "UPDATE_BRANCH",
+        "restart_cmd": "RESTART_CMD",
     }
 
     for field_name, env_name in env_map.items():

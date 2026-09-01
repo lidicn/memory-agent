@@ -2,7 +2,7 @@
  * 注意：本 SW 仅通过 HTTPS / localhost 注册（index.html 中已做协议守卫）。
  * API 与 SSE 流一律走 network-only，保证实时数据不被缓存污染。
  */
-const CACHE = 'mw-shell-v2';
+const CACHE = 'mw-shell-v4';
 
 // 离线壳预缓存的核心资源（首次联网时缓存，之后断网也能打开 App）
 const PRECACHE = [
@@ -25,6 +25,7 @@ const PRECACHE = [
   '/static/js/pages/mcp.js',
   '/static/js/pages/acp.js',
   '/static/js/pages/agent_memory.js',
+  '/static/js/pages/vision.js',
 ];
 
 self.addEventListener('install', (event) => {

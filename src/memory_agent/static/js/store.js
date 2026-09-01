@@ -4,7 +4,7 @@ import { api, auth } from './api.js';
 
 const NAV_KEY = 'mw.navCollapsed';
 // 必须与 main.js 中的 NAV 数组 id 保持一致；漏加会导致对应页面被 fallback 到 dashboard
-const ROUTES = ['dashboard', 'collect', 'assistant', 'insights', 'mcp', 'acp', 'agent_memory', 'members', 'settings'];
+const ROUTES = ['dashboard', 'collect', 'assistant', 'insights', 'mcp', 'acp', 'agent_memory', 'signal_rules', 'vision', 'members', 'settings'];
 
 export function registerStore(Alpine) {
   Alpine.store('app', {

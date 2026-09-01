@@ -9,6 +9,8 @@ import { insightsPage } from './pages/insights.js';
 import { mcpPage } from './pages/mcp.js';
 import { acpPage } from './pages/acp.js';
 import { agentMemoryPage } from './pages/agent_memory.js';
+import { signalRulesPage } from './pages/signal_rules.js';
+import { visionPage } from './pages/vision.js';
 import { settingsPage } from './pages/settings.js';
 import { membersPage } from './pages/members.js';
 
@@ -48,6 +50,14 @@ const NAV = [
   {
     id: 'agent_memory', label: 'Agent 记忆', desc: '参与式写回的向量记忆库',
     icon: ic('<path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/>')
+  },
+  {
+    id: 'signal_rules', label: '信号规则', desc: '学习策略：教系统别把自动化信号误判',
+    icon: ic('<path d="M12 2l9 4.5v5c0 5-3.4 8.5-9 11-5.6-2.5-9-6-9-11v-5z"/><path d="M9 12l2 2 4-4"/>')
+  },
+  {
+    id: 'vision', label: '视觉识别', desc: '摄像头行为识别与多模态设置',
+    icon: ic('<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>')
   },
   {
     id: 'settings', label: '系统设置', desc: '连接、模型与账号管理',
@@ -201,6 +211,8 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('mcpPage', mcpPage);
   Alpine.data('acpPage', acpPage);
   Alpine.data('agentMemoryPage', agentMemoryPage);
+  Alpine.data('signalRulesPage', signalRulesPage);
+  Alpine.data('visionPage', visionPage);
   Alpine.data('membersPage', membersPage);
   Alpine.data('settingsPage', settingsPage);
 });

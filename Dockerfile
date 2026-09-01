@@ -2,6 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# 在线更新需要 git（容器内对挂载的宿主机仓库执行 pull）
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 # 复制源码
 COPY src/ ./src/
 COPY pyproject.toml .
