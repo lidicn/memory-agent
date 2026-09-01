@@ -4,7 +4,8 @@ services:
     container_name: memory-agent
     restart: unless-stopped
     ports:
-      - "8086:8000"
+      # 只绑 LAN 网卡，避免与 tailscaled 在 Tailscale 网卡上的 `tailscale serve :8086` 冲突
+      - "192.168.2.200:8086:8000"
     env_file:
       - .env
     environment:
