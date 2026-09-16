@@ -124,7 +124,7 @@ def test_slot_level_penalizes_wrong_localization():
 
 
 def test_slot_level_and_segment_level_ignore_records_without_interval():
-    # bathing 走「占用推断」兜底路径时没有 start_ts/end_ts，无法做时间定位，
+    # 仍可能有无区间的 MA 记录（如遥测兜底产出的日级活动），它们无法做时间定位，
     # 必须从时段级/段级评估中剔除并被如实计数，而不是被当成命中。
     ma_no_iv = [
         {"activity": "sleeping", "day": "2021-01-01", "start_ts": None, "end_ts": None},

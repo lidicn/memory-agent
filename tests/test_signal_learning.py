@@ -203,8 +203,48 @@ def test_insights_respects_signal_exclusion():
         os.remove(st.db_path)
 
 
+def test_bathing_emits_interval_from_occupancy_pulse():
+    # P0 修复验证：洗澡（占用推断兜底）必须输出真实时间区间 start_ts/end_ts，
+    # 且按「占用脉冲 + 开灯、时长>=20min」重建，而非「全天任一占用即整天」（旧逻辑全天误报）。
+    st, insvc = _build_insights()
+    TAGS = {
+        "binary_sensor.bathroom_occupancy": ["presence"],
+        "light.bathroom": ["light"],
+    }
+    insvc._tags_of = staticmethod(lambda eid, disp: TAGS.get(eid, []))
+
+    rows = [
+        # 洗澡样片段：占用 60min + 开灯 -> 应判洗澡且带真实区间
+        {"entity_id": "binary_sensor.bathroom_occupancy", "ts": "2025-01-01T13:00:00",
+         "new_state": "on", "room": "卫生间"},
+        {"entity_id": "light.bathroom", "ts": "2025-01-01T13:00:05",
+         "new_state": "on", "room": "卫生间"},
+        {"entity_id": "binary_sensor.bathroom_occupancy", "ts": "2025-01-01T14:00:00",
+         "new_state": "off", "room": "卫生间"},
+        {"entity_id": "light.bathroom", "ts": "2025-01-01T14:00:05",
+         "new_state": "off", "room": "卫生间"},
+        # 如厕短脉冲：3min、无灯 -> 不应判洗澡
+        {"entity_id": "binary_sensor.bathroom_occupancy", "ts": "2025-01-01T08:00:00",
+         "new_state": "on", "room": "卫生间"},
+        {"entity_id": "binary_sensor.bathroom_occupancy", "ts": "2025-01-01T08:03:00",
+         "new_state": "off", "room": "卫生间"},
+    ]
+    try:
+        acts = insvc._detect_activities(rows)["activities"]
+        bath = [a for a in acts if a["activity"] == "bathing"]
+        assert len(bath) == 1, f"应仅由 60min 开灯片段判出 1 条洗澡，实际: {bath}"
+        b = bath[0]
+        assert b["start_ts"] == "2025-01-01T13:00:00", b
+        assert b["end_ts"] == "2025-01-01T14:00:00", b
+        assert b["duration_minutes"] == 60, b
+    finally:
+        st.close()
+        os.remove(st.db_path)
+
+
 if __name__ == "__main__":
     test_store_signal_exclusion_crud()
     test_signal_learning_service_teach_and_priority()
     test_insights_respects_signal_exclusion()
+    test_bathing_emits_interval_from_occupancy_pulse()
     print("OK: all signal_learning tests passed")

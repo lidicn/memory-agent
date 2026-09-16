@@ -2827,6 +2827,46 @@ class InsightService:
                     break
             return "、".join(out)
 
+        def _bath_occupancy_episodes(day_events, min_min: float = 10.0):
+            """从卫生间占用 + 灯事件重建「洗澡样」片段。
+
+            旧逻辑把「全天任一占用」当成洗澡并铺满整天，造成 19h/全天误报与天级过预测。
+            这里改为：提取占用脉冲（on→off 连续段），仅保留 **期间开灯且时长 ≥ min_min 分钟**
+            的片段（时长超 30min 即使无灯记录也采信，兼容缺灯传感器），返回 [(start_dt, end_dt), ...]。
+            每个片段即一段真实洗澡区间，供时段级/段级评估做时间定位。
+            """
+            pres = [e for e in day_events
+                    if "卫生间" in e["room"] and "presence" in e["tags"]]
+            light_dt = sorted(
+                e["dt"] for e in day_events
+                if "卫生间" in e["room"] and "light" in e["tags"] and e["active"]
+            )
+            eps: list = []
+            cur = None
+            for e in pres:
+                if e["active"]:
+                    if cur is None:
+                        cur = [e["dt"], e["dt"]]
+                    else:
+                        cur[1] = e["dt"]
+                else:
+                    if cur is not None:
+                        cur[1] = e["dt"]   # 收尾时刻取 off 时间，而非最后的 on 时间
+                        eps.append(cur)
+                        cur = None
+            if cur is not None:
+                eps.append(cur)
+            out = []
+            for s, en in eps:
+                mins = (en - s).total_seconds() / 60.0
+                if mins < min_min:
+                    continue
+                lit = any(s - timedelta(minutes=5) <= lt <= en + timedelta(minutes=5)
+                          for lt in light_dt)
+                if lit or mins >= 30:
+                    out.append((s, en))
+            return out
+
         by_day: dict[str, list] = defaultdict(list)
         for e in events:
             by_day[e["day"]].append(e)
@@ -2912,33 +2952,45 @@ class InsightService:
                 if ("浴室" in e["room"] or "卫生间" in e["room"])
                 and e["active"] and "presence" in e["tags"]
             ]
-            # 洗澡：优先用增压泵用水证据（真实洗澡时长）；无数据时回退占用传感器（低置信）
+            # 洗澡：优先用增压泵用水证据（真实洗澡时长）。每个用水窗口各自成一条记录，
+            # 并补真实起止时间 start_ts/end_ts，供时段级/段级评估做时间定位。
             bath_windows = water_windows.get(day, [])
             if bath_windows:
-                total_min = sum(mn for _, _, mn in bath_windows)
-                spans = "，".join(f"{a}-{b}({mn:.0f}min)" for a, b, mn in bath_windows)
-                results.append(self._act(
-                    day, "bathing", 0.7,
-                    f"卫生间增压泵用水 {len(bath_windows)} 次（{spans}），累计约 {total_min:.0f} 分钟；"
-                    "以增压泵高功率运行作为用水证据，替代原占用传感器推断（消除 19h 误报）",
-                    0, 23, entities=water_entities[:5],
-                    observed_window=spans, event_count=len(bath_windows),
-                    duration_minutes=int(total_min),
-                ))
+                for (a_str, b_str, mn) in bath_windows:
+                    st = f"{day}T{a_str}:00"
+                    et = f"{day}T{b_str}:00"
+                    results.append(self._act(
+                        day, "bathing", 0.7,
+                        f"卫生间增压泵用水（{a_str}-{b_str}，约 {mn:.0f} 分钟）；"
+                        "以增压泵高功率运行作为用水证据，替代原占用传感器推断（消除全天误报）",
+                        0, 23, entities=water_entities[:5],
+                        observed_window=f"{a_str}-{b_str}({mn:.0f}min)", event_count=1,
+                        start_ts=st, end_ts=et, duration_minutes=int(mn),
+                    ))
                 bath_water_days += 1
                 _mark("bathing", True, "命中", len(bath_windows))
-            elif bath:
-                results.append(self._act(
-                    day, "bathing", 0.4,
-                    f"卫生间/浴室占用传感器触发 {len(bath)} 次（{_span(bath)}）；"
-                    "仅 occupancy 占用推断、无独立用水传感器佐证，可能误报",
-                    0, 23, entities=sorted({e['eid'] for e in bath})[:5],
-                    observed_window=_span(bath), event_count=len(bath),
-                ))
-                bath_occ_days += 1
-                _mark("bathing", True, "命中(仅占用推断)", len(bath))
             else:
-                _mark("bathing", False, "卫生间无用水/占用触发", 0)
+                # 无用水证据时回退占用传感器，但按「占用脉冲 + 开灯」重建真实洗澡片段，
+                # 而非「全天任一占用即整天洗澡」（旧逻辑造成 19h/全天误报、天级过预测）。
+                bath_eps = _bath_occupancy_episodes(evs, min_min=20)
+                if bath_eps:
+                    bath_entities = sorted({e["eid"] for e in bath})[:5]
+                    for (s_dt, e_dt) in bath_eps:
+                        sm, em = s_dt.strftime("%H:%M"), e_dt.strftime("%H:%M")
+                        mins = int((e_dt - s_dt).total_seconds() // 60)
+                        results.append(self._act(
+                            day, "bathing", 0.45,
+                            f"卫生间占用+开灯片段（{sm}-{em}，约 {mins} 分钟）；"
+                            "仅 occupancy 占用推断、无独立用水传感器佐证，可能误报",
+                            0, 23, entities=bath_entities,
+                            observed_window=f"{sm}-{em}({mins}min)", event_count=1,
+                            start_ts=s_dt.isoformat(), end_ts=e_dt.isoformat(),
+                            duration_minutes=mins,
+                        ))
+                    bath_occ_days += 1
+                    _mark("bathing", True, "命中(仅占用推断)", len(bath_eps))
+                else:
+                    _mark("bathing", False, "卫生间无用水/可用占用脉冲", 0)
 
             tv = [
                 e for e in evs
