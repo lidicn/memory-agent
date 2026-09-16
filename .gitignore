@@ -36,7 +36,9 @@ output.txt
 # 前端依赖
 node_modules/
 
-# 真实 OpenSHS 数据集（大文件，外部下载，勿提交；复现见 docs/OpenSHS基准报告.md）
-# 仅忽略从外部拉取的「真实」数据，合成样本 openshs_sample.csv 仍纳入版本控制。
+# 真实 OpenSHS 数据集（89 MB，外部下载，勿提交；复现见 docs/OpenSHS基准报告.md）
+# 注意：上面的 data/ 规则已忽略整个 benchmarks/data/，其中 9 MB 的合成样本
+# openshs_sample.csv 同样不入库 —— 它由 benchmarks/gen_sample.py 确定性生成，
+# 单测会在样本缺失时自动重建（tests/test_openshs_bench.py 的 ensure_sample）。
 benchmarks/data/openshs_real*.csv
 benchmarks/data/_chunk_*.csv

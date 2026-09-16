@@ -21,10 +21,26 @@ from benchmarks.openshs_schema import (
     OPENSHS_COLUMNS,
     SENSOR_MAP,
 )
+from benchmarks.gen_sample import generate as generate_sample
 from benchmarks.openshs_bench import run_benchmark
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAMPLE = os.path.join(HERE, "..", "benchmarks", "data", "openshs_sample.csv")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_sample():
+    """保证合成回归样本存在（全新 clone 也能直接 pytest）。
+
+    ``openshs_sample.csv`` 是约 9 MB / 11 万行的**生成物**，不纳入版本控制
+    （``.gitignore`` 的 ``data/`` 规则会忽略整个 benchmarks/data/）。
+    样本缺失时用 ``gen_sample.generate`` 按需重建；其输出是确定性的
+    （固定 SEGMENTS + base_date=2016-04-01），故下面的完美基线断言依然成立。
+    """
+    if not os.path.exists(SAMPLE):
+        os.makedirs(os.path.dirname(SAMPLE), exist_ok=True)
+        generate_sample(SAMPLE)
+    return SAMPLE
 
 
 def test_sensor_map_covers_all_columns():

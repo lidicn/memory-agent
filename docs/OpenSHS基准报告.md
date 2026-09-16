@@ -127,4 +127,4 @@ PYTHONPATH=src python -m benchmarks.openshs_bench
 PYTHONPATH=src python -m benchmarks.openshs_bench --csv /path/to/fine.csv --map fine
 ```
 
-> 注：`infer_activities` 纯事件逻辑，本机可直接跑；若本机 sqlite 缺 FTS5 模块（`Store.init_schema` 建虚拟表失败），请于 NAS 容器内运行。真实数据集文件较大，已加入 `.gitignore`（`benchmarks/data/openshs_real*.csv`）不纳入版本控制；合成样本 `openshs_sample.csv` 仍受控。
+> 注：`infer_activities` 纯事件逻辑，本机可直接跑；若本机 sqlite 缺 FTS5 模块（`Store.init_schema` 建虚拟表失败），请于 NAS 容器内运行。整个 `benchmarks/data/` 已被 `.gitignore` 的 `data/` 规则忽略：89 MB 真实数据集与 9 MB 合成样本均**不入库**。合成样本由 `benchmarks/gen_sample.py` 确定性生成，单测在样本缺失时会自动重建（`ensure_sample` fixture），故全新 clone 后直接 `pytest` 即可，无需手工准备数据。
