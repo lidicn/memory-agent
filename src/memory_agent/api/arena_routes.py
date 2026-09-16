@@ -66,8 +66,25 @@ async def get_snapshot(request: Request):
     return ok({"snapshot": snap})
 
 
+async def get_analytics(request: Request):
+    """GET /api/arena/analytics —— 竞技场闭环分析：用了洞察的 Agent vs 没用的成功率/token 对比。
+
+    仅对管理员 JWT 开放（不在 ARENA_ENDPOINTS 白名单，arena_ 令牌访问会被 403 拦截）。
+    """
+    arena_id = request.query_params.get("arena_id")
+    rt = runtime(request)
+    if rt.arena is None:
+        return error("竞技场服务未就绪", 500)
+    try:
+        data = await asyncio.to_thread(rt.store.get_arena_analytics, arena_id)
+        return ok(data)
+    except Exception as exc:  # noqa: BLE001
+        return error(f"分析失败: {exc}", 500)
+
+
 ROUTES = [
     Route("/api/arena/snapshot", create_snapshot, methods=["POST"]),
     Route("/api/arena/snapshots", list_snapshots, methods=["GET"]),
     Route("/api/arena/snapshots/{arena_id}", get_snapshot, methods=["GET"]),
+    Route("/api/arena/analytics", get_analytics, methods=["GET"]),
 ]

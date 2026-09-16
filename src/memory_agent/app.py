@@ -76,12 +76,20 @@ DEVICE_ENDPOINTS = (
     "/api/face/node/lib",
 )
 
+# HA Assist（v1.0-2）：OpenAI 兼容会话端点，供 HA 的会话集成调用（家庭记忆问答）。
+# AuthMiddleware 放行这些路径，改由路由层用独立 ha_assist_token 校验（与设备端点同思路）。
+HA_ENDPOINTS = (
+    "/v1/chat/completions",
+    "/v1/models",
+)
+
 # 豆包管家（外部服务）用独立 butler_token 访问本服务的窄接口白名单。
 # 令牌只在这几个路径上生效，避免一个外部服务的令牌拿到整个 WebUI 的权限。
 # 契约见 docs/交接单_MA对接_成员档案与在场查询.md。
 BUTLER_ENDPOINTS = (
     "/api/members",                 # GET 列表（带 profile_json）
     "/api/vision/presence",         # GET 在场查询
+    "/api/vision/latest",           # GET 某房间最新巡检分析 + 截图外链（顾安恒专属对话整合）
     "/api/insights/member-schedule",  # GET 成员作息实测摘要
     "/api/behaviors",               # GET 当前行为状态（v0.9.5 主动感知，管家 M4 看板）
     "/api/events",                  # POST butler→MA 富化事件推送（感知层边界 §〇）
@@ -131,6 +139,11 @@ class AuthMiddleware:
 
         # 设备上报端点：跳过全局 JWT 鉴权，交给路由层设备令牌校验
         if path in DEVICE_ENDPOINTS:
+            await self.app(scope, receive, send)
+            return
+
+        # HA Assist 端点（/v1/*）：跳过全局 JWT 鉴权，交给路由层 ha_assist_token 校验
+        if path in HA_ENDPOINTS:
             await self.app(scope, receive, send)
             return
 

@@ -152,7 +152,12 @@ async def vision_analyze(request: Request):
     asyncio.get_running_loop().create_task(
         asyncio.to_thread(rt.vision.analyze_room, room, force=force, trigger="manual")
     )
-    return ok({"message": "已加入识别队列", "room": room}, status_code=202)
+    cam = rt.vision.camera_for_room(room) or {}
+    return ok({
+        "message": "已加入识别队列",
+        "room": room,
+        "snapshot_url": rt.vision.frame_url(cam.get("stream", "")),
+    }, status_code=202)
 
 
 async def events_face(request: Request):
@@ -285,6 +290,51 @@ async def behaviors_label(request: Request):
     })
 
 
+async def vision_latest(request: Request):
+    """GET /api/vision/latest?room=起居室 —— 该房间最近一次有效识别（文本 + 截图外链 + 时间）。
+
+    供豆包管家拉取「现在什么情况」。跳过 vlm_failed / skipped 行，取最近一条有效分析
+    （status ∈ ok / low_confidence 且 action 非空）；无有效结果时 found=false。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    room = (request.query_params.get("room") or "").strip()
+    if not room:
+        return error("缺少 room 参数")
+    rt = runtime(request)
+    events = await asyncio.to_thread(
+        rt.store.list_behavior_events, room, None, None, None, 8
+    )
+    latest = None
+    for e in events:
+        if (e.get("status") in ("ok", "low_confidence")) and (e.get("action") or "").strip():
+            latest = e
+            break
+    if latest is None:
+        return ok({
+            "room": room, "found": False, "snapshot_url": None,
+            "text": "", "ts": None, "hint": "该房间暂无有效识别结果",
+        })
+    stream = latest.get("camera_src") or ((rt.vision.camera_for_room(room) or {}).get("stream") or "")
+    snapshot_url = rt.vision.frame_url(stream) if latest.get("snapshot_path") else None
+    return ok({
+        "room": room,
+        "found": True,
+        "event_id": latest.get("id"),
+        "ts": latest.get("server_ts"),
+        "text": latest.get("action") or "",
+        "scene": latest.get("scene") or "",
+        "persons": latest.get("persons") or [],
+        "count": latest.get("count") or 0,
+        "confidence": latest.get("confidence"),
+        "status": latest.get("status"),
+        "trigger": latest.get("trigger"),
+        "snapshot_url": snapshot_url,
+        "snapshot_path": latest.get("snapshot_path"),
+    })
+
+
 ROUTES = [
     Route("/api/vision/status", vision_status, methods=["GET"]),
     Route("/api/vision/lights", vision_lights, methods=["GET"]),
@@ -293,6 +343,7 @@ ROUTES = [
     Route("/api/vision/analyze", vision_analyze, methods=["POST"]),
     Route("/api/events/face", events_face, methods=["POST"]),
     Route("/api/vision/presence", vision_presence, methods=["GET"]),
+    Route("/api/vision/latest", vision_latest, methods=["GET"]),
     Route("/api/behaviors", behaviors_query, methods=["GET"]),
     Route("/api/behaviors/{event_id}/label", behaviors_label, methods=["POST"]),
 ]

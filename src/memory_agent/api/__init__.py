@@ -19,6 +19,7 @@ from . import (
     debug_routes,
     events_routes,
     face_routes,
+    ha_assist_routes,
     ha_routes,
     insight_routes,
     identity_routes,
@@ -55,6 +56,7 @@ _MODULES = (
     events_routes,
     system_routes,
     arena_routes,
+    ha_assist_routes,
 )
 
 

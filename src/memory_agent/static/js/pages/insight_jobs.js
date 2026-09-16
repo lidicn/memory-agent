@@ -144,6 +144,54 @@ const TPL = `
   </div>
 </div>
 
+<!-- 竞技场闭环分析（v1.0）-->
+<div class="card p-4 mt-5" x-show="arenaReady">
+  <div class="flex items-center gap-2 mb-3">
+    <h3 class="font-semibold text-sm">竞技场闭环分析</h3>
+    <span class="text-[11px] text-txt-3">用了家庭记忆 / 洞察的 Agent vs 没用的：成功率与 token 对比</span>
+    <button class="btn-ghost btn-xs" @click="loadArenaAnalytics()">刷新</button>
+  </div>
+  <div class="grid md:grid-cols-2 gap-3">
+    <div class="card-flat p-3">
+      <div class="text-xs font-medium text-ok">用了洞察</div>
+      <div class="text-[11px] text-txt-3" x-text="arena.with_memory.count + ' 次提交'"></div>
+      <div class="mt-1 text-sm"><b x-text="pct(arena.with_memory.success_rate)"></b> 成功率</div>
+      <div class="text-[11px] text-txt-3">平均 <b x-text="arena.with_memory.avg_token"></b> token</div>
+    </div>
+    <div class="card-flat p-3">
+      <div class="text-xs font-medium">没用洞察</div>
+      <div class="text-[11px] text-txt-3" x-text="arena.without_memory.count + ' 次提交'"></div>
+      <div class="mt-1 text-sm"><b x-text="pct(arena.without_memory.success_rate)"></b> 成功率</div>
+      <div class="text-[11px] text-txt-3">平均 <b x-text="arena.without_memory.avg_token"></b> token</div>
+    </div>
+  </div>
+  <div class="overflow-x-auto thin-scroll mt-3" x-show="arena.recent && arena.recent.length">
+    <table class="w-full text-[12px]">
+      <thead><tr class="text-txt-3 text-left">
+        <th class="py-1.5 pr-3 font-medium">竞技场</th>
+        <th class="py-1.5 pr-3 font-medium">Agent</th>
+        <th class="py-1.5 pr-3 font-medium">任务</th>
+        <th class="py-1.5 pr-3 font-medium">用了洞察</th>
+        <th class="py-1.5 pr-3 font-medium">Token</th>
+        <th class="py-1.5 font-medium">结果</th>
+      </tr></thead>
+      <tbody>
+        <template x-for="r in arena.recent" :key="r.insight_id">
+          <tr class="border-t border-white/5">
+            <td class="py-1.5 pr-3 font-mono truncate max-w-[120px]" x-text="r.arena_id"></td>
+            <td class="py-1.5 pr-3 font-mono truncate max-w-[120px]" x-text="r.agent_id"></td>
+            <td class="py-1.5 pr-3 truncate max-w-[220px]" x-text="r.task_title"></td>
+            <td class="py-1.5 pr-3" x-text="r.used_memory_tools ? ('✓ ' + r.used_memory_tools) : '—'"></td>
+            <td class="py-1.5 pr-3" x-text="r.token_used"></td>
+            <td class="py-1.5"><span class="badge" :class="r.success ? 'badge-ok' : 'badge-danger'" x-text="r.success ? '成功' : '失败'"></span></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+  <p x-show="arenaReady && !arena.total" class="text-xs text-txt-3 mt-2">暂无竞技场提交记录</p>
+</div>
+
 <!-- 新建 / 编辑抽屉 -->
 <div class="modal-mask" x-show="drawerOpen" x-transition.opacity @click.self="drawerOpen=false" style="display:none">
   <div class="glass rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col anim-in" x-show="drawerOpen">
@@ -220,6 +268,8 @@ export function insightJobsPage() {
     jobs: [],
     runs: [],
     directionFeedback: [],
+    arena: { with_memory: { count: 0, success_rate: 0, avg_token: 0 }, without_memory: { count: 0, success_rate: 0, avg_token: 0 }, recent: [] },
+    arenaReady: false,
     loading: true,
     saving: false,
     drawerOpen: false,
@@ -239,6 +289,7 @@ export function insightJobsPage() {
       this.load();
       this.loadRuns();
       this.loadDirectionFeedback();
+      this.loadArenaAnalytics();
     },
     async load() {
       this.loading = true;
@@ -326,6 +377,14 @@ export function insightJobsPage() {
       try {
         const d = await api.researcherDirectionFeedback();
         this.directionFeedback = d.directions || [];
+      } catch (e) { /* 非关键 */ }
+    },
+    pct(x) { return ((x || 0) * 100).toFixed(1) + '%'; },
+    async loadArenaAnalytics() {
+      try {
+        const d = await api.arenaAnalytics();
+        if (d) this.arena = d;
+        this.arenaReady = true;
       } catch (e) { /* 非关键 */ }
     }
   };

@@ -252,6 +252,7 @@ export const api = {
   agentMemoryRetrieve: (body) => post('/api/agent/memories/retrieve', body),
   memberInsightFeedback: (memberId) => get('/api/members/' + memberId + '/insight-feedback'),
   researcherDirectionFeedback: () => get('/api/researcher/direction-feedback'),
+  arenaAnalytics: (arenaId) => get('/api/arena/analytics' + (arenaId ? '?arena_id=' + encodeURIComponent(arenaId) : '')),
 
   // ── 信号规则（学习策略）───────────────────────────────
   signalRules: (params) => get('/api/signal-rules' + qs(params)),

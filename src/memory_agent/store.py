@@ -1125,6 +1125,93 @@ class Store:
             ).fetchone()
             return dict(row) if row else None
 
+    def get_arena_analytics(self, arena_id=None, limit_recent=20) -> dict:
+        """竞技场闭环分析：按「是否使用家庭记忆 / 洞察工具」分 cohort，对比成功率与 token。
+
+        返回 {total, with_memory, without_memory, by_arena, by_agent, recent}。
+        cohort 划分依据 arena_results.used_memory_tools 是否非空列表。
+        """
+        with self._lock:
+            if arena_id:
+                rows = self._conn.execute(
+                    "SELECT insight_id, arena_id, agent_id, task_title, success, "
+                    "token_used, used_memory_tools, created_at FROM arena_results "
+                    "WHERE arena_id=? ORDER BY id DESC", (arena_id,)
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT insight_id, arena_id, agent_id, task_title, success, "
+                    "token_used, used_memory_tools, created_at FROM arena_results "
+                    "ORDER BY id DESC"
+                ).fetchall()
+        rows = [dict(r) for r in rows]
+
+        def _used(r) -> int:
+            try:
+                return len(json.loads(r["used_memory_tools"] or "[]") or [])
+            except Exception:
+                return 0
+
+        def _cohort(used: bool) -> dict:
+            sub = [r for r in rows if (_used(r) > 0) == used]
+            n = len(sub)
+            ok = sum(1 for r in sub if r["success"])
+            toks = [r["token_used"] for r in sub if r["token_used"]]
+            return {
+                "count": n,
+                "success_count": ok,
+                "success_rate": round(ok / n, 3) if n else 0.0,
+                "avg_token": round(sum(toks) / len(toks), 1) if toks else 0,
+                "total_token": sum(toks),
+            }
+
+        def _group(key):
+            groups: dict = {}
+            for r in rows:
+                groups.setdefault(r[key], []).append(r)
+            out = []
+            for g, sub in groups.items():
+                with_m = [r for r in sub if _used(r) > 0]
+                no_m = [r for r in sub if _used(r) == 0]
+                ok_m = sum(1 for r in with_m if r["success"])
+                ok_n = sum(1 for r in no_m if r["success"])
+                toks_m = [r["token_used"] for r in with_m if r["token_used"]]
+                out.append({
+                    key: g,
+                    "total": len(sub),
+                    "with_memory": {
+                        "count": len(with_m),
+                        "success_rate": round(ok_m / len(with_m), 3) if with_m else 0.0,
+                        "avg_token": round(sum(toks_m) / len(toks_m), 1) if toks_m else 0,
+                    },
+                    "without_memory": {
+                        "count": len(no_m),
+                        "success_rate": round(ok_n / len(no_m), 3) if no_m else 0.0,
+                    },
+                })
+            out.sort(key=lambda x: -x["total"])
+            return out
+
+        recent = [{
+            "insight_id": r["insight_id"],
+            "arena_id": r["arena_id"],
+            "agent_id": r["agent_id"],
+            "task_title": r["task_title"],
+            "success": bool(r["success"]),
+            "token_used": r["token_used"],
+            "used_memory_tools": _used(r),
+            "created_at": r["created_at"],
+        } for r in rows[: int(limit_recent)]]
+
+        return {
+            "total": len(rows),
+            "with_memory": _cohort(True),
+            "without_memory": _cohort(False),
+            "by_arena": _group("arena_id"),
+            "by_agent": _group("agent_id"),
+            "recent": recent,
+        }
+
     # -- 事件写入 ----------------------------------------------------------
 
     def insert_events(self, events: list[dict]) -> int:

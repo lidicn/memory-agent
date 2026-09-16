@@ -27,6 +27,7 @@ from .face_node_registry import FaceNodeRegistry
 from .ha_client import HAClient
 from .ha_db import HADBClient
 from .agent_memory import AgentMemoryService
+from .ha_assist import HaAssist
 from .arena import ArenaService
 from .signal_learning import SignalLearningService
 from .history import HistoryManager
@@ -72,6 +73,8 @@ class AppRuntime:
             self.config, self.store, self.history, self.insights, self.llm
         )
         self.signal_learning = SignalLearningService(self.store, self.agent_memory)
+        # HA Assist 集成（v1.0-2）：家庭记忆增强的会话回答后端（OpenAI 兼容 /v1/*）
+        self.ha_assist = HaAssist(self.config, self.agent_memory, self.llm, self.insights)
         # 实体身份层（v0.2）：模板/查询经它把「逻辑设备名」解析为当前 entity_id，
         # 从而免疫 HA 集成重登/双集成导致的实体漂移（详见 identity.py 模块文档）。
         self.identity = IdentityService(
@@ -93,6 +96,8 @@ class AppRuntime:
         self.tv = TVService(self.config, self.ha, self.vision)
         # MQTT 实时推送（v0.4）：旁路能力，未启用时 publish() 直接空转
         self.mqtt = MqttBridge(self.config)
+        # 视觉异常告警出口（Phase 2，默认关）：把 MQTT 桥接注入视觉服务
+        self.vision.mqtt = self.mqtt
         self.backup = BackupManager(self.config)
         self._patterns: Any = None
         self._sweep_task: Any = None

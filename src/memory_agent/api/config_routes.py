@@ -34,6 +34,8 @@ WRITABLE_FIELDS = (
     "mcp_response_max_bytes",
     # ── 豆包管家对接（外部服务窄接口令牌）────────────────────────────────
     "butler_token",
+    # ── HA Assist 集成（v1.0-2，OpenAI 兼容会话端点令牌）──────────────────
+    "ha_assist_token", "ha_assist_memory_top_k",
     # ── AutoFlow 竞技场对接（脱敏映射，可选；缺省按分区内稳定生成通用名）──
     "arena_desensitize",
     # ── 视觉识别（vision-behavior-spec）────────────────────────────────
@@ -41,9 +43,11 @@ WRITABLE_FIELDS = (
     "go2rtc_base_url", "go2rtc_user", "go2rtc_pass",
     "vlm_base_url", "vlm_api_key", "vlm_model",
     "vlm_timeout_s", "vlm_max_retries", "vlm_endpoint_path",
+    "vlm_conversation_id", "vlm_keep_conversation",
     "vision_cameras",
     "vision_cooldown_s", "vision_max_per_hour", "vision_no_tv_interval_s",
     "vision_light_gate", "vision_snapshot_retention_days",
+    "vision_alert_mqtt_enabled", "vision_alert_mqtt_topic",
     # ── 电视截屏多模态（docs/电视截屏多模态识别功能_交接单.md）─────────
     "tv_media_player_entity", "tv_capture_timeout_s",
     "tv_mqtt_enabled", "tv_mqtt_host", "tv_mqtt_port",
@@ -54,7 +58,7 @@ SECRET_FIELDS = (
     "hass_token", "nr_pass", "llm_api_key", "mcp_auth_token", "jwt_secret",
     "ha_db_password", "autoflow_acp_token",
     "vision_device_token", "go2rtc_pass", "vlm_api_key",
-    "butler_token", "tv_mqtt_pass",
+    "butler_token", "ha_assist_token", "tv_mqtt_pass",
 )
 
 

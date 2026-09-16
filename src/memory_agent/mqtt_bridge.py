@@ -165,6 +165,24 @@ class MqttBridge:
             print(f"[MQTT] 发布 {topic} 失败: {exc}")
             return False
 
+    def publish_raw(self, topic: str, payload: Any, retain: bool = False) -> bool:
+        """按完整 topic 发布（不加前缀）。用于跨服务约定主题（如 butler/trigger/*）。"""
+        if not self.enabled or self._closed:
+            return False
+        topic = (topic or "").strip()
+        if not topic:
+            return False
+        try:
+            client = self._ensure_client()
+            if client is None:
+                return False
+            body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+            client.publish(topic, body, qos=0, retain=retain)
+            return True
+        except Exception as exc:  # noqa: BLE001 - 旁路能力，失败不得上抛
+            print(f"[MQTT] 发布 {topic} 失败: {exc}")
+            return False
+
     def publish_presence(self, members: list[dict], ts: str) -> bool:
         """成员在场快照。``retain=True`` 让新订阅者立刻拿到当前状态。"""
         return self.publish(

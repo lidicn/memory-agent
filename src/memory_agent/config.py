@@ -173,6 +173,13 @@ class Config:
     # v0.6 #3：记忆来源（source）取值白名单，防止来源伪造。可在此扩展新来源。
     agent_memory_sources: List[str] = field(default_factory=lambda: ["ma", "butler", "vision", "manual"])
 
+    # ── HA Assist 集成（v1.0-2：MA 作为 HA conversation agent 后端，见 docs/HA_Assist接入.md）──
+    # Bearer 令牌：HA 的会话集成（extended_openai_conversation 等）用它调用 MA 的
+    # /v1/chat/completions，返回带家庭记忆的回答。未配置则通道关闭（/v1/* 一律 401）。
+    ha_assist_token: str = ""
+    # 回答时注入的家庭记忆条数（0 = 不注入，退化为普通 LLM）
+    ha_assist_memory_top_k: int = 6
+
     # ── AutoFlow 竞技场对接（外部服务调用本服务的竞技场窄接口，见 docs/交接单_AutoFlow竞技场对接.md）──
     # 专用 arena_ 令牌（kind=arena）：仅能调用 3 个 arena ACP 工具 + 快照接口，
     # 与生产 / butler / ACP 令牌三者隔离。脱敏映射可选，缺省按 arena 内稳定生成通用名。
@@ -194,6 +201,11 @@ class Config:
     # 多模态 VLM 端点路径：默认 OpenAI 兼容 /v1/chat/completions；
     # 使用 doubao2api 时可填其私有端点 /v1/images/analyses。
     vlm_endpoint_path: str = "/v1/chat/completions"
+    # 会话归集（交接单_顾安恒专属对话整合 2026-09-16）：设置后 MA 调 VLM 会带上
+    # conversation_id + keep_conversation，使巡检/分析汇聚到同一豆包对话，不再每次
+    # 新建「家庭监控画面人物分析」对话刷屏。留空则维持默认（每次新建）。
+    vlm_conversation_id: str = ""
+    vlm_keep_conversation: bool = True
     # 摄像头注册表：[{room, stream, enabled, no_tv, light_gate, light_entities: []}]
     vision_cameras: List[dict] = field(default_factory=list)
     # 频率与门槛
@@ -202,6 +214,10 @@ class Config:
     vision_no_tv_interval_s: int = 300       # 无 TV 房间巡检周期
     vision_light_gate: bool = True           # 光线门槛全局总闸：房间开灯才轮询
     vision_snapshot_retention_days: int = 7
+    # 巡检异常 MQTT 推送（交接单 顾安恒 Phase 2，默认关）：发现陌生人等异常时，
+    # 向管家约定主题推送 {room, alert_type, message, snapshot_url}。
+    vision_alert_mqtt_enabled: bool = False
+    vision_alert_mqtt_topic: str = "butler/trigger/gu_anheng_alert"
 
     # ── 人脸识别节点池（ArcFace 可插拔，face_node_pool_plan）────────────────
     # memory-agent 持有节点注册表与统一识别路由；节点按权重选路，失败降级 VLM。
@@ -322,6 +338,7 @@ def get_config() -> Config:
         "update_branch": "UPDATE_BRANCH",
         "restart_cmd": "RESTART_CMD",
         "butler_token": "BUTLER_TOKEN",
+        "ha_assist_token": "HA_ASSIST_TOKEN",
         "app_token": "APP_TOKEN",
         "tv_media_player_entity": "TV_MEDIA_PLAYER_ENTITY",
         "tv_mqtt_host": "TV_MQTT_HOST",

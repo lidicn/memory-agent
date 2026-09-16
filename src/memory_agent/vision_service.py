@@ -68,6 +68,8 @@ class VisionService:
         self.config = config
         self.store = store
         self.ha = ha
+        # 巡检异常 MQTT 推送（Phase 2 可选）：由 runtime 注入桥接；None 时静默跳过。
+        self.mqtt = None
         # 人脸识别节点池（ArcFace 可插拔）。runtime 会注入共享实例；
         # 兜底：此处自建一个独立实例，保证不直接依赖 runtime。
         self.face: FaceNodeRegistry | None = FaceNodeRegistry()
@@ -235,6 +237,17 @@ class VisionService:
                     continue
                 raise
 
+    def frame_url(self, stream: str) -> str | None:
+        """go2rtc 单帧外链（供管家把截图随分析一起推送到豆包对话）。
+
+        取帧失败 / 无流名 / 未配置 go2rtc 基址时返回 None（交接单要求 null）。
+        注意：go2rtc 实测无需 Basic Auth 即可取帧，故返回裸 URL 可直接被管家拉取。"""
+        stream = (stream or "").strip()
+        base = (self.config.go2rtc_base_url or "").rstrip("/")
+        if not stream or not base:
+            return None
+        return f"{base}/api/frame.jpeg?src={urllib.parse.quote(stream)}"
+
     # ── 多模态 LLM（doubao2api）──────────────────────────────────────────
 
     def _vlm_prompt(self, room: str, persons: list[dict] | None) -> str:
@@ -309,12 +322,15 @@ class VisionService:
         self, frame: bytes, prompt: str, *,
         base_url: str | None = None, api_key: str | None = None,
         model: str | None = None, endpoint_path: str | None = None,
+        conversation_id: str | None = None, keep_conversation: bool | None = None,
     ) -> tuple[str, int]:
         """调多模态 VLM（OpenAI 兼容）。端点路径由 endpoint_path / vlm_endpoint_path
         配置决定，默认 /v1/chat/completions；doubao2api 可填 /v1/images/analyses 回退。
         返回 (文本, 耗时ms)。
 
-        base_url/api_key/model/endpoint_path 可由测试接口传入表单当前值（未保存也能测）。"""
+        base_url/api_key/model/endpoint_path 可由测试接口传入表单当前值（未保存也能测）。
+        会话归集：设 vlm_conversation_id 后，payload 带 conversation_id + keep_conversation，
+        使所有巡检分析落入同一豆包对话，不再每次新建对话（交接单_顾安恒 2026-09-16）。"""
         base = (base_url or self.config.vlm_base_url or "").rstrip("/")
         path = (endpoint_path or self.config.vlm_endpoint_path or "/v1/chat/completions").strip()
         if not path.startswith("/"):
@@ -331,6 +347,20 @@ class VisionService:
                 ],
             }],
         }
+        # 会话归集（顾安恒专属对话）：汇聚到同一 conversation_id 并保留，避免刷屏。
+        conv = conversation_id if conversation_id is not None else (self.config.vlm_conversation_id or "")
+        if conv and str(conv).strip():
+            payload["conversation_id"] = str(conv).strip()
+            keep = (
+                keep_conversation if keep_conversation is not None
+                else bool(getattr(self.config, "vlm_keep_conversation", True))
+            )
+            payload["keep_conversation"] = bool(keep)
+            # 规避 doubao2api 会话续写 500 bug：当 conversation_id 命中已缓存的 system
+            # prompt 且本次无 system 消息时，服务端会向 messages 注入一个裸 dict
+            # （应为 _Message），_extract_prompt 取 msg.role 即崩。silent 模式走独立分支，
+            # 不触发该注入（MA 无 system 消息，语义上无影响）。
+            payload["silent"] = True
         headers = {"Content-Type": "application/json"}
         key = api_key if api_key is not None else self.config.vlm_api_key
         if key:
@@ -639,12 +669,13 @@ class VisionService:
             self._register_failure(room, stream, trigger, f"go2rtc 取帧失败: {exc}")
             return {"ok": False, "error": f"go2rtc 取帧失败: {exc}"}
 
-        # 6) 快照
+        # 6) 快照（含 go2rtc 帧外链，交接单要求；无截图时为 null）
         snapshot_path = ""
         try:
             snapshot_path = self._save_snapshot(room, frame)
         except Exception as exc:  # noqa: BLE001
             print(f"[Vision] 快照保存失败（不影响识别）: {exc}")
+        snapshot_url = self.frame_url(stream) if snapshot_path else None
 
         # 7) VLM 识别（JSON 解析失败重试 1 次，spec §8.3）
         prompt = self._vlm_prompt(room, persons)
@@ -664,7 +695,7 @@ class VisionService:
             self._register_failure(room, stream, trigger, str(exc),
                                    snapshot_path=snapshot_path, device_ts=device_ts)
             hint = "会话可能失效，请到 doubao2api 管理面板扫码重登"
-            return {"ok": False, "error": f"{exc}（{hint}）"}
+            return {"ok": False, "error": f"{exc}（{hint}）", "snapshot_url": snapshot_url}
 
         # 8) 解析并落库
         vlm_persons = (data or {}).get("persons") or []
@@ -759,12 +790,40 @@ class VisionService:
             "count": len(persons_out), "status": status,
             "latency_ms": latency_ms, "fetch_ms": fetch_ms,
             "snapshot_quality": quality, "trigger": trigger,
+            "snapshot_url": snapshot_url,
         }
+        # 巡检异常推送（Phase 2，默认关）：陌生人 → MQTT 通知管家推送到顾安恒对话。
+        self._maybe_publish_alert(room, persons_out, snapshot_url, action)
         return {
             "ok": True, "event_id": event_id, "action": action, "scene": scene,
             "persons": persons_out, "status": status, "latency_ms": latency_ms,
-            "snapshot_path": snapshot_path, "gate": gate_info,
+            "snapshot_path": snapshot_path, "snapshot_url": snapshot_url,
+            "gate": gate_info,
         }
+
+    # 未识别身份（视为陌生人）——异常告警触发集
+    _STRANGER_NAMES = frozenset({"陌生人", "未识别", "未识别成员", "unknown"})
+
+    def _maybe_publish_alert(self, room, persons, snapshot_url, action) -> None:
+        """巡检异常 → MQTT（Phase 2，默认关）。当前仅陌生人；失败静默不影响主流程。"""
+        if not getattr(self.config, "vision_alert_mqtt_enabled", False):
+            return
+        mqtt = getattr(self, "mqtt", None)
+        if mqtt is None:
+            return
+        strangers = [p for p in (persons or []) if (p.get("name") or "") in self._STRANGER_NAMES]
+        if not strangers:
+            return
+        topic = getattr(self.config, "vision_alert_mqtt_topic", "") or "butler/trigger/gu_anheng_alert"
+        try:
+            mqtt.publish_raw(topic, {
+                "room": room,
+                "alert_type": "stranger",
+                "message": action or f"{room} 出现未识别人员",
+                "snapshot_url": snapshot_url,
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Vision] 异常 MQTT 推送失败（已忽略）: {exc}")
 
     def _register_failure(
         self, room: str, stream: str, trigger: str, error: str,
