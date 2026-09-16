@@ -115,6 +115,8 @@ async def create_token(request: Request):
         name,
         prefix=body.get("prefix"),
         kind=body.get("kind"),
+        # v0.7.5：未指定 scopes 时默认只读；写工具需显式带 write
+        scopes=body.get("scopes"),
     )
     if not result.get("ok"):
         return error(result.get("error", "生成失败"))
@@ -125,6 +127,7 @@ async def create_token(request: Request):
             "token": result["token"],
             "prefix": result["prefix"],
             "created_at": result["created_at"],
+            "scopes": result.get("scopes", []),
             "url": url,
             "snippets": _client_snippets(url, result["token"]),
             "message": "Token 已生成，请立即复制保存，页面关闭后无法再次查看",
@@ -144,6 +147,42 @@ async def revoke_token(request: Request):
     if not runtime(request).tokens.revoke(name):
         return error("Token 不存在", 404)
     return ok({"message": f"Token 已撤销: {name}"})
+
+
+async def update_token_scopes(request: Request):
+    """调整令牌权限（v0.7.5：read / read+write）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    body = await json_body(request)
+    name = (body.get("name") or "").strip()
+    scopes = body.get("scopes")
+    if not name:
+        return error("缺少 name")
+    if scopes is None:
+        return error("缺少 scopes")
+    if not runtime(request).tokens.update_scopes(name, scopes):
+        return error("Token 不存在", 404)
+    return ok({"message": f"Token 权限已更新: {name}",
+               "scopes": runtime(request).tokens.scopes(name)})
+
+
+async def list_audit(request: Request):
+    """MCP 调用审计（v0.7.5-2 只读查询入口）。
+
+    ?limit=&token=&tool=&failed=1
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    q = request.query_params
+    rows = runtime(request).store.list_mcp_audit(
+        limit=int(q.get("limit") or 100),
+        token_name=q.get("token") or "",
+        tool=q.get("tool") or "",
+        only_failed=(q.get("failed") or "").strip() in ("1", "true", "yes"),
+    )
+    return ok({"audit": rows, "total": len(rows)})
 
 
 async def selftest(request: Request):
@@ -269,6 +308,8 @@ ROUTES = [
     Route("/api/mcp/tokens", list_tokens, methods=["GET"]),
     Route("/api/mcp/tokens", create_token, methods=["POST"]),
     Route("/api/mcp/tokens/revoke", revoke_token, methods=["POST"]),
+    Route("/api/mcp/tokens/scopes", update_token_scopes, methods=["POST"]),
+    Route("/api/mcp/audit", list_audit, methods=["GET"]),
     Route("/api/mcp/selftest", selftest, methods=["POST", "GET"]),
     # 旧端点别名
     Route("/api/config/agent-token", add_agent_token, methods=["POST"]),

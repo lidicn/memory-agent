@@ -265,6 +265,10 @@
         <section x-data="insightsPage" class="page space-y-5" x-html="tpl"></section>
       </template>
 
+      <template x-if="$store.app.route === 'researcher'">
+        <section x-data="researcherPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
       <template x-if="$store.app.route === 'mcp'">
         <section x-data="mcpPage" class="page space-y-5" x-html="tpl"></section>
       </template>
@@ -285,8 +289,16 @@
         <section x-data="visionPage" class="page space-y-5" x-html="tpl"></section>
       </template>
 
+      <template x-if="$store.app.route === 'devices'">
+        <section x-data="devicesPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
       <template x-if="$store.app.route === 'members'">
         <section x-data="membersPage" class="page space-y-5" x-html="tpl"></section>
+      </template>
+
+      <template x-if="$store.app.route === 'manual'">
+        <section x-data="userManualPage" class="page space-y-5" x-html="tpl"></section>
       </template>
 
       <template x-if="$store.app.route === 'settings'">

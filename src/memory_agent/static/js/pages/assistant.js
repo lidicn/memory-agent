@@ -10,6 +10,7 @@ const CAT_LABEL = {
 
 // 通用对话历史持久化到 localStorage：重启网关 / 刷新页面不丢记录
 const CHAT_KEY = 'mw.chat.messages';
+const MODEL_KEY = 'mw.chat.model';
 
 const TPL = `
 <div class="flex flex-col gap-5 h-[calc(100vh-8.5rem)]">
@@ -243,6 +244,10 @@ export function assistantPage() {
       this.loadMeta();
       this.loadRooms();
       this.loadChat();
+      // 用户手动切换模型后持久化，下次进来不再被重置
+      this.$watch('model', (v) => {
+        try { if (v) localStorage.setItem(MODEL_KEY, v); } catch (e) { /* ignore */ }
+      });
     },
 
     destroy() {
@@ -254,11 +259,20 @@ export function assistantPage() {
       try {
         const d = await api.llmModels();
         this.meta = d;
-        this.model = d.current || (d.models && d.models[0]) || '';
+        const saved = this._savedModel(d.models);
+        this.model = saved || d.current || (d.models && d.models[0]) || '';
         if (!d.configured) this.$store.app.warn('尚未配置大模型 API Key，请先到「系统设置」填写');
       } catch (e) {
         this.$store.app.err('模型信息加载失败：' + e.message);
       }
+    },
+
+    _savedModel(models) {
+      try {
+        const v = localStorage.getItem(MODEL_KEY);
+        if (v && (models || []).includes(v)) return v;
+      } catch (e) { /* 隐私模式/读取失败忽略 */ }
+      return '';
     },
 
     async loadRooms() {
@@ -389,11 +403,11 @@ export function assistantPage() {
               this.messages[replyIdx] = { ...m, error: true, content: data.message || '生成失败' };
               this.$store.app.err(data.message || '生成失败');
             } else if (event === 'backend') {
-              // 代理池实际切换到其后端：更新模型徽标，发生切换时提示
+              // 代理池实际使用后端：只提示，不动用户已选的下拉框
               const label = data.name || data.model || data.provider || '未知模型';
-              const switched = data.model && this.model && data.model !== this.model;
-              this.model = data.model || this.model;
-              if (switched) this.$store.app.info('代理池已切换到：' + label);
+              if (data.model && data.model !== this.model) {
+                this.$store.app.info('代理池实际使用：' + label);
+              }
             }
           },
           this._chatAbort.signal

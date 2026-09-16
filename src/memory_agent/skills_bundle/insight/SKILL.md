@@ -2,8 +2,8 @@
 name: insight
 description: 家庭行为洞察分析技能。当需要从家庭传感器/设备事件中提取作息节律、设备用量、异常行为，或把分析结论沉淀为可复用模板与技能时使用。通过 memory-agent 的 MCP 工具获取服务端已算好的洞察，不要自己拉原始事件硬算。
 category: insight
-version: 4
-updated_at: 2026-08-06T00:00:00
+version: 5
+updated_at: 2026-09-14T00:00:00
 ---
 
 # 家庭行为洞察分析
@@ -61,6 +61,7 @@ updated_at: 2026-08-06T00:00:00
 - `get_member_persona(member_id, days=14)` —— 拿该成员档案 + 全屋/房间定向行为画像 + 已存档标签；也可用全局 `get_user_persona(days=14)` 看整屋画像。
 - `confirm_member_tag(member_id, tag, category, emoji, confidence, evidence)` —— **仅当用户明确确认后**把推断标签写回（同名覆盖刷新）。
 - 建议工作流：先 `get_member_persona`/`get_user_persona` 拿结构化画像（出现天数/频次/典型时段/房间/置信度/证据）→ 由你（Agent）自主推断标签（如主卧 23:00–02:00 活跃高→夜猫子🦉；厨房≥5天/周→家庭主厨🍳）→ 展示证据并询问是否存档 → 确认后 `confirm_member_tag`。
+- ⚠️ **作息判定按真实静默区间，别用名义窗**：`sleeping` 记录的 `observed_window`（及 `evidence` 里的静默区间，如 `02:09-06:45`）与 `duration_minutes` 才是真实入睡→起床；`typical_window` 是名义夜间归属窗（22:00-07:00），**不得**据它写作息标签。据此判标签：偏晚入睡（如 02:00 后）应判「晚睡 / 夜猫子🦉」，而非「规律作息」。
 - 用户也可在 WebUI「家庭成员」页手动增删成员、房间、设备与标签。
 
 ## 取数避坑

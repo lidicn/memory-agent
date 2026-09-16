@@ -159,6 +159,11 @@ export const api = {
   saveConfig: (patch) => post('/api/config', patch),
   revealSecret: (field, payload) => post('/api/config/reveal', payload != null ? { field, ...payload } : { field }),
   testConnection: (body) => post('/api/config/test', body),
+
+  // ── 应用令牌（v0.6 多 app_token 管理）────────────────────
+  listAppTokens: () => get('/api/config/app-tokens'),
+  createAppToken: (name, source) => post('/api/config/app-tokens', { name, source }),
+  revokeAppToken: (name) => del('/api/config/app-tokens/' + encodeURIComponent(name)),
   health: () => get('/api/health'),
 
   // ── 采集 ───────────────────────────────────────────────
@@ -186,12 +191,33 @@ export const api = {
   insights: (params) => get('/api/insights' + qs(params)),
   saveTemplate: (tpl) => post('/api/templates', tpl),
   deleteTemplate: (id) => post('/api/templates/delete', { template_id: id }),
+  insightQuery: (body) => post('/api/insights/query', body),
+  // v0.7 模板校验 / 停用 / 修复
+  validateTemplates: (body) => post('/api/templates/validate', body || {}),
+  disableTemplate: (id, disabled) => post('/api/templates/disable', { template_id: id, disabled: !!disabled }),
+  fixTemplate: (id, entityIndex, opts) => post('/api/templates/fix', Object.assign({ template_id: id, entity_index: entityIndex }, opts || {})),
+
+  // ── 记忆研究员（v0.8 定向洞察）─────────────────────────────
+  researcherJobs: () => get('/api/researcher/jobs'),
+  researcherSaveJob: (job) => post('/api/researcher/jobs', job),
+  researcherDeleteJob: (jobId) => post('/api/researcher/jobs/delete', { job_id: jobId }),
+  researcherToggleJob: (jobId, enabled) => post('/api/researcher/jobs/toggle', { job_id: jobId, enabled: !!enabled }),
+  researcherRunNow: (jobId) => post('/api/researcher/run', jobId ? { job_id: jobId } : {}),
+  researcherRuns: (params) => get('/api/researcher/runs' + qs(params)),
+
+  // ── 实体身份 / 设备健康（v0.3，HA 实体动荡治理）────────
+  identityDevices: () => get('/api/identity/devices'),
+  identityHealth: (state) => get('/api/identity/health' + qs({ state: state || '' })),
+  listMerges: () => get('/api/identity/merges'),
+  splitMerge: (stable_id) => post('/api/identity/merges/split', { stable_id }),
 
   // ── MCP ────────────────────────────────────────────────
   mcpInfo: () => get('/api/mcp/info'),
   mcpTokens: () => get('/api/mcp/tokens'),
-  mcpCreateToken: (name) => post('/api/mcp/tokens', { name }),
+  mcpCreateToken: (name, kind, prefix, scopes) => post('/api/mcp/tokens', { name, kind, prefix, scopes }),
   mcpRevokeToken: (name) => post('/api/mcp/tokens/revoke', { name }),
+  mcpUpdateScopes: (name, scopes) => post('/api/mcp/tokens/scopes', { name, scopes }),
+  mcpAudit: (params) => get('/api/mcp/audit' + qs(params)),
   mcpSelftest: () => post('/api/mcp/selftest'),
 
   // ── ACP（Agent Client Protocol，拓扑 X peer-to-peer）────
@@ -210,6 +236,8 @@ export const api = {
   createMember: (body) => post('/api/members', body),
   updateMember: (id, body) => put('/api/members/' + encodeURIComponent(id), body),
   deleteMember: (id) => del('/api/members/' + encodeURIComponent(id)),
+  mergeMember: (sourceId, targetId) =>
+    post('/api/members/' + encodeURIComponent(sourceId) + '/merge', { target_id: targetId }),
   assignMemberRooms: (id, rooms) => put('/api/members/' + encodeURIComponent(id) + '/rooms', { rooms }),
   assignMemberDevices: (id, entity_ids) => put('/api/members/' + encodeURIComponent(id) + '/devices', { entity_ids }),
   addMemberTag: (id, body) => post('/api/members/' + encodeURIComponent(id) + '/tags', body),
@@ -222,6 +250,8 @@ export const api = {
   agentMemoryFeedback: (memory_id, useful) => post('/api/agent/memories/feedback', { memory_id, useful }),
   agentMemorySweep: () => post('/api/agent/memories/sweep'),
   agentMemoryRetrieve: (body) => post('/api/agent/memories/retrieve', body),
+  memberInsightFeedback: (memberId) => get('/api/members/' + memberId + '/insight-feedback'),
+  researcherDirectionFeedback: () => get('/api/researcher/direction-feedback'),
 
   // ── 信号规则（学习策略）───────────────────────────────
   signalRules: (params) => get('/api/signal-rules' + qs(params)),

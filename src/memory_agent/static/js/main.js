@@ -6,6 +6,7 @@ import { dashboardPage } from './pages/dashboard.js';
 import { collectPage } from './pages/collect.js';
 import { assistantPage } from './pages/assistant.js';
 import { insightsPage } from './pages/insights.js';
+import { insightJobsPage } from './pages/insight_jobs.js';
 import { mcpPage } from './pages/mcp.js';
 import { acpPage } from './pages/acp.js';
 import { agentMemoryPage } from './pages/agent_memory.js';
@@ -13,60 +14,11 @@ import { signalRulesPage } from './pages/signal_rules.js';
 import { visionPage } from './pages/vision.js';
 import { settingsPage } from './pages/settings.js';
 import { membersPage } from './pages/members.js';
+import { devicesPage } from './pages/devices.js';
+import { userManualPage } from './pages/user_manual.js';
+// 导航与路由白名单的单一真源（store.js 也 import 同一份，避免漏加导致页面回退概览）
+import { NAV, MORE_ICON } from './nav.js';
 
-const ic = (path) =>
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
-  'stroke-linecap="round" stroke-linejoin="round" class="w-full h-full">' + path + '</svg>';
-
-const NAV = [
-  {
-    id: 'dashboard', label: '概览', desc: '家庭记忆中枢运行全貌',
-    icon: ic('<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>')
-  },
-  {
-    id: 'collect', label: '数据采集', desc: '从 Home Assistant 抓取并沉淀行为事件',
-    icon: ic('<path d="M21 12a9 9 0 11-6.22-8.56"/><path d="M12 7v5l3 2"/><path d="M17 3l4 1-1 4"/>')
-  },
-  {
-    id: 'assistant', label: 'AI 助手', desc: '与内置大模型对话、生成行为洞察',
-    icon: ic('<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/><circle cx="9" cy="10" r="1"/><circle cx="12.5" cy="10" r="1"/><circle cx="16" cy="10" r="1"/>')
-  },
-  {
-    id: 'insights', label: '行为洞察', desc: '沉淀下来的规律与自动化建议',
-    icon: ic('<path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 00-4 12.7V17h8v-2.3A7 7 0 0012 2z"/>')
-  },
-  {
-    id: 'members', label: '家庭成员', desc: '为每个家人建立生活习惯档案',
-    icon: ic('<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>')
-  },
-  {
-    id: 'mcp', label: 'MCP 接入', desc: '为 AI Agent 签发访问凭证',
-    icon: ic('<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/><path d="M2 13h20"/>')
-  },
-  {
-    id: 'acp', label: 'ACP 接入', desc: '与 autoflow 双向互通（拓扑 X）',
-    icon: ic('<path d="M12 2a3 3 0 00-3 3v1H6a3 3 0 000 6h3v1a3 3 0 006 0v-1h3a3 3 0 000-6h-3V5a3 3 0 00-3-3z"/><circle cx="12" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/>')
-  },
-  {
-    id: 'agent_memory', label: 'Agent 记忆', desc: '参与式写回的向量记忆库',
-    icon: ic('<path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/>')
-  },
-  {
-    id: 'signal_rules', label: '信号规则', desc: '学习策略：教系统别把自动化信号误判',
-    icon: ic('<path d="M12 2l9 4.5v5c0 5-3.4 8.5-9 11-5.6-2.5-9-6-9-11v-5z"/><path d="M9 12l2 2 4-4"/>')
-  },
-  {
-    id: 'vision', label: '视觉识别', desc: '摄像头行为识别与多模态设置',
-    icon: ic('<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>')
-  },
-  {
-    id: 'settings', label: '系统设置', desc: '连接、模型与账号管理',
-    icon: ic('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 008 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.14.35.4.64.73.83.3.17.64.26.98.26H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/>')
-  }
-];
-
-// 底部 Tab「更多」入口图标
-const MORE_ICON = ic('<circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="19" r="1.4"/>');
 
 function shell() {
   return {
@@ -208,11 +160,14 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('collectPage', collectPage);
   Alpine.data('assistantPage', assistantPage);
   Alpine.data('insightsPage', insightsPage);
+  Alpine.data('researcherPage', insightJobsPage);
   Alpine.data('mcpPage', mcpPage);
   Alpine.data('acpPage', acpPage);
   Alpine.data('agentMemoryPage', agentMemoryPage);
   Alpine.data('signalRulesPage', signalRulesPage);
   Alpine.data('visionPage', visionPage);
   Alpine.data('membersPage', membersPage);
+  Alpine.data('devicesPage', devicesPage);
+  Alpine.data('userManualPage', userManualPage);
   Alpine.data('settingsPage', settingsPage);
 });

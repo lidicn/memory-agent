@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shlex
 import subprocess
 from typing import Optional
 
@@ -134,8 +135,20 @@ async def apply_update(request: Request):
         # 3) 重启：优先 restart_cmd，否则 re-exec 当前进程
         restart_cmd = (cfg.restart_cmd or "").strip()
         if restart_cmd:
+            # 安全（审计 O2）：移除 shell=True，避免 restart_cmd（可经配置修改）
+            # 造成命令注入。用 shlex 拆分后直接 exec，不再经过 shell 解释，
+            # 因此不支持 &&/|/重定向 等 shell 语法；复合命令请写成脚本再由本字段调用。
+            try:
+                cmd_argv = shlex.split(restart_cmd)
+            except ValueError as exc:
+                return JSONResponse({
+                    "ok": False,
+                    "error": f"restart_cmd 解析失败（检查引号是否闭合）：{exc}",
+                })
+            if not cmd_argv:
+                return JSONResponse({"ok": False, "error": "restart_cmd 为空"})
             subprocess.Popen(
-                restart_cmd, shell=True, cwd=REPO_DIR,
+                cmd_argv, cwd=REPO_DIR,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             return JSONResponse({
@@ -169,8 +182,23 @@ async def _reexec() -> None:
         _LOG.warning("reexec 不可用：%s", exc)
 
 
+async def breakers_status(request: Request):
+    """v0.9 离线降级：各依赖断路器状态（LLM / embedding …）。
+
+    ``degraded`` 列出当前非 closed 的断路器名，便于判断「是否在降级运行」。
+    """
+    from ..circuit_breaker import all_states
+
+    states = all_states()
+    return JSONResponse({
+        "breakers": states,
+        "degraded": [b["name"] for b in states if b.get("state") != "closed"],
+    })
+
+
 ROUTES = [
     Route("/api/system/version", get_version, methods=["GET"]),
+    Route("/api/system/breakers", breakers_status, methods=["GET"]),
     Route("/api/system/update/check", check_update, methods=["GET"]),
     Route("/api/system/update", apply_update, methods=["POST"]),
 ]

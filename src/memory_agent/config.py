@@ -8,11 +8,16 @@
 """
 import json
 import os
+import secrets
 import tempfile
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict, List
 
 CONFIG_FILE = "/data/config.json"
+
+# JWT 内置默认密钥（公开可预测）。get_config() 检测到仍为此值/为空时，
+# 会自动生成强随机密钥并持久化，避免部署者忘记改密钥导致认证形同虚设。
+DEFAULT_JWT_SECRET = "change_this_to_random_string"
 
 
 @dataclass
@@ -48,8 +53,17 @@ class Config:
     # 旧版单组 llm_* 字段会在 get_config() 自动迁移成这里的第一条。
     llm_backends: List[dict] = field(default_factory=list)
 
-    # JWT配置
-    jwt_secret: str = "change_this_to_random_string"
+    # ── 向量嵌入模型（OpenAI 兼容 /v1/embeddings，可选）──────────────────────
+    # 缺省留空 → 使用 chroma 默认 MiniLM（零配置不破坏现有部署）。
+    # 配置后，history 三集合注入该嵌入函数，提升中文语义检索质量
+    # （SiliconFlow bge-m3 / Qwen3-Embedding / new-api 网关等）。
+    # 切换模型后请运行 scripts/reindex_embeddings.py 重建集合（维度会变）。
+    embedding_base_url: str = ""
+    embedding_model: str = ""
+    embedding_api_key: str = ""
+
+    # JWT配置（默认值见 DEFAULT_JWT_SECRET；get_config 检测到默认/空值会自动换成随机密钥）
+    jwt_secret: str = DEFAULT_JWT_SECRET
 
     # MCP配置
     mcp_auth_token: str = ""
@@ -73,6 +87,28 @@ class Config:
     last_poll_time: str = ""  # 上次采集时间
     data_retention_days: int = 90  # 数据保留天数
     first_run_lookback_hours: int = 24  # 首次采集回溯窗口，避免起点=当前时刻导致采到 0 条
+
+    # ── 记忆研究员（v0.8：定向洞察 LLM 生成）全局安全闸 ─────────────────────
+    researcher_enabled: bool = False                  # 总开关（默认关，v0.7.5 收口后开启）
+    researcher_daily_token_budget: int = 80000        # 全局日 token 预算断路器
+    researcher_scheduler_time: str = "03:00"          # 每日定时洞察时刻 HH:MM（低峰）
+    researcher_unit_cap: int = 50                     # 单 Job 分析单元上限（4轴笛卡尔积截断）
+    researcher_call_timeout: int = 30                 # 单次 LLM 调用超时（秒）
+    researcher_max_consecutive_failures: int = 3      # 连败暂停阈值
+    researcher_staging_ttl_days: int = 30             # staging 洞察自动归档天数
+
+    # ── 主动感知·行为推断（v0.9.5：canonical 行为状态 + 序列规则）──────────────
+    activity_inference_enabled: bool = True           # 周期行为推断总开关
+    activity_window_minutes: int = 15                 # 序列匹配滑动窗口（分钟）
+    activity_interval_seconds: int = 300              # 周期推断间隔（秒，默认 5min）
+    pir_debounce_sec: int = 30                        # PIR/同实体连续触发去抖窗口（秒）
+    activity_conf_threshold: float = 0.6              # 写权威状态的最低置信度（低于仅进候选）
+
+    # ── 授权规则服务端化（v0.9）：Agent(MCP) 写回成员标签需管理员显式开启 ─────────
+    member_tag_agent_writeback: bool = False          # 默认关；开启后 confirm_member_tag 才被放行
+
+    # ── MCP 可维护性（v0.9 任务3）：响应体上限与故障注入 ──────────────────────
+    mcp_response_max_bytes: int = 65536              # 单工具响应正文上限（0=不限制），超限截断并附摘要
 
     # ── HA MariaDB 直读（方案B 采集源，可选；未启用时回退 REST）─────────────
     ha_db_enabled: bool = False
@@ -98,6 +134,50 @@ class Config:
 
     # ── 家庭成员 / 生活习惯档案 ───────────────────────────────────────────
     auto_discover_persona: bool = False  # 是否主动把发现的标签推送给用户（默认关闭：仅记录、需确认才存档）
+
+    # ── 电视截屏多模态（按需调用，docs/电视截屏多模态识别功能_交接单.md）────
+    # 截图来自 xiaomi_miot 的 media_player 实体：attributes.capture 是电视
+    # 自身的带签名 URL（有时效），因此**绝不能缓存**，每次都要重新取状态。
+    tv_media_player_entity: str = "media_player.xiaomi_rmh1_6103_play_control"
+    tv_capture_timeout_s: float = 15          # 从电视 6095 端口拉截图的超时
+    tv_capture_refresh_wait_s: float = 2.0    # 强制 HA 刷新实体后，等其写出新 capture 属性的时间
+    # TV 端状态广播（TV Cam 项目每 5s 发的 retained MQTT 消息），可选上下文
+    tv_mqtt_enabled: bool = False
+    tv_mqtt_host: str = "192.168.2.200"
+    tv_mqtt_port: int = 1883
+    tv_mqtt_user: str = ""
+    tv_mqtt_pass: str = ""
+    tv_mqtt_topic: str = "tv/livingroom/state"
+
+    # ── MQTT 实时推送（v0.4：向 TVPilot / DeskPilot 推事件，见 docs/交接卡_v0.4_MQTT实时推送.md）──
+    # broker 连接参数复用上面的 tv_mqtt_host/port/user/pass（与 TV Cam 同一 broker）。
+    # 未启用时 publish() 直接空转返回 False，不影响任何主流程。
+    ma_mqtt_enabled: bool = False
+    ma_mqtt_topic_prefix: str = "ma"        # 主题前缀：ma/presence、ma/device-health
+    ma_mqtt_presence_interval: int = 60     # 在场快照推送间隔（秒，最小 15）
+    ma_mqtt_reconnect_interval: int = 30    # broker 不可达时重试建连的退避间隔（秒）
+    tv_mqtt_timeout_s: float = 3.0            # 连上后等 retained 消息的时间
+
+    # ── 豆包管家对接（外部服务调用本服务的窄接口，见 docs/交接单_MA对接_成员档案与在场查询.md）──
+    # Bearer 令牌：管家凭它读写成员档案 + 查在场。未配置则该通道关闭。
+    # 只允许访问 BUTLER_ENDPOINTS 白名单内的路径，拿不到 WebUI 其他接口。
+    butler_token: str = ""
+
+    # ── TVPilot / DeskPilot 对接（应用层消费者，见 docs/交接卡_v0.3_对外查询接口.md）──
+    # Bearer 令牌：TV / PC 端凭它调用结构化洞察查询（POST /api/insights/query）。
+    # 与 butler_token 同款隔离：只放行 APP_ENDPOINTS 白名单，未配置则通道关闭。
+    app_token: str = ""
+    # v0.6：多应用令牌（TVPilot / DeskPilot 各持一个），落盘为 {name: {hash, prefix, ...}}。
+    # 与单 app_token 并存：校验时多令牌优先，遗留单令牌作为兜底。
+    app_tokens: Dict[str, Any] = field(default_factory=dict)
+    # v0.6 #3：记忆来源（source）取值白名单，防止来源伪造。可在此扩展新来源。
+    agent_memory_sources: List[str] = field(default_factory=lambda: ["ma", "butler", "vision", "manual"])
+
+    # ── AutoFlow 竞技场对接（外部服务调用本服务的竞技场窄接口，见 docs/交接单_AutoFlow竞技场对接.md）──
+    # 专用 arena_ 令牌（kind=arena）：仅能调用 3 个 arena ACP 工具 + 快照接口，
+    # 与生产 / butler / ACP 令牌三者隔离。脱敏映射可选，缺省按 arena 内稳定生成通用名。
+    # 脱敏规则：{真实设备名/成员名: 通用名}；为空时 arena 服务按出现顺序自动生成「设备N/成员N」。
+    arena_desensitize: Dict[str, Any] = field(default_factory=dict)
 
     # ── 视觉识别（多模态行为识别，vision-behavior-spec）───────────────────
     vision_enabled: bool = False
@@ -131,6 +211,15 @@ class Config:
     # 存储
     db_path: str = "/data/memory_agent.db"
     tz_offset_hours: float = 8.0  # 容器内通常无 TZ，显式声明本地时区偏移
+
+    # ── 备份 / 灾难恢复（先于 v0.8 存量记忆改写就位）──────────────────────────
+    # SQLite 主库 VACUUM 快照 + chroma 数据目录快照（可选）+ 14 份轮转。
+    backup_enabled: bool = False
+    backup_dir: str = "/data/backups"
+    backup_retention: int = 14
+    # chroma 数据目录（可选）：若 MA 容器能访问 chroma 持久卷则整目录快照；
+    # 否则跳过（chroma 可由 SQLite 通过 mirror + reindex 重建）。
+    chroma_data_dir: str = ""
 
     # ── 在线更新（从 GitHub 拉取最新代码并自重启）──────────────────
     # 容器内需把宿主机仓库根挂载到 REPO_DIR（见 docker-compose.yml 的 .:/repo）。
@@ -232,6 +321,33 @@ def get_config() -> Config:
         "update_repo_url": "UPDATE_REPO_URL",
         "update_branch": "UPDATE_BRANCH",
         "restart_cmd": "RESTART_CMD",
+        "butler_token": "BUTLER_TOKEN",
+        "app_token": "APP_TOKEN",
+        "tv_media_player_entity": "TV_MEDIA_PLAYER_ENTITY",
+        "tv_mqtt_host": "TV_MQTT_HOST",
+        "tv_mqtt_topic": "TV_MQTT_TOPIC",
+        "ma_mqtt_enabled": "MA_MQTT_ENABLED",
+        "ma_mqtt_topic_prefix": "MA_MQTT_TOPIC_PREFIX",
+        "ma_mqtt_presence_interval": "MA_MQTT_PRESENCE_INTERVAL",
+        "ma_mqtt_reconnect_interval": "MA_MQTT_RECONNECT_INTERVAL",
+        "tv_mqtt_user": "TV_MQTT_USER",
+        # v0.7 修复：此前只映射了 user 未映射 pass，导致配了用户名却永远拿不到密码，
+        # broker 一律返回「未授权」，ma/presence 推送形同虚设。
+        "tv_mqtt_pass": "TV_MQTT_PASS",
+        "embedding_base_url": "EMBEDDING_BASE_URL",
+        "embedding_model": "EMBEDDING_MODEL",
+        "embedding_api_key": "EMBEDDING_API_KEY",
+        "backup_enabled": "BACKUP_ENABLED",
+        "backup_dir": "BACKUP_DIR",
+        "backup_retention": "BACKUP_RETENTION",
+        "chroma_data_dir": "CHROMA_DATA_DIR",
+        "researcher_enabled": "RESEARCHER_ENABLED",
+        "researcher_daily_token_budget": "RESEARCHER_DAILY_TOKEN_BUDGET",
+        "researcher_scheduler_time": "RESEARCHER_SCHEDULER_TIME",
+        "researcher_unit_cap": "RESEARCHER_UNIT_CAP",
+        "researcher_call_timeout": "RESEARCHER_CALL_TIMEOUT",
+        "researcher_max_consecutive_failures": "RESEARCHER_MAX_CONSECUTIVE_FAILURES",
+        "researcher_staging_ttl_days": "RESEARCHER_STAGING_TTL_DAYS",
     }
 
     for field_name, env_name in env_map.items():
@@ -280,5 +396,17 @@ def get_config() -> Config:
             "timeout": config.llm_timeout,
             "enabled": True,
         }]
+
+    # ── 安全加固（审计 C1）：JWT 密钥不得为空或为内置默认值 ──────────────
+    # 默认值 "change_this_to_random_string" 公开可预测，任何拿到源码的人都能伪造
+    # JWT 绕过认证。检测到默认/空值时自动生成强随机密钥并持久化，避免部署者忘记
+    # 修改密钥导致认证形同虚设（只在首次触发一次）。
+    if not config.jwt_secret or config.jwt_secret == DEFAULT_JWT_SECRET:
+        config.jwt_secret = secrets.token_urlsafe(48)
+        try:
+            config.save()
+            print("[Config] 已自动生成并持久化新的 JWT 密钥（原密钥为空或为默认值）")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Config] JWT 密钥写盘失败，本次运行使用内存态密钥: {exc}")
 
     return config

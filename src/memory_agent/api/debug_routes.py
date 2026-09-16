@@ -15,9 +15,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import traceback
 import uuid
+
+# 审计 O8：调试端点的完整 traceback 仅 MA_DEBUG_TRACEBACK=1 时回传；
+# 生产默认只回异常摘要，避免已认证的普通用户看到内部栈。
+_DEBUG_TRACEBACK = os.getenv("MA_DEBUG_TRACEBACK", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _tb() -> str:
+    """按 MA_DEBUG_TRACEBACK 决定是否附带完整栈（审计 O8）。"""
+    return traceback.format_exc() if _DEBUG_TRACEBACK else ""
 
 from starlette.requests import Request
 from starlette.routing import Route
@@ -353,7 +363,7 @@ async def debug_stream(request: Request):
 
         return sse_response(gen())
     except Exception as exc:
-        return error(f"debug_stream 内部异常: {exc}\n{traceback.format_exc()}", 500)
+        return error(f"debug_stream 内部异常: {exc}\n{_tb()}", 500)
 
 
 async def debug_status(request: Request):
@@ -380,7 +390,7 @@ async def debug_status(request: Request):
             }
         )
     except Exception as exc:  # 调试端点必须暴露真实异常，而非吞成裸 500
-        return error(f"debug_status 内部异常: {exc}\n{traceback.format_exc()}", 500)
+        return error(f"debug_status 内部异常: {exc}\n{_tb()}", 500)
 
 
 async def debug_abort(request: Request):
@@ -400,7 +410,7 @@ async def debug_abort(request: Request):
         run.abort()
         return ok({"message": "已请求中止，将在下一轮工具调用前停止", "status": "aborting"})
     except Exception as exc:
-        return error(f"debug_abort 内部异常: {exc}\n{traceback.format_exc()}", 500)
+        return error(f"debug_abort 内部异常: {exc}\n{_tb()}", 500)
 
 
 # ── dbg_ 调试令牌管理（需管理员，区别于 mcp_ 令牌） ───────────────────────────

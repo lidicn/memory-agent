@@ -101,18 +101,30 @@ const TPL = `
       <h3 class="font-semibold">访问凭证</h3>
       <p class="text-[11px] text-txt-3 mt-0.5">服务端只保存哈希，明文仅在生成时展示一次</p>
     </div>
-    <div class="flex gap-2">
-      <input class="inp w-[200px]" x-model="newName" placeholder="凭证名称，如 claude-desktop"
+    <div class="flex flex-wrap items-center gap-2">
+      <select class="inp w-[150px]" x-model="newKind">
+        <option value="mcp">MCP</option>
+        <option value="acp">ACP（拓扑 X 对等）</option>
+        <option value="arena">竞技场（AutoFlow）</option>
+      </select>
+      <select class="inp w-[168px]" x-model="newScopes" :disabled="newKind !== 'mcp'"
+              title="新令牌默认只读；写工具（建成员/写记忆/改模板/触发采集等）需带 write">
+        <option value="read">只读（read）</option>
+        <option value="read,write">读写（read + write）</option>
+      </select>
+      <input class="inp w-[200px]" x-model="newName" placeholder="凭证名称，如 autoflow-arena"
              @keydown.enter.prevent="create()">
       <button class="btn-primary shrink-0" @click="create()" :disabled="creating || !newName.trim()">
         <span x-show="creating" class="spinner"></span><span x-text="creating ? '生成中…' : '生成 Token'"></span>
       </button>
     </div>
+    <p class="hint mt-2">选 <span class="font-mono">竞技场（AutoFlow）</span> 生成 <span class="font-mono">arena</span> 类型令牌：仅能调用 3 个竞技场工具 + 快照接口，与生产 / 管家令牌隔离。把生成的令牌交给 AutoFlow 作为 <span class="font-mono">MEMORY_AGENT_ACP_TOKEN</span> 即可。</p>
+    <p class="hint mt-1">🔒 <b>新令牌默认只读</b>：写类工具（创建成员 / 写回标签与记忆 / 保存模板 / 触发采集等 17 个）需要 <span class="font-mono">write</span> 权限，否则服务端返回 <span class="font-mono">DENIED</span>。存量令牌沿用读写全权，可随时收紧。</p>
   </div>
 
   <div class="overflow-x-auto -mx-5 px-5">
     <table class="tbl" x-show="tokens.length">
-      <thead><tr><th>名称</th><th>前缀</th><th>创建时间</th><th>最近调用</th><th>调用次数</th><th class="text-right">操作</th></tr></thead>
+      <thead><tr><th>名称</th><th>前缀</th><th>权限</th><th>创建时间</th><th>最近调用</th><th>调用次数</th><th class="text-right">操作</th></tr></thead>
       <tbody>
         <template x-for="t in tokens" :key="t.name">
           <tr>
@@ -120,7 +132,16 @@ const TPL = `
               <span class="text-sm" x-text="t.name"></span>
               <span class="badge badge-warn ml-1.5" x-show="t.migrated" title="由旧版明文配置迁移而来，建议重新签发">已迁移</span>
             </td>
-            <td class="font-mono text-xs text-txt-2" x-text="(t.prefix || '—') + '…'"></td>
+            <td class="font-mono text-xs text-txt-2">
+              <span class="badge mr-1" :class="(t.kind||'mcp')==='arena' ? 'badge-warn' : (t.kind||'mcp')==='acp' ? 'badge-brand' : 'badge-mute'" x-text="t.kind || 'mcp'"></span>
+              <span x-text="(t.prefix || '—') + '…'"></span>
+            </td>
+            <td>
+              <button class="badge" :class="hasWrite(t) ? 'badge-brand' : 'badge-mute'"
+                      :title="(t.scopes_inherited ? '存量令牌：默认沿用读写全权。' : '') + '点击切换 read / read+write'"
+                      @click="toggleScopes(t)" x-text="hasWrite(t) ? '读写' : '只读'"></button>
+              <span class="badge badge-warn ml-1" x-show="t.scopes_inherited" title="未显式设置过权限，沿用读写全权">继承</span>
+            </td>
             <td class="text-xs text-txt-3" x-text="fmtTime(t.created_at, true)"></td>
             <td class="text-xs" :class="t.last_used_at ? 'text-txt-2' : 'text-txt-4'">
               <span x-text="t.last_used_at ? fmtTime(t.last_used_at, true) : '从未调用'"></span>
@@ -135,6 +156,47 @@ const TPL = `
     <div x-show="!tokens.length" class="empty">
       <span>还没有签发任何 MCP Token</span>
       <span class="text-[11px]">先取个名字，点右上角「生成 Token」</span>
+    </div>
+  </div>
+</div>
+
+<!-- 调用审计（v0.7.5） -->
+<div class="card p-5">
+  <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+    <div>
+      <h3 class="font-semibold">调用审计</h3>
+      <p class="text-[11px] text-txt-3 mt-0.5">谁 / 何时 / 调了哪个工具 / 耗时 / 成败（落库保留 30 天）</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+        <div class="switch scale-75" :class="auditFailedOnly && 'on'" @click="auditFailedOnly = !auditFailedOnly; loadAudit()"></div>
+        <span>只看失败</span>
+      </label>
+      <button class="btn-ghost btn-xs" @click="loadAudit()">刷新</button>
+    </div>
+  </div>
+  <div class="overflow-x-auto -mx-5 px-5 max-h-[360px] overflow-y-auto">
+    <table class="tbl" x-show="audit.length">
+      <thead><tr><th>时间</th><th>令牌</th><th>工具</th><th>权限</th><th>耗时</th><th>结果</th></tr></thead>
+      <tbody>
+        <template x-for="(a, i) in audit" :key="a.id || i">
+          <tr>
+            <td class="text-xs text-txt-3 whitespace-nowrap" x-text="fmtTime(a.ts, true)"></td>
+            <td class="text-xs" x-text="a.token_name || '—'"></td>
+            <td class="font-mono text-xs text-txt-2" x-text="a.tool"></td>
+            <td><span class="badge" :class="a.scope === 'write' ? 'badge-warn' : 'badge-mute'" x-text="a.scope || 'read'"></span></td>
+            <td class="text-xs font-mono text-txt-3" x-text="Math.round(a.duration_ms) + 'ms'"></td>
+            <td>
+              <span class="badge" :class="a.ok ? 'badge-ok' : 'badge-danger'" x-text="a.ok ? '成功' : '失败'"></span>
+              <span class="text-[10px] text-txt-3 ml-1" x-show="a.error" x-text="(a.error || '').slice(0, 60)"></span>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+    <div x-show="!audit.length" class="empty">
+      <span>暂无调用记录</span>
+      <span class="text-[11px]">Agent 调用任一工具后即可在这里追溯</span>
     </div>
   </div>
 </div>
@@ -213,11 +275,15 @@ export function mcpPage() {
     client: 'claude',
     createdClient: 'claude',
     newName: '',
+    newKind: 'mcp',
+    newScopes: 'read',
     creating: false,
     testing: false,
     testResult: '',
     testOk: false,
     created: null,
+    audit: [],
+    auditFailedOnly: false,
 
     fmtTime,
 
@@ -228,7 +294,7 @@ export function mcpPage() {
       return this.created ? ((this.created.snippets || {})[this.createdClient] || '') : '';
     },
 
-    init() { this.load(); },
+    init() { this.load(); this.loadAudit(); },
 
     async load() {
       try {
@@ -237,6 +303,28 @@ export function mcpPage() {
         this.tokens = t.tokens || [];
       } catch (e) {
         this.$store.app.err('MCP 信息加载失败：' + e.message);
+      }
+    },
+
+    async loadAudit() {
+      try {
+        const d = await api.mcpAudit({ limit: 100, failed: this.auditFailedOnly ? 1 : 0 });
+        this.audit = d.audit || [];
+      } catch (e) { this.audit = []; }
+    },
+
+    hasWrite(t) {
+      return (t.scopes || []).includes('write');
+    },
+
+    async toggleScopes(t) {
+      const next = this.hasWrite(t) ? ['read'] : ['read', 'write'];
+      try {
+        await api.mcpUpdateScopes(t.name, next);
+        this.$store.app.ok(`已把「${t.name}」权限设为 ${next.includes('write') ? '读写' : '只读'}`);
+        await this.load();
+      } catch (e) {
+        this.$store.app.err(e.message || '权限更新失败');
       }
     },
 
@@ -270,7 +358,8 @@ export function mcpPage() {
       if (!name) return;
       this.creating = true;
       try {
-        const d = await api.mcpCreateToken(name);
+        const scopes = (this.newKind === 'mcp' ? this.newScopes || 'read' : 'read,write').split(',');
+        const d = await api.mcpCreateToken(name, this.newKind, undefined, scopes);
         this.created = d;
         this.createdClient = this.client;
         this.newName = '';

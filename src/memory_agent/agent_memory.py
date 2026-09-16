@@ -44,10 +44,13 @@ class AgentMemoryService:
     @staticmethod
     def _to_metadata(mem: dict) -> dict:
         # 仅标量（v2 #8）：tags 只存 SQL，不放 chroma（旧版 chroma 不接受 list）
+        # v0.5：source 标记记忆来源（ma=本服务原生 / butler=豆包管家生态），
+        # 用于检索侧按来源过滤，隔离低置信 LLM 摘要对高置信行为事实的污染。
         return {
             "kind": "agent_memory",
             "state": mem["state"],
             "trust": float(mem.get("trust", 0.0)),
+            "source": mem.get("source", "ma"),
             "expires_at": mem.get("expires_at", ""),
             "session_id": mem.get("session_id", ""),
             "memory_id": mem.get("memory_id", ""),
@@ -135,6 +138,10 @@ class AgentMemoryService:
         ttl_days: Optional[int] = None,
         topic_key: str = "",
         dry_run: bool = True,
+        source: str = "ma",
+        merge: bool = True,
+        valid_from: str = "",
+        observed_at: str = "",
     ) -> dict:
         tags = tags or []
         source_refs = source_refs or []
@@ -170,6 +177,15 @@ class AgentMemoryService:
                 "message": "dry_run 未落库；preview 仅供参考",
             }
 
+        # v0.8-2：默认走 mem0 式合并管线（相似→UPDATE / 矛盾且新更可信→INVALIDATE+ADD）
+        if merge:
+            return self.merge_semantic_memory(
+                session_id=session_id, text=text, topic_key=tk, tags=tags,
+                source_refs=source_refs, ttl_days=ttl_days, source=source,
+                trust=trust_info.get("trust", 0.0),
+                valid_from=valid_from, observed_at=observed_at,
+            )
+
         mid = self.store.add_agent_memory(
             session_id=session_id,
             text=text,
@@ -179,15 +195,145 @@ class AgentMemoryService:
             ttl_days=ttl_days,
             state="staging",
             auto_promote_blocked=auto_block,
+            source=source,
         )
         self._upsert_mirror(self.store.get_agent_memory(mid))
         return {
             "ok": True,
             "memory_id": mid,
             "state": "staging",
+            "source": source,
             "auto_promote_blocked": auto_block,
             "message": "已写入 staging；永不自动进 live，需 promote / sweep 晋升",
         }
+
+    # ── mem0 式合并写入（v0.8-2：ADD / UPDATE / INVALIDATE 分支）─────────────
+    def merge_semantic_memory(
+        self,
+        session_id: str,
+        text: str,
+        topic_key: str = "",
+        tags: Optional[List[str]] = None,
+        source_refs: Optional[List[str]] = None,
+        ttl_days: Optional[int] = None,
+        source: str = "ma",
+        trust: float = 0.0,
+        valid_from: str = "",
+        observed_at: str = "",
+    ) -> dict:
+        """v0.8-2 mem0 式记忆操作：写入前向量近邻召回同 topic 旧记忆，按相似度分支。
+
+        分支（dup_sim 默认 0.92，conflict_sim 默认 0.85）：
+          sim < dup_sim                  → ADD（新 staging）
+          sim ≥ dup_sim 且兼容/补充      → UPDATE 旧（保留演变链 prev_id）
+          矛盾 & 旧是 live               → 新进 pending_review（**不自动 INVALIDATE live**，安全闸）
+          矛盾 & 旧非 live（staging 等）  → INVALIDATE 旧 + ADD 新（prev_id=旧，新更可信）
+
+        安全闸：live 是高置信已晋升事实，绝不自动撤；与之矛盾只挂起待人工裁决。
+        chroma 不可用时退化为纯 ADD（不合并），与 add_semantic_memory 降级一致。
+        """
+        tags = tags or []
+        source_refs = source_refs or []
+        ttl_days = ttl_days or int(getattr(self.config, "agent_default_ttl_days", 30))
+        if not text or not text.strip():
+            return {"ok": False, "error": "text 不能为空", "code": 400}
+        if not source_refs:
+            return {"ok": False, "error": "source_refs 不能为空（参与式写回要求可溯源）", "code": 422}
+        ok, invalid = self._validate_source_refs(source_refs)
+        if not ok:
+            return {"ok": False, "error": "source_refs 含非法引用",
+                    "invalid_refs": invalid, "code": 422}
+
+        tk = topic_key or (tags[0] if tags else "general")
+        tags_json = json.dumps(tags, ensure_ascii=False)
+        refs_json = json.dumps(source_refs, ensure_ascii=False)
+        col = self._col
+        if col is None:
+            # chroma 不可用 → 退化纯 ADD，mirror 稍后由 reconcile 补
+            mid = self.store.add_agent_memory(
+                session_id=session_id, text=text, topic_key=tk,
+                tags_json=tags_json, source_refs_json=refs_json,
+                ttl_days=ttl_days, state="staging", source=source,
+            )
+            return {"ok": True, "action": "added", "memory_id": mid, "state": "staging",
+                    "similarity": 0.0, "source": source, "note": "chroma 不可用，未合并"}
+
+        # 近邻召回：有 topic_key 则同 topic 过滤（更准），否则全局最近
+        where = {"topic_key": tk} if tk != "general" else {}
+        try:
+            res = col.query(query_texts=[text], where=where, n_results=1)
+        except Exception as exc:  # pragma: no cover
+            print(f"[AgentMemory] merge 召回失败: {exc}")
+            res = None
+        nearest_id, nearest_sim, nearest_state = "", 0.0, ""
+        if res:
+            ids = (res.get("ids") or [[]])[0]
+            dists = (res.get("distances") or [[]])[0]
+            metas = (res.get("metadatas") or [[]])[0]
+            if ids:
+                nearest_id = ids[0]
+                d = dists[0] if dists else 1.0
+                nearest_sim = 1.0 / (1.0 + max(float(d), 0.0))
+                nearest_state = (metas[0] or {}).get("state", "")
+
+        dup_sim = float(getattr(self.config, "agent_dup_sim", 0.92))
+        conflict_sim = float(getattr(self.config, "agent_conflict_sim", 0.85))
+
+        # 分支 1：无相似（低于矛盾阈值）→ ADD 新
+        if not nearest_id or nearest_sim < conflict_sim:
+            mid = self.store.add_agent_memory(
+                session_id=session_id, text=text, topic_key=tk,
+                tags_json=tags_json, source_refs_json=refs_json,
+                ttl_days=ttl_days, state="staging", source=source,
+            )
+            self._upsert_mirror(self.store.get_agent_memory(mid))
+            return {"ok": True, "action": "added", "memory_id": mid, "state": "staging",
+                    "similarity": round(nearest_sim, 3), "source": source}
+
+        # 分支 2：相似（≥ dup_sim）→ 兼容/补充 → UPDATE 旧（保留演变链）
+        if nearest_state == "live":
+            if nearest_sim >= dup_sim:
+                self.store.merge_update_agent_memory(
+                    nearest_id, text, tags_json, refs_json,
+                    prev_id=nearest_id, ttl_days=ttl_days)
+                self._upsert_mirror(self.store.get_agent_memory(nearest_id))
+                return {"ok": True, "action": "updated", "memory_id": nearest_id,
+                        "state": "live", "similarity": round(nearest_sim, 3), "source": source}
+            # 分支 3：与 live 矛盾 → 新进 pending_review（不自动 INVALIDATE live，安全闸）
+            mid = self.store.add_agent_memory(
+                session_id=session_id, text=text, topic_key=tk,
+                tags_json=tags_json, source_refs_json=refs_json,
+                ttl_days=ttl_days, state="pending_review", source=source)
+            self._upsert_mirror(self.store.get_agent_memory(mid))
+            return {"ok": True, "action": "conflict_pending", "memory_id": mid,
+                    "state": "pending_review", "conflict_with": nearest_id,
+                    "similarity": round(nearest_sim, 3), "source": source}
+
+        # 分支 4：旧是 staging/pending_review（未进 live）
+        if nearest_sim >= dup_sim:
+            self.store.merge_update_agent_memory(
+                nearest_id, text, tags_json, refs_json,
+                prev_id=nearest_id, ttl_days=ttl_days)
+            self._upsert_mirror(self.store.get_agent_memory(nearest_id))
+            return {"ok": True, "action": "updated", "memory_id": nearest_id,
+                    "state": nearest_state, "similarity": round(nearest_sim, 3), "source": source}
+        # 矛盾且新更可信（时间更新）→ INVALIDATE 旧 + ADD 新（prev_id=旧）
+        # v0.9 时间有效性：旧记忆 valid_to = 新记忆 valid_from（时间切片，演变可回溯）
+        from .store import now_local as _now_local
+        now_iso = _now_local(self.config.tz_offset_hours).isoformat(sep="T")
+        new_valid_from = valid_from or observed_at or now_iso
+        self.revoke_memory(nearest_id)
+        self.store.close_agent_memory_validity(nearest_id, new_valid_from)
+        mid = self.store.add_agent_memory(
+            session_id=session_id, text=text, topic_key=tk,
+            tags_json=tags_json, source_refs_json=refs_json,
+            ttl_days=ttl_days, state="staging", source=source, prev_id=nearest_id,
+            valid_from=new_valid_from, observed_at=observed_at or new_valid_from)
+        self._upsert_mirror(self.store.get_agent_memory(mid))
+        return {"ok": True, "action": "invalidated_added", "memory_id": mid,
+                "state": "staging", "invalidated": nearest_id,
+                "valid_from": new_valid_from, "valid_to": "",
+                "similarity": round(nearest_sim, 3), "source": source}
 
     # ── 晋升条件评估（v2 #1 / #6；修复：前缀归一化 + 误导性报错）────────────
     def _evaluate_promotion(self, mem: dict, corroborating_insight_id: str = "") -> Tuple[bool, str]:
@@ -292,21 +438,28 @@ class AgentMemoryService:
             return {"ok": False, "error": "memory_id 不存在"}
         return {"ok": True, **res}
 
-    def list_agent_memories(self, state: str = "all") -> dict:
-        rows = self.store.list_agent_memories(state)
+    def list_agent_memories(self, state: str = "all", source: str = "") -> dict:
+        rows = self.store.list_agent_memories(state, source)
         return {
             "ok": True,
             "state": state,
+            "source": source or "all",
             "count": len(rows),
             "memories": [
                 {
                     "memory_id": r["memory_id"],
                     "session_id": r["session_id"],
+                    "text": r["text"],
                     "state": r["state"],
                     "trust": r["trust"],
+                    "source": r.get("source", "ma"),
                     "topic_key": r["topic_key"],
                     "tags": json.loads(r["tags_json"] or "[]"),
                     "source_refs": json.loads(r["source_refs_json"] or "[]"),
+                    "prev_id": r.get("prev_id", ""),
+                    "valid_from": r.get("valid_from", ""),
+                    "valid_to": r.get("valid_to", ""),
+                    "observed_at": r.get("observed_at", ""),
                     "feedback_up": r["feedback_up"],
                     "feedback_down": r["feedback_down"],
                     "expires_at": r["expires_at"],
@@ -325,39 +478,95 @@ class AgentMemoryService:
             ),
         }
 
-    # ── 检索（v2 #2 re-rank）─────────────────────────────────────────────
-    def retrieve(self, question: str, trust_min: Optional[float] = None, top_k: int = 5) -> List[dict]:
+    # ── 检索（v0.8-4 混合检索：向量 + FTS5 关键词融合重排）──────────────
+    def retrieve(self, question: str, trust_min: Optional[float] = None, top_k: int = 5,
+                 source: str = "", as_of: str = "") -> List[dict]:
         col = self._col
-        if col is None:
-            return []
         k = max(1, min(int(getattr(self.config, "agent_retrieve_k", 20)), 50))
-        where = {"state": "live"}
-        if trust_min is not None:
-            where["trust"] = {"$gte": trust_min}
+        merged: dict = {}
+
+        # 第一路：向量语义召回
+        if col is not None:
+            where = {"state": "live"}
+            if trust_min is not None:
+                where["trust"] = {"$gte": trust_min}
+            # v0.5：按来源过滤（如只召回本服务原生记忆，或只召回管家生态记忆以隔离低置信摘要）
+            if source:
+                where["source"] = source
+            try:
+                res = col.query(query_texts=[question], where=where, n_results=k)
+                ids = (res.get("ids") or [[]])[0]
+                dists = (res.get("distances") or [[]])[0]
+                docs = (res.get("documents") or [[]])[0]
+                metas = (res.get("metadatas") or [[]])[0]
+                for i, mid in enumerate(ids):
+                    meta = metas[i] or {}
+                    dist = dists[i] if i < len(dists) else 1.0
+                    sim = 1.0 / (1.0 + max(dist, 0.0))
+                    merged[mid] = {
+                        "memory_id": mid,
+                        "text": docs[i] if i < len(docs) else "",
+                        "similarity": sim,
+                        "trust": float(meta.get("trust", 0.0)),
+                        "source": meta.get("source", "ma"),
+                        "topic_key": meta.get("topic_key", ""),
+                        "fts": 0.0,
+                    }
+            except Exception as exc:  # pragma: no cover
+                print(f"[AgentMemory] 向量检索失败: {exc}")
+
+        # 第二路：FTS5 关键词召回（专名/设备名/房间名，向量语义易漏）
         try:
-            res = col.query(query_texts=[question], where=where, n_results=k)
-        except Exception as exc:  # pragma: no cover
-            print(f"[AgentMemory] 检索失败: {exc}")
-            return []
-        ids = (res.get("ids") or [[]])[0]
-        dists = (res.get("distances") or [[]])[0]
-        docs = (res.get("documents") or [[]])[0]
-        metas = (res.get("metadatas") or [[]])[0]
+            fts_rows = self.store.search_agent_memories_fts(question, limit=k, state="live")
+        except Exception:
+            fts_rows = []
+        for r in fts_rows:
+            mid = r["memory_id"]
+            if source and (r.get("source") or "ma") != source:
+                continue
+            if trust_min is not None and float(r.get("trust", 0.0)) < trust_min:
+                continue
+            if mid in merged:
+                merged[mid]["fts"] = 1.0
+            else:
+                merged[mid] = {
+                    "memory_id": mid,
+                    "text": r.get("text", ""),
+                    "similarity": 0.0,
+                    "trust": float(r.get("trust", 0.0)),
+                    "source": r.get("source", "ma"),
+                    "topic_key": r.get("topic_key", ""),
+                    "fts": 1.0,
+                }
+
+        # 融合重排：语义为主 + 关键词增强 + 信任微调
         scored = []
-        for i, mid in enumerate(ids):
-            meta = metas[i] or {}
-            dist = dists[i] if i < len(dists) else 1.0
-            sim = 1.0 / (1.0 + max(dist, 0.0))
-            trust = float(meta.get("trust", 0.0))
-            final = 0.7 * sim + 0.3 * ((trust + 1) / 2)
+        for m in merged.values():
+            trust = float(m.get("trust", 0.0))
+            sim = float(m.get("similarity", 0.0))
+            fts = float(m.get("fts", 0.0))
+            final = 0.6 * sim + 0.25 * fts + 0.15 * ((trust + 1) / 2)
             scored.append({
-                "memory_id": mid,
-                "text": docs[i] if i < len(docs) else "",
+                "memory_id": m["memory_id"],
+                "text": m["text"],
                 "similarity": round(sim, 3),
                 "trust": round(trust, 3),
+                "source": m["source"],
+                "topic_key": m["topic_key"],
+                "fts_hit": bool(fts),
                 "final_score": round(final, 3),
-                "topic_key": meta.get("topic_key", ""),
             })
+        # v0.9 时间有效性：as_of 给定时按 valid_from/valid_to 过滤（该时刻是否成立）
+        if as_of:
+            kept = []
+            for m in scored:
+                rec = self.store.get_agent_memory(m["memory_id"]) or {}
+                vf = rec.get("valid_from") or ""
+                vt = rec.get("valid_to") or ""
+                m["valid_from"], m["valid_to"] = vf, vt
+                if (not vf or vf <= as_of) and (not vt or as_of <= vt):
+                    kept.append(m)
+            scored = kept
         scored.sort(key=lambda x: -x["final_score"])
         return scored[:top_k]
 

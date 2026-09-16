@@ -17,6 +17,7 @@
   "ha_db_user": "memory_agent_ro",
   "ha_db_password": "<HA_MARIADB_READONLY_PASSWORD>",
   "jwt_secret": "<GENERATE_A_32_BYTE_RANDOM_SECRET>",
+  "butler_token": "<BUTLER_TOKEN_FOR_DOUBAO_BUTLER>",
   "tz_offset_hours": 8,
   "db_path": "/data/memory_agent.db",
   "skills_dir": "/data/skills"

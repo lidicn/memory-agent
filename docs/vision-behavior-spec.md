@@ -56,7 +56,7 @@ flowchart TD
         K --> M["Webhook → NR（复用 NR_URL）"]
     end
 
-    F -.统一视觉入口.-> N["go2rtc streams：<br/>客厅 / 客厅sd / 小黄人 / 未来全屋"]
+    F -.统一视觉入口.-> N["go2rtc streams：<br/>cam_客厅 / cam_客厅标清 / cam_小黄人 / cam_书房"]
 
     subgraph NoTV["无 TV 房间（曲线救国）"]
         O["低频巡检定时器（默认 5 分钟）"] --> F
@@ -85,7 +85,18 @@ flowchart TD
 ### 3.1 go2rtc —— 全屋统一「眼睛」
 
 - 基址：`http://192.168.2.200:1984`，Basic Auth：`lidicn` / `longyin1003`（api 与 rtsp 同套，见 NAS `/vol1/1000/docker/go2rtc/go2rtc.yaml`）
-- 已配置流（`streams:`）：`客厅`（米家 chuangmi.camera.051a01 HD）、`客厅sd`（同机 SD 副码流）、`小黄人`（chuangmi.camera.ipc019e HD）。新增房间 = go2rtc 加一条流 + memory-agent 房间注册表加一行。
+- 已配置流（`streams:`，2026-09-15 核对 `/vol1/1000/docker/go2rtc/go2rtc.yaml` 实测）：
+
+  | 流名 | 设备 | IP | 机型 / 码流 |
+  |---|---|---|---|
+  | `cam_客厅` | 客厅 | 192.168.2.185 | chuangmi.camera.051a01 HD |
+  | `cam_客厅标清` | 客厅（副码流） | 192.168.2.185 | 同上 SD |
+  | `cam_小黄人` | 起居室 | 192.168.2.107 | chuangmi.camera.ipc019e HD |
+  | `cam_书房` | 书房 | 192.168.2.167 | chuangmi.camera.ipc009 HD |
+
+- **流名带 `cam_` 前缀，且必须与 go2rtc.yaml 完全一致**（大小写/前缀都敏感）。memory-agent 侧 `vision_cameras.stream` 填错会直接 404（`go2rtc 流不存在(404)：'<流名>'`）。
+- **改动要落在文件上**：go2rtc 容器把 `/vol1/1000/docker/go2rtc` 挂到 `/config`，每次重启都从 `go2rtc.yaml` 加载。运行时删流/改名重启即回滚，永久增删必须改该 yaml 再重启 go2rtc（改前先 `cp go2rtc.yaml go2rtc.yaml.bak.<用途>`，目录里已有多个历史备份）。
+- 新增房间 = go2rtc.yaml 加一条 `streams:` 条目 + memory-agent「视觉识别」页（或 `config.json` 的 `vision_cameras`）加一行 `{room, stream, enabled, no_tv}`。
 - 取帧端点（**推荐 MVP 用单帧**）：
 
 ```
@@ -241,8 +252,8 @@ GO2RTC_PASS=***
 DOUBAO_BASE_URL=http://192.168.2.200:9090
 DOUBAO_API_KEY=longyin
 DOUBAO_VISION_TIMEOUT_S=25
-VISION_ROOMS={"客厅":"客厅","小房间":"小黄人"}        # room → go2rtc 流名
-VISION_NO_TV_ROOMS=["小房间"]                        # 纯摄像头房间（启用低频巡检）
+VISION_ROOMS={"客厅":"cam_客厅","起居室":"cam_小黄人","书房":"cam_书房"}   # room → go2rtc 流名（须带 cam_ 前缀）
+VISION_NO_TV_ROOMS=["起居室"]                        # 纯摄像头房间（启用低频巡检）
 VISION_COOLDOWN_S=60          # 同房间两次 VLM 最小间隔
 VISION_MAX_PER_HOUR=20        # 每房间每小时硬上限
 VISION_NO_TV_INTERVAL_S=300   # 无 TV 房间巡检周期
@@ -354,7 +365,7 @@ CREATE INDEX IF NOT EXISTS idx_be_member ON behavior_events(day);  -- persons �
 | P0（半天） | 验证豆包图片链路：会话存活、延迟、识别质量 | 下述脚本返回 200 且能正确描述画面；记录 `耗时` |
 | P1（1~2天） | §5 全部接口 + §6 节流 + §7 存储 | `POST /api/vision/analyze` 手动触发客厅 → `behavior_events` 出现一条含 action 的记录；连续触发 5 次，实际 VLM 调用 ≤2 次（冷却+去重生效） |
 | P2（1天，TV 侧配合） | TV 事件上报对接 | TV 前「换人/人数变化」→ 10s 内 `behavior_events` 新增记录 + NR 收到 webhook |
-| P3（0.5天） | 无 TV 房间巡检 + 穿搭档案 + 成员匹配 | `小黄人` 房间每 5 分钟有巡检记录；三人穿搭档案当日可查；外观匹配能正确区分三人 |
+| P3（0.5天） | 无 TV 房间巡检 + 穿搭档案 + 成员匹配 | `cam_小黄人`（起居室）每 5 分钟有巡检记录；三人穿搭档案当日可查；外观匹配能正确区分三人 |
 | P4（0.5天） | 洞察集成：MCP 工具 + `ask_memory` 路由 + 摘要入库 | 问「Emily 今天下午干嘛了」能返回行为事件 |
 
 ### P0 验收脚本（可直接运行）

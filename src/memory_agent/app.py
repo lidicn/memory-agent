@@ -21,8 +21,10 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import traceback
 from http.cookies import SimpleCookie
+from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -74,6 +76,42 @@ DEVICE_ENDPOINTS = (
     "/api/face/node/lib",
 )
 
+# 豆包管家（外部服务）用独立 butler_token 访问本服务的窄接口白名单。
+# 令牌只在这几个路径上生效，避免一个外部服务的令牌拿到整个 WebUI 的权限。
+# 契约见 docs/交接单_MA对接_成员档案与在场查询.md。
+BUTLER_ENDPOINTS = (
+    "/api/members",                 # GET 列表（带 profile_json）
+    "/api/vision/presence",         # GET 在场查询
+    "/api/insights/member-schedule",  # GET 成员作息实测摘要
+    "/api/behaviors",               # GET 当前行为状态（v0.9.5 主动感知，管家 M4 看板）
+    "/api/events",                  # POST butler→MA 富化事件推送（感知层边界 §〇）
+    # ── AutoForge v0.5.0 运行指标回灌（生态闭环，契约见 AutoForge docs/MA_METRICS_CONTRACT.md）──
+    "/api/metrics/ingest",         # POST AutoForge 运行指标（按 dedupe_key 幂等合并）
+    "/api/metrics",                # GET 已接收指标查询
+    # ── 电视截屏多模态（按需调用，docs/电视截屏多模态识别功能_交接单.md）────
+    "/api/tv/state",                # GET 当前电视 App 信息
+    "/api/tv/screenshot",           # GET 当前电视截图
+    "/api/tv/analyze",              # POST 截屏 + 多模态识别
+)
+
+# 竞技场（外部服务 AutoFlow）用独立 arena_ 令牌访问本服务的窄接口白名单。
+# 令牌只在这几个路径上生效，与生产/管家/ACP 令牌三者隔离。
+# 契约见 docs/交接单_AutoFlow竞技场对接.md。
+ARENA_ENDPOINTS = (
+    "/api/arena/snapshot",          # POST 生成脱敏版本化快照
+    "/api/arena/snapshots",         # GET 列出/查看快照
+)
+
+# TVPilot / DeskPilot（豆包管家生态下的应用层）用独立 app_token 访问本服务的接口。
+# 与 JWT/管家/竞技场/ACP/设备令牌五者隔离，仅放行白名单路径。
+# 契约见 docs/交接卡_v0.3_对外查询接口.md 与 v0.5「记忆统一入库」。
+# 写记忆时 source 由令牌派生（见 agent_memory_routes._resolve_source），调用方无法伪造来源。
+APP_ENDPOINTS = (
+    "/api/insights/query",          # POST 按模板 / 逻辑设备查询结构化结果（只读）
+    "/api/agent/memories",          # POST 写入记忆（来源由令牌派生，防伪造，v0.5/v0.6）
+    "/api/agent/memories/recall",   # POST 记忆召回（只读）
+)
+
 
 class AuthMiddleware:
     """纯 ASGI 鉴权中间件，支持 Bearer JWT / Basic / Cookie 三种凭据。"""
@@ -106,10 +144,66 @@ class AuthMiddleware:
             await self._reject(send, path)
             return
 
+        # 管家令牌只放行白名单路径，超出范围一律 403
+        if user.get("butler") and not self._butler_allowed(path):
+            await self._reject(send, path, status=403, message="管家令牌无权访问该接口")
+            return
+
+        # 竞技场令牌只放行白名单路径，超出范围一律 403
+        if user.get("arena") and not self._arena_allowed(path):
+            await self._reject(send, path, status=403, message="竞技场令牌无权访问该接口")
+            return
+
+        # 应用令牌（TVPilot / DeskPilot）只放行白名单路径，超出范围一律 403
+        if user.get("app") and not self._app_allowed(path):
+            await self._reject(send, path, status=403, message="应用令牌无权访问该接口")
+            return
+
         state = scope.setdefault("state", {})
         if isinstance(state, dict):
             state["user"] = user
         await self.app(scope, receive, send)
+
+    @staticmethod
+    def _butler_allowed(path: str) -> bool:
+        """管家令牌的路径白名单判定（含 /api/members/{id} 这类动态子路径）。"""
+        if path in BUTLER_ENDPOINTS:
+            return True
+        return path.startswith("/api/members/")
+
+    @staticmethod
+    def _arena_allowed(path: str) -> bool:
+        """竞技场令牌的路径白名单判定（含 /api/arena/snapshots/{id} 动态子路径）。"""
+        if path in ARENA_ENDPOINTS:
+            return True
+        return path.startswith("/api/arena/snapshots/")
+
+    @staticmethod
+    def _app_allowed(path: str) -> bool:
+        """应用令牌（TVPilot / DeskPilot）的路径白名单判定。"""
+        return path in APP_ENDPOINTS
+
+    @staticmethod
+    def _butler_matches(token: str) -> bool:
+        """常量时间比对管家令牌；未配置时通道关闭（返回 False）。"""
+        expected = (get_config().butler_token or "").strip()
+        if not expected:
+            return False
+        # compare_digest 要求两端均为 ASCII/bytes；遇到含非 ASCII 字符的非法令牌会抛
+        # TypeError。此处 fail-safe 为「不匹配」，避免被一个脏令牌打挂整个鉴权链。
+        try:
+            return secrets.compare_digest(expected, token)
+        except TypeError:
+            return False
+
+    def _app_verify(self, token: str) -> dict | None:
+        """校验应用令牌（TVPilot / DeskPilot）；命中返回 ``{name, source}``，否则 ``None``。
+
+        支持 v0.6 多令牌，并兼容 v0.3 遗留单 ``app_token``（见 ``app_tokens.AppTokenStore``）。
+        """
+        from .app_tokens import get_app_token_store
+
+        return get_app_token_store().verify(token)
 
     def _authenticate(self, headers: dict) -> dict | None:
         auth_manager = AuthManager(get_config())
@@ -117,6 +211,19 @@ class AuthMiddleware:
 
         if authorization.startswith("Bearer "):
             token = authorization[7:].strip()
+            # 豆包管家服务令牌：与 JWT / 设备令牌三者隔离，仅放行 BUTLER_ENDPOINTS
+            if self._butler_matches(token):
+                return {"username": "butler", "is_admin": False, "butler": True}
+            # TVPilot / DeskPilot 服务令牌：与 JWT/管家/设备令牌隔离，仅放行 APP_ENDPOINTS
+            app_rec = self._app_verify(token)
+            if app_rec:
+                return {
+                    "username": "app:" + app_rec["name"],
+                    "is_admin": False,
+                    "app": True,
+                    "app_name": app_rec["name"],
+                    "app_source": app_rec.get("source", ""),
+                }
             user = auth_manager.verify_token(token)
             if user:
                 return user
@@ -128,6 +235,8 @@ class AuthMiddleware:
                 store = None
             if store is not None:
                 name = store.verify(token)
+                if name and store.kind(name) == "arena":
+                    return {"username": name, "is_admin": False, "arena": True}
                 if name and store.kind(name) == "debug":
                     return {"username": name, "is_admin": False, "debug": True}
             return None
@@ -160,16 +269,14 @@ class AuthMiddleware:
         return None
 
     @staticmethod
-    async def _reject(send: Send, path: str) -> None:
-        body = json.dumps({"ok": False, "error": "未登录"}, ensure_ascii=False).encode()
-        status = 401
+    async def _reject(send: Send, path: str, status: int = 401,
+                      message: str = "未登录") -> None:
+        body = json.dumps({"ok": False, "error": message}, ensure_ascii=False).encode()
         headers = [
             (b"content-type", b"application/json; charset=utf-8"),
             (b"content-length", str(len(body)).encode()),
         ]
-        if not path.startswith("/api"):
-            # 非 API 请求交还给前端外壳，由前端弹出登录视图，避免重定向循环
-            status = 401
+        # 非 API 请求交还给前端外壳，由前端弹出登录视图，避免重定向循环
         await send({"type": "http.response.start", "status": status, "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
@@ -237,14 +344,85 @@ async def mcp_unavailable(request: Request):
     )
 
 
+async def mcp_stats_endpoint(request: Request):
+    """MCP 工具调用效率快照（Bug#8：可观测性）。运维/效率排查入口，需 WebUI JWT 鉴权。"""
+    try:
+        top_n = int(request.query_params.get("top_n", "20"))
+    except ValueError:
+        top_n = 20
+    sort_by = request.query_params.get("sort_by", "calls")
+    return JSONResponse(mcp_server.get_mcp_stats(top_n=top_n, sort_by=sort_by))
+
+
+# ── v0.5.0 AutoForge 运行指标回灌（生态闭环）────────────────────────────
+_METRICS_PATH = os.path.join(os.environ.get("DATA_DIR", "/data"), "af_metrics.json")
+
+
+async def metrics_ingest_endpoint(request: Request):
+    """接收 AutoForge 回灌的运行指标（butler 白名单）；按 dedupe_key 幂等合并。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid_json"}, status_code=400)
+    if not isinstance(payload, dict) or "automation_id" not in payload:
+        return JSONResponse({"ok": False, "error": "missing automation_id"}, status_code=400)
+    key = payload.get("dedupe_key") or payload["automation_id"]
+    try:
+        os.makedirs(os.path.dirname(_METRICS_PATH), exist_ok=True)
+        store: dict = {}
+        if os.path.exists(_METRICS_PATH):
+            try:
+                store = json.loads(Path(_METRICS_PATH).read_text(encoding="utf-8"))
+            except Exception:
+                store = {}
+        store[key] = payload
+        Path(_METRICS_PATH).write_text(
+            json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "dedupe_key": key})
+
+
+async def metrics_query_endpoint(request: Request):
+    """返回已接收的 AutoForge 运行指标（butler 白名单）。"""
+    if not os.path.exists(_METRICS_PATH):
+        return JSONResponse({"ok": True, "metrics": {}})
+    try:
+        store = json.loads(Path(_METRICS_PATH).read_text(encoding="utf-8"))
+    except Exception:
+        return JSONResponse({"ok": True, "metrics": {}})
+    return JSONResponse({"ok": True, "metrics": store})
+
+
 _log = logging.getLogger("mcp.dispatch")
 
 
 def _no_buffer_send(send: Send) -> Send:
-    """为 MCP 响应注入防缓冲头，避免反向代理缓冲 SSE 流导致 endpoint 事件延迟。"""
+    """为 MCP 响应注入防缓冲头，避免反向代理缓冲 SSE 流导致 endpoint 事件延迟。
+
+    健壮性：若应用已发送过响应头后又尝试发送第二个 ``http.response.start``
+    （典型场景：SSE/流式响应中途抛出异常，框架的异常处理器再尝试回写 500 错误
+    响应），直接吞掉重复的 start 及其后的 body，避免 uvicorn 抛
+    ``Expected ASGI message 'http.response.body', but got 'http.response.start'``
+    并干掉整个 worker（表现为周期性崩溃重启）。原始异常仍由上层记录。
+    """
+
+    sent_start = False
+    suppress = False  # 已进入“丢弃错误回写”模式
 
     async def wrapped(message):
-        if message.get("type") == "http.response.start":
+        nonlocal sent_start, suppress
+        mtype = message.get("type")
+        if mtype == "http.response.start":
+            if sent_start:
+                # 响应头已发送，重复 start 是框架的错误回写，丢弃以免击垮 worker。
+                _log.warning(
+                    "MCP: 丢弃重复的 http.response.start（响应头已发送，疑似流式响应中途异常）"
+                )
+                suppress = True
+                return
+            sent_start = True
             headers = list(message.get("headers", []))
             names = {h[0].lower() for h in headers}
             if b"cache-control" not in names:
@@ -252,6 +430,9 @@ def _no_buffer_send(send: Send) -> Send:
             if b"x-accel-buffering" not in names:
                 headers.append((b"x-accel-buffering", b"no"))
             message = {**message, "headers": headers}
+        elif mtype == "http.response.body" and suppress:
+            # 错误回写 body，随上面的重复 start 一起丢弃。
+            return
         await send(message)
 
     return wrapped
@@ -396,6 +577,10 @@ async def _manifest(request: Request):
 def _build_routes() -> list:
     routes: list = list(api.get_routes())
     routes.append(Route("/health", liveness, methods=["GET"]))
+    routes.append(Route("/api/mcp/stats", mcp_stats_endpoint, methods=["GET"]))
+    # v0.5.0 AutoForge 运行指标回灌（生态闭环）
+    routes.append(Route("/api/metrics/ingest", metrics_ingest_endpoint, methods=["POST"]))
+    routes.append(Route("/api/metrics", metrics_query_endpoint, methods=["GET"]))
 
     if mcp_server.mcp_app is not None:
         mcp_mw = MCPTokenMiddleware(_mcp_dispatcher, lambda: get_runtime().tokens)
@@ -475,8 +660,10 @@ async def _dump_traceback_handler(request: Request, exc: Exception) -> Response:
             break
         except OSError:
             continue
+    # 安全（审计 AP1）：不再把 traceback 回传给客户端（未认证也能拿到，泄露内部
+    # 结构/路径/依赖）。完整栈已写入日志与落盘文件，供运维排查。
     return JSONResponse(
-        {"ok": False, "error": "internal_server_error", "traceback": text},
+        {"ok": False, "error": "internal_server_error"},
         status_code=500,
     )
 

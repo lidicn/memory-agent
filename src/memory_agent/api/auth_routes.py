@@ -8,11 +8,43 @@ from starlette.routing import Route
 from .deps import current_user, error, json_body, ok, require_admin, require_user, runtime
 
 
+def _bearer_or_cookie_token(request: Request) -> str:
+    """从 Authorization: Bearer 或 Cookie: token= 提取 JWT。
+
+    /api/auth/register 属于 PUBLIC_PREFIXES，AuthMiddleware 会跳过鉴权、
+    不写入 ``state.user``，因此这里自行解析令牌用于管理员校验。
+    """
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:].strip()
+    cookie_header = request.headers.get("cookie", "")
+    if cookie_header:
+        from http.cookies import SimpleCookie
+
+        cookies = SimpleCookie()
+        try:
+            cookies.load(cookie_header)
+        except Exception:
+            return ""
+        morsel = cookies.get("token")
+        if morsel and morsel.value:
+            return morsel.value
+    return ""
+
+
 async def register(request: Request):
     body = await json_body(request)
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
     rt = runtime(request)
+    # 安全加固（审计 A1）：系统初始化后（已有账号）关闭公开注册，仅管理员可新增用户。
+    # 引导期（无任何账号）仍允许匿名注册首个账号并成为管理员，以完成初始化；
+    # 可用 INIT_ADMIN_USER / INIT_ADMIN_PASS 预置管理员，进一步关闭初始化窗口。
+    if rt.auth.has_users():
+        token = _bearer_or_cookie_token(request)
+        caller = rt.auth.verify_token(token) if token else None
+        if not caller or not caller.get("is_admin"):
+            return error("系统已初始化，注册已关闭；如需新增用户请由管理员操作", 403)
     result = rt.auth.register(username, password)
     if not result.get("ok"):
         return error(result.get("error", "注册失败"))
@@ -26,14 +58,30 @@ async def register(request: Request):
     )
 
 
+def _client_ip(request: Request) -> str:
+    """取客户端 IP（优先 X-Forwarded-For 首个，兼容反向代理）。"""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    client = request.client
+    return client.host if client else "unknown"
+
+
 async def login(request: Request):
     body = await json_body(request)
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
     rt = runtime(request)
+    ip = _client_ip(request)
+    # 审计 A4：登录爆破防护（按 IP + 用户名双维度限流 / 锁定）
+    allowed, retry = rt.auth.login_allowed(ip, username)
+    if not allowed:
+        return error(f"尝试过于频繁，请在 {max(1, retry // 60 + 1)} 分钟后重试", 429)
     result = rt.auth.login(username, password)
     if not result.get("ok"):
+        rt.auth.note_login_failure(ip, username)
         return error(result.get("error", "登录失败"), 401)
+    rt.auth.note_login_success(ip, username)
     user = rt.auth.get_user(username) or {}
     return ok(
         {
@@ -45,6 +93,10 @@ async def login(request: Request):
 
 
 async def logout(request: Request):
+    # 审计 A2：登出时把当前 Token 的 jti 拉黑，旧 Token 立即失效
+    token = _bearer_or_cookie_token(request)
+    if token:
+        runtime(request).auth.revoke_token(token)
     return ok({"message": "已登出"})
 
 

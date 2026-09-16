@@ -30,6 +30,12 @@ WRITABLE_FIELDS = (
     "ha_db_password", "ha_db_query_batch", "ha_db_query_timeout",
     "autoflow_acp_url", "autoflow_acp_token",
     "auto_discover_persona",
+    "member_tag_agent_writeback",
+    "mcp_response_max_bytes",
+    # ── 豆包管家对接（外部服务窄接口令牌）────────────────────────────────
+    "butler_token",
+    # ── AutoFlow 竞技场对接（脱敏映射，可选；缺省按分区内稳定生成通用名）──
+    "arena_desensitize",
     # ── 视觉识别（vision-behavior-spec）────────────────────────────────
     "vision_enabled", "vision_device_token",
     "go2rtc_base_url", "go2rtc_user", "go2rtc_pass",
@@ -38,12 +44,17 @@ WRITABLE_FIELDS = (
     "vision_cameras",
     "vision_cooldown_s", "vision_max_per_hour", "vision_no_tv_interval_s",
     "vision_light_gate", "vision_snapshot_retention_days",
+    # ── 电视截屏多模态（docs/电视截屏多模态识别功能_交接单.md）─────────
+    "tv_media_player_entity", "tv_capture_timeout_s",
+    "tv_mqtt_enabled", "tv_mqtt_host", "tv_mqtt_port",
+    "tv_mqtt_user", "tv_mqtt_pass", "tv_mqtt_topic", "tv_mqtt_timeout_s",
 )
 
 SECRET_FIELDS = (
     "hass_token", "nr_pass", "llm_api_key", "mcp_auth_token", "jwt_secret",
     "ha_db_password", "autoflow_acp_token",
     "vision_device_token", "go2rtc_pass", "vlm_api_key",
+    "butler_token", "tv_mqtt_pass",
 )
 
 
@@ -160,6 +171,7 @@ async def get_config_api(request: Request):
             "autoflow_acp_url": cfg.autoflow_acp_url,
             "autoflow_acp_token": mask_secret(cfg.autoflow_acp_token),
             "auto_discover_persona": cfg.auto_discover_persona,
+            "butler_token": mask_secret(cfg.butler_token),
             "vision_enabled": cfg.vision_enabled,
             "vision_device_token": mask_secret(cfg.vision_device_token),
             "go2rtc_base_url": cfg.go2rtc_base_url,
@@ -179,13 +191,23 @@ async def get_config_api(request: Request):
             "vision_snapshot_retention_days": cfg.vision_snapshot_retention_days,
             "db_path": cfg.db_path,
             "last_poll_time": cfg.last_poll_time,
+            # 电视截屏多模态配置
+            "tv_media_player_entity": cfg.tv_media_player_entity,
+            "tv_capture_timeout_s": cfg.tv_capture_timeout_s,
+            "tv_mqtt_enabled": cfg.tv_mqtt_enabled,
+            "tv_mqtt_host": cfg.tv_mqtt_host,
+            "tv_mqtt_port": cfg.tv_mqtt_port,
+            "tv_mqtt_user": cfg.tv_mqtt_user,
+            "tv_mqtt_pass": mask_secret(cfg.tv_mqtt_pass),
+            "tv_mqtt_topic": cfg.tv_mqtt_topic,
+            "tv_mqtt_timeout_s": cfg.tv_mqtt_timeout_s,
             "secrets_set": {f: bool(getattr(cfg, f, "")) for f in SECRET_FIELDS},
         }
     )
 
 
 async def update_config_api(request: Request):
-    _, err = require_user(request)
+    _, err = require_admin(request)
     if err:
         return err
     body = await json_body(request)
@@ -383,10 +405,47 @@ async def health(request: Request):
     return ok(await runtime(request).health())
 
 
+# ── 应用令牌（TVPilot / DeskPilot）多令牌管理（v0.6）─────────────────────────
+from ..app_tokens import get_app_token_store  # noqa: E402
+
+
+async def list_app_tokens(request: Request):
+    _, err = require_user(request)
+    if err:
+        return err
+    return ok({"tokens": get_app_token_store().list_tokens()})
+
+
+async def create_app_token(request: Request):
+    _, err = require_user(request)
+    if err:
+        return err
+    body = await json_body(request)
+    name = (body.get("name") or "").strip()
+    source = (body.get("source") or "").strip()
+    res = get_app_token_store().generate(name, source)
+    if not res.get("ok"):
+        return error(res.get("error", "生成失败"))
+    return ok(res)
+
+
+async def revoke_app_token(request: Request):
+    _, err = require_user(request)
+    if err:
+        return err
+    name = request.path_params.get("name", "")
+    if not get_app_token_store().revoke(name):
+        return error("令牌不存在", 404)
+    return ok({"message": f"已吊销: {name}"})
+
+
 ROUTES = [
     Route("/api/config", get_config_api, methods=["GET"]),
     Route("/api/config", update_config_api, methods=["POST"]),
     Route("/api/config/test", test_connection, methods=["POST"]),
     Route("/api/config/reveal", reveal_secret, methods=["POST"]),
+    Route("/api/config/app-tokens", list_app_tokens, methods=["GET"]),
+    Route("/api/config/app-tokens", create_app_token, methods=["POST"]),
+    Route("/api/config/app-tokens/{name}", revoke_app_token, methods=["DELETE"]),
     Route("/api/health", health, methods=["GET"]),
 ]

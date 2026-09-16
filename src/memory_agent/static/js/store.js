@@ -1,10 +1,11 @@
 /* 全局状态：登录态、路由、提示、确认框、采集心跳 */
 
 import { api, auth } from './api.js';
+// 合法路由由导航单一真源派生，不再手工维护第二份白名单
+// （历史上漏加 'manual' 导致用户手册页被 fallback 回概览）
+import { ROUTE_IDS as ROUTES } from './nav.js';
 
 const NAV_KEY = 'mw.navCollapsed';
-// 必须与 main.js 中的 NAV 数组 id 保持一致；漏加会导致对应页面被 fallback 到 dashboard
-const ROUTES = ['dashboard', 'collect', 'assistant', 'insights', 'mcp', 'acp', 'agent_memory', 'signal_rules', 'vision', 'members', 'settings'];
 
 export function registerStore(Alpine) {
   Alpine.store('app', {

@@ -385,6 +385,52 @@ const TPL = `
         </template>
       </div>
     </div>
+
+    <!-- v0.6：应用令牌（TVPilot / DeskPilot）多令牌管理与吊销 -->
+    <div class="card p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-semibold text-sm">应用令牌（TVPilot / DeskPilot）</h3>
+        <span class="badge badge-mute" x-text="appTokens.length + ' 个'"></span>
+      </div>
+      <p class="hint mb-3">每个客户端（电视 / PC）一个独立令牌，可单独吊销；遗留单 APP_TOKEN 仍作为兜底。</p>
+
+      <template x-if="appTokenSecret">
+        <div class="mb-3 rounded-lg bg-ok/10 border border-ok/25 px-3 py-2 text-[11px]">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-ok font-semibold">新令牌已生成（仅显示一次）</span>
+            <button class="btn-ghost btn-xs" @click="copy(appTokenSecret)">复制</button>
+          </div>
+          <code class="block mt-1 break-all font-mono text-txt-2" x-text="appTokenSecret"></code>
+        </div>
+      </template>
+
+      <div class="space-y-1.5">
+        <template x-for="t in appTokens" :key="t.name">
+          <div class="card-flat px-3 py-2 flex items-center gap-2">
+            <div class="min-w-0 flex-1">
+              <div class="text-xs truncate font-medium" x-text="t.name"></div>
+              <div class="text-[10px] text-txt-3 flex items-center gap-2">
+                <span class="font-mono" x-text="t.prefix + '…'"></span>
+                <span x-show="t.source" x-text="'来源: ' + t.source"></span>
+                <span x-text="'使用 ' + (t.use_count||0) + ' 次'"></span>
+              </div>
+            </div>
+            <button class="icon-btn hover:!text-danger" @click="revokeAppToken(t.name)">
+              <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+            </button>
+          </div>
+        </template>
+        <p x-show="!appTokens.length" class="text-xs text-txt-3">尚无应用令牌，请在下方创建。</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2 mt-3">
+        <input class="inp" x-model="newAppName" placeholder="令牌名称（如 tvpilot）">
+        <input class="inp inp-mono" x-model="newAppSource" placeholder="来源标识（可选）">
+      </div>
+      <button class="btn-soft w-full justify-center mt-2" @click="createAppToken()" :disabled="!newAppName.trim()">
+        生成新令牌
+      </button>
+    </div>
   </div>
 </div>
 `;
@@ -394,6 +440,10 @@ export function settingsPage() {
     tpl: TPL,
     cfg: {},
     users: [],
+    appTokens: [],
+    newAppName: '',
+    newAppSource: '',
+    appTokenSecret: '',
     revealed: {},
     testing: {},
     testResult: {},
@@ -420,6 +470,9 @@ export function settingsPage() {
         { key: 'nodered', label: 'Node-RED', on: !!(h.nodered && h.nodered.connected), detail: (h.nodered && (h.nodered.url || h.nodered.error)) || '未配置' },
         { key: 'chroma', label: '向量库', on: !!(h.chroma && h.chroma.connected), detail: h.chroma && h.chroma.connected ? (h.chroma.documents || 0) + ' 文档' : ((h.chroma && h.chroma.error) || '未启用') },
         { key: 'ha_db', label: 'HA 数据库', on: !!(h.ha_db && h.ha_db.connected), detail: (h.ha_db && h.ha_db.connected) ? ('schema=' + (h.ha_db.mode || '?')) : ((h.ha_db && h.ha_db.enabled) ? (h.ha_db.error || '未连接') : '未启用') },
+        { key: 'mqtt', label: 'MQTT 推送', on: !!(h.mqtt && h.mqtt.enabled && h.mqtt.connected), detail: h.mqtt ? (h.mqtt.enabled ? (h.mqtt.connected ? '已连接' : (h.mqtt.retry_after > 0 ? `重连中（${Math.ceil(h.mqtt.retry_after)}s 后重试）` : '未连接')) : '未启用') : '—' },
+        { key: 'lag', label: '采集滞后', on: (h.collect_lag_seconds ?? null) !== null && (h.collect_lag_seconds < 3600), detail: (h.collect_lag_seconds ?? null) === null ? '无事件' : (h.collect_lag_seconds < 60 ? '刚刚' : `${Math.round(h.collect_lag_seconds / 60)} 分钟前`) },
+        { key: 'embedding', label: '嵌入模型', on: !(h.embedding && h.embedding.configured && h.embedding.error), detail: h.embedding ? (h.embedding.configured ? (h.embedding.error ? ('错误: ' + h.embedding.error) : (`${h.embedding.model} · ${h.embedding.dimension || '?'}维`)) : (h.embedding.reason || '默认 MiniLM')) : '—' },
         { key: 'tokens', label: 'MCP 凭证', on: (h.tokens || 0) > 0, detail: (h.tokens || 0) + ' 个有效' }
       ];
     },
@@ -427,8 +480,44 @@ export function settingsPage() {
     init() {
       this.load();
       this.loadUsers();
+      this.loadAppTokens();
       this.loadHealth();
       this.loadVersion();
+    },
+
+    async loadAppTokens() {
+      try {
+        const d = await api.listAppTokens();
+        this.appTokens = d.tokens || [];
+      } catch (e) { /* 非管理员或无权限静默 */ }
+    },
+
+    async createAppToken() {
+      const name = (this.newAppName || '').trim();
+      if (!name) { this.$store.app.warn('请填写令牌名称'); return; }
+      try {
+        const d = await api.createAppToken(name, (this.newAppSource || '').trim());
+        this.appTokenSecret = d.token || '';
+        this.newAppName = '';
+        this.newAppSource = '';
+        await this.loadAppTokens();
+        this.$store.app.ok('已生成应用令牌（明文仅显示一次，请立即复制）');
+      } catch (e) {
+        this.$store.app.err(e.message);
+      }
+    },
+
+    async revokeAppToken(name) {
+      const yes = await this.$store.app.ask('吊销令牌', '确定吊销「' + name + '」？该客户端将立即失去访问权限。', '吊销');
+      if (!yes) return;
+      try {
+        await api.revokeAppToken(name);
+        this.appTokenSecret = '';
+        await this.loadAppTokens();
+        this.$store.app.ok('已吊销：' + name);
+      } catch (e) {
+        this.$store.app.err(e.message);
+      }
     },
 
     async load() {

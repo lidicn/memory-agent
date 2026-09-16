@@ -15,14 +15,21 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import statistics
+import time
 from collections import Counter
 from datetime import datetime, timedelta
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 from .store import TELEMETRY_DOMAINS, Store, now_local, parse_ts
+
+# 单实体事件数超过房间事件数该比例即视为「噪声源」，从行为/房间使用率中剔除
+# （仍保留在设备健康异常检测里）。取值偏保守：真实人类活动通常分散在多个设备，
+# 单一设备占比 >60% 几乎必然是报警抖动/状态反复（如加湿器缺水）。
+NOISE_RATIO_CAP = 0.6
 
 # ── 语义词典 ────────────────────────────────────────────────────────────────
 
@@ -139,6 +146,28 @@ class InsightService:
     def __init__(self, config, store: Store):
         self.config = config
         self.store = store
+        # 审计 I1：结果缓存。infer_activities / get_behavior_insights 属全窗口重扫描，
+        # 同一窗口短时间内重复调用（Agent 连续问 / 环比内部 cur+prev）直接复用，
+        # 避免重复全表扫描。TTL 默认 60s；进程内状态，容器重启清零。
+        self._result_cache: dict = {}
+        self._CACHE_TTL = float(getattr(config, "insight_cache_ttl", 60.0) or 60.0)
+
+    def _cache_get(self, key):
+        ent = self._result_cache.get(key)
+        if not ent:
+            return None
+        ts, val = ent
+        if time.monotonic() - ts > self._CACHE_TTL:
+            self._result_cache.pop(key, None)
+            return None
+        return copy.deepcopy(val)
+
+    def _cache_put(self, key, val) -> None:
+        self._result_cache[key] = (time.monotonic(), copy.deepcopy(val))
+        # 简单容量上限：超过 64 条清理最旧，避免长期驻留无限增长。
+        if len(self._result_cache) > 64:
+            oldest = min(self._result_cache, key=lambda k: self._result_cache[k][0])
+            self._result_cache.pop(oldest, None)
 
     # ── 时间语义（统一 days / start / end）────────────────────────────────
 
@@ -796,6 +825,61 @@ class InsightService:
             "devices": results,
         }
 
+    @staticmethod
+    def _parse_time_range(tr: str):
+        """解析 'HH:MM-HH:MM' -> (start_min, end_min, crosses_midnight)。空/无效返回 None。
+        crosses_midnight 表示 end <= start（如 '22:00-07:00' 跨零点）。"""
+        if not tr or "-" not in tr:
+            return None
+        try:
+            a, b = tr.split("-", 1)
+            sh, sm = (int(x) for x in a.split(":"))
+            eh, em = (int(x) for x in b.split(":"))
+        except Exception:
+            return None
+        if not (0 <= sh < 24 and 0 <= sm < 60 and 0 <= eh < 24 and 0 <= em < 60):
+            return None
+        smin, emin = sh * 60 + sm, eh * 60 + em
+        if smin == 0 and emin >= 1439:
+            return None  # 全天窗口（如 00:00-23:59），无需裁剪，等价于不过滤
+        return (smin, emin, emin <= smin)
+
+    @staticmethod
+    def _split_by_day(seg_start, seg_end):
+        """把 [seg_start, seg_end] 按自然日切成连续切片，返回 [(s, e), ...]。"""
+        out = []
+        cur = seg_start
+        while cur < seg_end:
+            nxt = (cur + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            pe = min(seg_end, nxt)
+            if pe > cur:
+                out.append((cur, pe))
+            cur = nxt
+        return out
+
+    @staticmethod
+    def _clip_to_time_range(seg_start, seg_end, tr):
+        """把 segment 按自然日切片，仅保留落在 time_range 周期窗口内的部分。
+        tr=None 表示不裁剪（返回整段按天切片，使跨午夜会话正确归到各自日期）。
+        返回交集区间 [(s, e), ...]，每段按实际日期，供 by_day/timeline 使用。"""
+        pieces = InsightService._split_by_day(seg_start, seg_end)
+        if not tr:
+            return pieces
+        smin, emin, crosses = tr
+        out = []
+        for ps, pe in pieces:
+            day = ps.date()
+            day_start = datetime(day.year, day.month, day.day)
+            day_end = day_start + timedelta(days=1)
+            windows = [(day_start + timedelta(minutes=smin), day_start + timedelta(minutes=emin))] if not crosses \
+                else [(day_start + timedelta(minutes=smin), day_end),
+                      (day_start, day_start + timedelta(minutes=emin))]
+            for ws, we in windows:
+                iss, ie = max(ps, ws), min(pe, we)
+                if ie > iss:
+                    out.append((iss, ie))
+        return out
+
     def _usage_one(
         self,
         entity_id: str,
@@ -804,6 +888,7 @@ class InsightService:
         allow_on: set[str],
         debounce: int,
         include_timeline: bool,
+        time_range: str = "",
     ) -> dict:
         # 窗口起点之前的最后一次状态：决定进入窗口时设备是否已经开着，
         # 少了这一步「昨晚开到今早」的空调时长会被整段吞掉。
@@ -845,6 +930,14 @@ class InsightService:
         if cur_start is not None:
             segments.append({"start": cur_start, "end": window_end, "open": True})
 
+        tr = self._parse_time_range(time_range)
+        if tr:
+            clipped = []
+            for seg in segments:
+                for (s, e) in self._clip_to_time_range(seg["start"], seg["end"], tr):
+                    clipped.append({"start": s, "end": e})
+            segments = clipped
+
         timeline = []
         by_day: dict[str, float] = {}
         durations: list[float] = []
@@ -861,7 +954,7 @@ class InsightService:
                     "end": seg["end"].isoformat(sep="T"),
                     "duration_seconds": round(dur, 1),
                     "duration_human": fmt_duration(dur),
-                    "still_on": seg["open"],
+                    "still_on": seg["end"] >= window_end,
                 }
             )
 
@@ -900,6 +993,7 @@ class InsightService:
         end_iso: str,
         debounce: int = DEFAULT_DEBOUNCE_SECONDS,
         include_timeline: bool = True,
+        time_range: str = "",
     ) -> dict:
         """按「属性值」判定的开启时长（覆盖 source=='HDMI 3' 这类属性级条件）。
 
@@ -981,6 +1075,14 @@ class InsightService:
                     cur_start = None
         if cur_start is not None:
             segments.append({"start": cur_start, "end": window_end})
+
+        tr = self._parse_time_range(time_range)
+        if tr:
+            clipped = []
+            for seg in segments:
+                for (s, e) in self._clip_to_time_range(seg["start"], seg["end"], tr):
+                    clipped.append({"start": s, "end": e})
+            segments = clipped
 
         timeline = []
         by_day: dict[str, float] = {}
@@ -1084,6 +1186,29 @@ class InsightService:
 
     # ── 行为洞察（服务端出结论）───────────────────────────────────────────
 
+    def _noise_entities(self, start_iso: str, end_iso: str, rooms=None) -> set:
+        """识别单实体占比垄断型噪声源（如加湿器缺水反复跳变、人体传感器误报）。
+
+        判定准则与 behavior_insights 完全一致：某实体事件数 > 房间事件数 * NOISE_RATIO_CAP
+        即视为垄断型噪声。返回需从「人的行为 / 房间使用率 / 静默判定」中剔除的 entity_id 集合。
+
+        这些实体只参与设备健康(anomaly)检测，不污染行为洞察与睡眠/离家识别。
+        """
+        excl = list(TELEMETRY_DOMAINS)
+        hist_raw = self.store.hour_histogram(start_iso, end_iso, rooms, excl)
+        tops = self.store.top_entities(start_iso, end_iso, rooms, 40, excl)
+        noise_ids: set = set()
+        for room, buckets in hist_raw.items():
+            room_total = sum(buckets)
+            if room_total <= 0:
+                continue
+            for t in tops:
+                if t.get("room") != room or t["entity_id"] in noise_ids:
+                    continue
+                if t["count"] > NOISE_RATIO_CAP * room_total:
+                    noise_ids.add(t["entity_id"])
+        return noise_ids
+
     def behavior_insights(
         self,
         days: int = 7,
@@ -1100,7 +1225,8 @@ class InsightService:
         resolved_rooms = sorted(set(resolved_rooms)) or None
 
         excl = list(TELEMETRY_DOMAINS) if behavior_only else None
-        hist = self.store.hour_histogram(start_iso, end_iso, resolved_rooms, excl)
+        hist_raw = self.store.hour_histogram(start_iso, end_iso, resolved_rooms, excl)
+        hist = hist_raw
         tops = self.store.top_entities(start_iso, end_iso, resolved_rooms, 40, excl)
         daily = self.store.daily_counts_by_room(start_iso, end_iso, resolved_rooms)
         transitions = self.store.transitions(
@@ -1112,6 +1238,47 @@ class InsightService:
         total_raw = self.store.count_events(start_iso, end_iso, resolved_rooms)
 
         names = self.name_map()
+
+        # ── 单实体占比封顶：自动识别并排除噪声源（如加湿器缺水反复跳变）──
+        # 不靠猜测域，而是按「单实体事件数 > 房间事件数 * 阈值」判定，
+        # 把垄断型实体从「行为/房间使用率」中剔除，但仍保留在设备健康(anomaly)里。
+        # 同一套逻辑也用于活动识别的静默判定（见 infer_activities / _detect_activities）。
+        noise_ids = self._noise_entities(start_iso, end_iso, resolved_rooms)
+        noise_sources: list[dict] = []
+        for room, buckets in hist_raw.items():
+            room_total = sum(buckets)
+            if room_total <= 0:
+                continue
+            for t in tops:
+                if t.get("room") != room or t["entity_id"] not in noise_ids:
+                    continue
+                if any(ns["entity_id"] == t["entity_id"] for ns in noise_sources):
+                    continue
+                eid = t["entity_id"]
+                noise_sources.append({
+                    "entity_id": eid,
+                    "room": room,
+                    "count": t["count"],
+                    "room_share": round(t["count"] / room_total, 3),
+                    "friendly_name": names.get(eid, {}).get("friendly_name")
+                    or self._fallback_name(eid),
+                })
+        if noise_ids:
+            hist = self.store.hour_histogram(
+                start_iso, end_iso, resolved_rooms, excl,
+                exclude_entities=list(noise_ids),
+            )
+            tops = self.store.top_entities(
+                start_iso, end_iso, resolved_rooms, 40, excl,
+                exclude_entities=list(noise_ids),
+            )
+            total_clean = self.store.count_events(
+                start_iso, end_iso, resolved_rooms,
+                exclude_domains=excl, exclude_entities=list(noise_ids),
+            )
+        else:
+            total_clean = total
+
         tops_by_room: dict[str, list[dict]] = {}
         for t in tops:
             meta_info = names.get(t["entity_id"], {})
@@ -1125,6 +1292,13 @@ class InsightService:
                     "count": t["count"],
                 }
             )
+
+        # 原始小时直方图（含噪声）留给 anomaly 做设备健康检测；
+        # 输出用的节奏/房间洞察用剔除噪声后的直方图。
+        global_hourly_raw = [0] * 24
+        for buckets in hist_raw.values():
+            for i, v in enumerate(buckets):
+                global_hourly_raw[i] += v
 
         global_hourly = [0] * 24
         room_insights: dict[str, dict] = {}
@@ -1152,15 +1326,17 @@ class InsightService:
         for row in daily:
             by_day[row["day"]] = by_day.get(row["day"], 0) + row["count"]
 
-        anomaly = self.anomaly_report(by_day, global_hourly, start_iso, end_iso, self.store)
+        anomaly = self.anomaly_report(by_day, global_hourly_raw, start_iso, end_iso, self.store)
 
         return {
             "ok": True,
             "window": meta,
             "behavior_only": behavior_only,
-            "total_events": total,
+            "total_events": total_clean,
             "total_events_raw": total_raw,
             "telemetry_filtered": total_raw - total if behavior_only else 0,
+            "noise_filtered": (total - total_clean) if noise_ids else 0,
+            "noise_sources": noise_sources,
             "daily_rhythm": {
                 "hourly": global_hourly,
                 **self._rhythm(global_hourly),
@@ -1792,8 +1968,31 @@ class InsightService:
             for grp in catalog.get("rooms", {}).values()
             for e in grp.get("entities", [])
         ]
+
+        # 被模板引用标记：哪些实体被行为洞察模板（run_template）引用，优先修。
+        # 引用来源 = 模板实体的 entity_id（裸实体）+ logical_id 经身份层解析出的候选实体。
+        referenced_set = set()
+        try:
+            rt = self._get_rt()
+            if rt is not None and getattr(rt, "templates", None) is not None:
+                for tpl in rt.templates.list_all():
+                    for eq in (getattr(tpl, "entities", None) or []):
+                        eid = getattr(eq, "entity_id", "") or ""
+                        if eid:
+                            referenced_set.add(eid)
+                        lid = getattr(eq, "logical_id", "") or ""
+                        if lid and getattr(rt, "identity", None) is not None:
+                            try:
+                                resolved, _ = rt.identity.resolve(lid)
+                                referenced_set.update(resolved or [])
+                            except Exception:
+                                pass
+        except Exception as exc:
+            print(f"[Insights] 设备健康引用标记跳过: {exc}")
+
         healthy, no_data, stale = [], [], []
         for e in entities:
+            e["referenced"] = bool(e.get("entity_id") in referenced_set)
             sd = self._num_stale(e)  # stale_days 是 float，不能用 isinstance(x, int)
             if not e.get("has_data"):
                 no_data.append(e)
@@ -1823,6 +2022,10 @@ class InsightService:
             ),
             "total_entities": len(entities),
             "catalog_total": catalog.get("total"),
+            "referenced_entities": sum(1 for e in entities if e.get("referenced")),
+            "referenced_entity_ids": sorted(
+                e["entity_id"] for e in entities if e.get("referenced")
+            ),
             "healthy": len(healthy),
             "no_data": len(no_data),
             "stale": len(stale),
@@ -2019,11 +2222,28 @@ class InsightService:
         """
         start_iso, end_iso, meta = self.resolve_range(days, start, end)
         room_filter = [r.strip() for r in str(rooms or "").split(",") if r.strip()] or None
+        # 审计 I1：同窗口重复识别直接复用缓存结果，避免重复全窗口事件扫描。
+        # days 语义下窗口终点=当前时刻（逐秒变化），会让 key 抖动导致缓存永不命中；
+        # 统一按「分钟」粒度对齐 key（≤60s 陈旧，与 TTL 同量级）。显式 start/end 时
+        # （如环比内部 cur/prev）本就是日对齐字符串，量化无影响。
+        ckey = ("infer_activities", tuple(room_filter or ()),
+                start_iso[:16], end_iso[:16],
+                tuple(sorted(activities)) if activities else None)
+        cached = self._cache_get(ckey)
+        if cached is not None:
+            return cached
         rows = self._iter_all_events(
             start_iso, end_iso, rooms=room_filter,
             exclude_domains=list(TELEMETRY_DOMAINS), order="asc",
         )
-        detected = self._detect_activities(rows, activities)
+        # 复用与 behavior_insights 一致的噪声识别：加湿器缺水等垄断型 alarm/抖动实体
+        # 会从事件流里剔除，否则它们每几分钟一发、把全屋静默间隔填满，
+        # 导致 sleeping/away 永远不满足「≥3h/≥90min 无事件」。
+        noise_ids = self._noise_entities(start_iso, end_iso, room_filter)
+        detected = self._detect_activities(
+            rows, activities, exclude_entities=noise_ids,
+            start_iso=start_iso, end_iso=end_iso,
+        )
         activities = detected["activities"]
 
         # 看电视兜底：这个家里没有 media_player 实体，电视只暴露一个「昨日播放时长」
@@ -2043,7 +2263,7 @@ class InsightService:
             except Exception as exc:
                 print(f"[Insights] 电视遥测兜底跳过: {exc}")
 
-        return {
+        result = {
             "ok": True,
             "window": meta,
             "behavior_only": True,
@@ -2055,6 +2275,8 @@ class InsightService:
             "detector_report": detected["detectors"],
             "signal_inventory": detected["inventory"],
         }
+        self._cache_put(ckey, result)
+        return result
 
     # ── Phase 2-A：用户画像 / 行为环比 / 证据溯源 ──────────────────────────
     def get_user_persona(self, days: int = 14) -> dict:
@@ -2107,15 +2329,38 @@ class InsightService:
             "summary": summary,
         }
 
+    def _compare_windows(self, compare_days: int):
+        """返回对齐到自然日边界的环比窗口（修复 #10：避免 7×24h 滚动窗口跨 8 个日历日）。
+
+        两个窗口等长、首尾相接不重叠，各恰好 compare_days 个完整自然日。
+        返回 (cur_start, cur_end, prev_start, prev_end) 均为 ISO 字符串。
+        """
+        cd = max(1, min(int(compare_days or 7), 365))
+        today = now_local(self.tz).date()
+        # cur 窗口 = 含今天在内的最近 cd 个完整自然日：[tomorrow-cd, tomorrow)
+        cur_end = (today + timedelta(days=1)).isoformat() + "T00:00:00"
+        cur_start = (today + timedelta(days=1) - timedelta(days=cd)).isoformat() + "T00:00:00"
+        prev_end = cur_start
+        prev_start = (today + timedelta(days=1) - timedelta(days=2 * cd)).isoformat() + "T00:00:00"
+        return cur_start, cur_end, prev_start, prev_end
+
     def get_behavior_insights(self, compare_days: int = 7) -> dict:
-        """行为环比：最近 compare_days 天 vs 上一个等长窗口，给出各活动发生次数/天数的 delta。
+        """行为环比：最近 compare_days 天 vs 上一个等长窗口。
+
+        修复 #9：除活动次数/天数外，新增 **时长/强度**（各活动累计分钟）与 **温控维度**
+        （空调开启时长、平均设定/室温、设定温度区间变化）；修复 #10：窗口对齐到自然日
+        边界，每个窗口恰好 compare_days 个日历日，不再跨 8 天。
 
         做周报、习惯变化追踪时调用。
         """
-        cur_start, cur_end, _meta = self.resolve_range(compare_days)
-        cur_start_dt = datetime.fromisoformat(cur_start)
-        prev_start = (cur_start_dt - timedelta(days=compare_days)).isoformat()
-        prev_end = cur_start  # 不含当前窗口起点，避免两窗口重叠
+        cur_start, cur_end, prev_start, prev_end = self._compare_windows(compare_days)
+
+        # 审计 I1：整个环比结果按 compare_days 缓存（TTL 60s）。Agent 连续调用同
+        # 环比时不重复做 cur/prev 两窗口的全量识别 + 温控会话聚合，首调后立即可用。
+        ckey = ("get_behavior_insights", int(compare_days or 7))
+        cached = self._cache_get(ckey)
+        if cached is not None:
+            return cached
 
         cur = self.infer_activities(start=cur_start, end=cur_end)
         prev = self.infer_activities(start=prev_start, end=prev_end)
@@ -2123,16 +2368,22 @@ class InsightService:
         def _agg(acts):
             out: dict = {}
             for a in acts:
-                e = out.setdefault(a["activity"], {"count": 0, "days": set()})
+                e = out.setdefault(a["activity"], {"count": 0, "days": set(), "minutes": 0})
                 e["count"] += 1
                 e["days"].add(a["day"])
+                dm = a.get("duration_minutes")
+                if dm is None and a.get("start_ts") and a.get("end_ts"):
+                    d0, d1 = parse_ts(a["start_ts"]), parse_ts(a["end_ts"])
+                    dm = int((d1 - d0).total_seconds() // 60) if d0 and d1 else None
+                if dm is not None:
+                    e["minutes"] += dm
             return out
 
         ca, pa = _agg(cur["activities"]), _agg(prev["activities"])
         comparison = {}
         for t in sorted(set(ca) | set(pa)):
-            c = ca.get(t, {"count": 0, "days": set()})
-            p = pa.get(t, {"count": 0, "days": set()})
+            c = ca.get(t, {"count": 0, "days": set(), "minutes": 0})
+            p = pa.get(t, {"count": 0, "days": set(), "minutes": 0})
             comparison[t] = {
                 "current_occurrences": c["count"],
                 "previous_occurrences": p["count"],
@@ -2140,15 +2391,51 @@ class InsightService:
                 "current_days": len(c["days"]),
                 "previous_days": len(p["days"]),
                 "delta_days": len(c["days"]) - len(p["days"]),
+                "current_minutes": c["minutes"],
+                "previous_minutes": p["minutes"],
+                "delta_minutes": c["minutes"] - p["minutes"],
             }
-        summary = self._synthesize_compare(comparison, compare_days)
-        return {
+        # 温控维度（修复 #9）
+        climate_cmp = self._climate_compare(cur_start, cur_end, prev_start, prev_end)
+        summary = self._synthesize_compare(comparison, compare_days, climate_cmp)
+        result = {
             "ok": True,
             "compare_days": compare_days,
-            "current_window": {"start": cur_start, "end": cur_end, "count": len(cur["activities"])},
-            "previous_window": {"start": prev_start, "end": prev_end, "count": len(prev["activities"])},
+            "current_window": {"start": cur_start, "end": cur_end, "days": compare_days, "count": len(cur["activities"])},
+            "previous_window": {"start": prev_start, "end": prev_end, "days": compare_days, "count": len(prev["activities"])},
             "comparison": comparison,
+            "climate_comparison": climate_cmp,
             "summary": summary,
+        }
+        self._cache_put(ckey, result)
+        return result
+
+    def _climate_compare(self, cur_start, cur_end, prev_start, prev_end) -> dict:
+        """温控维度环比（修复 #9）：空调开启时长 + 平均设定/室温 + 设定温度区间变化。"""
+        def _agg_cl(start, end):
+            cs = self.climate_sessions(start=start, end=end)
+            sessions = cs.get("sessions", [])
+            total_min = sum(s.get("duration_minutes", 0) for s in sessions)
+            sp = [s["setpoint_c"] for s in sessions if s.get("setpoint_c") is not None]
+            rt = [s["room_temp_c"] for s in sessions if s.get("room_temp_c") is not None]
+            return {
+                "sessions": len(sessions),
+                "hours": round(total_min / 60, 1),
+                "avg_setpoint_c": round(sum(sp) / len(sp), 1) if sp else None,
+                "avg_room_temp_c": round(sum(rt) / len(rt), 1) if rt else None,
+                "min_setpoint_c": round(min(sp), 1) if sp else None,
+                "max_setpoint_c": round(max(sp), 1) if sp else None,
+            }
+        cur = _agg_cl(cur_start, cur_end)
+        prev = _agg_cl(prev_start, prev_end)
+        d_sp = None
+        if cur["avg_setpoint_c"] is not None and prev["avg_setpoint_c"] is not None:
+            d_sp = round(cur["avg_setpoint_c"] - prev["avg_setpoint_c"], 1)
+        return {
+            "current": cur,
+            "previous": prev,
+            "delta_hours": round(cur["hours"] - prev["hours"], 1),
+            "delta_avg_setpoint_c": d_sp,
         }
 
     def explain_insight(self, insight_id: str) -> dict:
@@ -2229,26 +2516,52 @@ class InsightService:
         return "\n".join(lines)
 
     @staticmethod
-    def _synthesize_compare(comparison: dict, days: int) -> str:
+    def _synthesize_compare(comparison: dict, days: int, climate_cmp: dict = None) -> str:
         if not comparison:
-            return f"近 {days} 天与上一个 {days} 天窗口均无足够活动数据做环比。"
-        ups, downs, flats = [], [], []
-        for t, c in comparison.items():
-            d = c["delta_occurrences"]
-            if d > 0:
-                ups.append(f"{t}(+{d})")
-            elif d < 0:
-                downs.append(f"{t}({d})")
-            else:
-                flats.append(t)
-        parts = []
-        if ups:
-            parts.append("上升：" + "、".join(ups))
-        if downs:
-            parts.append("下降：" + "、".join(downs))
-        if flats:
-            parts.append("持平：" + "、".join(flats))
-        return f"近 {days} 天 vs 上一个 {days} 天行为环比 —— " + ("；".join(parts) if parts else "无变化")
+            base = f"近 {days} 天与上一个 {days} 天窗口均无足够活动数据做环比。"
+        else:
+            ups, downs, flats = [], [], []
+            for t, c in comparison.items():
+                d = c["delta_occurrences"]
+                if d > 0:
+                    ups.append(f"{t}(+{d}次)")
+                elif d < 0:
+                    downs.append(f"{t}({d}次)")
+                else:
+                    flats.append(t)
+            # 时长变化（仅列有累计时长的活动，修复 #9：强度维度）
+            dur_parts = []
+            for t, c in comparison.items():
+                dm = c["delta_minutes"]
+                if dm:
+                    arrow = "↑" if dm > 0 else "↓"
+                    dur_parts.append(f"{t}{arrow}{fmt_duration(abs(dm) * 60)}")
+            parts = []
+            if ups:
+                parts.append("次数上升：" + "、".join(ups))
+            if downs:
+                parts.append("次数下降：" + "、".join(downs))
+            if flats:
+                parts.append("次数持平：" + "、".join(flats))
+            if dur_parts:
+                parts.append("时长变化：" + "、".join(dur_parts))
+            base = f"近 {days} 天 vs 上一个 {days} 天行为环比 —— " + ("；".join(parts) if parts else "无变化")
+        # 温控维度（修复 #9）
+        if climate_cmp:
+            cur = climate_cmp["current"]
+            prev = climate_cmp["previous"]
+            dh = climate_cmp["delta_hours"]
+            sign = "+" if dh >= 0 else ""
+            bits = [f"空调开启 {cur['hours']}h（上周 {prev['hours']}h，{sign}{dh}h）"]
+            csp, psp = cur["avg_setpoint_c"], prev["avg_setpoint_c"]
+            if csp is not None and psp is not None:
+                dsp = climate_cmp["delta_avg_setpoint_c"]
+                ssp = "+" if dsp >= 0 else ""
+                bits.append(f"平均设定 {csp}°C（上周 {psp}°C，{ssp}{dsp}°C）")
+            if cur["avg_room_temp_c"] is not None:
+                bits.append(f"室温均 {cur['avg_room_temp_c']}°C")
+            base += "。温控：" + "；".join(bits)
+        return base
 
     # ── Phase 2-B：自定义活动规则注册 ──────────────────────────────────────
     def define_activity(
@@ -2261,6 +2574,10 @@ class InsightService:
         - room：房间子串（可选），命中才计；tags：需命中的设备标签（可选，如 presence/door/media）；
         - start_hour/end_hour：生效时段；min_events：最小触发次数；confidence：置信度。
         注册后 infer_activities 自动套用；识别出的活动可被 source_refs=insight:<id> 引用写回记忆。
+
+        实体覆盖预检（修复 #7）：若规则要求的 tags 在指定房间（或全屋）最近窗口内
+        完全没有对应实体产生过事件，明确报『缺实体类型』并给出代理建议，而非运行期
+        含糊的『标签没匹配 / 未命中』。
         """
         rule = {
             "name": name, "room": room, "tags": tags or [],
@@ -2269,9 +2586,56 @@ class InsightService:
         }
         rule_id = self.store.upsert_activity_rule(rule)
         rule["rule_id"] = rule_id
-        return {
+        out = {
             "ok": True, "rule": rule,
             "message": "规则已注册，下次 infer_activities 自动套用；可经 source_refs=insight:<id> 写回记忆",
+        }
+        warn = self._check_activity_rule_coverage(room, tags or [])
+        if warn:
+            out["coverage_warning"] = warn["message"]
+            out["missing_tags"] = warn["missing_tags"]
+            out["message"] += " ⚠️ " + warn["message"]
+        return out
+
+    def _check_activity_rule_coverage(self, room, tags, window_days: int = 14) -> Optional[dict]:
+        """注册自定义规则前的实体覆盖预检（修复 #7）。
+
+        返回 None 表示覆盖良好；否则返回 warning dict（含 missing_tags 与 message），
+        说明规则要求的标签在指定房间（或全屋）最近 window_days 天内没有任何对应实体
+        产生过事件——即『缺实体类型』，规则将无法命中。
+
+        注意：这是诊断而非拦截。规则仍会被注册（用户可先注册、补齐传感器后自动生效），
+        但会显式给出『缺实体类型』的明确结论与代理建议，避免运行期含糊的『未命中』。
+        """
+        if not tags:
+            return None
+        end = now_local(self.tz)
+        start = end - timedelta(days=window_days)
+        names = self.name_map()
+        present: set = set()
+        try:
+            for r in self._iter_all_events(start.isoformat(), end.isoformat(), max_rows=5000, order="desc"):
+                eid = str(r.get("entity_id", ""))
+                room_r = str(r.get("room", "") or "")
+                if room and room not in room_r:
+                    continue
+                disp = str((names.get(eid, {}) or {}).get("friendly_name") or "")
+                present |= (self._tags_of(eid, disp) & set(tags))
+        except Exception:
+            return None  # 预检失败不阻塞注册，只跳过告警
+        missing = [t for t in tags if t not in present]
+        if not missing:
+            return None
+        scope = f"房间「{room}」" if room else "全屋"
+        return {
+            "ok": False,
+            "missing_tags": missing,
+            "message": (
+                f"{scope}最近{window_days}天内没有 {missing} 类型实体产生过事件，"
+                f"该规则将无法判定——这是『缺实体类型』而非标签匹配问题。"
+                f"建议：改用该房间已有的信号做代理（如 door 门磁 / climate 空调 / "
+                f"appliance 插座 / media 电视），或先补齐 {missing} 传感器再注册。"
+            ),
         }
 
     def _tv_from_telemetry(self, start_iso: str, end_iso: str) -> list[dict]:
@@ -2366,7 +2730,8 @@ class InsightService:
                 tags.add(tag)
         return tags
 
-    def _detect_activities(self, rows, activity_filter=None) -> dict:
+    def _detect_activities(self, rows, activity_filter=None, exclude_entities=None,
+                           start_iso=None, end_iso=None) -> dict:
         """基于事件流识别活动。
 
         与旧版的区别：
@@ -2383,6 +2748,7 @@ class InsightService:
             "standby", "not_home", "", "false",
         }
 
+        _excl = set(exclude_entities or set())
         events: list[dict] = []
         for r in rows:
             ts = str(r.get("ts", ""))
@@ -2390,6 +2756,10 @@ class InsightService:
             if dt is None:
                 continue
             eid = str(r.get("entity_id", ""))
+            # 噪声源（加湿器缺水等垄断型 alarm/抖动）不进入事件流，
+            # 否则会伪造「全屋仍有活动」、破坏睡眠/离家的静默间隔判定。
+            if eid in _excl:
+                continue
             disp = str((names.get(eid, {}) or {}).get("friendly_name") or "")
             state = str(r.get("new_state", "")).strip().lower()
             events.append({
@@ -2402,9 +2772,22 @@ class InsightService:
                 "state": state,
                 "room": str(r.get("room", "") or ""),
                 "active": state not in INACTIVE,
-                "tags": self._tags_of(eid, disp),
+                # 归一为 set：`_tags_of` 契约返回 set，但测试/调用方可能以 list 覆盖，
+                # 后续静默判定用集合运算（`tags & {...}`），此处统一类型避免 list&set 崩溃。
+                "tags": set(self._tags_of(eid, disp) or ()),
             })
         events.sort(key=lambda e: e["dt"])
+
+        # 静默判定只看「强人类活动」信号（人在 / 门 / 家电 / 电脑）。
+        # 摄像头 AI 场景、电视/音箱、灯、窗帘、自动化触发等环境抖动并不证明
+        # 「人醒着在动」，若计入会把夜间静默间隔填满，导致睡眠/离家永远不成立。
+        _SILENCE_BREAK_TAGS = {"presence", "door", "appliance", "computer"}
+        silence_events = [e for e in events if e["tags"] & _SILENCE_BREAK_TAGS]
+        # 睡眠静默忽略 presence：雷达存在传感器在「人睡着在床」时仍会持续触发，
+        # 若计入则夜间永远满事件、睡眠无法成立。睡眠只看「人主动在操作」的信号
+        # （家电 / 门 / 电脑），媒体关闭 + 无操作 ≥3h 即视为入睡。
+        _SLEEP_BREAK_TAGS = {"appliance", "door", "computer"}
+        sleep_silence_events = [e for e in events if e["tags"] & _SLEEP_BREAK_TAGS]
 
         # ── 信号硬排除层（学习策略：teach_signal kind='hard'）──
         # 一次加载生效中的排除规则；命中实体在对应 scope 直接跳过（无歧义硬排）。
@@ -2450,6 +2833,61 @@ class InsightService:
 
         results: list[dict] = []
 
+        # ── 洗澡识别的用水证据：卫生间增压泵高功率运行 = 真实用水 ──
+        # 原逻辑只用「卫生间占用传感器」推断，占用一整天都触发 → 出现 19h 假阳性。
+        # 改用增压泵电源功率（待机 ~1W、运行 ~170W）作为用水证据，窗口=真实洗澡时长。
+        _WATER_POWER_TH = 50.0
+        water_entities = [
+            eid for eid, meta in names.items()
+            if "增压泵" in (meta.get("friendly_name") or "")
+            and (meta.get("domain") in ("sensor", "switch"))
+        ]
+        water_windows: dict[str, list] = {}
+        if water_entities and start_iso and end_iso:
+            wrows = self.store.query_events(start_iso, end_iso, entities=water_entities, order="asc")
+            bursts: list = []
+            cur = None
+            last_dt = None
+            for r in wrows:
+                dt = parse_ts(str(r.get("ts", "")))
+                if dt is None:
+                    continue
+                eid = str(r.get("entity_id", ""))
+                st = str(r.get("new_state", "")).strip().lower()
+                dom = (names.get(eid, {}) or {}).get("domain") or eid.split(".", 1)[0]
+                if dom == "sensor":
+                    try:
+                        running = float(st) >= _WATER_POWER_TH
+                    except ValueError:
+                        running = False
+                else:
+                    running = st in ("on", "1", "true", "开", "运行")
+                if running:
+                    if cur is None:
+                        cur = [dt, dt]
+                    elif (dt - last_dt).total_seconds() <= 600:
+                        cur[1] = dt
+                    else:
+                        bursts.append(cur)
+                        cur = [dt, dt]
+                else:
+                    if cur is not None:
+                        bursts.append(cur)
+                        cur = None
+                last_dt = dt
+            if cur is not None:
+                bursts.append(cur)
+            for b in bursts:
+                mins = (b[1] - b[0]).total_seconds() / 60.0
+                if mins >= 3:  # 过滤马桶冲水等极短用水
+                    d = b[0].strftime("%Y-%m-%d")
+                    water_windows.setdefault(d, []).append(
+                        (b[0].strftime("%H:%M"), b[1].strftime("%H:%M"), mins)
+                    )
+
+        bath_water_days = 0
+        bath_occ_days = 0
+
         # ── 逐日检测：做饭 / 洗澡 / 看电视 / 工作 ──
         for day, evs in sorted(by_day.items()):
             cook = [
@@ -2458,11 +2896,14 @@ class InsightService:
                 and (6 <= e["hour"] <= 9 or 11 <= e["hour"] <= 14 or 17 <= e["hour"] <= 21)
             ]
             if cook:
+                _cs, _ce = parse_ts(cook[0]["ts"]), parse_ts(cook[-1]["ts"])
+                _cmin = int((_ce - _cs).total_seconds() // 60) if _cs and _ce else 0
                 results.append(self._act(
                     day, "cooking", 0.6,
                     f"厨房设备在用餐时段活跃（{_who(cook)}，{_span(cook)}，{len(cook)} 次触发）",
                     6, 21, entities=sorted({e['eid'] for e in cook})[:5],
                     observed_window=_span(cook), event_count=len(cook),
+                    start_ts=cook[0]["ts"], end_ts=cook[-1]["ts"], duration_minutes=_cmin,
                 ))
             _mark("cooking", bool(cook), "厨房无用餐时段活跃事件" if not cook else "命中", len(cook))
 
@@ -2471,15 +2912,33 @@ class InsightService:
                 if ("浴室" in e["room"] or "卫生间" in e["room"])
                 and e["active"] and "presence" in e["tags"]
             ]
-            if bath:
+            # 洗澡：优先用增压泵用水证据（真实洗澡时长）；无数据时回退占用传感器（低置信）
+            bath_windows = water_windows.get(day, [])
+            if bath_windows:
+                total_min = sum(mn for _, _, mn in bath_windows)
+                spans = "，".join(f"{a}-{b}({mn:.0f}min)" for a, b, mn in bath_windows)
                 results.append(self._act(
-                    day, "bathing", 0.55,
+                    day, "bathing", 0.7,
+                    f"卫生间增压泵用水 {len(bath_windows)} 次（{spans}），累计约 {total_min:.0f} 分钟；"
+                    "以增压泵高功率运行作为用水证据，替代原占用传感器推断（消除 19h 误报）",
+                    0, 23, entities=water_entities[:5],
+                    observed_window=spans, event_count=len(bath_windows),
+                    duration_minutes=int(total_min),
+                ))
+                bath_water_days += 1
+                _mark("bathing", True, "命中", len(bath_windows))
+            elif bath:
+                results.append(self._act(
+                    day, "bathing", 0.4,
                     f"卫生间/浴室占用传感器触发 {len(bath)} 次（{_span(bath)}）；"
-                    "注意：这是 occupancy 占用推断，家中没有独立用水传感器，无法确认真的在洗澡",
+                    "仅 occupancy 占用推断、无独立用水传感器佐证，可能误报",
                     0, 23, entities=sorted({e['eid'] for e in bath})[:5],
                     observed_window=_span(bath), event_count=len(bath),
                 ))
-            _mark("bathing", bool(bath), "卫生间无占用触发" if not bath else "命中", len(bath))
+                bath_occ_days += 1
+                _mark("bathing", True, "命中(仅占用推断)", len(bath))
+            else:
+                _mark("bathing", False, "卫生间无用水/占用触发", 0)
 
             tv = [
                 e for e in evs
@@ -2487,12 +2946,15 @@ class InsightService:
                 and not _signal_excluded(e["eid"], "watching_tv")
             ]
             if tv:
+                _ts, _te = parse_ts(tv[0]["ts"]), parse_ts(tv[-1]["ts"])
+                _tmin = int((_te - _ts).total_seconds() // 60) if _ts and _te else 0
                 results.append(self._act(
                     day, "watching_tv", 0.7,
                     f"影音设备处于开启/播放状态（{_who(tv)}，{_span(tv)}）",
                     tv[0]["hour"], tv[-1]["hour"],
                     entities=sorted({e['eid'] for e in tv})[:5],
                     observed_window=_span(tv), event_count=len(tv),
+                    start_ts=tv[0]["ts"], end_ts=tv[-1]["ts"], duration_minutes=_tmin,
                 ))
             _mark(
                 "watching_tv", bool(tv),
@@ -2510,32 +2972,38 @@ class InsightService:
                 and not _signal_excluded(e["eid"], "presence")
             ]
             if work:
+                _ws, _we = parse_ts(work[0]["ts"]), parse_ts(work[-1]["ts"])
+                _wmin = int((_we - _ws).total_seconds() // 60) if _ws and _we else 0
                 results.append(self._act(
                     day, "working", 0.6,
                     f"书房白天有人或电脑在线（{_who(work)}，{_span(work)}）",
                     9, 19, entities=sorted({e['eid'] for e in work})[:5],
                     observed_window=_span(work), event_count=len(work),
+                    start_ts=work[0]["ts"], end_ts=work[-1]["ts"], duration_minutes=_wmin,
                 ))
             _mark("working", bool(work), "书房白天无占用、也无电脑类实体在线" if not work else "命中", len(work))
+
+        # 洗澡报告汇总：如实反映「用水证据优先、占用推断兜底」
+        if detectors.get("bathing", {}).get("fired_days"):
+            if bath_water_days:
+                detectors["bathing"]["reason"] = (
+                    f"命中（{bath_water_days} 天有增压泵用水证据"
+                    + (f"，{bath_occ_days} 天仅占用推断" if bath_occ_days else "")
+                    + "）"
+                )
+            else:
+                detectors["bathing"]["reason"] = "命中(仅占用推断)"
 
         # ── 跨日检测：睡眠 / 离家（基于行为事件的静默间隔）──
         # 睡眠按「夜」聚合，同一夜只保留最长的那段静默，避免一夜切出好几段假睡眠
         best_sleep: dict[str, tuple] = {}
         away_hits = 0
-        for a, b in zip(events, events[1:]):
+
+        # 离家：白天全屋无人在（presence 也消失）+ 门磁动作 + ≥90min 静默
+        for a, b in zip(silence_events, silence_events[1:]):
             mins = (b["dt"] - a["dt"]).total_seconds() / 60.0
             if mins < 90:
                 continue
-            # 睡眠：夜间起、清晨止、静默 ≥3 小时
-            if mins >= 180 and (a["hour"] >= 20 or a["hour"] <= 3) and 4 <= b["hour"] <= 12:
-                # 归属到「入睡那一夜」：20 点后算当天，凌晨算前一天
-                night = a["day"] if a["hour"] >= 20 else (
-                    (a["dt"] - timedelta(days=1)).strftime("%Y-%m-%d")
-                )
-                if night not in best_sleep or mins > best_sleep[night][2]:
-                    best_sleep[night] = (a, b, mins)
-                continue
-            # 离家：白天静默 ≥90 分钟，且静默开始前 30 分钟内有门磁动作
             if 7 <= a["hour"] <= 20:
                 door_before = [
                     e for e in events
@@ -2549,10 +3017,24 @@ class InsightService:
                         f"{door_before[-1]['ts'][11:16]} 门磁「{door_before[-1]['name']}」动作后，"
                         f"全屋从 {a['ts'][11:16]} 起静默 {mins / 60:.1f} 小时（疑似离家）",
                         7, 20,
+                        observed_window=f"{a['ts'][11:16]}-{b['ts'][11:16]}",
                         start_ts=a["ts"], end_ts=b["ts"],
                         duration_minutes=int(mins),
                         entities=[door_before[-1]["eid"]],
                     ))
+
+        # 睡眠：在家在床，忽略 presence 雷达误触，无家电/门/电脑操作 + 媒体关闭 ≥3h
+        for a, b in zip(sleep_silence_events, sleep_silence_events[1:]):
+            mins = (b["dt"] - a["dt"]).total_seconds() / 60.0
+            if mins < 180:
+                continue
+            if (a["hour"] >= 20 or a["hour"] <= 3) and 4 <= b["hour"] <= 12:
+                # 归属到「入睡那一夜」：20 点后算当天，凌晨算前一天
+                night = a["day"] if a["hour"] >= 20 else (
+                    (a["dt"] - timedelta(days=1)).strftime("%Y-%m-%d")
+                )
+                if night not in best_sleep or mins > best_sleep[night][2]:
+                    best_sleep[night] = (a, b, mins)
         for night, (a, b, mins) in sorted(best_sleep.items()):
             # 学习策略：起床锚定（静默后首个动作 b）若被硬排除为自动化信号，
             # 则不予采信——避免「小爱音箱定时模式切换」被误当成起床。
@@ -2564,6 +3046,7 @@ class InsightService:
                 anchor = "（起床后有窗帘动作）"
             who_b = "" if b_excluded else f"，静默后首个动作「{b['name']}」"
             excl_note = "；⚠️ 起床锚定实体已被硬排除为自动化信号，不予采信" if b_excluded else ""
+            sleep_window = f"{a['ts'][11:16]}-{b['ts'][11:16]}"
             results.append(self._act(
                 night, "sleeping",
                 0.75 if mins >= 300 else 0.6,
@@ -2571,6 +3054,11 @@ class InsightService:
                 f"持续 {mins / 60:.1f} 小时{anchor}；"
                 f"静默前最后动作「{a['name']}」{who_b}{excl_note}",
                 22, 7,
+                # 名义 typical_window 固定为 22:00-07:00，会被误读成真实入睡/起床时刻（曾导致
+                # Agent 写出「21:30 睡-07:00 起」的错误作息标签）。用实测静默区间覆盖，
+                # 并以同一区间作为 observed_window 暴露给画像聚合，保证作息判定有真实依据。
+                typical_window=sleep_window,
+                observed_window=sleep_window,
                 start_ts=a["ts"], end_ts=b["ts"],
                 duration_minutes=int(mins),
                 entities=[a["eid"]] + ([] if b_excluded else [b["eid"]]),
@@ -2581,7 +3069,7 @@ class InsightService:
         detectors["sleeping"] = {
             "fired_days": len(best_sleep),
             "matched_events": len(events),
-            "reason": "命中" if best_sleep else "未发现夜间 ≥3 小时的全屋静默间隔（数据窗口过短或夜间仍有传感器触发）",
+            "reason": "命中" if best_sleep else "未发现夜间 ≥3 小时的无操作静默（家电/门/电脑均静默；若卧室有雷达存在传感器持续触发属正常，不代表没睡）",
         }
         detectors["away"] = {
             "fired_days": away_hits,
@@ -2596,10 +3084,28 @@ class InsightService:
             custom_rules = []
         if custom_rules:
             af_set = set(activity_filter) if activity_filter else None
+            # 实体覆盖预检：窗口内 房间 -> 出现过的标签集合（修复 #7：缺实体类型要显式报）
+            coverage: dict = {}
             for day, evs in by_day.items():
-                for rule in custom_rules:
-                    if af_set is not None and rule["name"] not in af_set:
+                for e in evs:
+                    coverage.setdefault(e["room"] or "", set()).update(e["tags"])
+            all_tags: set = set().union(*coverage.values()) if coverage else set()
+            for rule in custom_rules:
+                if af_set is not None and rule["name"] not in af_set:
+                    continue
+                needed = set(rule["tags"])
+                if needed:
+                    room_tags = (
+                        set().union(*[t for rm, t in coverage.items() if rule["room"] and rule["room"] in rm])
+                        if rule["room"] else all_tags
+                    )
+                    missing = needed - room_tags
+                    if missing:
+                        _mark(rule["name"], False,
+                              f"缺实体类型：{('房间「' + rule['room'] + '」') if rule['room'] else '全屋'}"
+                              f"无 {sorted(missing)} 传感器（窗口内无对应事件），规则无法命中", 0)
                         continue
+                for day, evs in by_day.items():
                     matched = [
                         e for e in evs
                         if e["active"]
@@ -2718,19 +3224,33 @@ class InsightService:
             return None
 
     def _semantic_evidence(self, q: str, rt):
-        """取语义副驾证据：系统集合 semantic_search + agent 写回记忆（已晋升 live，按 trust 重排）。"""
+        """取语义副驾证据：系统集合 semantic_search + agent 写回记忆（已晋升 live，按 trust 重排）。
+
+        v0.9 离线降级：embedding 网关不可达时经断路器**短路**（避免每次调用都付超时代价），
+        命中打开态直接跳过语义路，回退纯结构化统计（答案仍由 ``_synthesize_answer`` 合成）。
+        """
+        from .circuit_breaker import get_breaker
+
         semantic_hits = []
         agent_hits = []
+        br = get_breaker("embedding", 3, 60.0)
+        if not br.allow():
+            return semantic_hits, agent_hits  # 断路器打开：短路，纯结构化
+        ok_any = False
         if rt is not None and rt.history is not None:
             try:
                 semantic_hits = rt.history.semantic_search(q, n_results=3)
-            except Exception:
-                pass
+                ok_any = True
+            except Exception as exc:  # noqa: BLE001
+                br.record_failure(f"semantic_search: {exc}")
         if rt is not None and getattr(rt, "agent_memory", None) is not None:
             try:
                 agent_hits = rt.agent_memory.retrieve(q, top_k=5)
-            except Exception:
-                pass
+                ok_any = True
+            except Exception as exc:  # noqa: BLE001
+                br.record_failure(f"agent_memory.retrieve: {exc}")
+        if ok_any:
+            br.record_success()
         return semantic_hits, agent_hits
 
     # 净水器出水实体（与 api/nr_routes.py 的 WATER_PURIFIER_ENTITY 保持一致）
@@ -2751,17 +3271,27 @@ class InsightService:
             records = history_dict.get(entity, []) if isinstance(history_dict, dict) else []
             if not records:
                 return {"ok": True, "entity": entity, "total_volume_ml": 0,
-                        "total_count": 0, "days": []}
+                        "total_count": 0, "days": [],
+                        "no_records": True,
+                        "skipped_reason": "HA 历史中该实体在窗口内无任何记录"}
             daily: dict = {}
             total_volume = 0
             total_count = 0
+            skipped_unparsable = 0
             for record in records:
-                if record.get("state") != "on":
-                    continue
+                # v0.7 修复（双重 bug）：
+                # 1) 该 event 实体的 state 是**时间戳**（如 2026-09-09T07:17:46+00:00），
+                #    原先 `state != "on"` 会把所有记录全部跳过；
+                # 2) 属性名实际是中文「出水数据」，原先只取英文 out_data 取不到值。
+                # 改为：只要拿到出水数据就处理，并兼容两种键名。
                 attrs = record.get("attributes", {}) or {}
-                out_data = attrs.get("out_data", "")
+                out_data = attrs.get("out_data") or attrs.get("出水数据") or ""
+                if not out_data:
+                    skipped_unparsable += 1
+                    continue
                 parts = str(out_data).split("-")
                 if len(parts) < 4:
+                    skipped_unparsable += 1
                     continue
                 try:
                     volume_ml = int(parts[2]) if parts[2] else 0
@@ -2799,8 +3329,15 @@ class InsightService:
                     "tds_reduction_pct": round((1 - s["tds_out_sum"] / s["tds_in_sum"]) * 100, 1)
                     if s["tds_in_sum"] > 0 else 0,
                 })
-            return {"ok": True, "entity": entity, "total_volume_ml": total_volume,
-                    "total_count": total_count, "days": days}
+            result = {"ok": True, "entity": entity, "total_volume_ml": total_volume,
+                      "total_count": total_count, "days": days}
+            if total_count == 0:
+                # 明确区分「真没出水」与「有记录但解析不了」，不再静默归零
+                result["skipped_reason"] = (
+                    f"窗口内 {len(records)} 条记录，但出水数据不可解析"
+                    f"（跳过 {skipped_unparsable} 条）"
+                )
+            return result
         except Exception as exc:
             return {"ok": False, "error": f"净水器统计失败：{exc}"}
 
@@ -3248,6 +3785,35 @@ class InsightService:
         if "今晚" in q or "今天" in q or "today" in ql:
             start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             return start.isoformat(), now.isoformat(), {"timezone": "Asia/Shanghai", "start": start.isoformat(), "end": now.isoformat(), "note": "今天"}
+        # 具体星期（周三 / 星期三 / 上周三 / 这周三）——精确到某一天，
+        # 必须优先于泛化的「上周/周末」，否则「上周三晚上」会被错当成「整周」。
+        import re as _re
+        m_wd = _re.search(r"(上上|上|这|本)?\s*(?:周|星期|礼拜)\s*([一二三四五六日天])", q)
+        if m_wd:
+            order = "一二三四五六日"
+            wd_char = m_wd.group(2)
+            wd = 6 if wd_char in ("日", "天") else order.index(wd_char)
+            prefix = m_wd.group(1) or ""
+            this_monday = (now - timedelta(days=now.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            week_offset = -14 if prefix == "上上" else (-7 if prefix == "上" else 0)
+            day0 = this_monday + timedelta(days=week_offset + wd)
+            if not prefix and day0 > now:  # 「周三」无限定且未到 → 指上一次
+                day0 -= timedelta(days=7)
+            start, end = day0, day0 + timedelta(days=1) - timedelta(seconds=1)
+            part = ""
+            for kw, (h0, h1) in (
+                ("凌晨", (0, 6)), ("早上", (5, 9)), ("上午", (8, 12)),
+                ("中午", (11, 14)), ("下午", (12, 18)),
+                ("晚上", (18, 24)), ("夜里", (20, 24)), ("晚间", (18, 24)),
+            ):
+                if kw in q:
+                    start = day0 + timedelta(hours=h0)
+                    end = day0 + timedelta(hours=h1) - timedelta(seconds=1)
+                    part = kw
+                    break
+            note = f"{prefix}周{wd_char}{part}"
+            return start.isoformat(), end.isoformat(), {"timezone": "Asia/Shanghai", "start": start.isoformat(), "end": end.isoformat(), "note": note}
         if "上周" in q:
             start = (now - timedelta(days=now.weekday() + 7)).replace(hour=0, minute=0, second=0, microsecond=0)
             end = start + timedelta(days=6, hours=23, minutes=59, seconds=59)

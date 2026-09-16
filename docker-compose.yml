@@ -35,6 +35,8 @@ services:
       # 密码不在此处明文注入；以 config.json 的 ha_db_password 为准
       # JWT密钥
       JWT_SECRET: "${JWT_SECRET:-change_this_to_random_string}"
+      # 豆包管家对接令牌（外部服务窄接口：成员档案读写 + 在场查询）
+      BUTLER_TOKEN: "${BUTLER_TOKEN:-}"
       PYTHONPATH: "/app/src"
     volumes:
       - ./src:/app/src

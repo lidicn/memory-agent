@@ -16,11 +16,15 @@ import secrets
 import threading
 from typing import Any
 
+from .mcp_scopes import ALL_SCOPES, DEFAULT_SCOPES, normalize
 from .store import now_local
 
 TOKEN_PREFIX = "mcp_"
 PREFIX_LEN = 12
 LAST_USED_THROTTLE_SECONDS = 15
+# 迁移/遗留令牌的默认权限：为保证「现有 Agent 不断连」，
+# 存量令牌视作全权（read+write），新建令牌才走「默认只读」。
+LEGACY_SCOPES = list(ALL_SCOPES)
 
 
 def _hash(token: str) -> str:
@@ -89,14 +93,21 @@ class MCPTokenStore:
     # ── 生成 / 撤销 / 列表 ───────────────────────────────────────────────
 
     def generate(
-        self, name: str, prefix: str | None = None, kind: str | None = None
+        self, name: str, prefix: str | None = None, kind: str | None = None,
+        scopes: list[str] | None = None,
     ) -> dict:
+        """生成令牌。
+
+        v0.7.5：新增 ``scopes``，未指定时**默认只读**（``read``）。
+        写类工具（见 ``mcp_scopes.WRITE_TOOLS``）需要显式带 ``write``。
+        """
         name = (name or "").strip()
         if not name:
             return {"ok": False, "error": "缺少 Token 名称"}
         if len(name) > 64:
             return {"ok": False, "error": "名称过长（上限 64 字符）"}
         prefix = prefix or TOKEN_PREFIX
+        granted = normalize(scopes) if scopes is not None else list(DEFAULT_SCOPES)
         with self._lock:
             tokens = dict(self.config.agent_tokens or {})
             if name in tokens:
@@ -109,6 +120,7 @@ class MCPTokenStore:
                 "last_used_at": "",
                 "use_count": 0,
                 "kind": kind or "mcp",
+                "scopes": granted,
             }
             tokens[name] = record
             self.config.agent_tokens = tokens
@@ -122,6 +134,30 @@ class MCPTokenStore:
         if isinstance(rec, dict):
             return rec.get("kind", "mcp")
         return "mcp"
+
+    def scopes(self, name: str) -> list[str]:
+        """返回令牌权限。
+
+        存量/迁移令牌没有 ``scopes`` 字段 → 视为全权（read+write），
+        保证升级后现有 Agent 的写操作不被静默拒绝；新建令牌默认只读。
+        """
+        rec = (self.config.agent_tokens or {}).get(name)
+        if isinstance(rec, dict) and rec.get("scopes"):
+            return normalize(rec.get("scopes"))
+        return list(LEGACY_SCOPES)
+
+    def update_scopes(self, name: str, scopes) -> bool:
+        """调整令牌权限（WebUI 收紧/放开用）。"""
+        with self._lock:
+            tokens = dict(self.config.agent_tokens or {})
+            rec = tokens.get(name)
+            if not isinstance(rec, dict):
+                return False
+            rec = {**rec, "scopes": normalize(scopes)}
+            tokens[name] = rec
+            self.config.agent_tokens = tokens
+            self.config.save()
+        return True
 
     def revoke(self, name: str) -> bool:
         with self._lock:
@@ -147,6 +183,9 @@ class MCPTokenStore:
                         "last_used_at": value.get("last_used_at", ""),
                         "use_count": int(value.get("use_count") or 0),
                         "kind": value.get("kind", "mcp"),
+                        "scopes": normalize(value.get("scopes")) if value.get("scopes")
+                                  else list(LEGACY_SCOPES),
+                        "scopes_inherited": not bool(value.get("scopes")),
                         "migrated": bool(value.get("migrated")),
                     }
                 )
@@ -159,6 +198,9 @@ class MCPTokenStore:
                         "created_at": "",
                         "last_used_at": "",
                         "use_count": 0,
+                        "kind": "mcp",
+                        "scopes": list(LEGACY_SCOPES),
+                        "scopes_inherited": True,
                         "migrated": False,
                     }
                 )

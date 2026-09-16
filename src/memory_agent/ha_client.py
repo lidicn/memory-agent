@@ -141,7 +141,7 @@ class HAClient:
                 start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
                 if hasattr(start_dt, 'tzinfo') and start_dt.tzinfo:
                     start_dt = start_dt.replace(tzinfo=None)
-            except:
+            except Exception:
                 start_dt = datetime.now() - timedelta(hours=1)
             
             # 解析end_time（如果提供）
@@ -150,7 +150,7 @@ class HAClient:
                     end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
                     if hasattr(end_dt, 'tzinfo') and end_dt.tzinfo:
                         end_dt = end_dt.replace(tzinfo=None)
-                except:
+                except Exception:
                     end_dt = start_dt + timedelta(days=1)
             else:
                 end_dt = start_dt + timedelta(days=1)

@@ -169,6 +169,11 @@ TOOL_SPECS: list = [
         example="书房电脑昨天开了多久 / 主卧空调运行时长",
         pitfall="不确定设备名时先用 get_entity_catalog 找到 entity_id/友好名。用水/净水器类出水量问题应优先用 ask_memory（净水器分支）。",
     ),
+    # 注：v0.3 新增的 MCP 语义工具 query_device_usage / list_device_health 是
+    # mcp_server 内手写的 @mcp.tool()（嵌套在 _build_server 中），**不在本 schema
+    # 登记**——register_simple_tools 只按显式 names 注册，且 TOOL_NAMES 会被
+    # 目录一致性测试用来断言 mcp_server 存在同名模块级函数，嵌套函数不满足。
+    # 待 v0.6 把这两个工具改为模块级函数（或服务方法 + generated=True）后再登记。
     ToolSpec(
         name="search_events",
         summary="语义化搜索设备事件，按房间/类别/状态过滤。",
@@ -927,6 +932,74 @@ TOOL_SPECS: list = [
         example="query_behavior_events(room='书房', start='2026-08-30T15:00:00', end='2026-08-30T17:00:00')",
         pitfall="时间默认按天切片；精确到小时需传 start/end。结果按 server_ts 倒序。",
     ),
+    # ── AutoFlow 竞技场（外部服务窄接口，见 docs/交接单_AutoFlow竞技场对接.md）────
+    # 仅对持有 arena_ 令牌（kind=arena）的竞技场开放，与生产 / butler / ACP 令牌隔离。
+    # expose=("arena",)：dispatch 同进程调用 rt.arena.<method>，ACP 按令牌作用域暴露。
+    ToolSpec(
+        name="get_arena_inspiration",
+        summary="为竞技场 Agent 提供脱敏的「创造力灵感」：基于分区固定快照的行为模式。",
+        description=(
+            "按竞技场分区（arena_id）返回脱敏灵感列表，每条含 title/description/"
+            "suggested_flow/entity_hints/creativity_score。数据来自该分区版本化快照，"
+            "不暴露真实设备名/成员名。灵感类型：behavior/device/member/anomaly/all。"
+        ),
+        group="竞技场",
+        service="arena", method="get_arena_inspiration",
+        expose=("arena",),
+        generated=False,
+        params=[
+            _p("arena_id", "string", "竞技场分区 ID，如 study_room", required=True),
+            _p("inspiration_type", "string", "灵感类型：behavior/device/member/anomaly/all，默认 all", default="all"),
+            _p("limit", "integer", "返回灵感数量，默认 5", default=5),
+        ],
+        example="get_arena_inspiration(arena_id='study_room', inspiration_type='all', limit=5)",
+        pitfall="分区需先经 POST /api/arena/snapshot 生成快照；无快照时返回空 items 与 hint。",
+    ),
+    ToolSpec(
+        name="evaluate_creativity",
+        summary="评估竞技场题目的创造力/新颖度/贴合度，并判定是否与题目库重复（锁定机制）。",
+        description=(
+            "三层判定：实体重叠(快速)→文本相似(轻量)→LLM 语义(仅模糊区间)。"
+            "返回 creativity_score / novelty_score / relevance_score / feedback / "
+            "is_duplicate / duplicate_of。非重复题目会被写入题目库（向量去重）。"
+        ),
+        group="竞技场",
+        service="arena", method="evaluate_creativity",
+        expose=("arena",),
+        generated=False,
+        params=[
+            _p("arena_id", "string", "竞技场分区 ID", required=True),
+            _p("title", "string", "Agent 提出的题目", required=True),
+            _p("description", "string", "flow 描述", required=True),
+            _p("entity_ids", "array", "涉及的设备标识列表（建议用灵感里的 entity_hints）", required=True),
+        ],
+        example="evaluate_creativity(arena_id='study_room', title='夜间护眼模式', description='...', entity_ids=['设备1'])",
+        pitfall="entity_ids 用灵感返回的 entity_hints（脱敏通用名），不要传真实 entity_id。",
+    ),
+    ToolSpec(
+        name="record_arena_result",
+        summary="记录竞技场一次提交结果，沉淀洞察迭代闭环数据。",
+        description=(
+            "竞技场每次提交后把结果写回：成功与否、token 消耗、使用了哪些 memory 工具。"
+            "用于分析『用了洞察的 Agent 是否更强』，形成闭环。"
+        ),
+        group="竞技场",
+        service="arena", method="record_arena_result",
+        expose=("arena",),
+        generated=False,
+        params=[
+            _p("arena_id", "string", "竞技场分区 ID", required=True),
+            _p("task_title", "string", "题目", required=True),
+            _p("task_description", "string", "flow 描述", required=True),
+            _p("flow_dsl", "string", "提交的 flow DSL 文本", required=True),
+            _p("success", "boolean", "是否成功运行", required=True),
+            _p("token_used", "integer", "消耗 token 数", default=0),
+            _p("agent_id", "string", "提交 Agent 标识", required=True),
+            _p("used_memory_tools", "array", "使用了哪些 memory-agent 工具", default=[]),
+        ],
+        example="record_arena_result(arena_id='study_room', task_title='...', task_description='...', flow_dsl='...', success=True, agent_id='agent-1', used_memory_tools=['get_arena_inspiration'])",
+        pitfall="仅记录，不影响快照与题目库；建议每次提交后调用以沉淀数据。",
+    ),
 ]
 
 SPEC_BY_NAME: dict = {s.name: s for s in TOOL_SPECS}
@@ -1016,8 +1089,13 @@ async def dispatch(rt, name: str, args: dict | None) -> dict:
     if spec is None:
         available = ", ".join(n for n in SPEC_BY_NAME if "builtin" in SPEC_BY_NAME[n].expose)
         return {"error": f"未知工具：{name}。内置可用工具只有：{available}。"}
-    if "builtin" not in spec.expose:
-        return {"error": f"工具 {name} 未对内置对话开放（仅 MCP 可用）。"}
+    if not ({"builtin", "arena"} & set(spec.expose)):
+        return {"error": f"工具 {name} 未对内置对话/竞技场开放（仅 MCP 可用）。"}
+    # 必填参数校验：缺参时给出明确报错，避免把丑陋的 TypeError
+    # （如「record_arena_result() missing 8 required positional arguments」）抛给调用方。
+    missing = [p.name for p in spec.params if p.required and p.name not in (args or {})]
+    if missing:
+        return {"error": f"工具 {name} 缺少必填参数：{', '.join(missing)}"}
     svc = getattr(rt, spec.service, None)
     if svc is None:
         return {"error": f"后端服务不可用：{spec.service}"}
@@ -1026,8 +1104,17 @@ async def dispatch(rt, name: str, args: dict | None) -> dict:
         return {"error": f"后端未实现工具：{name}（{spec.service}.{spec.method}）"}
     allowed = {p.name for p in spec.params}
     kwargs = {k: v for k, v in (args or {}).items() if k in allowed}
+    # 补齐 schema 声明的可选默认值：内置 LLM 路径常省略可选参，而部分后端方法
+    # （如竞技场工具）对可选参没有 Python 侧默认值，缺失会直接 TypeError。
+    for p in spec.params:
+        if not p.required and p.name not in kwargs and p.default is not None:
+            kwargs[p.name] = p.default
     kwargs.update(spec.force or {})
     try:
+        # 后端方法可能是协程（如竞技场三个工具），协程必须直接 await；
+        # 同步方法才丢线程池。否则 to_thread 只会返回一个未执行的协程对象。
+        if inspect.iscoroutinefunction(method):
+            return await method(**kwargs)
         return await asyncio.to_thread(method, **kwargs)
     except Exception as exc:
         return {"error": f"工具执行失败：{exc}"}

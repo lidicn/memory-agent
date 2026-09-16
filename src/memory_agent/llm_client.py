@@ -438,6 +438,11 @@ class LLMRouter:
                    tools=None, tool_choice="auto") -> Dict[str, Any]:
         if not self.providers:
             raise LLMError("未配置任何大模型后端")
+        # v0.9 离线降级：LLM 断路器（连续失败 → 打开短路，避免每次都逐个后端重试）
+        from .circuit_breaker import get_breaker
+        br = get_breaker("llm", 3, 60.0)
+        if not br.allow():
+            raise LLMError("LLM 后端断路器打开（连续失败，冷却中）——已降级为纯规则合成")
         errors: list[str] = []
         for provider in self._order(model):
             try:
@@ -450,6 +455,7 @@ class LLMRouter:
                     "name": provider.name,
                     "provider": provider.provider,
                 }
+                br.record_success()
                 return result
             except LLMError as exc:
                 errors.append(str(exc))
@@ -458,6 +464,7 @@ class LLMRouter:
                 errors.append(str(exc))
                 continue
         summary = "; ".join(errors) if errors else "所有大模型后端均不可用"
+        br.record_failure(summary)
         raise LLMError(summary)
 
     async def stream_chat(self, messages, model=None, temperature=None, max_tokens=None,

@@ -18,7 +18,6 @@ import httpx
 from starlette.requests import Request
 from starlette.routing import Route
 
-from ..acp_server import acp_handle, build_acp_tools
 from .deps import error, json_body, ok, require_user, runtime
 
 ACP_TOKEN_PREFIX = "acp_"
@@ -42,6 +41,9 @@ async def acp_info(request: Request):
         return err
     rt = runtime(request)
     cfg = rt.config
+    # 惰性导入：acp_server 反向依赖 api 子模块（debug_routes），顶层导入会形成循环，
+    # 导致「先导入 acp_server」时 build_acp_tools 尚未定义即被引用而 ImportError。
+    from ..acp_server import build_acp_tools
     tools = [
         {"name": t.get("name"), "description": t.get("description", "")}
         for t in (build_acp_tools() or [])
@@ -72,6 +74,8 @@ async def acp_selftest(request: Request):
         return err
     rt = runtime(request)
     steps = []
+    # 惰性导入：同上，避免与 acp_server 的循环导入。
+    from ..acp_server import acp_handle
     try:
         resp, _ = await acp_handle(rt, {
             "jsonrpc": "2.0",

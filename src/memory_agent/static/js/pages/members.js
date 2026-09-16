@@ -249,6 +249,9 @@ const TPL = `
             </template>
           </div>
           <div x-show="!(detail.tags||[]).length" class="mt-3 text-xs text-txt-3">还没有生活习惯标签。让 AI 助手分析历史数据，或手动添加。</div>
+          <button class="icon-btn hover:!text-brand absolute right-14 top-5" @click="mergeOpen = true" title="合并到其他成员">
+            <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3H5a2 2 0 00-2 2v3M16 3h3a2 2 0 012 2v3M8 21H5a2 2 0 01-2-2v-3M16 21h3a2 2 0 002-2v-3"/><path d="M9 12h6M9 12l2-2M9 12l2 2M15 12l-2-2M15 12l-2 2"/></svg>
+          </button>
           <button class="icon-btn hover:!text-danger absolute right-5 top-5" @click="removeMember(detail)" title="删除成员">
             <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
           </button>
@@ -327,8 +330,70 @@ const TPL = `
             </div>
           </div>
         </div>
+
+        <!-- 相关洞察反馈（v0.8-3 洞察反馈反哺成员档案）-->
+        <div>
+          <div class="flex items-center justify-between">
+            <p class="section-title !mb-0">相关洞察反馈</p>
+            <span class="text-[11px] text-txt-3" x-text="(feedbackSummary.up||0) + ' 👍 · ' + (feedbackSummary.down||0) + ' 👎'"></span>
+          </div>
+          <div class="mt-2 space-y-2">
+            <template x-for="m in feedbackItems" :key="m.memory_id">
+              <div class="rounded-lg bg-white/5 p-2.5">
+                <p class="text-[12px] leading-relaxed text-txt-1" x-text="m.text"></p>
+                <div class="flex items-center justify-between mt-1.5">
+                  <span class="text-[10px] text-txt-3" x-text="'信任 ' + ((m.trust>=0?'+':'') + (m.trust||0).toFixed(2)) + ' · ' + m.state"></span>
+                  <div class="flex gap-1">
+                    <button class="icon-btn" title="有用" @click.stop="fbMemory(m, true)">👍</button>
+                    <button class="icon-btn" title="无用" @click.stop="fbMemory(m, false)">👎</button>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <p x-show="!feedbackItems.length" class="text-xs text-txt-3">暂无该成员相关洞察（研究员产出的洞察会带 member: 标签）</p>
+          </div>
+        </div>
       </div>
     </template>
+  </div>
+</div>
+
+<!-- 合并成员弹窗 -->
+<div class="fixed inset-0 z-50 grid place-items-center" x-show="mergeOpen" x-cloak>
+  <div class="absolute inset-0 bg-black/80" @click="mergeOpen = false"></div>
+  <div class="relative card bg-ink-900 w-[420px] max-w-[92vw] anim-in">
+    <div class="p-5 border-b border-white/10 flex items-center justify-between shrink-0">
+      <h3 class="font-semibold">合并成员</h3>
+      <button class="icon-btn" @click="mergeOpen = false" title="关闭">
+        <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="p-5 space-y-4">
+      <p class="text-[13px] text-txt-2 leading-relaxed">
+        把「<b x-text="detail && detail.name"></b>」合并进另一位成员。合并后<b class="text-danger">当前成员将被删除</b>，其数据并入目标成员。
+      </p>
+      <div>
+        <label class="lbl">合并到</label>
+        <select class="inp" x-model="mergeTargetId">
+          <option value="">请选择目标成员…</option>
+          <template x-for="m in members.filter(x => !detail || x.id !== detail.id)" :key="m.id">
+            <option :value="m.id" x-text="m.name + ((m.rooms||[]).length ? '（' + m.rooms.join('、') + '）' : '')"></option>
+          </template>
+        </select>
+      </div>
+      <div class="rounded-lg bg-white/5 p-3 text-[11px] text-txt-3 space-y-1">
+        <p class="font-medium text-txt-2">合并策略（非破坏式，目标优先）：</p>
+        <p>· 关联房间与专属设备：取并集</p>
+        <p>· 生活习惯标签：同名标签保留置信度更高的一条，证据合并</p>
+        <p>· 外观特征 / 人脸 / 管家档案 / 备注：目标为空才继承</p>
+      </div>
+    </div>
+    <div class="p-5 border-t border-white/10 flex justify-end gap-2 bg-ink-900 shrink-0">
+      <button class="btn-ghost" @click="mergeOpen = false">取消</button>
+      <button class="btn-danger" @click="doMerge()" :disabled="merging || !mergeTargetId">
+        <span x-show="merging" class="spinner"></span>确认合并
+      </button>
+    </div>
   </div>
 </div>
 `;
@@ -342,10 +407,15 @@ export const membersPage = () => ({
   deviceSearch: '',
   drawerOpen: false,
   detail: null,
+  mergeOpen: false,
+  mergeTargetId: '',
+  merging: false,
   formOpen: false,
   saving: false,
   avatarSaving: false,
   addTagOpen: false,
+  feedbackItems: [],
+  feedbackSummary: {},
   form: { id: '', name: '', avatar_emoji: '🦉', avatar_bg: '#0EA5E9', avatar_url: '', note: '',
     gender: '', approx_age: '', body_type: '', body_type_custom: '', weight: '', height: '', clothing: '',
     hair: '', typical_location: '' },
@@ -644,11 +714,44 @@ export const membersPage = () => ({
     }
   },
 
+  async doMerge() {
+    if (!this.detail || !this.mergeTargetId) {
+      this.$store.app.err('请选择要合并到的目标成员');
+      return;
+    }
+    const source = this.detail;
+    const target = this.members.find((m) => m.id === this.mergeTargetId);
+    if (!target) {
+      this.$store.app.err('目标成员不存在');
+      return;
+    }
+    const yes = await this.$store.app.ask(
+      '合并成员',
+      '把「' + source.name + '」合并进「' + target.name + '」？合并后「' + source.name + '」将被删除，房间/设备/标签并入目标。此操作不可撤销。',
+      '合并'
+    );
+    if (!yes) return;
+    this.merging = true;
+    try {
+      await api.mergeMember(source.id, target.id);
+      this.$store.app.ok('已把「' + source.name + '」合并进「' + target.name + '」');
+      this.mergeOpen = false;
+      this.mergeTargetId = '';
+      this.drawerOpen = false;
+      await this.load();
+    } catch (e) {
+      this.$store.app.err(e.message || '合并失败');
+    } finally {
+      this.merging = false;
+    }
+  },
+
   openDetail(m) {
     this.detail = m;
     this.deviceSearch = '';
     this.addTagOpen = false;
     this.drawerOpen = true;
+    this.loadMemberFeedback(m.id);
   },
 
   closeDrawer() {
@@ -723,5 +826,26 @@ export const membersPage = () => ({
     } catch (e) {
       this.$store.app.err(e.message || '添加失败');
     }
-  },
-});
+    },
+
+    async loadMemberFeedback(id) {
+    try {
+    const d = await api.memberInsightFeedback(id);
+    this.feedbackItems = d.memories || [];
+    this.feedbackSummary = { up: d.up || 0, down: d.down || 0 };
+    } catch (e) {
+    this.feedbackItems = [];
+    this.feedbackSummary = {};
+    }
+    },
+
+    async fbMemory(m, useful) {
+    try {
+    await api.agentMemoryFeedback(m.memory_id, useful);
+    this.$store.app.ok(useful ? '已标记有用' : '已标记无用');
+    if (this.detail) await this.loadMemberFeedback(this.detail.id);
+    } catch (e) {
+    this.$store.app.err(e.message || '反馈失败');
+    }
+    },
+    });

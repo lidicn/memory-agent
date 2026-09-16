@@ -49,9 +49,9 @@ class ACPTokenMiddleware:
                 send, "Token 无效或缺失（需 acp_ 令牌，kind=acp）", 401
             )
             return
-        if store.kind(name) != "acp":
-            _log.warning("ACP 鉴权失败: Token 用途非 acp (%s, %s)", name, path)
-            await self._reject(send, "该 Token 非 ACP 用途（kind!=acp）", 403)
+        if store.kind(name) not in ("acp", "arena"):
+            _log.warning("ACP 鉴权失败: Token 用途非 acp/arena (%s, %s)", name, path)
+            await self._reject(send, "该 Token 非 ACP 用途（kind 须为 acp/arena）", 403)
             return
 
         scope.setdefault("state", {})
@@ -75,13 +75,17 @@ class ACPTokenMiddleware:
             return auth[7:].strip()
         if headers.get("x-acp-token"):
             return headers["x-acp-token"].strip()
-        # 兼容部分只支持 URL 参数的客户端
-        query = scope.get("query_string", b"").decode("latin-1")
-        for part in query.split("&"):
-            if part.startswith("token="):
-                from urllib.parse import unquote
+        # 安全（审计 AC1）：默认不再从 URL 参数取 Token（会进浏览器历史 / 访问日志）。
+        # 如需兼容只支持 URL 的旧客户端，显式设 ACP_ALLOW_URL_TOKEN=1 才开启。
+        import os
 
-                return unquote(part[6:])
+        if os.getenv("ACP_ALLOW_URL_TOKEN", "").strip().lower() in ("1", "true", "yes", "on"):
+            query = scope.get("query_string", b"").decode("latin-1")
+            for part in query.split("&"):
+                if part.startswith("token="):
+                    from urllib.parse import unquote
+
+                    return unquote(part[6:])
         return ""
 
     @staticmethod

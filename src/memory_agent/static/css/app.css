@@ -694,3 +694,52 @@ select.inp option,
   transform: scale(1.05);
   background: rgba(99, 102, 241, 0.18);
 }
+
+/* ── 用户手册：markdown 渲染样式 ─────────────────────── */
+.manual-answer h3, .manual-answer h4 {
+  font-weight: 600;
+  color: #F1F5F9;
+  margin: 0.6em 0 0.3em;
+}
+.manual-answer p { margin: 0.45em 0; }
+.manual-answer ul, .manual-answer ol {
+  margin: 0.45em 0;
+  padding-left: 1.4em;
+  list-style: disc;
+}
+.manual-answer ol { list-style: decimal; }
+.manual-answer li { margin: 0.2em 0; }
+.manual-answer pre {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.manual-answer code {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+  color: #67E8F9;
+}
+.manual-answer pre code { color: #E2E8F0; }
+.manual-answer strong { color: #F1F5F9; }
+.manual-answer hr { border-color: rgba(255, 255, 255, 0.08); margin: 0.8em 0; }
+.manual-answer a { color: #38BDF8; text-decoration: underline; }
+.manual-answer blockquote {
+  border-left: 3px solid #0EA5E9;
+  padding-left: 10px;
+  color: #94A3B8;
+  margin: 0.5em 0;
+}
+.manual-answer table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 12px;
+}
+.manual-answer th, .manual-answer td {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 4px 8px;
+  text-align: left;
+}

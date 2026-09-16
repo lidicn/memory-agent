@@ -9,10 +9,26 @@ from starlette.requests import Request
 from starlette.routing import Route
 
 from .deps import error, json_body, ok, require_user, runtime
+from ..config import get_config
+
+
+def _resolve_source(body_source, user):
+    """v0.6 #3：来源白名单 + 按 token 派生来源，防伪造。
+
+    * 应用令牌带 source（如 TVPilot 令牌标 vision）时强制采用该来源，
+      忽略调用方自报值，避免越权把自己标成 butler / ma；
+    * 其余情况要求 source 落在白名单内，非法值回落 ma（缺省安全值）。
+    """
+    allowed = set(get_config().agent_memory_sources or ["ma", "butler", "vision", "manual"])
+    token_source = (user.get("app_source") or "").strip() if user.get("app") else ""
+    if token_source:
+        return token_source
+    src = (body_source or "").strip() or "ma"
+    return src if src in allowed else "ma"
 
 
 async def add_memory(request: Request):
-    _, err = require_user(request)
+    user, err = require_user(request)
     if err:
         return err
     body = await json_body(request)
@@ -21,6 +37,7 @@ async def add_memory(request: Request):
         return error("缺少 text")
     rt = runtime(request)
     # add_semantic_memory 是同步方法（内部含 chroma 检索），不可 await
+    # source 标记记忆来源（v0.5）：ma=本服务原生 / butler=豆包管家生态；v0.6 #3 加固防伪造
     result = rt.agent_memory.add_semantic_memory(
         text=text,
         topic_key=(body.get("topic_key") or "").strip(),
@@ -29,6 +46,9 @@ async def add_memory(request: Request):
         tags=body.get("tags") or [],
         dry_run=bool(body.get("dry_run", False)),
         ttl_days=body.get("ttl_days"),
+        source=_resolve_source(body.get("source"), user),
+        valid_from=(body.get("valid_from") or "").strip(),
+        observed_at=(body.get("observed_at") or "").strip(),
     )
     if not result.get("ok"):
         return error(result.get("error", "写入失败"), result.get("code", 400), result)
@@ -41,12 +61,14 @@ async def list_memories(request: Request):
         return err
     state = request.query_params.get("state", "all")
     topic_key = request.query_params.get("topic_key", "").strip()
+    source = request.query_params.get("source", "").strip()
     rt = runtime(request)
-    result = rt.agent_memory.list_agent_memories(state)
+    result = rt.agent_memory.list_agent_memories(state, source)
     rows = result.get("memories", [])
     if topic_key:
         rows = [r for r in rows if r.get("topic_key") == topic_key]
-    return ok({"state": state, "topic_key": topic_key, "count": len(rows), "memories": rows})
+    return ok({"state": state, "topic_key": topic_key, "source": source or "all",
+               "count": len(rows), "memories": rows})
 
 
 async def memory_health(request: Request):
@@ -145,10 +167,13 @@ async def retrieve(request: Request):
     rt = runtime(request)
     trust_min = body.get("trust_min")
     top_k = int(body.get("top_k", 5))
+    source = (body.get("source") or "").strip()
     hits = rt.agent_memory.retrieve(
         question,
         trust_min=float(trust_min) if trust_min not in (None, "") else None,
         top_k=top_k,
+        source=source,
+        as_of=(body.get("as_of") or "").strip(),
     )
     return ok({"count": len(hits), "memories": hits})
 

@@ -308,12 +308,20 @@ class PatternManager:
             if condition.get('room') and condition['room'] != room:
                 continue
             
-            # 检查时间
+            # 检查时间（支持跨午夜时段，如 '22:00-02:00'）
             if time and condition.get('time_range'):
-                # 简单时间范围检查
-                start, end = condition['time_range'].split('-')
-                if not (start <= time <= end):
-                    continue
+                try:
+                    a, b = condition['time_range'].split('-', 1)
+                    sh, sm = (int(x) for x in a.split(':'))
+                    eh, em = (int(x) for x in b.split(':'))
+                    th, tm = (int(x) for x in str(time).split(':')[:2])
+                    smin, emin, tmin = sh * 60 + sm, eh * 60 + em, th * 60 + tm
+                except Exception:
+                    pass
+                else:
+                    ok = (smin <= tmin <= emin) if smin <= emin else (tmin >= smin or tmin <= emin)
+                    if not ok:
+                        continue
             
             # 检查季节
             if season and condition.get('season'):

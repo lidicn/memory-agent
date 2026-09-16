@@ -9,12 +9,15 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 from starlette.requests import Request
 from starlette.routing import Route
 
 import httpx
 
+from ..store import now_local
+from ..presence_fusion import fuse_presence
 from .deps import error, json_body, ok, require_user, runtime
 
 
@@ -170,6 +173,46 @@ async def events_face(request: Request):
     return ok(result, status_code=202)
 
 
+async def vision_presence(request: Request):
+    """在场查询：最近 N 分钟内，各成员最后一次被识别到的时间与来源。
+
+    ``GET /api/vision/presence?room=客厅&minutes=10``
+
+    豆包管家每 30~60s 轮询一次，发现「某成员新出现」即触发个性化问候。
+    数据来源是 ``behavior_events.persons_json``（TV 人脸事件 + 视觉巡检都写这里），
+    不额外建表。``via`` 归一化：TV 端上报的 ``face`` 与服务端补认的 ``arcface``
+    统一为 ``arcface``，外观匹配为 ``appearance_matched``；原始值在 ``via_raw``。
+    未识别 / 陌生人（``未识别成员`` 等）不出现在结果里。
+    """
+    params = request.query_params
+    room = (params.get("room") or "").strip() or None
+    raw_minutes = params.get("minutes")
+    try:
+        minutes = float(raw_minutes) if raw_minutes not in (None, "") else 10.0
+    except (TypeError, ValueError):
+        return error("minutes 必须是数字")
+    minutes = max(0.5, min(minutes, 24 * 60))
+    rt = runtime(request)
+    now = now_local(rt.config.tz_offset_hours)
+    since = (now - timedelta(minutes=minutes)).isoformat(sep="T")
+    items = await asyncio.to_thread(rt.store.recent_presence, since, room)
+    # 在场融合（v0.7.5）：跨房间占用 + 名册消除法身份推断。
+    # 消除法需要全房子视图，故 occupancy 始终取全房间（不受 room 过滤影响），
+    # 而 items 仍按 room 过滤返回，保持对管家的既有契约不变。
+    members = await asyncio.to_thread(rt.store.list_members)
+    occupancy = await asyncio.to_thread(rt.store.recent_occupancy, since)
+    fusion = fuse_presence(members, occupancy)
+    return ok({
+        "room": room or "",
+        "window_minutes": minutes,
+        "since": since,
+        "now": now.isoformat(sep="T"),
+        "count": len(items),
+        "items": items,
+        "fusion": fusion,
+    })
+
+
 async def behaviors_query(request: Request):
     """行为查询（spec §5.3）：?member=&room=&from=&to=&limit="""
     _, err = require_user(request)
@@ -249,6 +292,7 @@ ROUTES = [
     Route("/api/vision/test-llm", vision_test_llm, methods=["POST"]),
     Route("/api/vision/analyze", vision_analyze, methods=["POST"]),
     Route("/api/events/face", events_face, methods=["POST"]),
+    Route("/api/vision/presence", vision_presence, methods=["GET"]),
     Route("/api/behaviors", behaviors_query, methods=["GET"]),
     Route("/api/behaviors/{event_id}/label", behaviors_label, methods=["POST"]),
 ]

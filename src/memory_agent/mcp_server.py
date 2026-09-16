@@ -36,8 +36,22 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import json
+import logging
 import os
+import threading
+import time
 
+from .mcp_context import caller as _caller_context
+from .mcp_errors import (  # noqa: F401
+    ALL_CODES,
+    ErrorCode,
+    _is_error,
+    infer_error_code,
+    normalize_tool_result,
+)
+from .mcp_scopes import note_unknown, requires, scope_of
 from .runtime import get_runtime
 from .tool_schema import build_catalog, TOOL_NAMES as TOOL_NAMES_FROM_SPEC, register_simple_tools  # noqa: F401
 
@@ -90,8 +104,38 @@ SERVER_INSTRUCTIONS = """Memory Agent —— 家庭行为记忆与洞察中枢�
 5. 用自然语言把发现讲给用户：**展示证据 + 询问是否存档到 TA 的生活习惯档案**。
 6. **只有用户明确确认后**才调用 `confirm_member_tag(member_id, tag='夜猫子', emoji='🦉', confidence=0.9, category='sleep', evidence=[...])` 写回。
    同名标签会覆盖刷新；用户也可在 WebUI 的「家庭成员」页手动增删标签。
+   **服务端强制（v0.9）**：标签写回默认**被服务端拒绝**（返回 `DENIED`），需管理员先在 WebUI「系统设置」开启 `member_tag_agent_writeback`；
+   未开启时请引导用户在「家庭成员」页手动添加，切勿重复尝试。
 
 安全准则：绝不在未获确认时擅自写回标签；标签用语要温和、带人情味（emoji + 口语化），避免监控感。
+
+## 错误模型（v0.9 统一契约）
+工具失败一律返回 `isError=true`，正文为结构化 JSON：
+`{"ok": false, "error": {"code": "...", "message": "..."}, "detail": {...}}`。
+错误码枚举：
+- `NOT_FOUND` 资源不存在（成员/模板/记忆/技能…）
+- `INVALID_PARAM` 参数缺失或非法
+- `UPSTREAM_UNAVAILABLE` 依赖不可达（HA / LLM / 向量库 / 功能未启用）
+- `DENIED` 权限不足（如令牌无 write 权限）
+- `RATE_LIMITED` 限流
+- `INTERNAL` 未分类内部错误
+遇到 `isError` 时按 `error.code` 分类处理（勿把 `message` 当正常数据），必要时向用户说明并建议修复。
+
+## 幂等键（防重复执行）
+所有写工具（如 `trigger_collection` / `create_member` / `save_skill` / `add_semantic_memory` …）
+都支持可选参数 `idempotency_key`：传同一 key 的重复调用**只执行一次**，24h 内再次调用直接返回首次结果。
+网络重试 / 多次触发同一动作时带上它，可避免重复采集、重复建成员、重复写记忆等副作用。
+
+## 响应体上限（v0.9 任务3）
+单个工具的响应正文超过 `mcp_response_max_bytes`（默认 64KB，可在「系统设置」调整）时会被
+**自动截断并附摘要**，结尾提示「[响应已截断] … 请用更窄的时间窗 / 分页参数 / 专用精简查询接口」。
+这是服务端保护（避免巨响应撑爆客户端上下文），并非错误；缩窄查询范围即可拿到完整数据。
+
+## 故障注入矩阵（v0.9 任务3，运维/测试用）
+容器内可调用 `set_mcp_fault(tool, code)` 强制某工具（tool='*' 表示全部）返回指定错误码而
+**不真正执行**，用于验证客户端对各类故障的契约处理（错误模型 / 断路器 / 重试）。
+code ∈ {NOT_FOUND, INVALID_PARAM, UPSTREAM_UNAVAILABLE, DENIED, RATE_LIMITED, INTERNAL}。
+结束后 `clear_mcp_faults()` 清除。正常业务不应依赖此能力。
 """
 
 MCP_AVAILABLE = True
@@ -590,11 +634,312 @@ def seed_builtin_skills(rt: "Runtime") -> int:
     return seeded
 
 
+# ── MCP 调用可观测性（Bug#8：调用计数 / 耗时 / 错误 / 慢调用日志）──────
+# 所有 CALL_TOOL 请求经 MCPServer._handle_call_tool -> self.call_tool 统一入口，
+# 因此包装实例级 call_tool 即可覆盖手写 @mcp.tool() 与动态注册的 schema 工具。
+MCP_CALL_STATS: dict = {}
+MCP_STATS_LOCK = threading.Lock()
+# 审计 M2：单级阈值会把「冷启动 ~60s」与「偶发慢查询」混为一谈（前者必然触发，
+# 反而淹没后者）。拆成两级：SLOW（>=5s，INFO）与 HEAVY（>=30s，WARNING，重点排查）。
+MCP_SLOW_MS = float(os.getenv("MCP_SLOW_MS", "5000"))
+MCP_HEAVY_MS = float(os.getenv("MCP_HEAVY_MS", "30000"))
+_mcp_stats_log = logging.getLogger("mcp.stats")
+# 审计 M1：MCP 调用统计上限，防止进程级无限增长（内存泄漏）
+MCP_MAX_STATS_ENTRIES = int(os.getenv("MCP_MAX_STATS_ENTRIES", "500"))
+
+
+def _extract_error_text(result):
+    try:
+        for c in result.content:
+            if getattr(c, "type", "") == "text" and getattr(c, "text", ""):
+                return str(c.text)[:300]
+    except Exception:
+        pass
+    return "is_error"
+
+
+def _record_mcp_call(name, dt_ms, is_err, err_text):
+    # v0.7.5-2 操作审计：落库（带身份/来源），与内存统计互补。
+    # 旁路：失败只记日志，绝不影响工具调用本身。
+    try:
+        token_name, _granted, origin = _caller_context()
+        get_runtime().store.log_mcp_audit(
+            token_name=token_name,
+            tool=name,
+            scope=scope_of(name),
+            duration_ms=dt_ms,
+            ok=not is_err,
+            error=(err_text or "") if is_err else "",
+            origin=origin,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _mcp_stats_log.debug("MCP 审计落库失败（忽略）: %s", exc)
+    with MCP_STATS_LOCK:
+        s = MCP_CALL_STATS.get(name)
+        if s is None:
+            s = {"calls": 0, "errors": 0, "total_ms": 0.0, "max_ms": 0.0,
+                 "min_ms": 0.0, "last_ms": 0.0, "last_called": "", "last_error": None}
+            MCP_CALL_STATS[name] = s
+        s["calls"] += 1
+        s["total_ms"] += dt_ms
+        if dt_ms > s["max_ms"]:
+            s["max_ms"] = dt_ms
+        if s["min_ms"] <= 0 or dt_ms < s["min_ms"]:
+            s["min_ms"] = dt_ms
+        s["last_ms"] = dt_ms
+        s["last_called"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+        if is_err:
+            s["errors"] += 1
+            s["last_error"] = (err_text or "")[:500]
+        # 审计 M1：防止 MCP_CALL_STATS 进程级无限增长（内存泄漏）
+        if len(MCP_CALL_STATS) > MCP_MAX_STATS_ENTRIES:
+            for _ in range(len(MCP_CALL_STATS) - MCP_MAX_STATS_ENTRIES):
+                MCP_CALL_STATS.popitem(last=False)  # py3.7+ 字典保序，淘汰最旧
+    if dt_ms >= MCP_HEAVY_MS:
+        _mcp_stats_log.warning("[MCP-HEAVY] tool=%s %.0fms err=%s", name, dt_ms, is_err)
+    elif dt_ms >= MCP_SLOW_MS:
+        _mcp_stats_log.info("[MCP-SLOW] tool=%s %.0fms err=%s", name, dt_ms, is_err)
+
+
+def _build_tool_result(text: str, is_error: bool = False):
+    """构造 CallToolResult，自动适配 mcp 1.x(isError) / 2.x(is_error) 字段名。"""
+    from mcp.types import CallToolResult, TextContent
+
+    tc = TextContent(type="text", text=text)
+    flds = getattr(CallToolResult, "model_fields", None) or getattr(
+        CallToolResult, "__fields__", {}) or {}
+    kwargs: dict = {"content": [tc]}
+    if "is_error" in flds:
+        kwargs["is_error"] = is_error
+    elif "isError" in flds:
+        kwargs["isError"] = is_error
+    else:
+        kwargs["is_error"] = is_error
+    return CallToolResult(**kwargs)
+
+
+def _denied_result(tool: str, token_name: str, granted: list):
+    """构造「权限不足」的工具错误结果（isError=True，而非抛协议错误）。
+
+    用 isError 结果而不是异常：客户端拿到的是可读的失败原因，
+    而不是一条难以定位的协议错误。
+    """
+    granted_txt = ",".join(granted) if granted else "(无)"
+    text = (
+        f"DENIED: 令牌 '{token_name or '(未知)'}' 无 write 权限，"
+        f"不能调用写工具 '{tool}'（当前权限 {granted_txt}）。"
+        "请在 WebUI「MCP 接入」把该令牌权限切到「读写」，或换用带 write 的令牌。"
+    )
+    return _build_tool_result(text, is_error=True)
+
+
+# ── v0.9 幂等键（写工具防重复执行；分发层消费，工具签名无需改）──────────────
+def _idem_result(cached: dict):
+    """把缓存的幂等结果还原为 CallToolResult（兼容 mcp 1.x/2.x 字段名）。"""
+    from mcp.types import CallToolResult, TextContent
+
+    text = TextContent(type="text", text=cached.get("result_text") or "")
+    flds = getattr(CallToolResult, "model_fields", None) or getattr(
+        CallToolResult, "__fields__", {}) or {}
+    kwargs: dict = {"content": [text]}
+    is_err = bool(cached.get("is_error"))
+    if "is_error" in flds:
+        kwargs["is_error"] = is_err
+    elif "isError" in flds:
+        kwargs["isError"] = is_err
+    else:
+        kwargs["is_error"] = is_err
+    return CallToolResult(**kwargs)
+
+
+def _result_text(result) -> str:
+    try:
+        for c in result.content:
+            if getattr(c, "type", "") == "text":
+                return str(c.text)
+    except Exception:
+        pass
+    return ""
+
+
+def _idem_get(cache_key: str):
+    try:
+        return get_runtime().store.get_idempotency(cache_key)
+    except Exception:
+        return None
+
+
+def _idem_save(cache_key: str, tool: str, text: str) -> None:
+    try:
+        get_runtime().store.save_idempotency(cache_key, tool, text)
+    except Exception as exc:  # noqa: BLE001
+        _mcp_stats_log.debug("幂等键落库失败（忽略）: %s", exc)
+
+
+def _mcp_response_max_bytes() -> int:
+    """运行时读取响应上限（默认 64KB）。"""
+    try:
+        return int(getattr(get_runtime().config, "mcp_response_max_bytes", 65536) or 65536)
+    except Exception:
+        return 65536
+
+
+def _apply_response_cap(result, tool: str, max_bytes: int = None):
+    """v0.9 任务3：单工具响应正文超上限则截断并附摘要，避免巨响应撑爆客户端上下文。
+
+    max_bytes 为 None 取运行配置；传值用于单测。错误结果(is_error)截断后保留错误标记。
+    """
+    cap = max_bytes if max_bytes is not None else _mcp_response_max_bytes()
+    if cap <= 0:
+        return result
+    text = _result_text(result)
+    raw = text.encode("utf-8")
+    if len(raw) <= cap:
+        return result
+    truncated = raw[:cap].decode("utf-8", "ignore")
+    kb_total = max(1, len(raw) // 1024)
+    kb_cap = max(1, cap // 1024)
+    summary = (
+        f"\n\n⚠️ [响应已截断] 工具 '{tool}' 原始输出约 {kb_total}KB 超过上限 {kb_cap}KB，"
+        f"已展示前 {kb_cap}KB。请用更窄的时间窗 / 分页参数 / 专用精简查询接口获取完整结果。"
+    )
+    return _build_tool_result(truncated + summary, is_error=_is_error(result))
+
+
+# ── v0.9 任务3 故障注入矩阵（混沌演练 / 契约验证用）────────────────────────
+# 运维或测试可在容器内调用 set_mcp_fault(tool, code) 强制某工具返回指定错误码，
+# 不真正执行工具——用于验证客户端对各类故障的契约处理（错误模型 / 断路器 / 重试）。
+_FAULT_INJECT: dict[str, str] = {}
+_FAULT_LOCK = threading.Lock()
+
+
+def set_mcp_fault(tool: str, code: str) -> None:
+    """注入故障：tool='*' 表示全部工具。code 必须为 mcp_errors.ErrorCode 之一。"""
+    if code not in ALL_CODES:
+        raise ValueError(f"未知故障码 {code!r}，应为 {ALL_CODES} 之一")
+    with _FAULT_LOCK:
+        _FAULT_INJECT[tool] = code
+
+
+def clear_mcp_faults() -> None:
+    with _FAULT_LOCK:
+        _FAULT_INJECT.clear()
+
+
+def list_mcp_faults() -> dict[str, str]:
+    with _FAULT_LOCK:
+        return dict(_FAULT_INJECT)
+
+
+def _fault_result(tool: str, code: str):
+    msg = f"故障注入（演练）：工具 '{tool}' 被强制返回 {code}"
+    payload = json.dumps(
+        {"ok": False, "error": {"code": code, "message": msg}}, ensure_ascii=False
+    )
+    return _build_tool_result(payload, is_error=True)
+
+
+async def _tracked_call_tool(server, name, arguments, context=None):
+    # v0.7.5-1 工具级 scope：写工具需令牌持 write。
+    # 判定放在这里而不是 ASGI 中间件——中间件读 body 会破坏 /mcp 的 Mount 转发。
+    _tok, _scopes, _origin = _caller_context()
+    note_unknown(name)
+    if not requires(name, _scopes):
+        _mcp_stats_log.warning(
+            "MCP 权限拒绝: token=%s tool=%s need=write granted=%s", _tok, name, _scopes
+        )
+        result = _denied_result(name, _tok, _scopes)
+        _record_mcp_call(name, 0.0, True, f"DENIED scope: {name}")
+        return result
+
+    # v0.9 任务3 故障注入矩阵：注入的故障优先于真实执行（含幂等缓存），用于契约验证 / 混沌演练。
+    fault_code = _FAULT_INJECT.get(name) or _FAULT_INJECT.get("*")
+    if fault_code:
+        _mcp_stats_log.warning("MCP 故障注入: tool=%s code=%s", name, fault_code)
+        result = _fault_result(name, fault_code)
+        _record_mcp_call(name, 0.0, True, f"FAULT-INJECT:{fault_code}")
+        return result
+
+    # v0.9 幂等键：写工具可传 idempotency_key 防重复执行（分发层消费，工具签名无需改）
+    idem_key = ""
+    if isinstance(arguments, dict):
+        idem_key = str(arguments.pop("idempotency_key", "") or "").strip()
+    cache_key = f"{name}:{idem_key}" if idem_key else ""
+    if cache_key:
+        cached = _idem_get(cache_key)
+        if cached is not None:
+            _record_mcp_call(name, 0.0, bool(cached.get("is_error")), "IDEMPOTENT-HIT")
+            return _idem_result(cached)
+
+    t0 = time.monotonic()
+    is_err = False
+    err_text = None
+    try:
+        result = await MCPServer.call_tool(server, name, arguments, context)
+        # v0.9 契约完善：把工具的朴素 {"ok": false} 结果升级为 isError=True + 结构化错误码，
+        # 终结「ok:false 被模型当正文」。
+        result = normalize_tool_result(result, name)
+        # v0.9 任务3：响应体超限截断 + 摘要（不真正执行工具外不触发）
+        result = _apply_response_cap(result, name)
+        if getattr(result, "is_error", False) or getattr(result, "isError", False):
+            is_err = True
+            err_text = _extract_error_text(result)
+        elif cache_key:
+            # 仅缓存成功结果；失败不缓存，允许重试
+            _idem_save(cache_key, name, _result_text(result))
+        return result
+    except Exception as exc:
+        is_err = True
+        err_text = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        dt = (time.monotonic() - t0) * 1000
+        _record_mcp_call(name, dt, is_err, err_text)
+
+
+def _install_mcp_tracking(server):
+    """包装实例级 call_tool，覆盖全部工具调用（含动态注册的 schema 工具）。"""
+    if server is None:
+        return
+    server.call_tool = functools.partial(_tracked_call_tool, server)
+
+
+def get_mcp_stats(top_n: int = 20, sort_by: str = "calls") -> dict:
+    """返回 MCP 工具调用效率快照（运维/效率可观测）。
+
+    sort_by: calls / errors / total_ms / avg_ms / max_ms（降序）。
+    """
+    with MCP_STATS_LOCK:
+        items = []
+        for name, s in MCP_CALL_STATS.items():
+            avg = (s["total_ms"] / s["calls"]) if s["calls"] else 0.0
+            items.append({
+                "name": name, "calls": s["calls"], "errors": s["errors"],
+                "error_rate": round(s["errors"] / s["calls"], 3) if s["calls"] else 0.0,
+                "total_ms": round(s["total_ms"], 1), "avg_ms": round(avg, 1),
+                "max_ms": round(s["max_ms"], 1), "min_ms": round(s["min_ms"], 1),
+                "last_ms": round(s["last_ms"], 1), "last_called": s["last_called"],
+                "last_error": s["last_error"],
+            })
+        total_calls = sum(i["calls"] for i in items)
+        total_errors = sum(i["errors"] for i in items)
+    key = sort_by if sort_by in ("calls", "errors", "total_ms", "avg_ms", "max_ms") else "calls"
+    items.sort(key=lambda i: i[key], reverse=True)
+    if top_n and top_n > 0:
+        items = items[:top_n]
+    return {
+        "ok": True, "since": "process start", "window_tools": len(MCP_CALL_STATS),
+        "total_calls": total_calls, "total_errors": total_errors,
+        "slow_threshold_ms": MCP_SLOW_MS, "tools": items,
+    }
+
+
 def _build_server():
     if not MCP_AVAILABLE:
         return None
 
     mcp = MCPServer(SERVER_NAME, instructions=SERVER_INSTRUCTIONS)
+    _install_mcp_tracking(mcp)
 
     # ── 入口层 ───────────────────────────────────────────────────────────
 
@@ -716,6 +1061,71 @@ def _build_server():
             debounce_seconds,
             include_timeline,
         )
+
+    @mcp.tool()
+    async def query_device_usage(
+        logical_device: str = "",
+        entity_id: str = "",
+        attribute: str = "state",
+        value: str = "",
+        pattern: str = "equals",
+        metric: str = "duration",
+        days: int = 7,
+        start: str = "",
+        end: str = "",
+        include_timeline: bool = False,
+    ) -> dict:
+        """按「逻辑设备名」查询用量 / 时长 / 计数（v0.3 语义工具）。
+
+        与 ``get_device_usage`` 的区别：本工具接受**逻辑设备名**（如「客厅电视」「游戏机」），
+        由身份层解析为当前 entity_id。因此 HA 集成重登、双集成并存导致 entity_id 漂移后
+        依然稳定——不必先调 get_entity_catalog 去查最新的 entity_id。
+
+        典型用法：``query_device_usage(logical_device="客厅电视", attribute="source",
+        value="HDMI 3", metric="duration", days=2)`` 即「电视 HDMI 3 近两天的时长」。
+
+        logical_device 与 entity_id 二选一；都不传会报错。
+        metric：duration（时长）/ count（次数）/ numeric_sum（数值累计）。
+        """
+        from .templates import run_query
+
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            run_query,
+            rt,
+            entity_id=entity_id,
+            logical_id=logical_device,
+            attribute=attribute,
+            pattern=pattern,
+            value=value,
+            metric=metric,
+            days=days,
+            start=start,
+            end=end,
+            include_timeline=include_timeline,
+        )
+
+    @mcp.tool()
+    async def list_device_health(state: str = "") -> dict:
+        """实体健康 / 失效清单（A3）。
+
+        state 可填 active（确认在线）/ unknown（短暂失联）/ stale（长期失效），
+        留空返回全部。``referenced=1`` 表示该实体仍被某个模板引用，
+        它一旦失效就会让洞察失真，应优先处理。
+        """
+        rt = get_runtime()
+        identity = getattr(rt, "identity", None)
+        if identity is None:
+            return {"ok": False, "error": "身份层未启用"}
+        rows = await asyncio.to_thread(identity.store.list_device_health, state)
+        devices = await asyncio.to_thread(identity.list_devices)
+        return {
+            "ok": True,
+            "state": state or "all",
+            "health": rows,
+            "total": len(rows),
+            "logical_devices": len(devices),
+        }
 
     @mcp.tool()
     async def search_events(
@@ -920,6 +1330,16 @@ def _build_server():
         emoji 如 🦉；confidence 为 0~1；evidence 为证据字符串列表。
         """
         rt = get_runtime()
+        # v0.9 授权规则服务端化：「须用户确认」由服务端强制，不再依赖 LLM 自觉。
+        # 管理员需在 WebUI「系统设置」显式开启 member_tag_agent_writeback，否则拒绝写回。
+        if not bool(getattr(rt.config, "member_tag_agent_writeback", False)):
+            return {
+                "ok": False,
+                "code": "DENIED",
+                "error": "成员标签写回未授权（member_tag_agent_writeback=false）。"
+                         "请管理员在 WebUI「系统设置」开启后重试；"
+                         "或引导用户在「家庭成员」页手动添加标签。",
+            }
         result = await asyncio.to_thread(
             rt.store.add_member_tag,
             member_id,
@@ -962,9 +1382,11 @@ def _build_server():
 
     @mcp.tool()
     async def get_behavior_insights_compare(compare_days: int = 7) -> dict:
-        """行为环比洞察：对比最近 compare_days 与上一个等长窗口，给出各活动的发生次数/天数 delta 与趋势摘要。
+        """行为环比洞察：对比最近 compare_days 与上一个等长窗口（自然日对齐，各恰好 compare_days 天）。
 
-        做周报、习惯变化追踪时调用。
+        返回各活动的发生次数/天数 **与累计时长(delta)**，以及 **温控维度**（空调开启时长、
+        平均设定/室温、设定温度区间变化）的 delta 与趋势摘要。适用于『和上周比有什么变化』、
+        『这周对比上周』、『空调是不是开得更猛/设得更低了』。
         """
         rt = get_runtime()
         return await asyncio.to_thread(rt.insights.get_behavior_insights, compare_days)
@@ -1493,16 +1915,34 @@ def _build_server():
         """
         if not template_id:
             return {"ok": False, "error": "template_id 不能为空"}
+        from .template_validate import check_executable
         from .templates import run_template
+
+        rt = get_runtime()
+        # 执行闸门（v0.7）：失效模板硬阻止，避免静默返回误导性的 0
+        gate = check_executable(rt, template_id)
+        if not gate.get("allowed"):
+            return {
+                "ok": False,
+                "error": (
+                    f"模板已失效（{gate.get('status')}）："
+                    f"{gate.get('reason') or '引用实体不可用'}"
+                ),
+                "status": gate.get("status"),
+                "suggestions": gate.get("suggestions") or [],
+            }
         try:
-            return run_template(
-                get_runtime(),
+            res = run_template(
+                rt,
                 template_id,
                 days=days,
                 start=start,
                 end=end,
                 include_timeline=include_timeline,
             )
+            if gate.get("warning"):
+                res["warning"] = gate["warning"]
+            return res
         except Exception as exc:
             return {"ok": False, "error": f"模板执行失败：{exc}"}
 
@@ -1635,6 +2075,81 @@ def _build_server():
             "is_latest": True,
             **extra,
         }
+
+    # ── 只读资源（v0.9 MCP 契约：列表/获取类迁为资源，可缓存、省 token）────────
+    @mcp.resource("skill://{name}", name="skill",
+                  description="按名获取网关技能 markdown（技能唯一真源）",
+                  mime_type="text/markdown")
+    def res_skill(name: str) -> str:
+        rt = get_runtime()
+        skill_path = os.path.join(rt.config.skills_dir, name, "SKILL.md")
+        if not os.path.isfile(skill_path):
+            return f"# skill 不存在: {name}"
+        with open(skill_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    @mcp.resource("template://{template_id}", name="template",
+                  description="行为洞察模板完整 JSON", mime_type="application/json")
+    def res_template(template_id: str) -> str:
+        rt = get_runtime()
+        tpl = rt.templates.get(template_id)
+        if tpl is None:
+            return json.dumps({"ok": False, "error": f"模板不存在: {template_id}"},
+                              ensure_ascii=False)
+        data = tpl.to_dict()
+        data["builtin"] = rt.templates.is_builtin(template_id)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.resource("member://{member_id}", name="member",
+                  description="成员生活习惯档案（含标签/房间/设备）JSON",
+                  mime_type="application/json")
+    def res_member(member_id: str) -> str:
+        rt = get_runtime()
+        member = rt.store.get_member(member_id)
+        if not member:
+            return json.dumps({"ok": False, "error": "成员不存在"}, ensure_ascii=False)
+        member.pop("face_feature", None)  # 生物特征不经资源外泄
+        return json.dumps({"ok": True, "member": member}, ensure_ascii=False)
+
+    @mcp.resource("catalog://rooms", name="rooms",
+                  description="房间与设备目录（entity_id ↔ 友好名/房间/类别）",
+                  mime_type="application/json")
+    def res_rooms() -> str:
+        rt = get_runtime()
+        return json.dumps(rt.insights.entity_catalog("", "", "", "", True, 7),
+                          ensure_ascii=False)
+
+    # ── 可复用提示（v0.9 MCP 契约：把 SERVER_INSTRUCTIONS 流程抽成 Prompts）────
+    @mcp.prompt(name="weekly_review", description="生成家庭行为周报的分析流程")
+    def prompt_weekly_review(days: str = "7") -> str:
+        return (
+            f"请生成最近 {days} 天的家庭行为周报：\n"
+            f"1. get_behavior_insights(days={days}) 拿作息、活跃时段、房间分布、异常；\n"
+            "2. get_device_usage(...) 补关键设备用量；\n"
+            "3. 结合 get_user_persona 汇总；\n"
+            "4. 按「作息 / 房间偏好 / 媒体 / 异常」四段输出，附证据与时间窗。"
+        )
+
+    @mcp.prompt(name="member_persona", description="为成员建立/更新生活习惯档案的流程")
+    def prompt_member_persona(member_id: str = "", days: str = "14") -> str:
+        return (
+            "为成员建立生活习惯档案：\n"
+            "1. list_members() 找到 member_id（无则 create_member）；\n"
+            f"2. get_member_persona(member_id, days={days}) 拿结构化画像与证据；\n"
+            "3. 基于出现天数/频次/典型时段/房间推断标签（如夜猫子🦉、家庭主厨🍳）；\n"
+            "4. 展示证据并询问用户是否存档；**确认后**才 confirm_member_tag 写回"
+            "（服务端需管理员开启 member_tag_agent_writeback）。"
+        )
+
+    @mcp.prompt(name="device_health_audit", description="设备健康巡检流程")
+    def prompt_device_health_audit() -> str:
+        return (
+            "设备健康巡检：\n"
+            "1. get_entity_catalog(days=14, only_enabled=False) 看全量设备与最后在线；\n"
+            "2. 识别长期离线的设备；\n"
+            "3. 用设备健康相关工具拿健康状态与失效实体；\n"
+            "4. 汇总「异常设备清单 + 建议」（重建集成 / 检查供电 / 网络）。"
+        )
 
     return mcp
 

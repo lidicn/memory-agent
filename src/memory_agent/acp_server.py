@@ -110,8 +110,67 @@ _STORE = SessionStore()
 
 
 # ── 工具目录 ───────────────────────────────────────────────────────────
-def build_acp_tools() -> list[dict]:
-    """ACP initialize 暴露的工具：builtin 集 + delegate_to_autoflow。"""
+# 竞技场专用工具（仅对 arena_ 令牌开放），与 builtin/delegate 隔离
+_ARENA_TOOL_NAMES = {
+    "get_arena_inspiration",
+    "evaluate_creativity",
+    "record_arena_result",
+}
+
+
+def _acp_kind(rt, scope) -> str:
+    """从 ACP middleware 写入的 token 名推导令牌种类（arena/acp/...）。"""
+    name = (scope.get("state") or {}).get("acp_token_name")
+    if name:
+        try:
+            k = rt.tokens.kind(name)
+            if k:
+                return k
+        except Exception:
+            pass
+    return "acp"
+
+
+def _make_arena_run_tool(rt, kind):
+    """按令牌作用域生成工具执行器：arena 令牌只能调 3 个竞技场工具，越权一律拒绝。"""
+
+    async def _run(_rt, name, args):
+        if kind == "arena":
+            if name not in _ARENA_TOOL_NAMES:
+                return {"error": f"竞技场令牌无权调用工具：{name}"}
+            method = getattr(rt.arena, name, None)
+            if method is None:
+                return {"error": f"未知竞技场工具: {name}"}
+            try:
+                return await method(**(args or {}))
+            except Exception as exc:  # noqa: BLE001
+                return {"error": f"竞技场工具执行失败：{exc}"}
+        return await _run_acp_tool(rt, name, args)
+
+    return _run
+
+
+def build_acp_tools(kind: str = "acp") -> list[dict]:
+    """ACP initialize 暴露的工具。
+
+    * kind=="arena"：仅返回 3 个竞技场窄工具（get_arena_inspiration /
+      evaluate_creativity / record_arena_result），不含 delegate_to_autoflow，
+      保证竞技场令牌不能越权调用生产写操作。
+    * 其它（默认 acp）：builtin 集 + delegate_to_autoflow。
+    """
+    if kind == "arena":
+        tools: list[dict] = []
+        for t in tool_schema.build_openai_tools(("arena",)):
+            fn = t["function"]
+            tools.append(
+                {
+                    "name": fn["name"],
+                    "description": fn["description"],
+                    "inputSchema": fn["parameters"],
+                }
+            )
+        return tools
+
     tools: list[dict] = []
     for t in tool_schema.build_openai_tools(("builtin",)):
         fn = t["function"]
@@ -263,7 +322,7 @@ async def acp_handle(
                     "sessions": True,
                     "tools": True,
                 },
-                "tools": build_acp_tools(),
+                "tools": build_acp_tools(_acp_kind(rt, scope)),
             },
         ), None
 
@@ -333,7 +392,11 @@ async def acp_handle(
         _register(run)
         _STORE.bind(session_id, run.run_id)
         asyncio.create_task(
-            _execute_run(rt, run, tools=ACP_TOOLS, run_tool=_run_acp_tool)
+            _execute_run(
+                rt, run,
+                tools=build_acp_tools(_acp_kind(rt, scope)),
+                run_tool=_make_arena_run_tool(rt, _acp_kind(rt, scope)),
+            )
         )
 
         async def gen() -> AsyncIterator[str]:

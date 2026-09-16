@@ -33,6 +33,10 @@ const TPL = `
 
   <div class="ml-auto flex items-center gap-2">
     <span class="text-[11px] text-txt-3" x-text="total + ' 条洞察'"></span>
+    <span class="text-[10px] text-txt-3" x-show="lastChecked" x-text="'校验于 ' + fmtTime(lastChecked, true)"></span>
+    <button class="btn-ghost btn-xs" @click="revalidate()" :disabled="validating">
+      <span x-show="validating" class="spinner"></span><span>重新校验</span>
+    </button>
     <button class="btn-ghost btn-xs" @click="exportAll()" :disabled="!items.length">导出全部</button>
   </div>
 </div>
@@ -48,7 +52,8 @@ const TPL = `
 
 <div class="grid md:grid-cols-2 xl:grid-cols-3 gap-4" x-show="!loading && items.length">
   <template x-for="(t, i) in items" :key="t.id">
-    <div class="card p-4 flex flex-col stagger cursor-pointer" :style="'--d:' + (i*35) + 'ms'"
+    <div class="card p-4 flex flex-col stagger cursor-pointer" :class="t.disabled ? 'opacity-60' : ''"
+         :style="'--d:' + (i*35) + 'ms'"
          @click="detail = t">
       <div class="flex items-start gap-3">
         <div class="w-9 h-9 rounded-xl grid place-items-center shrink-0" :class="catClass(t.category)">
@@ -65,6 +70,7 @@ const TPL = `
 
       <div class="flex flex-wrap items-center gap-1.5 mt-3">
         <span class="badge badge-brand" x-text="catLabel(t.category)"></span>
+        <span class="badge" :class="valBadge(t).cls" x-text="valBadge(t).label"></span>
         <span class="badge badge-mute" x-text="(t.entities||[]).length + ' 实体'"></span>
         <span class="badge" :class="confBadge(t.confidence)" x-text="'置信 ' + Math.round((t.confidence||0)*100) + '%'"></span>
         <span class="badge badge-mute" x-show="t.sample_days" x-text="t.sample_days + ' 天样本'"></span>
@@ -118,14 +124,41 @@ const TPL = `
       <div x-show="detail && (detail.entities||[]).length">
         <div class="lbl">关联实体</div>
         <div class="space-y-1.5">
-          <template x-for="e in (detail && detail.entities) || []" :key="e.entity_id + (e.attribute||'')">
-            <div class="card-flat p-2.5 flex items-center gap-2 text-[11px]">
-              <span class="font-mono text-brand-400 truncate flex-1" x-text="e.entity_id"></span>
-              <span class="badge badge-mute" x-text="e.attribute || 'state'"></span>
-              <span class="badge badge-mute" x-text="(e.pattern||'equals') + ' ' + (e.value||'')"></span>
-              <span class="badge badge-info" x-show="e.time_range" x-text="e.time_range"></span>
+          <template x-for="(e, ei) in (detail && detail.entities) || []" :key="e.entity_id + (e.attribute||'')">
+            <div class="card-flat p-2.5">
+              <div class="flex items-center gap-2 text-[11px]">
+                <span class="font-mono text-brand-400 truncate flex-1" x-text="e.entity_id"></span>
+                <span class="badge" :class="entBadge(detail, ei).cls" x-text="entBadge(detail, ei).label"></span>
+                <span class="badge badge-mute" x-text="e.attribute || 'state'"></span>
+                <span class="badge badge-mute" x-text="(e.pattern||'equals') + ' ' + (e.value||'')"></span>
+                <span class="badge badge-info" x-show="e.time_range" x-text="e.time_range"></span>
+              </div>
+              <div class="text-[10px] text-txt-3 mt-1" x-show="entInfo(detail, ei) && entInfo(detail, ei).message"
+                   x-text="entInfo(detail, ei) && entInfo(detail, ei).message"></div>
             </div>
           </template>
+        </div>
+      </div>
+
+      <div x-show="detail && detail.validation && (detail.validation.suggestions||[]).length">
+        <div class="lbl">修复建议（可换用可用实体）</div>
+        <div class="space-y-1.5">
+          <template x-for="s in (detail && detail.validation && detail.validation.suggestions) || []" :key="s.entity_index">
+            <div class="card-flat p-2.5 flex items-center gap-2 text-[11px]">
+              <div class="flex-1 min-w-0">
+                <div class="font-mono truncate" x-text="s.from + '  →  ' + s.to"></div>
+                <div class="text-[10px] text-txt-3 mt-0.5"
+                     x-text="(s.reason || '') + ' · 置信 ' + Math.round((s.confidence||0)*100) + '%'"></div>
+              </div>
+              <button class="btn-primary btn-xs" @click="applyFix(s)">应用</button>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div x-show="detail && detail.validation && detail.validation.needs_manual">
+        <div class="card-flat p-2.5 text-[11px] text-amber-400">
+          引用的实体查无替代候选，需人工指定真实实体后再使用。
         </div>
       </div>
 
@@ -138,6 +171,8 @@ const TPL = `
     <div class="flex items-center justify-between gap-2 p-4 border-t border-white/5">
       <span class="text-[10px] text-txt-3" x-text="detail && ('更新于 ' + fmtTime(detail.updated_at || detail.created_at, true))"></span>
       <div class="flex gap-2">
+        <button class="btn-ghost btn-xs" @click="toggleDisable(detail)"
+                x-text="detail && detail.disabled ? '恢复使用' : '停用'"></button>
         <button class="btn-ghost btn-xs" @click="copyJSON()">复制 JSON</button>
         <button class="btn-ghost btn-xs" @click="exportOne(detail)">导出</button>
         <button class="btn-danger btn-xs" x-show="detail && !detail.builtin" @click="remove(detail)">删除</button>
@@ -156,6 +191,8 @@ export function insightsPage() {
     q: '',
     category: 'all',
     loading: true,
+    validating: false,
+    lastChecked: '',
     detail: null,
 
     fmtTime,
@@ -172,6 +209,16 @@ export function insightsPage() {
         this.items = d.templates || [];
         this.total = d.total || this.items.length;
         if (d.categories && d.categories.length) this.categories = d.categories;
+        // 刷新后让详情弹层指向新对象，校验/停用状态才会实时更新
+        if (this.detail) {
+          const fresh = this.items.find((x) => x.id === this.detail.id);
+          if (fresh) this.detail = fresh;
+        }
+        const checked = this.items
+          .map((t) => t.validation && t.validation.checked_at)
+          .filter(Boolean)
+          .sort();
+        this.lastChecked = checked.length ? checked[checked.length - 1] : '';
       } catch (e) {
         this.$store.app.err('洞察加载失败：' + e.message);
       } finally {
@@ -188,6 +235,85 @@ export function insightsPage() {
       if (n >= 0.8) return 'badge-ok';
       if (n >= 0.5) return 'badge-warn';
       return 'badge-mute';
+    },
+
+    // ── v0.7 校验 / 停用 / 修复 ──────────────────────────
+    valBadge(t) {
+      const s = t && t.validation_status;
+      if (s === 'ok') return { label: '正常', cls: 'badge-ok' };
+      if (s === 'no_data') return { label: '无数据', cls: 'border-amber-400/40 text-amber-400 bg-amber-400/10' };
+      if (s === 'stale') return { label: '已失效', cls: 'border-rose-400/40 text-rose-400 bg-rose-400/10' };
+      if (s === 'missing') return { label: '实体缺失', cls: 'border-rose-400/40 text-rose-400 bg-rose-400/10' };
+      if (s === 'disabled') return { label: '已停用', cls: 'badge-mute' };
+      return { label: '未校验', cls: 'badge-mute' };
+    },
+
+    entInfo(detail, index) {
+      const v = detail && detail.validation;
+      if (!v || !(v.entities || []).length) return null;
+      return (v.entities || []).find((x) => x.index === index) || null;
+    },
+
+    entBadge(detail, index) {
+      const info = this.entInfo(detail, index);
+      if (!info) return { label: '未校验', cls: 'badge-mute' };
+      const map = {
+        ok: { label: '正常', cls: 'badge-ok' },
+        no_data: { label: '无数据', cls: 'border-amber-400/40 text-amber-400 bg-amber-400/10' },
+        stale: { label: '已失效', cls: 'border-rose-400/40 text-rose-400 bg-rose-400/10' },
+        missing: { label: '不存在', cls: 'border-rose-400/40 text-rose-400 bg-rose-400/10' }
+      };
+      return map[info.state] || { label: info.state || '未知', cls: 'badge-mute' };
+    },
+
+    async revalidate() {
+      this.validating = true;
+      try {
+        const d = await api.validateTemplates({});
+        const s = d.summary || {};
+        const txt = Object.keys(s).map((k) => k + ':' + s[k]).join(' / ') || '无模板';
+        this.$store.app.ok('校验完成 — ' + txt);
+        await this.load();
+      } catch (e) {
+        this.$store.app.err('校验失败：' + e.message);
+      } finally {
+        this.validating = false;
+      }
+    },
+
+    async applyFix(s) {
+      if (!s || !this.detail) return;
+      const yes = await this.$store.app.ask(
+        '应用修复',
+        '把 ' + s.from + ' 改为 ' + s.to + '？原值会记入审计，可回退。',
+        '应用'
+      );
+      if (!yes) return;
+      try {
+        await api.fixTemplate(this.detail.id, s.entity_index, { new_ref: s.to });
+        this.$store.app.ok('已修复');
+        await this.load();
+      } catch (e) {
+        this.$store.app.err('修复失败：' + e.message);
+      }
+    },
+
+    async toggleDisable(t) {
+      if (!t) return;
+      const target = !t.disabled;
+      const yes = await this.$store.app.ask(
+        target ? '停用模板' : '恢复模板',
+        target ? '停用后该模板不出现在调用路径，可随时恢复。' : '恢复后会重新校验。',
+        target ? '停用' : '恢复'
+      );
+      if (!yes) return;
+      try {
+        await api.disableTemplate(t.id, target);
+        this.$store.app.ok(target ? '已停用' : '已恢复');
+        await this.load();
+      } catch (e) {
+        this.$store.app.err(e.message);
+      }
     },
 
     async remove(t) {

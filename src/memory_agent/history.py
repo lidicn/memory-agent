@@ -22,6 +22,41 @@ from typing import Any, Dict, List, Optional
 from .store import TELEMETRY_DOMAINS, Store, make_event_id, now_local, parse_ts
 
 
+class _OpenAICompatEmbeddingFunction:
+    """OpenAI 兼容 ``/v1/embeddings`` 嵌入函数。
+
+    用于接入第三方嵌入端点（SiliconFlow bge-m3 / Qwen3-Embedding / new-api 网关），
+    提升中文语义检索质量。未配置时返回 ``None``，chroma 走默认 MiniLM，零配置不破坏现有部署。
+    """
+
+    def __init__(self, base_url: str, model: str, api_key: str = ""):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+
+    def __call__(self, input: list) -> "np.ndarray":
+        import httpx
+        import numpy as np
+
+        # chroma 的 EmbeddingFunction 协议期望 numpy 数组（与默认 MiniLM 一致）。
+        # 早期版本此处返回纯 Python list，导致下游对嵌入结果调用 .tolist() 时
+        # 抛 'list' object has no attribute 'tolist'。统一返回 float32 的 ndarray。
+        if isinstance(input, str):
+            input = [input]
+        texts = [t if isinstance(t, str) else str(t) for t in input]
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        body = {"model": self.model, "input": texts}
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(f"{self.base_url}/embeddings", json=body, headers=headers)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+        # 按 index 排序，保证与输入顺序一致（部分网关不保序）
+        data = sorted(data, key=lambda d: d.get("index", 0))
+        return np.array([d["embedding"] for d in data], dtype=np.float32)
+
+
 class HistoryManager:
     """行为历史门面：SQLite 主存储 + Chroma 语义索引。"""
 
@@ -35,8 +70,42 @@ class HistoryManager:
         self._collection = None
         self._chroma_error: str = ""
         self._chroma_tried = False
+        self._embed_fn_cache = None
+        self._embed_resolved = False
 
     # ── Chroma（可选） ───────────────────────────────────────────────────
+
+    def _embedding_function(self):
+        """返回 OpenAI 兼容嵌入函数。
+
+        优先级：配置了外部 embedding 端点（``embedding_base_url``+``embedding_model``）
+        则用 OpenAI 兼容接口；否则回退到 chroma 自带本地 MiniLM。
+
+        重要：chromadb>=0.5 已**移除**内置默认 embedding function，旧代码在未配置时
+        返回 ``None`` 会让 collection 创建后任何 ``query``/``upsert`` 都报错
+        ``You must provide an embedding function``（这正是语义去重/镜像长期静默失效的根因）。
+        因此未配置外部端点时必须显式回退到本地 ``DefaultEmbeddingFunction``。
+        本地 MiniLM 模型需预置到 ``~/.cache/chroma/onnx_models``（部署时已 docker cp 进容器），
+        否则首次使用会联网下载（容器内出网可能极慢/超时）。
+        """
+        if self._embed_resolved:
+            return self._embed_fn_cache
+        base = (getattr(self.config, "embedding_base_url", "") or "").strip()
+        model = (getattr(self.config, "embedding_model", "") or "").strip()
+        if base and model:
+            key = (getattr(self.config, "embedding_api_key", "") or "").strip()
+            self._embed_fn_cache = _OpenAICompatEmbeddingFunction(base, model, key)
+        else:
+            # 未配置外部端点：回退到 chroma 自带本地 MiniLM（需模型已缓存）
+            try:
+                import chromadb.utils.embedding_functions as _efns
+                self._embed_fn_cache = _efns.DefaultEmbeddingFunction()
+                print("[History] 使用本地 MiniLM 作为 embedding 函数")
+            except Exception as exc:
+                print(f"[History] 本地 embedding 函数不可用（缺 MiniLM 模型且无外部端点）: {exc}")
+                self._embed_fn_cache = None
+        self._embed_resolved = True
+        return self._embed_fn_cache
 
     @property
     def collection(self):
@@ -53,7 +122,9 @@ class HistoryManager:
                 host=self.config.chroma_host, port=self.config.chroma_port
             )
             self._collection = self._client.get_or_create_collection(
-                name=self.COLLECTION_NAME, metadata={"description": "家庭行为历史摘要"}
+                name=self.COLLECTION_NAME,
+                metadata={"description": "家庭行为历史摘要"},
+                embedding_function=self._embedding_function(),
             )
             self._chroma_error = ""
             print(f"[History] 向量库已连接: {self.COLLECTION_NAME}")
@@ -78,9 +149,31 @@ class HistoryManager:
             return self._client.get_or_create_collection(
                 name=self.AGENT_COLLECTION,
                 metadata={"description": "Agent 参与式写回记忆"},
+                embedding_function=self._embedding_function(),
             )
         except Exception as exc:
             print(f"[History] agent_memory 集合不可用: {exc}")
+            return None
+
+    @property
+    def arena_collection(self):
+        """竞技场题目库专用集合（命名空间隔离）。不可用时返回 None，绝不抛错。
+
+        复用 ``collection`` 已建立的 chroma client；题目去重向量索引落在这里，
+        与行为历史（behavior_history）/ Agent 记忆（agent_memory）各自独立。
+        """
+        if self._collection is None and not self._chroma_tried:
+            _ = self.collection  # 触发一次连接，建立 self._client
+        if self._client is None:
+            return None
+        try:
+            return self._client.get_or_create_collection(
+                name="arena_titles",
+                metadata={"description": "竞技场题目库（向量去重）"},
+                embedding_function=self._embedding_function(),
+            )
+        except Exception as exc:
+            print(f"[History] arena_titles 集合不可用: {exc}")
             return None
 
     def chroma_status(self) -> Dict[str, Any]:
@@ -99,6 +192,28 @@ class HistoryManager:
             }
         except Exception as exc:
             return {"connected": False, "error": str(exc)}
+
+    def embedding_status(self) -> Dict[str, Any]:
+        """嵌入模型状态：未配置 / 可达性 + 维度。供 /api/health 暴露。"""
+        base = (getattr(self.config, "embedding_base_url", "") or "").strip()
+        model = (getattr(self.config, "embedding_model", "") or "").strip()
+        if not base or not model:
+            return {
+                "configured": False,
+                "reason": "未配置 embedding 端点（使用 chroma 默认模型）",
+            }
+        try:
+            ef = self._embedding_function()
+            vec = ef(["健康检查探针：书房 空调 开启"])
+            dim = len(vec[0]) if vec and isinstance(vec[0], list) else 0
+            return {"configured": True, "base_url": base, "model": model, "dimension": dim}
+        except Exception as exc:
+            return {
+                "configured": True,
+                "base_url": base,
+                "model": model,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     def chroma_selftest(self, host=None, port=None) -> Dict[str, Any]:
         """向量库端到端自检：写入探针 → 语义检索 → 清理。
@@ -235,6 +350,8 @@ class HistoryManager:
         self._collection = None
         self._chroma_tried = False
         self._chroma_error = ""
+        self._embed_fn_cache = None
+        self._embed_resolved = False
 
     # ── 写入 ─────────────────────────────────────────────────────────────
 

@@ -11,7 +11,8 @@ COPY src/ ./src/
 COPY pyproject.toml .
 
 # 安装依赖（固定chromadb版本）
-RUN pip install --no-cache-dir "chromadb==0.5.23" httpx bcrypt "python-jose[cryptography]" itsdangerous starlette uvicorn python-dotenv redis "mcp>=2.0.0" "pymysql>=1.1"
+# paho-mqtt：v0.6 起在场推送（ma/presence）依赖，缺省会导致 MQTT 空转不推送
+RUN pip install --no-cache-dir "chromadb==0.5.23" httpx bcrypt "python-jose[cryptography]" itsdangerous starlette uvicorn python-dotenv redis "mcp>=2.0.0" "pymysql>=1.1" "paho-mqtt>=1.6"
 
 # 预下载chromadb ONNX嵌入模型（避免首次运行时超时）
 RUN python -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; ef = DefaultEmbeddingFunction(); ef(['warmup'])" || true

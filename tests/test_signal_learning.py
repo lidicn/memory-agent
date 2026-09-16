@@ -153,6 +153,10 @@ def _build_insights():
     TAGS = {
         "media.study_tv": ["media"],
         "computer.study_pc": ["computer"],
+        # 睡眠检测基于「家电/门/电脑」类行为事件的静默间隔；起床锚定用例需给样本补标签，
+        # 否则静默事件为空、睡眠永不命中（用例会误红）。
+        "sensor.a": ["appliance"],
+        "speaker.xiaoai": ["appliance"],
     }
     insvc.name_map = staticmethod(lambda: {})
     insvc._tags_of = staticmethod(lambda eid, disp: TAGS.get(eid, []))
