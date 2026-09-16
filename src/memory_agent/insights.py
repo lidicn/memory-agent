@@ -2867,6 +2867,42 @@ class InsightService:
                     out.append((s, en))
             return out
 
+        def _study_occupancy_episodes(day_events, min_min: float = 30.0):
+            """从书房(office)白天占用脉冲重建「持续工作样」片段。
+
+            旧逻辑把书房任一瞬时 presence 当整天 working，造成过预测（路过一下即判工作一整天）。
+            这里只保留 9–19 点内、on→off 连续且时长 ≥ min_min 分钟的占用片段，
+            作为「真在工作」的证据；单 blip 不计数。
+            """
+            pres = [
+                e for e in day_events
+                if "书房" in e["room"] and "presence" in e["tags"]
+            ]
+            eps: list = []
+            cur = None
+            for e in pres:
+                if e["active"]:
+                    if cur is None:
+                        cur = [e["dt"], e["dt"]]
+                    else:
+                        cur[1] = e["dt"]
+                else:
+                    if cur is not None:
+                        cur[1] = e["dt"]
+                        eps.append(cur)
+                        cur = None
+            if cur is not None:
+                eps.append(cur)
+            out = []
+            for s, en in eps:
+                mins = (en - s).total_seconds() / 60.0
+                if mins < min_min:
+                    continue
+                if not (9 <= s.hour <= 19):
+                    continue
+                out.append((s, en))
+            return out
+
         by_day: dict[str, list] = defaultdict(list)
         for e in events:
             by_day[e["day"]].append(e)
@@ -3016,24 +3052,44 @@ class InsightService:
                 len(tv),
             )
 
-            work = [
+            # working：仅在「书房白天有电脑/工作设备证据」或「书房存在持续占用片段(≥30min)」
+            # 时判定，避免单 blip 占用即判整天工作（旧逻辑把书房任一瞬时 presence 当全天
+            # working，造成严重过预测）。区间取真实占用/电脑活动片段，而非首末事件撑满。
+            comp = [
                 e for e in evs
                 if e["active"] and 9 <= e["hour"] <= 19
-                and ("computer" in e["tags"] or ("书房" in e["room"] and "presence" in e["tags"]))
+                and "computer" in e["tags"]
                 and not _signal_excluded(e["eid"], "working")
-                and not _signal_excluded(e["eid"], "presence")
             ]
-            if work:
-                _ws, _we = parse_ts(work[0]["ts"]), parse_ts(work[-1]["ts"])
-                _wmin = int((_we - _ws).total_seconds() // 60) if _ws and _we else 0
+            study_eps = _study_occupancy_episodes(evs, min_min=30)
+            if comp or study_eps:
+                if comp:
+                    _ws, _we = comp[0]["dt"], comp[-1]["dt"]
+                    _wmin = int((_we - _ws).total_seconds() // 60)
+                    _conf = 0.7
+                    _why = f"书房电脑/工作设备在线（{_who(comp)}，{_span(comp)}）"
+                    _ents = sorted({e["eid"] for e in comp})[:5]
+                    _obs = _span(comp)
+                    _ec = len(comp)
+                else:
+                    _s_dt, _e_dt = max(study_eps, key=lambda se: (se[1] - se[0]))
+                    _ws, _we = _s_dt, _e_dt
+                    _wmin = int((_we - _ws).total_seconds() // 60)
+                    _conf = 0.5
+                    _why = f"书房白天持续占用（≥30min，{_s_dt.strftime('%H:%M')}-{_e_dt.strftime('%H:%M')}）"
+                    _ents = sorted({e["eid"] for e in evs
+                                    if e["active"] and "书房" in e["room"] and "presence" in e["tags"]})[:5]
+                    _obs = f"{_s_dt.strftime('%H:%M')}-{_e_dt.strftime('%H:%M')}"
+                    _ec = len(study_eps)
                 results.append(self._act(
-                    day, "working", 0.6,
-                    f"书房白天有人或电脑在线（{_who(work)}，{_span(work)}）",
-                    9, 19, entities=sorted({e['eid'] for e in work})[:5],
-                    observed_window=_span(work), event_count=len(work),
-                    start_ts=work[0]["ts"], end_ts=work[-1]["ts"], duration_minutes=_wmin,
+                    day, "working", _conf, _why,
+                    9, 19, entities=_ents,
+                    observed_window=_obs, event_count=_ec,
+                    start_ts=_ws.isoformat(), end_ts=_we.isoformat(), duration_minutes=_wmin,
                 ))
-            _mark("working", bool(work), "书房白天无占用、也无电脑类实体在线" if not work else "命中", len(work))
+                _mark("working", True, "命中", _ec)
+            else:
+                _mark("working", False, "书房白天无电脑证据、也无≥30min持续占用", 0)
 
         # 洗澡报告汇总：如实反映「用水证据优先、占用推断兜底」
         if detectors.get("bathing", {}).get("fired_days"):

@@ -242,9 +242,55 @@ def test_bathing_emits_interval_from_occupancy_pulse():
         os.remove(st.db_path)
 
 
+def test_working_requires_sustained_presence_or_computer():
+    # P1 验证：working 不再因书房单 blip 占用而判整天工作；
+    # 需「电脑/工作设备证据」或「书房白天持续占用片段(≥30min)」才触发，且带真实区间。
+    st, insvc = _build_insights()
+    TAGS = {
+        "binary_sensor.office_presence": ["presence"],
+        "computer.study_pc": ["computer"],
+    }
+    insvc._tags_of = staticmethod(lambda eid, disp: TAGS.get(eid, []))
+
+    # 1) 单 blip 占用（<1min）不应判 working
+    blip = [
+        {"entity_id": "binary_sensor.office_presence", "ts": "2025-01-01T10:00:00",
+         "new_state": "on", "room": "书房"},
+        {"entity_id": "binary_sensor.office_presence", "ts": "2025-01-01T10:00:30",
+         "new_state": "off", "room": "书房"},
+    ]
+    # 2) 持续占用 45min 应判 working 且带真实区间
+    sustained = [
+        {"entity_id": "binary_sensor.office_presence", "ts": "2025-01-01T10:00:00",
+         "new_state": "on", "room": "书房"},
+        {"entity_id": "binary_sensor.office_presence", "ts": "2025-01-01T10:45:00",
+         "new_state": "off", "room": "书房"},
+    ]
+    # 3) 电脑在线应判 working（即使无持续占用）
+    comp = [
+        {"entity_id": "computer.study_pc", "ts": "2025-01-01T14:00:00",
+         "new_state": "on", "room": "书房"},
+    ]
+    try:
+        a1 = insvc._detect_activities(blip)["activities"]
+        assert not any(x["activity"] == "working" for x in a1), "单 blip 不应判 working"
+        a2 = insvc._detect_activities(sustained)["activities"]
+        wk = [x for x in a2 if x["activity"] == "working"]
+        assert len(wk) == 1, wk
+        assert wk[0]["start_ts"] == "2025-01-01T10:00:00"
+        assert wk[0]["end_ts"] == "2025-01-01T10:45:00"
+        assert wk[0]["duration_minutes"] == 45
+        a3 = insvc._detect_activities(comp)["activities"]
+        assert any(x["activity"] == "working" for x in a3), "电脑在线应判 working"
+    finally:
+        st.close()
+        os.remove(st.db_path)
+
+
 if __name__ == "__main__":
     test_store_signal_exclusion_crud()
     test_signal_learning_service_teach_and_priority()
     test_insights_respects_signal_exclusion()
     test_bathing_emits_interval_from_occupancy_pulse()
+    test_working_requires_sustained_presence_or_computer()
     print("OK: all signal_learning tests passed")
