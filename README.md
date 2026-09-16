@@ -299,6 +299,42 @@ memory-agent/
 
 ---
 
+## 对接指南
+
+### A. 对接豆包管家（外部服务窄接口）
+
+豆包管家通过独立的 `butler_token`（Bearer）访问 MA 的窄接口白名单（`BUTLER_ENDPOINTS`），拿不到 WebUI 其他接口。
+
+1. 在 WebUI「设置 → 系统 / 对接」填写 `butler_token` 并保存（未配置则通道关闭，401）。
+2. 管家可调用端点：
+   - `GET /api/insights/member-schedule` —— 成员作息实测摘要
+   - `GET /api/vision/presence` —— 在场查询
+   - `GET /api/vision/latest?room=<房间>` —— 该房间最近一次有效识别（含 `snapshot_url` 截图外链、文本、时间戳）
+3. 所有端点返回 JSON；权限隔离，管家令牌无法访问非白名单路径。
+
+### B. HA Assist 集成（原生语音 / Assist）
+
+MA 暴露 OpenAI 兼容端点，HA 的会话集成即可让 Assist / 语音直接用上家庭记忆（MA 不做设备控制，仅记忆增强问答）。
+
+1. MA 侧配置（WebUI「设置」）：`ha_assist_token`（HA 调用凭据）、`ha_assist_memory_top_k`（注入记忆条数，默认 6）。
+2. HA 侧（`configuration.yaml`，需 HACS `extended_openai_conversation`）：
+   ```yaml
+   conversation:
+     - platform: extended_openai_conversation
+       api_key: "<ha_assist_token>"
+       base_url: "http://<MA主机>:8086/v1"
+       model: "ma-family"
+   ```
+3. 端点：`POST /v1/chat/completions`（支持 `stream=true` 的 SSE）、`GET /v1/models`。
+4. 契约详见 `docs/HA_Assist接入.md`。
+
+### C. 竞技场分析闭环（AutoFlow 竞技场）
+
+- AutoFlow 竞技场对接：Agent 提交结果经 `record_arena_result` 写入 `arena_results`（含 `success` / `token_used` / `used_memory_tools`）。
+- 分析闭环：`GET /api/arena/analytics`（仅管理员 JWT）按「是否使用家庭记忆 / 洞察工具」分 cohort，对比成功率与 token；定向洞察页「竞技场闭环分析」卡片可视化该对比，作为 MA 价值证明。
+
+---
+
 ## 故障排查
 
 - **MCP 握手失败 / 报错 SSE stream ended 或 did not provide a POST endpoint**：先点「握手自检」确认 Streamable HTTP 与 SSE 两个端点是否都返回成功。若 SSE 自检失败，检查客户端填的地址是 `/mcp` 还是 `/mcp/sse`；若 Streamable HTTP 解析类报错，改用 SSE 回退地址 `/mcp/sse`。最终确认镜像安装了 `mcp>=2.0.0`。

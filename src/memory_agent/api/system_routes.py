@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+
+from memory_agent import __version__ as __app_version__
 import shlex
 import subprocess
 from typing import Optional
@@ -53,6 +55,7 @@ async def _git(args: list[str], timeout: int = 120) -> subprocess.CompletedProce
 async def get_version(request: Request):
     """返回当前版本信息：commit / branch / tag / dirty / 更新源。"""
     info: dict = {
+        "version": __app_version__,
         "repo_dir": REPO_DIR,
         "commit": "", "branch": "", "tag": "", "dirty": None,
         "update_repo_url": "", "update_branch": "",

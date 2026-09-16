@@ -1,38 +1,20 @@
 {
-  "name": "记忆工坊 Memory Worker",
-  "short_name": "记忆工坊",
-  "description": "家庭记忆与行为洞察助手 — 采集、洞察、助手一体化",
+  "name": "Memory Agent · 家庭行为记忆中枢",
+  "short_name": "Memory Agent",
+  "description": "家庭行为记忆中枢：采集、洞察、助手一体化 PWA",
   "lang": "zh-CN",
-  "start_url": "#/",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui"],
   "orientation": "portrait",
-  "background_color": "#0B0F1A",
+  "background_color": "#0b1120",
   "theme_color": "#0EA5E9",
-  "categories": ["productivity", "lifestyle", "utilities"],
   "icons": [
     {
       "src": "/static/icons/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any"
-    },
-    {
-      "src": "/static/icons/maskable.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
       "purpose": "any maskable"
-    },
-    {
-      "src": "/static/icons/apple-touch-icon.png",
-      "sizes": "512x512",
-      "type": "image/png"
-    },
-    {
-      "src": "/static/icons/apple-touch-icon.png",
-      "sizes": "192x192",
-      "type": "image/png"
     }
   ]
 }

@@ -1,6 +1,6 @@
 [project]
 name = "memory-agent"
-version = "0.1.0"
+version = "1.0.0"
 description = "Memory Agent - 家庭行为记忆中枢 MCP服务"
 requires-python = ">=3.11"
 dependencies = [

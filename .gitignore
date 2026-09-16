@@ -35,3 +35,8 @@ output.txt
 
 # 前端依赖
 node_modules/
+
+# 真实 OpenSHS 数据集（大文件，外部下载，勿提交；复现见 docs/OpenSHS基准报告.md）
+# 仅忽略从外部拉取的「真实」数据，合成样本 openshs_sample.csv 仍纳入版本控制。
+benchmarks/data/openshs_real*.csv
+benchmarks/data/_chunk_*.csv
