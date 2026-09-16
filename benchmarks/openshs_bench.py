@@ -33,13 +33,14 @@ from memory_agent.insights import InsightService
 from memory_agent.store import Store
 
 from .openshs_convert import ground_truth, start_end, wide_to_events
+from .openshs_eval import BASELINE_KEYS, day_level, segment_level, slot_level
 from .openshs_schema import get_activity_map
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CSV = os.path.join(HERE, "data", "openshs_sample.csv")
 
 
-def run_benchmark(csv_path: str, map_name: str = "fine") -> dict:
+def run_benchmark(csv_path: str, map_name: str = "fine", slot_seconds: int = 300) -> dict:
     events = wide_to_events(csv_path)
     mn, mx = start_end(csv_path)
 
@@ -100,6 +101,15 @@ def run_benchmark(csv_path: str, map_name: str = "fine") -> dict:
                 if (micro_prec + micro_rec) else 0.0)
     macro_f1 = sum(v["f1"] for v in per_act.values()) / max(1, len(per_act))
 
+    ma_records = res.get("activities", [])
+    days_sorted = sorted(days)
+    levels = {
+        "day": day_level(gt_days, pred_days, days_sorted, evaluated),
+        "slot": slot_level(gt["segments"], ma_records, evaluated, mn, mx,
+                           slot_seconds=slot_seconds),
+        "segment": segment_level(gt["segments"], ma_records, evaluated),
+    }
+
     return {
         "csv": csv_path,
         "n_events": len(events),
@@ -112,7 +122,60 @@ def run_benchmark(csv_path: str, map_name: str = "fine") -> dict:
                   "f1": round(micro_f1, 3)},
         "macro_f1": round(macro_f1, 3),
         "segments": gt["segments"],
+        "levels": levels,
     }
+
+
+def _print_macro(m: dict, tag: str) -> None:
+    print("-" * 64)
+    print(f"{tag} macro-F1: MA={m['ma']}  |  基线: "
+          + "  ".join(f"{k}={v}" for k, v in m["baselines"].items()))
+    verdict = "有增益" if m["lift"] > 0 else "无增益 / 不如傻瓜基线"
+    print(f"{tag} 最强基线={m['best_baseline']}  =>  LIFT={m['lift']:+.3f}   [{verdict}]")
+    print("=" * 64)
+
+
+def _print_levels(levels: dict) -> None:
+    """打印 Level 1（天级 + 退化基线）与 Level 2（时段级 / 段级）的对照结果。"""
+    d = levels.get("day")
+    if d:
+        print("=" * 64)
+        print("【Level 1】天级 · 对照退化基线   样本数/活动 =", d["n_samples_per_activity"])
+        print("-" * 64)
+        print(f"{'活动':<14}{'基础率':>7}{'MA_F1':>8}{'最强基线':>10}{'MA_MCC':>9}")
+        for act, v in d["ma"].items():
+            b = d["baselines"][act]
+            best = max(b[k]["f1"] for k in BASELINE_KEYS)
+            print(f"{act:<14}{b['base_rate']:>7.2f}{v['f1']:>8}{best:>10}{v['mcc']:>9.3f}")
+        _print_macro(d["macro"], "Level 1")
+
+    s = levels.get("slot")
+    if s and "error" not in s:
+        print("【Level 2a】时段级 · 严格时间定位   槽=%ss  "
+              "样本数/活动=%s  无区间MA记录=%s"
+              % (s["slot_seconds"], s["n_samples_per_activity"],
+                 s["n_MA_records_without_interval"]))
+        print("-" * 64)
+        print(f"{'活动':<14}{'基础率':>8}{'MA_F1':>8}{'最强基线':>10}{'MA_MCC':>9}")
+        for act, v in s["ma"].items():
+            b = s["baselines"][act]
+            best = max(b[k]["f1"] for k in BASELINE_KEYS)
+            print(f"{act:<14}{b['base_rate']:>8.4f}{v['f1']:>8}{best:>10}{v['mcc']:>9.3f}")
+        _print_macro(s["macro"], "Level 2a")
+
+    g = levels.get("segment")
+    if g:
+        print("【Level 2b】段级事件检测 · 对 MA 粗定位更公平   "
+              "无区间MA记录=%s" % g["n_MA_records_without_interval"])
+        print("-" * 64)
+        print(f"{'活动':<14}{'GT段':>6}{'MA条':>6}{'TP':>5}{'FP':>5}{'FN':>5}"
+              f"{'P':>8}{'R':>8}{'F1':>8}")
+        for act, v in g["ma"].items():
+            print(f"{act:<14}{v['gt_segments']:>6}{v['ma_records']:>6}{v['tp']:>5}"
+                  f"{v['fp']:>5}{v['fn']:>5}{v['precision']:>8}{v['recall']:>8}{v['f1']:>8}")
+        print("-" * 64)
+        print(f"MACRO-F1 (segment-level): {g['macro_f1']}")
+        print("=" * 64)
 
 
 def print_report(r: dict, map_name: str = "fine") -> None:
@@ -152,18 +215,25 @@ def print_report(r: dict, map_name: str = "fine") -> None:
           "MA 对 working/bathing 在粗粒度集上呈现明显过预测（每日触发），"
           "反映其基于『办公室/卫生间在场』即判定，未区分具体子活动。")
 
+    levels = r.get("levels") or {}
+    if levels:
+        _print_levels(levels)
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="OpenSHS activity benchmark")
     ap.add_argument("--csv", default=DEFAULT_CSV, help="OpenSHS 宽表 CSV 路径")
     ap.add_argument("--map", default="fine", choices=["fine", "coarse"],
                    help="标签映射：fine=样本/细粒度数据集，coarse=真实粗粒度 7 分类")
+    ap.add_argument("--slot-seconds", type=int, default=300,
+                   help="时段级评估的槽长（秒，默认 300 = 5 分钟）")
     args = ap.parse_args()
     if not os.path.exists(args.csv):
         print(f"找不到 {args.csv}；先运行: "
               f"PYTHONPATH=src python -m benchmarks.gen_sample {args.csv}", file=sys.stderr)
         return 2
-    report = run_benchmark(args.csv, map_name=args.map)
+    report = run_benchmark(args.csv, map_name=args.map,
+                           slot_seconds=args.slot_seconds)
     print_report(report, map_name=args.map)
     return 0
 
