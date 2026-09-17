@@ -26,6 +26,7 @@ import httpx
 
 from .face_node_registry import FaceNodeRegistry
 from .store import now_local
+from datetime import timedelta
 
 _logger = logging.getLogger(__name__)
 
@@ -601,6 +602,36 @@ class VisionService:
 
     # ── 主流程：单房间识别 ────────────────────────────────────────────────
 
+    def _vlm_gate_skip(self, room: str) -> tuple[bool, str]:
+        """VLM 取帧 Gate（Phase 0.3）：决定能否跳过本次 VLM 识别。
+
+        跳过条件（满足其一即跳过，省 go2rtc 等待 + VLM 费用）：
+        - 房间近期有 edge_ai 感知事件（盒侧 AI 已给出答案，VLM 冗余）；
+        - 房间配置了 motion 实体且当前为 off（无运动，无内容可分析）。
+        """
+        cfg = self.config
+        if not getattr(cfg, "vlm_gate_enabled", True):
+            return (False, "")
+        # 1) 近期边缘信号
+        since = (now_local(cfg.tz_offset_hours) - timedelta(
+            seconds=getattr(cfg, "vlm_gate_window_sec", 120)
+        )).isoformat(sep="T")
+        try:
+            if self.store.has_recent_edge_signal(room, since):
+                return (True, "edge_ai_fresh")
+        except Exception:  # noqa: BLE001
+            pass
+        # 2) motion 实体为 off（无运动）
+        ent = getattr(cfg, "room_motion_entities", {}).get(room)
+        if ent:
+            try:
+                st = self.ha.get_state(ent)
+                if isinstance(st, dict) and st.get("state") == "off":
+                    return (True, "no_motion")
+            except Exception:  # noqa: BLE001
+                pass
+        return (False, "")
+
     def analyze_room(
         self,
         room: str,
@@ -661,6 +692,13 @@ class VisionService:
             self._bump_skip(room, "backoff")
             return {"ok": False, "skipped": True, "reason": "backoff",
                     "retry_after_s": round(remain)}
+
+        # 4.5) VLM 取帧 Gate（Phase 0.3）：边缘已有信号或静止时跳过，省 VLM 调用
+        if not force and getattr(cfg, "vlm_gate_enabled", True):
+            skip_gate, gate_reason = self._vlm_gate_skip(room)
+            if skip_gate:
+                self._bump_skip(room, gate_reason)
+                return {"ok": False, "skipped": True, "reason": gate_reason, "trigger": trigger}
 
         # 5) 拉帧（门槛全过之后才等 go2rtc 的 4~13s）
         try:

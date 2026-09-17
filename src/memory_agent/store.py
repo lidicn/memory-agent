@@ -243,6 +243,24 @@ CREATE TABLE IF NOT EXISTS behavior_events (
   status TEXT NOT NULL DEFAULT 'ok'  -- ok | vlm_failed | low_confidence | skipped
 );
 CREATE INDEX IF NOT EXISTS idx_be_day_room ON behavior_events(day, room);
+
+-- 统一感知总线（主动感知 v2.0）：边缘 AI / VLM / sensor 三类来源归一化收口
+CREATE TABLE IF NOT EXISTS perception_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT UNIQUE,       -- 幂等键 make_event_id(entity_id, server_ts)
+  server_ts TEXT NOT NULL,
+  day TEXT NOT NULL,
+  source TEXT NOT NULL,       -- edge_ai | vlm | sensor
+  kind TEXT NOT NULL,         -- face_known | face_unknown | human | pet | cry | gesture | day_night | fav_area | no_human | motion | object
+  room TEXT,
+  entity_id TEXT,
+  confidence REAL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  raw_event_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pe_event_id ON perception_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_pe_source_day ON perception_events(source, day);
+CREATE INDEX IF NOT EXISTS idx_pe_kind_ts ON perception_events(kind, server_ts);
 """
 
 
@@ -385,6 +403,14 @@ class Store:
                     )
                 except Exception:
                     pass  # 列已存在
+            # 主动感知 v2.0：perception_events 幂等键（event_id）
+            # 旧表可能无 event_id 列，补齐后保证重复事件被 IGNORE
+            try:
+                conn.execute(
+                    "ALTER TABLE perception_events ADD COLUMN event_id TEXT UNIQUE"
+                )
+            except Exception:
+                pass  # 列已存在
             # v0.8-4 混合检索：FTS5 关键词索引（external content + trigger 自动同步）
             # 优先 trigram（中文子串/专名友好），不支持则回退 unicode61；均不可用则纯向量
             for _tok in ("trigram", "unicode61"):
@@ -1440,6 +1466,93 @@ class Store:
                 if any(p.get("name") == member for p in d.get("persons") or [])
             ]
         return out
+
+    # -- 统一感知总线（主动感知 v2.0） -----------------------------------------
+
+    def insert_perception_event(self, payload: dict) -> int:
+        """写入一条归一化感知事件，返回自增 id（重复 event_id 被 IGNORE，返回 0）。
+
+        payload 字段：event_id(可选) / server_ts / source / kind / room /
+        entity_id / confidence / payload(dict) / raw_event(dict)。
+        未显式给 event_id 时由 make_event_id(entity_id, server_ts) 派生，保证幂等。
+        """
+        ts = payload.get("server_ts") or now_local(self.tz_offset_hours).isoformat(sep="T")
+        event_id = payload.get("event_id") or make_event_id(
+            str(payload.get("entity_id") or ""), str(ts)
+        )
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO perception_events(
+                     event_id, server_ts, day, source, kind, room, entity_id, confidence,
+                     payload_json, raw_event_json)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    event_id,
+                    ts,
+                    payload.get("day") or str(ts)[:10],
+                    payload.get("source") or "sensor",
+                    payload.get("kind") or "unknown",
+                    payload.get("room"),
+                    payload.get("entity_id"),
+                    payload.get("confidence"),
+                    json.dumps(payload.get("payload") or {}, ensure_ascii=False),
+                    json.dumps(payload["raw_event"], ensure_ascii=False)
+                    if payload.get("raw_event") is not None else None,
+                ),
+            )
+            conn.commit()
+            # INSERT OR IGNORE 命中唯一约束时 cur.rowcount=0（未插入），
+            # 此时 lastrowid 仍是上一条的 rowid，故以 rowcount 判定是否真写入
+            return int(cur.lastrowid or 0) if cur.rowcount else 0
+
+    def list_perception_events(
+        self, source: str | None = None, kind: str | None = None,
+        room: str | None = None, day_from: str | None = None,
+        day_to: str | None = None, limit: int = 100,
+    ) -> list[dict]:
+        """查询统一感知总线事件，按时间倒序。"""
+        sql = "SELECT * FROM perception_events"
+        conds: list[str] = []
+        args: list = []
+        if source:
+            conds.append("source = ?"); args.append(source)
+        if kind:
+            conds.append("kind = ?"); args.append(kind)
+        if room:
+            conds.append("room = ?"); args.append(room)
+        if day_from:
+            conds.append("day >= ?"); args.append(day_from)
+        if day_to:
+            conds.append("day <= ?"); args.append(day_to)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY server_ts DESC LIMIT ?"
+        args.append(int(limit))
+        conn = self.connect()
+        with self._lock:
+            rows = conn.execute(sql, args).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d.pop("payload_json") or "{}")
+            except Exception:
+                d["payload"] = {}
+            d.pop("raw_event_json", None)
+            out.append(d)
+        return out
+
+    def has_recent_edge_signal(self, room: str, since_iso: str) -> bool:
+        """判断某房间在 since_iso 之后是否有 edge_ai 感知事件（VLM 取帧 Gate 用）。"""
+        conn = self.connect()
+        with self._lock:
+            row = conn.execute(
+                "SELECT 1 FROM perception_events "
+                "WHERE source='edge_ai' AND room=? AND server_ts >= ? LIMIT 1",
+                (room, since_iso),
+            ).fetchone()
+        return row is not None
 
     # ── 行为状态 / 候选规则（v0.9.5 主动感知·行为推断层）────────────────────
 

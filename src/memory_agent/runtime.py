@@ -45,6 +45,8 @@ from .store import Store, now_local
 from .templates import TemplateManager
 from .tv_service import TVService
 from .vision_service import VisionService
+from .livingroom_ai import LivingRoomAIIngest
+from .announcer import Announcer
 
 
 class AppRuntime:
@@ -106,6 +108,7 @@ class AppRuntime:
         self._backup_task: Any = None
         self._tpl_validate_task: Any = None
         self._activity_task: Any = None
+        self._livingroom_ai_task: Any = None
         # 记忆研究员（v0.8 定向洞察）：依赖上面已装配的 insights/llm/agent_memory/history
         self.researcher = ResearcherService(self)
         # 主动感知·行为推断（v0.9.5）：从 events 产出 canonical 行为状态，供 GET /api/behaviors
@@ -170,10 +173,44 @@ class AppRuntime:
         self._tpl_validate_task = asyncio.create_task(self._periodic_template_validate())
         # 主动感知（v0.9.5）：周期行为推断（低频批处理，非实时流）
         self._activity_task = asyncio.create_task(self._periodic_activity_inference())
+        # 主动感知 v2.0 · Phase 0.1 + 0.4：客厅盒侧 AI 事件轻量轮询 + 主动播报闭环
+        announcer = Announcer(
+            self.ha, self.store,
+            tts_entity=getattr(self.config, "announce_tts_entity", "") or "",
+            enabled=getattr(self.config, "announce_enabled", False),
+            cooldown_sec=getattr(self.config, "announce_cooldown_sec", 30),
+        )
+        self._livingroom_ai = LivingRoomAIIngest(
+            self.ha, self.store,
+            interval_seconds=getattr(self.config, "livingroom_ai_interval_seconds", 10),
+            announcer=announcer,
+        )
+        self._livingroom_ai_task = asyncio.create_task(self._periodic_livingroom_ai())
 
         # 记忆研究员（v0.8）：按 researcher_scheduler_time 每日低峰定期洞察
         self.researcher.start()
         print("[Runtime] 启动完成")
+
+    async def _periodic_livingroom_ai(self) -> None:
+        """常驻任务：轻量轮询客厅盒侧 AI 事件，落 perception_events（source=edge_ai）。
+
+        间隔由 ``livingroom_ai_interval_seconds`` 控制（默认 10s）；总开关
+        ``livingroom_ai_enabled`` 默认开。单次失败仅记录，不影响主流程。
+        """
+        interval = max(1, int(getattr(self.config, "livingroom_ai_interval_seconds", 10) or 10))
+        try:
+            await asyncio.sleep(5)  # 启动稍延，避开采集/对账争抢
+            while True:
+                if getattr(self.config, "livingroom_ai_enabled", True):
+                    try:
+                        n = await asyncio.to_thread(self._livingroom_ai.run)
+                        if n:
+                            print(f"[LivingRoomAI] 盒侧 AI 事件 +{n}")
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[LivingRoomAI] 轮询异常: {exc}")
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
 
     def _publish_health_changes(self, res: dict) -> None:
         """把对账中发生变化的设备健康状态推到 MQTT（A3 告警出口）。"""

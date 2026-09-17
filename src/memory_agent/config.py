@@ -104,6 +104,20 @@ class Config:
     pir_debounce_sec: int = 30                        # PIR/同实体连续触发去抖窗口（秒）
     activity_conf_threshold: float = 0.6              # 写权威状态的最低置信度（低于仅进候选）
 
+    # ── 主动感知 v2.0 · 客厅盒侧 AI 事件接入（Phase 0.1）──────────────────────
+    livingroom_ai_enabled: bool = True                # 客厅盒侧 AI 事件轮询总开关
+    livingroom_ai_interval_seconds: int = 10          # 轮询间隔（秒，默认 10s）
+
+    # ── 主动感知 v2.0 · 主动播报闭环（Phase 0.4，doubao2api TTS）────────────────
+    announce_enabled: bool = False                    # 主动播报总开关（默认关，需配置 tts 实体）
+    announce_tts_entity: str = ""                     # HA 中 doubao_tts 实体 id，如 "tts.doubao_tts"
+    announce_cooldown_sec: int = 30                   # 同类事件最小播报间隔，防刷屏
+
+    # ── 主动感知 v2.0 · VLM 取帧降级（Phase 0.3）────────────────────────────
+    vlm_gate_enabled: bool = True                      # 边缘已有信号/无运动时跳过 VLM 取帧
+    vlm_gate_window_sec: int = 120                    # 边缘信号视为"新鲜"的时间窗（秒）
+    room_motion_entities: Dict[str, str] = field(default_factory=dict)  # 房间→motion 实体，用于静止跳过
+
     # ── 授权规则服务端化（v0.9）：Agent(MCP) 写回成员标签需管理员显式开启 ─────────
     member_tag_agent_writeback: bool = False          # 默认关；开启后 confirm_member_tag 才被放行
 
