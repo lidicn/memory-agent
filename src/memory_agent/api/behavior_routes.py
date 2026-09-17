@@ -218,6 +218,7 @@ async def behaviors_mine_drift(request: Request):
         rt.activity.mine_drift, None, None, max(1, min(days, 180)), None,
         bucket_sec=(int(body["bucket_sec"]) if body.get("bucket_sec") is not None else None),
         window_size=(int(body["window_size"]) if body.get("window_size") is not None else None),
+        min_score=(float(body["min_score"]) if body.get("min_score") is not None else None),
         persist=bool(body.get("persist", True)),
     )
     return ok(res)

@@ -118,6 +118,62 @@ def test_mine_drift_persist_false(store):
     assert store.list_behavior_drifts() == []
 
 
+def test_score_stream_requires_absolute_min_score():
+    """纯相对分位会**恒定**产出约 5% 的"异常"；加绝对分下限后，平稳序列应报 0。"""
+    from memory_agent import algo_kernel as ak
+
+    pytest.importorskip("river")
+    series = [{"bucket": f"2026-09-01T{i % 24:02d}:00:00", "code": 1,
+               "tags": ["light"], "n": 1} for i in range(400)]
+    det = ak.OnlineAnomalyDetector(window_size=100)
+    res = det.score_stream(series, min_score=0.9)
+    assert res["ok"] is True and res["n"] == 400
+    assert res["anomaly_count"] == 0          # 全程一模一样 → 没有值得报的异常
+
+    # 放宽到 0 分下限时才会按相对分位产出（说明原来那 ~5% 是阈值人为造成的）
+    loose = ak.OnlineAnomalyDetector(window_size=100).score_stream(series, min_score=0.0)
+    assert loose["anomaly_count"] > 0
+
+
+def test_hour_of_day_deviation_flags_spike():
+    """同小时历史分布偏离 = 可解释异常（给出 expected/z），不依赖黑箱分数。"""
+    from memory_agent import algo_kernel as ak
+
+    series = []
+    for d in range(1, 11):                       # 10 天：08:00 稳定在 12 次左右
+        series.append({"bucket": f"2026-09-{d:02d}T08:00:00", "n": 10 + (d % 3),
+                       "tags": ["light"], "code": 1})
+    series.append({"bucket": "2026-09-11T08:00:00", "n": 117,
+                   "tags": ["light", "presence"], "code": 3})   # 突变日
+    series.append({"bucket": "2026-09-11T15:00:00", "n": 11, "tags": ["light"],
+                   "code": 1})                     # 别的小时样本不足，不应报
+
+    out = ak.hour_of_day_deviation(series, k=3.0, min_samples=5)
+    assert len(out) == 1
+    hit = out[0]
+    assert hit["bucket"] == "2026-09-11T08:00:00"
+    assert hit["hour"] == 8 and hit["density"] == 117
+    assert hit["z"] > 10 and hit["expected"] < 15 and hit["delta"] > 100
+
+    # 凌晨恒为 0 的小时：起夜产生 1-2 次事件属噪声，被绝对量下限挡住
+    quiet = [{"bucket": f"2026-09-{d:02d}T03:00:00", "n": 0, "tags": [], "code": 0}
+             for d in range(1, 11)]
+    quiet.append({"bucket": "2026-09-11T03:00:00", "n": 2,
+                  "tags": ["presence"], "code": 1})
+    assert ak.hour_of_day_deviation(quiet, min_samples=5) == []
+
+    # 但同小时真的出现量级异常（凌晨 4 点 92 次）时要能报出来
+    quiet.append({"bucket": "2026-09-12T04:00:00", "n": 92,
+                  "tags": ["light"], "code": 1})
+    for d in range(1, 11):
+        quiet.append({"bucket": f"2026-09-{d:02d}T04:00:00", "n": 0,
+                      "tags": [], "code": 0})
+    hits = ak.hour_of_day_deviation(quiet, min_samples=5)
+    assert [h["bucket"] for h in hits] == ["2026-09-12T04:00:00"]
+    assert hits[0]["expected"] == 0 and hits[0]["z"] is None   # 历史恒定 → z 不适用
+    assert hits[0]["delta"] == 92
+
+
 def test_mine_drift_insufficient_points(store):
     """样本点太少 → 明确告知不做检测，而不是硬算出一个假结论。"""
     base = datetime(2026, 9, 1, 0, 0, 0)

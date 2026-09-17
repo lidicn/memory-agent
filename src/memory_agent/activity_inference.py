@@ -604,6 +604,7 @@ class ActivityInferenceService:
     def mine_drift(self, start: str | None = None, end: str | None = None,
                    days: int = 14, rooms: list | None = None, *,
                    bucket_sec: int | None = None, window_size: int | None = None,
+                   min_score: float | None = None,
                    persist: bool = True, max_rows: int = 200000) -> dict:
         """行为活跃度的**在线异常**与**概念漂移**检测（P1.2）。
 
@@ -641,13 +642,21 @@ class ActivityInferenceService:
         ws = int(window_size or getattr(cfg, "drift_window_size", 0) or 0)
         if ws <= 0:
             ws = max(30, min(250, len(series) // 2))
+        if min_score is None:
+            min_score = float(getattr(cfg, "drift_min_score", 0.9) or 0.9)
         det = algo_kernel.OnlineAnomalyDetector(window_size=ws)
-        res = det.score_stream(series)
+        res = det.score_stream(series, min_score=min_score)
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error"), "points": len(series)}
 
         drifts = (res.get("drift") or {}).get("points") or []
-        anomalies = res.get("anomalies") or []
+        # 主判据 = 「同一小时的历史分布偏离」：可解释、可核对（给出 expected/z）；
+        # HST 分数在本项目数据上区分度饱和（p90≈0.99），只作**相对排名**参考。
+        anomalies = algo_kernel.hour_of_day_deviation(
+            series, k=float(getattr(cfg, "drift_k", 3.0) or 3.0),
+            min_delta=float(getattr(cfg, "drift_min_delta", 10.0) or 10.0))
+        relative_top = sorted(res.get("anomalies") or [],
+                              key=lambda x: -(x.get("score") or 0))[:10]
 
         persisted = 0
         if persist:
@@ -664,13 +673,21 @@ class ActivityInferenceService:
                 except Exception as exc:  # noqa: BLE001
                     print(f"[Activity] 漂移点写库失败: {exc}")
             for a in anomalies:
-                item = by_bucket.get(a.get("bucket")) or {}
+                # score 存"显著度"：有 z 用 z（历史恒定时为 None → 退化为绝对偏离量）
+                score = a.get("z")
+                if score is None:
+                    score = a.get("delta") or 0.0
                 try:
                     self.store.upsert_behavior_drift(
                         bucket_ts=a.get("bucket") or "", kind="anomaly",
                         day=str(a.get("bucket") or "")[:10],
-                        density=item.get("n") or 0.0, score=a.get("score") or 0.0,
-                        tags=a.get("tags"), detail={"reason": "hst_low_density"})
+                        density=a.get("density") or 0.0, score=score,
+                        tags=a.get("tags"),
+                        detail={"reason": "hour_of_day_deviation",
+                                "expected": a.get("expected"),
+                                "scale": a.get("scale"),
+                                "delta": a.get("delta"),
+                                "z": a.get("z"), "hour": a.get("hour")})
                     persisted += 1
                 except Exception as exc:  # noqa: BLE001
                     print(f"[Activity] 异常时段写库失败: {exc}")
@@ -686,6 +703,8 @@ class ActivityInferenceService:
             "persisted": persisted,
             "drifts": drifts[:10],
             "anomalies": anomalies[:10],
+            # HST 相对排名（区分度饱和，仅供参考，不作为异常判据）
+            "relative_top": relative_top,
         }
 
     # ── 意图/习惯层（任务 D：重复活动 → 长期意图）───────────────────────

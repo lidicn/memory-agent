@@ -119,6 +119,9 @@ class Config:
     drift_days: int = 14                              # 回溯天数（1h 分桶 14 天 ≈ 336 点）
     drift_bucket_sec: int = 3600                      # 时间桶粒度（秒；1h 对应"作息"量级）
     drift_window_size: int = 0                        # HST 窗口（0=按样本量自适应）
+    drift_min_score: float = 0.9                      # HST 相对排名阈值（仅参考）
+    drift_k: float = 3.0                              # 同小时偏离判据：|z| >= k 视为异常时段
+    drift_min_delta: float = 10.0                     # 同小时偏离的绝对量下限（防凌晨起夜式噪声）
     drift_retention_days: int = 90                    # 漂移点保留天数
     process_mining_retention_days: int = 90           # 行为异常保留天数（confirmed 不清理）
 

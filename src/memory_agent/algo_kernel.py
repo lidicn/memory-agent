@@ -706,16 +706,31 @@ class OnlineAnomalyDetector:
             )
             self._adwin = drift.ADWIN(delta=drift_delta)
 
-    @staticmethod
-    def _features(item: dict) -> dict:
-        """观测 → river 特征字典（各标签是否出现 + 事件密度）。"""
+    # 事件密度分档（二值化）。**不要把原始计数直接当特征**：HST 是面向稀疏
+    # 二值特征设计的，喂入 0~数百的重尾数值会让分数整体压在高位、失去区分度
+    # （线上实测：p90 就已达 0.989，阈值形同虚设）。
+    DENSITY_BUCKETS: tuple[int, ...] = (1, 5, 20, 60)
+
+    @classmethod
+    def _features(cls, item: dict) -> dict:
+        """观测 → river 特征字典（各标签是否出现 + 密度分档，全为 0/1）。"""
         tags = set(item.get("tags") or decode_code(int(item.get("code") or 0)))
         feats = {t: (1 if t in tags else 0) for t in TAG_VOCAB}
-        feats["density"] = float(item.get("n") or 0)
+        n = float(item.get("n") or 0)
+        for b in cls.DENSITY_BUCKETS:
+            feats[f"density>={b}"] = 1 if n >= b else 0
         return feats
 
-    def score_stream(self, series: Sequence[dict]) -> dict:
-        """顺序喂入观测，返回异常分序列与漂移信息。"""
+    def score_stream(self, series: Sequence[dict], min_score: float = 0.9,
+                     quantile: float = 0.95, warmup: int = 30) -> dict:
+        """顺序喂入观测，返回异常分序列与漂移信息。
+
+        :param min_score: 异常**绝对分**下限。仅用相对分位（如 top 5%）会**恒定**
+            产出约 5% 的"异常"——无论那段时间是否真的异常，人无法据此行动。
+            因此要求同时满足「超过历史 ``quantile`` 分位」**且**「≥ min_score」。
+        :param quantile: 相对分位阈值（默认 0.95）
+        :param warmup: 前 N 步只学习不打分（HST 冷启动分数偏高，避免开局误报）
+        """
         if not self.available:
             return {"ok": False, "error": "river 未安装"}
         if not series:
@@ -736,25 +751,84 @@ class OnlineAnomalyDetector:
             if getattr(self._adwin, "drift_detected", False):
                 drifts.append({"index": i, "bucket": item.get("bucket"),
                                "density": density, "score": round(s, 4)})
-            if i >= 30:  # 前 30 步作热身，避免冷启动误报
-                threshold = _quantile(scores[:-1], 0.95)
-                if s > max(threshold, 1e-9):
+            if i >= warmup:
+                threshold = max(_quantile(scores[:-1], quantile), float(min_score))
+                if s >= threshold:
                     anomalies.append({"bucket": item.get("bucket"),
                                       "tags": item.get("tags"),
                                       "score": round(s, 4)})
         return {
             "ok": True,
             "n": len(series),
+            "min_score": float(min_score),
             "score_mean": round(sum(scores) / len(scores), 4),
             "score_max": round(max(scores), 4),
             "anomaly_count": len(anomalies),
-            "anomalies": anomalies[:20],
+            "anomalies": anomalies[:50],
             "drift": {
                 "detected": bool(drifts),
                 "count": len(drifts),
                 "points": drifts[:10],
             },
         }
+
+
+def hour_of_day_deviation(
+    series: Sequence[dict],
+    k: float = 3.0,
+    min_samples: int = 5,
+    min_delta: float = 10.0,
+    top_n: int = 30,
+) -> list[dict]:
+    """按「一天中的第几小时」找密度显著偏离自身历史分布的小时（**可解释**异常）。
+
+    对每个 hour（0-23），用该小时历史各天密度算**中位数 + MAD**（稳健基线）；
+    某天该小时同时满足下面两条即记为偏离：
+
+    1. ``|n - median| >= k * 1.4826 * MAD``（相对显著性）
+    2. ``|n - median| >= min_delta``（**绝对量下限**）
+
+    **为何必须加绝对量下限**：凌晨 3-4 点平时恒为 0 事件，MAD=0 → 任何人起夜
+    产生 1-2 个事件都会算"无限显著"（线上实测：z 哨兵值 999 刷屏，30 条"异常"
+    几乎全是起夜）。加上绝对下限后，只有真正量级上的异常（如凌晨 4 点 92 次
+    事件）才会被报出来。
+
+    **为何用中位数+MAD 而非均值+标准差**：每小时只有几十个样本，单点异常会把
+    均值与标准差一起抬高，z 被稀释到阈值边缘（实测 117 vs 平时 11 只得到 z=3.01）；
+    MAD 不受离群值影响，同样的尖峰能稳定给出 z≫k。
+
+    这也是对 HST 的补位：HST 分数在本项目数据上**区分度饱和**（p90 即达 0.99），
+    只能用于相对排名，不足以单独充当"异常"判据。
+    """
+    by_hour: dict[int, list] = {}
+    for s in series:
+        ts = _parse_ts(s.get("bucket"))
+        if ts is None:
+            continue
+        by_hour.setdefault(ts.hour, []).append((s, float(s.get("n") or 0)))
+
+    out: list[dict] = []
+    for hour, items in by_hour.items():
+        vals = [v for _, v in items]
+        if len(vals) < max(2, min_samples):
+            continue
+        median = _quantile(vals, 0.5)
+        mad = _quantile([abs(v - median) for v in vals], 0.5)
+        scale = 1.4826 * mad  # 使 MAD 在正态假设下与标准差可比
+        for s, v in items:
+            delta = v - median
+            if abs(delta) < max(k * scale, float(min_delta)):
+                continue
+            out.append({
+                "bucket": s.get("bucket"), "hour": hour, "density": v,
+                "expected": round(median, 2), "scale": round(scale, 2),
+                "delta": round(delta, 2),
+                "z": (round(delta / scale, 2) if scale > 0 else None),
+                "tags": s.get("tags") or [],
+            })
+    # 按"归一化显著度"排序；scale=0（历史恒定）时以绝对偏离量度
+    out.sort(key=lambda x: -abs(x["delta"]) / max(x["scale"] or 0.0, 1.0))
+    return out[:top_n]
 
 
 def _quantile(values: Sequence[float], q: float) -> float:
