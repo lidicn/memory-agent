@@ -81,9 +81,10 @@ def test_audit_counts_matched_and_near_miss(store):
     assert study["matched_days"] == 1
     assert study["near_miss_days"] == 2
     assert study["estimated_recall"] == round(1 / 3, 3)
-    # 卡点在最后一步「computer(on)」
+    # 卡点在最后一步「computer(on)」；事件当天出现过（只是顺序不对）
     assert study["top_blockers"][0]["blocker"] == "computer(on)@step5"
     assert study["top_blockers"][0]["count"] == 2
+    assert study["top_blockers"][0]["reasons"] == {"timing_or_order": 2}
 
 
 def test_audit_skips_days_without_all_anchors(store):
@@ -142,3 +143,40 @@ def test_audit_reports_room_move_rule_recall(store):
     move = next(a for a in res["audit"] if a["rule"] == "房间移动")
     assert move["eligible_days"] == 2 and move["matched_days"] == 1
     assert move["top_blockers"][0]["blocker"] == "door(off)@step2"
+    # 门"关"事件当天根本没出现 → 属设备/采集缺口，而非规则太严
+    assert move["top_blockers"][0]["reasons"] == {"missing_event": 1}
+
+
+def test_audit_distinguishes_missing_event_from_timing(store):
+    """`missing_event`（事件缺失，放宽规则没用）不产出放宽建议；`timing_or_order` 才产出。"""
+    _day(store, 1, [(0, DOOR, "on"), (3, DOOR, "off")])
+    _day(store, 2, [(0, DOOR, "on")])          # 只开不关 → missing_event
+    _day(store, 3, [(0, DOOR, "on")])
+
+    svc = ActivityInferenceService(_runtime(store))
+    res = svc.audit_rule_recall(start="2026-09-01T00:00:00", end="2026-09-04T00:00:00",
+                                persist=True, min_near_miss=2)
+    move = next(a for a in res["audit"] if a["rule"] == "房间移动")
+    assert move["top_blockers"][0]["reasons"] == {"missing_event": 2}
+    assert [g for g in res["gaps"] if "房间移动" in g["name"]] == []
+    assert [r for r in store.list_candidate_rules()
+            if r["source"] == "recall_gap" and "房间移动" in r["name"]] == []
+
+    # 同样 2 天缺口，但所需事件都出现过（只是超出 within_min）→ 时序问题 → 产出建议
+    tmp2 = tempfile.mkdtemp(prefix="ma_recall2_")
+    s2 = Store(os.path.join(tmp2, "t.db"), tz_offset_hours=0.0)
+    s2.init_schema()
+    _day(s2, 1, NORMAL)
+    # 灯在门开后 20min 才亮（within_min 12）→ 超出时间窗，事件本身都在
+    slow = [(0, DOOR, "on"), (3, DOOR, "off"), (20, LIGHT, "on"),
+            (25, CLIMATE, "on"), (30, PC, "on")]
+    _day(s2, 2, slow)
+    _day(s2, 3, slow)
+
+    svc2 = ActivityInferenceService(_runtime(s2))
+    res2 = svc2.audit_rule_recall(start="2026-09-01T00:00:00", end="2026-09-04T00:00:00",
+                                  persist=True, min_near_miss=2)
+    study2 = next(a for a in res2["audit"] if a["rule"] == "书房工作")
+    assert study2["near_miss_days"] == 2
+    assert study2["top_blockers"][0]["reasons"] == {"timing_or_order": 2}
+    assert any("书房工作" in g["name"] for g in res2["gaps"])

@@ -526,7 +526,7 @@ class ActivityInferenceService:
                 continue
             eligible = matched = 0
             near_miss: list[str] = []
-            blockers: dict[str, int] = {}
+            blockers: dict[str, dict] = {}
             for (rm, day), evs in by_room_day.items():
                 if not self._room_ok(rm, rule):
                     continue
@@ -540,29 +540,43 @@ class ActivityInferenceService:
                 near_miss.append(f"{rm}|{day}")
                 idx = self._rule_prefix_blocker(evs, rule)
                 if idx is None:
-                    key = "time_window"
+                    key, reason = "time_window", "time_window"
                 else:
                     st = steps[idx - 1]
                     key = f"{st.get('tag')}({st.get('state', 'any')})@step{idx}"
-                blockers[key] = blockers.get(key, 0) + 1
+                    # 区分两种完全不同的病因：**事件当天根本没出现**（设备/采集缺口，
+                    # 规则再放宽也没用）vs **出现了但不满足时序/时间窗**（规则可放宽）。
+                    seen = any(
+                        (st.get("tag") in (e.get("tags") or set()))
+                        and self._state_ok(e.get("state"), st.get("state", "any"))
+                        for e in evs)
+                    reason = "timing_or_order" if seen else "missing_event"
+                b = blockers.setdefault(key, {"count": 0, "reasons": {}})
+                b["count"] += 1
+                b["reasons"][reason] = b["reasons"].get(reason, 0) + 1
 
-            top = sorted(blockers.items(), key=lambda x: -x[1])
+            top = sorted(blockers.items(), key=lambda x: -x[1]["count"])
             audit.append({
                 "rule": rule.get("name"), "infer": rule.get("infer"),
                 "anchors": sorted(anchors),
                 "eligible_days": eligible, "matched_days": matched,
                 "near_miss_days": len(near_miss),
                 "estimated_recall": (round(matched / eligible, 3) if eligible else None),
-                "top_blockers": [{"blocker": k, "count": v} for k, v in top[:3]],
+                "top_blockers": [{"blocker": k, "count": v["count"],
+                                  "reasons": v["reasons"]} for k, v in top[:3]],
                 "examples": near_miss[:5],
             })
 
-            if not (persist and top and top[0][1] >= max(1, int(min_near_miss))):
+            if not (persist and top and top[0][1]["count"] >= max(1, int(min_near_miss))):
                 continue
             if len(gaps) >= max_gaps:
                 continue
-            blocker, count = top[0]
+            blocker, binfo = top[0]
+            count = binfo["count"]
             if blocker == "time_window" or "@step" not in blocker:
+                continue
+            # 事件根本没出现（设备/采集缺口）→ 放宽规则无意义，交人工先查数据源
+            if (binfo.get("reasons") or {}).get("missing_event", 0) >= count:
                 continue
             try:
                 idx = int(blocker.split("@step")[1])
@@ -581,11 +595,13 @@ class ActivityInferenceService:
                     confidence=round(float(rule.get("confidence") or 0.5) * 0.9, 2),
                     source="recall_gap",
                     evidence=[{"rule": rule.get("name"), "blocker": blocker,
+                               "reasons": binfo.get("reasons"),
                                "near_miss_days": len(near_miss),
                                "eligible_days": eligible, "matched_days": matched}],
                 )
                 gaps.append({"rule_id": rid, "action": action, "name": name,
                              "blocker": blocker, "count": count,
+                             "reasons": binfo.get("reasons"),
                              "near_miss_days": len(near_miss)})
             except Exception as exc:  # noqa: BLE001
                 print(f"[Activity] 召回放宽建议写库失败: {exc}")
