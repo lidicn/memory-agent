@@ -63,6 +63,9 @@ NORMAL = [(0, DOOR, "on"), (2, DOOR, "off"), (4, LIGHT, "on"),
 # 电脑/空调顺序颠倒：5 步全齐但末步对不上
 SWAPPED = [(0, DOOR, "on"), (2, DOOR, "off"), (4, LIGHT, "on"),
            (6, PC, "on"), (8, CLIMATE, "on")]
+# 灯在门开后 20min 才亮（规则要求 within_min 12）→ 事件都在，纯时间窗问题
+SLOW = [(0, DOOR, "on"), (3, DOOR, "off"), (20, LIGHT, "on"),
+        (25, CLIMATE, "on"), (30, PC, "on")]
 
 
 def test_audit_counts_matched_and_near_miss(store):
@@ -102,28 +105,32 @@ def test_audit_skips_days_without_all_anchors(store):
 
 
 def test_audit_emits_relaxed_candidate_rule(store):
+    """时序卡点 → 产出「放宽该步时间约束」的建议（保留步骤，不把规则删退化成空壳）。"""
     _day(store, 1, NORMAL)
-    _day(store, 2, SWAPPED)
-    _day(store, 3, SWAPPED)
+    _day(store, 2, SLOW)
+    _day(store, 3, SLOW)
 
     svc = ActivityInferenceService(_runtime(store))
     res = svc.audit_rule_recall(start="2026-09-01T00:00:00", end="2026-09-04T00:00:00",
                                 persist=True, min_near_miss=2)
     assert res["gap_count"] >= 1
-    gap = next(g for g in res["gaps"] if g["blocker"] == "computer(on)@step5")
-    assert gap["name"] == "召回放宽[书房工作]:去掉第5步"
+    gap = next(g for g in res["gaps"] if g["blocker"] == "light(on)@step3")
+    assert gap["kind"] == "relax_timing"
+    assert gap["name"] == "召回放宽[书房工作]:第3步时间约束放宽"
 
     rules = [r for r in store.list_candidate_rules() if r["source"] == "recall_gap"]
-    assert rules
     rule = next(r for r in rules if r["name"] == gap["name"])
-    assert [s["tag"] for s in rule["steps"]] == ["door", "door", "light", "climate"]
+    tags = [s["tag"] for s in rule["steps"]]
+    assert tags == ["door", "door", "light", "climate", "computer"]   # 步骤保留
+    assert rule["steps"][2]["within_min"] == 24.0                      # 12 → 24（放宽）
     assert rule["status"] == "staging"          # 只进 staging，等人工审核
-    assert rule["evidence"][0]["blocker"] == "computer(on)@step5"
+    assert rule["evidence"][0]["blocker"] == "light(on)@step3"
+    assert rule["evidence"][0]["kind"] == "relax_timing"
 
 
 def test_audit_no_gap_when_below_threshold(store):
     _day(store, 1, NORMAL)
-    _day(store, 2, SWAPPED)                     # 仅 1 天缺口
+    _day(store, 2, SLOW)                        # 仅 1 天缺口
 
     svc = ActivityInferenceService(_runtime(store))
     res = svc.audit_rule_recall(start="2026-09-01T00:00:00", end="2026-09-03T00:00:00",
@@ -162,16 +169,13 @@ def test_audit_distinguishes_missing_event_from_timing(store):
     assert [r for r in store.list_candidate_rules()
             if r["source"] == "recall_gap" and "房间移动" in r["name"]] == []
 
-    # 同样 2 天缺口，但所需事件都出现过（只是超出 within_min）→ 时序问题 → 产出建议
+    # 同样 2 天缺口，但所需事件都出现过（只是超出 within_min）→ timing_or_order → 产出建议
     tmp2 = tempfile.mkdtemp(prefix="ma_recall2_")
     s2 = Store(os.path.join(tmp2, "t.db"), tz_offset_hours=0.0)
     s2.init_schema()
     _day(s2, 1, NORMAL)
-    # 灯在门开后 20min 才亮（within_min 12）→ 超出时间窗，事件本身都在
-    slow = [(0, DOOR, "on"), (3, DOOR, "off"), (20, LIGHT, "on"),
-            (25, CLIMATE, "on"), (30, PC, "on")]
-    _day(s2, 2, slow)
-    _day(s2, 3, slow)
+    _day(s2, 2, SLOW)
+    _day(s2, 3, SLOW)
 
     svc2 = ActivityInferenceService(_runtime(s2))
     res2 = svc2.audit_rule_recall(start="2026-09-01T00:00:00", end="2026-09-04T00:00:00",
@@ -179,4 +183,5 @@ def test_audit_distinguishes_missing_event_from_timing(store):
     study2 = next(a for a in res2["audit"] if a["rule"] == "书房工作")
     assert study2["near_miss_days"] == 2
     assert study2["top_blockers"][0]["reasons"] == {"timing_or_order": 2}
-    assert any("书房工作" in g["name"] for g in res2["gaps"])
+    gaps2 = [g for g in res2["gaps"] if "书房工作" in g["name"]]
+    assert gaps2 and gaps2[0]["kind"] == "relax_timing"

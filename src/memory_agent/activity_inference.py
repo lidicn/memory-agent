@@ -575,17 +575,39 @@ class ActivityInferenceService:
             count = binfo["count"]
             if blocker == "time_window" or "@step" not in blocker:
                 continue
+            reasons = binfo.get("reasons") or {}
             # 事件根本没出现（设备/采集缺口）→ 放宽规则无意义，交人工先查数据源
-            if (binfo.get("reasons") or {}).get("missing_event", 0) >= count:
+            if reasons.get("missing_event", 0) >= count:
                 continue
             try:
                 idx = int(blocker.split("@step")[1])
             except (IndexError, ValueError):
                 continue
-            relaxed = [s for i, s in enumerate(steps, 1) if i != idx]
-            if len(relaxed) < 2:
-                continue
-            name = f"召回放宽[{rule.get('name')}]:去掉第{idx}步"
+            st = steps[idx - 1]
+            relaxed = [dict(s) for s in steps]
+            if reasons.get("timing_or_order", 0) >= count:
+                # 事件出现过、只是时间约束不满足 → **放宽该步时间窗**（保留步骤，
+                # 避免"删步骤"把规则退化成无意义）。注意 order 与 timing 在此
+                # 合并统计，建议仍进 staging 由人工结合 evidence 判断。
+                changed = False
+                if st.get("within_min"):
+                    relaxed[idx - 1]["within_min"] = round(
+                        float(st["within_min"]) * 2, 1)
+                    changed = True
+                if st.get("after_prev_min"):
+                    relaxed[idx - 1]["after_prev_min"] = 0
+                    changed = True
+                if not changed:
+                    continue
+                label = f"第{idx}步时间约束放宽"
+                gap_kind = "relax_timing"
+            else:
+                del relaxed[idx - 1]
+                if len(relaxed) < 2:
+                    continue
+                label = f"去掉第{idx}步"
+                gap_kind = "drop_step"
+            name = f"召回放宽[{rule.get('name')}]:{label}"
             try:
                 rid, action = self.store.upsert_candidate_rule(
                     name=name, steps=relaxed,
@@ -595,13 +617,14 @@ class ActivityInferenceService:
                     confidence=round(float(rule.get("confidence") or 0.5) * 0.9, 2),
                     source="recall_gap",
                     evidence=[{"rule": rule.get("name"), "blocker": blocker,
-                               "reasons": binfo.get("reasons"),
+                               "kind": gap_kind,
+                               "reasons": reasons,
                                "near_miss_days": len(near_miss),
                                "eligible_days": eligible, "matched_days": matched}],
                 )
                 gaps.append({"rule_id": rid, "action": action, "name": name,
-                             "blocker": blocker, "count": count,
-                             "reasons": binfo.get("reasons"),
+                             "kind": gap_kind, "blocker": blocker, "count": count,
+                             "reasons": reasons,
                              "near_miss_days": len(near_miss)})
             except Exception as exc:  # noqa: BLE001
                 print(f"[Activity] 召回放宽建议写库失败: {exc}")
