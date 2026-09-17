@@ -26,6 +26,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+from . import algo_kernel
 from .store import now_local
 
 
@@ -447,6 +448,134 @@ class ActivityInferenceService:
 
         return {"ok": True, "start": start, "end": end,
                 "candidates": len(rules), "rules": rules}
+
+    # ── P1.1 过程挖掘：行为过程模型 + 一致性检验（行为异常）────────────────
+    def _iter_events(self, start: str, end: str, rooms: list | None = None,
+                     max_rows: int = 60000) -> list[dict]:
+        """取窗口内事件（分页全量）。
+
+        ``store.query_events`` 单次 LIMIT 硬上限 5000 会**静默截断**，直接传大
+        limit 只会拿到最早一段；优先复用 ``insights._iter_all_events`` 分页。
+        """
+        ins = self.insights
+        if ins is not None and hasattr(ins, "_iter_all_events"):
+            try:
+                return ins._iter_all_events(start, end, max_rows=max_rows,
+                                            rooms=rooms, order="asc")
+            except TypeError:
+                return ins._iter_all_events(start, end, max_rows=max_rows, rooms=rooms)
+        return self.store.query_events(start=start, end=end, rooms=rooms,
+                                       order="asc", limit=5000)
+
+    def mine_process(self, start: str | None = None, end: str | None = None,
+                     days: int = 7, rooms: list | None = None, *,
+                     min_edge_support: float | None = None,
+                     min_activity_support: float | None = None,
+                     persist: bool = True, emit_rules: bool = True,
+                     min_variant_support: int | None = None, max_rules: int = 8,
+                     max_rows: int = 60000) -> dict:
+        """挖行为**过程模型**并检出偏离常态的 case（P1.1；异常 = 一致性检验）。
+
+        与 ``mine_sequences``（朴素 n-gram 频次）互补：本方法把 ``(房间·天)`` 当
+        case、``tag_on`` 当活动，构建直接跟随图（DFG），用**稀有边/稀有活动**判据
+        检出"平时不这么走"的一天。实证（见 docs/调研_P1算法内核spike_结论_20260917.md）
+        该判据已覆盖全部检出，故核心为纯 Python（无 AGPL / 无重依赖）；
+        装了 pm4py 会自动叠加 Petri 网 token 回放增强。
+
+        阈值缺省取 config 的 ``process_mining_min_*``（默认 0.1 / 0.1 / 3）。
+
+        - ``persist``：异常写 ``behavior_anomalies``（按 case 幂等，保留人工复核 status）
+        - ``emit_rules``：房间高频变体（支持度 ≥ ``min_variant_support``，长度 ≥3）
+          写 ``candidate_rules``（source=``process``），作为**规则缺口提示**（P1.4）
+        """
+        cfg = self.config
+        if min_edge_support is None:
+            min_edge_support = float(
+                getattr(cfg, "process_mining_min_edge_support", 0.1) or 0.1)
+        if min_activity_support is None:
+            min_activity_support = float(
+                getattr(cfg, "process_mining_min_activity_support", 0.1) or 0.1)
+        if min_variant_support is None:
+            min_variant_support = int(
+                getattr(cfg, "process_mining_min_variant_support", 3) or 3)
+        now = now_local(cfg.tz_offset_hours)
+        end = end or now.isoformat(sep="T")
+        if not start:
+            start = (now.replace(microsecond=0)
+                     - timedelta(days=max(1, days))).isoformat(sep="T")
+        try:
+            events = self._iter_events(start, end, rooms=rooms, max_rows=max_rows)
+        except Exception as exc:  # pragma: no cover
+            return {"ok": False, "error": f"事件查询失败: {exc}"}
+
+        try:
+            res = algo_kernel.mine_process_model(
+                events, self._tags_of, primary_tag=self._primary_tag,
+                min_edge_support=min_edge_support,
+                min_activity_support=min_activity_support,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"过程挖掘失败: {exc}"}
+        if not res.get("ok"):
+            return res
+
+        anomalies = res.get("anomalies") or []
+        persisted = 0
+        if persist and anomalies:
+            for a in anomalies[:200]:
+                try:
+                    self.store.upsert_behavior_anomaly(
+                        case_key=a.get("case") or "", day=a.get("day") or "",
+                        room=a.get("room") or "", reasons=a.get("reasons"),
+                        activities=a.get("activities"), rare_edges=a.get("rare_edges"),
+                        rare_activities=a.get("rare_activities"),
+                        severity=a.get("severity") or 0.0,
+                        engine=res.get("engine") or "pure",
+                    )
+                    persisted += 1
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[Activity] 行为异常写库失败: {exc}")
+
+        rules: list[dict] = []
+        if emit_rules:
+            for room, variants in (res.get("variants_by_room") or {}).items():
+                for v in variants:
+                    if len(rules) >= max_rules:
+                        break
+                    acts = v.get("activities") or []
+                    if len(acts) < 3 or (v.get("count") or 0) < min_variant_support:
+                        continue
+                    tags = [t[:-3] if t.endswith("_on") else t for t in acts]
+                    name = f"过程变体[{room}]:" + "→".join(tags)
+                    conf = round(min(0.9, 0.5 + 0.1 * int(v["count"])), 2)
+                    try:
+                        rid, action = self.store.upsert_candidate_rule(
+                            name=name,
+                            steps=[{"tag": t, "state": "on"} for t in tags],
+                            time_window="", infer=self._infer_name(tags),
+                            confidence=conf, source="process",
+                            evidence=[{"room": room, "support": v.get("count"),
+                                       "source": "process_mining"}],
+                        )
+                        rules.append({"rule_id": rid, "action": action, "name": name,
+                                      "support": v.get("count"), "confidence": conf})
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[Activity] 过程变体写候选规则失败: {exc}")
+
+        return {
+            "ok": True,
+            "engine": res.get("engine"),
+            "start": start, "end": end,
+            "cases": res.get("cases"), "events": len(events),
+            "fitness_rate": res.get("fitness_rate"),
+            "dfg_edges": res.get("dfg_edges"),
+            "top_variants": (res.get("top_variants") or [])[:5],
+            "anomaly_count": len(anomalies),
+            "persisted": persisted,
+            "anomalies": anomalies[:20],
+            "candidates": len(rules),
+            "rules": rules,
+        }
 
     # ── 意图/习惯层（任务 D：重复活动 → 长期意图）───────────────────────
     def infer_habits(self, days: int = 14, min_days: int = 3) -> dict:

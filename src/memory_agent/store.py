@@ -625,6 +625,36 @@ class Store:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_candidate_rules_status ON candidate_rules(status)"
             )
+            # P1.1 过程挖掘：行为异常（偏离已学过程模型的 case，一次性/复核用）
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS behavior_anomalies (
+                    anomaly_id     TEXT PRIMARY KEY,
+                    case_key       TEXT NOT NULL,
+                    day            TEXT NOT NULL DEFAULT '',
+                    room           TEXT NOT NULL DEFAULT '',
+                    reasons_json   TEXT NOT NULL DEFAULT '[]',
+                    activities_json TEXT NOT NULL DEFAULT '[]',
+                    rare_edges_json TEXT NOT NULL DEFAULT '[]',
+                    rare_acts_json TEXT NOT NULL DEFAULT '[]',
+                    severity       REAL NOT NULL DEFAULT 0.0,
+                    engine         TEXT NOT NULL DEFAULT 'pure',
+                    status         TEXT NOT NULL DEFAULT 'new',
+                    detected_at    TEXT NOT NULL,
+                    updated_at     TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_behavior_anomalies_case "
+                "ON behavior_anomalies(case_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_behavior_anomalies_day "
+                "ON behavior_anomalies(day)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_behavior_anomalies_status "
+                "ON behavior_anomalies(status)"
+            )
             # v0.9 MCP 契约：幂等键表（写工具防重复执行）
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS idempotency_keys (
@@ -1712,6 +1742,118 @@ class Store:
             )
             conn.commit()
             return bool(cur.rowcount)
+
+    # ── 行为异常（P1.1 过程挖掘：偏离过程模型的 case）──────────────────────
+
+    def upsert_behavior_anomaly(
+        self, case_key: str, day: str = "", room: str = "",
+        reasons: list | None = None, activities: list | None = None,
+        rare_edges: list | None = None, rare_activities: list | None = None,
+        severity: float = 0.0, engine: str = "pure",
+    ) -> tuple[str, str]:
+        """按 ``case_key`` 去重写入行为异常；已存在则刷新判据。
+
+        **保留人工 status**（new/confirmed/ignored）——重跑挖掘不应把人工复核
+        结果洗掉。返回 ``(anomaly_id, "added"|"updated")``。
+        """
+        aid = hashlib.md5(str(case_key).encode("utf-8")).hexdigest()[:16]
+        now = now_local(self.tz_offset_hours).isoformat(sep="T")
+        conn = self.connect()
+        with self._lock:
+            row = conn.execute(
+                "SELECT anomaly_id FROM behavior_anomalies WHERE case_key = ?", (case_key,)
+            ).fetchone()
+            if row:
+                conn.execute(
+                    """UPDATE behavior_anomalies SET day=?, room=?, reasons_json=?,
+                       activities_json=?, rare_edges_json=?, rare_acts_json=?,
+                       severity=?, engine=?, updated_at=? WHERE anomaly_id=?""",
+                    (day, room, json.dumps(reasons or [], ensure_ascii=False),
+                     json.dumps(activities or [], ensure_ascii=False),
+                     json.dumps(rare_edges or [], ensure_ascii=False),
+                     json.dumps(rare_activities or [], ensure_ascii=False),
+                     float(severity), engine, now, aid),
+                )
+                conn.commit()
+                return aid, "updated"
+            conn.execute(
+                """INSERT INTO behavior_anomalies(
+                     anomaly_id, case_key, day, room, reasons_json, activities_json,
+                     rare_edges_json, rare_acts_json, severity, engine, status,
+                     detected_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,'new',?,?)""",
+                (aid, case_key, day, room,
+                 json.dumps(reasons or [], ensure_ascii=False),
+                 json.dumps(activities or [], ensure_ascii=False),
+                 json.dumps(rare_edges or [], ensure_ascii=False),
+                 json.dumps(rare_activities or [], ensure_ascii=False),
+                 float(severity), engine, now, now),
+            )
+            conn.commit()
+        return aid, "added"
+
+    def list_behavior_anomalies(
+        self, status: str | None = None, day_from: str | None = None,
+        day_to: str | None = None, room: str | None = None, limit: int = 200,
+    ) -> list[dict]:
+        """列出行为异常（严重度降序、天倒序），解析 JSON 字段。"""
+        sql = "SELECT * FROM behavior_anomalies"
+        conds: list[str] = []
+        args: list = []
+        if status:
+            conds.append("status = ?")
+            args.append(status)
+        if room:
+            conds.append("room = ?")
+            args.append(room)
+        if day_from:
+            conds.append("day >= ?")
+            args.append(day_from)
+        if day_to:
+            conds.append("day <= ?")
+            args.append(day_to)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY severity DESC, day DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 2000)))
+        conn = self.connect()
+        with self._lock:
+            rows = conn.execute(sql, args).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            for key, col in (("reasons", "reasons_json"), ("activities", "activities_json"),
+                             ("rare_edges", "rare_edges_json"),
+                             ("rare_activities", "rare_acts_json")):
+                try:
+                    d[key] = json.loads(d.pop(col) or "[]")
+                except Exception:
+                    d[key] = []
+                    d.pop(col, None)
+            out.append(d)
+        return out
+
+    def set_behavior_anomaly_status(self, anomaly_id: str, status: str) -> bool:
+        """更新行为异常状态（new | confirmed | ignored）。"""
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                "UPDATE behavior_anomalies SET status=?, updated_at=? WHERE anomaly_id=?",
+                (status, now_local(self.tz_offset_hours).isoformat(sep="T"), anomaly_id),
+            )
+            conn.commit()
+            return bool(cur.rowcount)
+
+    def purge_behavior_anomalies(self, before_day: str) -> int:
+        """清理 ``day < before_day`` 的异常（保留 confirmed，便于复盘）。"""
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                "DELETE FROM behavior_anomalies WHERE day < ? AND status != 'confirmed'",
+                (before_day,),
+            )
+            conn.commit()
+            return int(cur.rowcount or 0)
 
     # ── 幂等键（v0.9 MCP 契约：写工具防重复执行）──────────────────────────
 

@@ -104,6 +104,14 @@ class Config:
     pir_debounce_sec: int = 30                        # PIR/同实体连续触发去抖窗口（秒）
     activity_conf_threshold: float = 0.6              # 写权威状态的最低置信度（低于仅进候选）
 
+    # ── P1.1 过程挖掘（行为过程模型 + 一致性检验 → 行为异常）──────────────────
+    process_mining_enabled: bool = True               # 每日一次过程挖掘（异常落库）
+    process_mining_days: int = 7                      # 过程挖掘回溯天数
+    process_mining_min_edge_support: float = 0.1      # 稀有直接跟随边阈值（低于即判异常）
+    process_mining_min_activity_support: float = 0.1  # 稀有活动阈值（低于即判异常）
+    process_mining_min_variant_support: int = 3       # 变体产出候选规则的最低支持度
+    process_mining_retention_days: int = 90           # 行为异常保留天数（confirmed 不清理）
+
     # ── 主动感知 v2.0 · 客厅盒侧 AI 事件接入（Phase 0.1）──────────────────────
     livingroom_ai_enabled: bool = True                # 客厅盒侧 AI 事件轮询总开关
     livingroom_ai_interval_seconds: int = 10          # 轮询间隔（秒，默认 10s）

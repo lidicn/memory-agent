@@ -339,6 +339,7 @@ class AppRuntime:
         """
         interval = max(60, int(getattr(self.config, "activity_interval_seconds", 300) or 300))
         last_habit_day = ""
+        last_process_day = ""
         try:
             await asyncio.sleep(60)  # 首跑延时，避开启动期采集/对账争抢
             while True:
@@ -350,13 +351,39 @@ class AppRuntime:
                                 f"[Activity] 行为推断：扫描 {res.get('scanned')} 事件，"
                                 f"产出 {res.get('persisted')} 状态 / {res.get('candidates')} 候选"
                             )
-                        # 任务 D：每日一次从 behavior_states 沉淀长期习惯
                         day = now_local(self.config.tz_offset_hours).strftime("%Y-%m-%d")
+                        # 任务 D：每日一次从 behavior_states 沉淀长期习惯
                         if day != last_habit_day:
                             hres = await asyncio.to_thread(self.activity.infer_habits)
                             last_habit_day = day
                             if hres.get("saved"):
                                 print(f"[Activity] 习惯沉淀：{hres.get('saved')} 条")
+                        # P1.1：每日一次过程挖掘（行为过程模型 + 一致性检验 → 行为异常）
+                        if day != last_process_day:
+                            last_process_day = day
+                            if getattr(self.config, "process_mining_enabled", True):
+                                try:
+                                    keep = int(getattr(
+                                        self.config, "process_mining_retention_days", 90) or 90)
+                                    before = (
+                                        now_local(self.config.tz_offset_hours)
+                                        - timedelta(days=keep)
+                                    ).strftime("%Y-%m-%d")
+                                    await asyncio.to_thread(
+                                        self.store.purge_behavior_anomalies, before)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                pres = await asyncio.to_thread(
+                                    self.activity.mine_process,
+                                    None, None,
+                                    int(getattr(self.config, "process_mining_days", 7) or 7),
+                                )
+                                if pres.get("ok"):
+                                    print(
+                                        f"[Activity] 过程挖掘：{pres.get('cases')} case，"
+                                        f"异常 {pres.get('anomaly_count')}（落库 {pres.get('persisted')}），"
+                                        f"候选规则 {pres.get('candidates')}"
+                                    )
                     except Exception as exc:  # noqa: BLE001
                         print(f"[Activity] 行为推断异常: {exc}")
                 await asyncio.sleep(interval)

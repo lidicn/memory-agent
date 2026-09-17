@@ -53,6 +53,7 @@ from .mcp_errors import (  # noqa: F401
 )
 from .mcp_scopes import note_unknown, requires, scope_of
 from .runtime import get_runtime
+from .store import now_local
 from .tool_schema import build_catalog, TOOL_NAMES as TOOL_NAMES_FROM_SPEC, register_simple_tools  # noqa: F401
 
 SERVER_NAME = "memory-agent"
@@ -1390,6 +1391,76 @@ def _build_server():
         """
         rt = get_runtime()
         return await asyncio.to_thread(rt.insights.get_behavior_insights, compare_days)
+
+    @mcp.tool()
+    async def mine_behavior_process(days: int = 7, rooms: str = "") -> dict:
+        """过程挖掘（只读分析）：把「房间·天」当轨迹、设备标签为步骤，挖行为过程模型并找**异常的一天**。
+
+        与序列规则（define_activity/mine_sequences 的 n-gram 频次）互补：本工具做**一致性检验**
+        ——某天的行为步骤里出现了平时几乎不走的转移（如平时只 门→灯→电脑，某天多插了空调），
+        即判为行为异常。返回变体统计、DFG 规模、一致性率与异常清单（含稀有边证据）。
+        适用『最近有没有哪天行为异常/不对劲』『作息是不是变了』。不写库；要落库请用
+        refresh_behavior_anomalies。
+
+        :param days: 回溯天数，默认 7
+        :param rooms: 逗号分隔的房间白名单，留空=全部房间
+        """
+        rt = get_runtime()
+        room_list = [r.strip() for r in (rooms or "").split(",") if r.strip()] or None
+        return await asyncio.to_thread(
+            rt.activity.mine_process, None, None, days, room_list,
+            persist=False, emit_rules=False,
+        )
+
+    @mcp.tool()
+    async def refresh_behavior_anomalies(days: int = 7, rooms: str = "") -> dict:
+        """重算并**落库**行为异常（写工具，需 read+write 令牌）。
+
+        同 mine_behavior_process 的算法，但把异常写入 behavior_anomalies 供 WebUI 复核，
+        并把「房间高频过程变体」写候选规则（source=process，作为规则缺口提示，人工审核）。
+        """
+        rt = get_runtime()
+        room_list = [r.strip() for r in (rooms or "").split(",") if r.strip()] or None
+        return await asyncio.to_thread(
+            rt.activity.mine_process, None, None, days, room_list,
+            persist=True, emit_rules=True,
+        )
+
+    @mcp.tool()
+    async def list_behavior_anomalies(status: str = "", days: int = 14,
+                                      limit: int = 50) -> dict:
+        """列出已落库的行为异常（按严重度降序）。
+
+        :param status: new（未复核）| confirmed | ignored；留空=全部
+        :param days: 只取最近 N 天（按异常所属日期），默认 14
+        :param limit: 返回上限，默认 50
+        """
+        from datetime import timedelta
+
+        rt = get_runtime()
+        day_from = (now_local(rt.config.tz_offset_hours)
+                    - timedelta(days=max(1, int(days or 14)))).strftime("%Y-%m-%d")
+        rows = await asyncio.to_thread(
+            rt.store.list_behavior_anomalies, status or None, day_from, None, None,
+            max(1, min(int(limit or 50), 500)),
+        )
+        return {"ok": True, "count": len(rows), "day_from": day_from, "anomalies": rows}
+
+    @mcp.tool()
+    async def review_behavior_anomaly(anomaly_id: str, status: str) -> dict:
+        """复核行为异常（写工具）：status = confirmed（确属异常）/ ignored（误报）/ new（复位）。
+
+        人工复核结果在重跑挖掘时会被保留（不会被刷新洗掉）。
+        """
+        rt = get_runtime()
+        if status not in ("new", "confirmed", "ignored"):
+            return {"ok": False, "error": "status 必须是 new/confirmed/ignored"}
+        changed = await asyncio.to_thread(
+            rt.store.set_behavior_anomaly_status, anomaly_id, status
+        )
+        if not changed:
+            return {"ok": False, "error": f"异常不存在: {anomaly_id}"}
+        return {"ok": True, "anomaly_id": anomaly_id, "status": status}
 
     @mcp.tool()
     async def explain_insight(insight_id: str) -> dict:

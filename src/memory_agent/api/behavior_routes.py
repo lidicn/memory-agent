@@ -122,6 +122,77 @@ async def candidate_rules_export(request: Request):
     return ok({"rules": rules, "count": len(rules)})
 
 
+async def behaviors_mine_process(request: Request):
+    """手动触发过程挖掘（P1.1）：挖行为过程模型 + 一致性检验 → 行为异常 / 候选规则。
+
+    body 可选：``days``（默认 7）、``start``/``end``、``rooms``(list)、
+    ``persist``、``emit_rules``、``min_variant_support``。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    body = await json_body(request)
+    rt = runtime(request)
+    try:
+        days = int(body.get("days") or 7)
+    except (TypeError, ValueError):
+        return error("days 必须是整数")
+    rooms = body.get("rooms")
+    res = await asyncio.to_thread(
+        rt.activity.mine_process,
+        (body.get("start") or "").strip() or None,
+        (body.get("end") or "").strip() or None,
+        max(1, min(days, 90)),
+        [str(r) for r in rooms] if isinstance(rooms, list) and rooms else None,
+        persist=bool(body.get("persist", True)),
+        emit_rules=bool(body.get("emit_rules", True)),
+        min_variant_support=int(body.get("min_variant_support") or 3),
+    )
+    return ok(res)
+
+
+async def behaviors_anomalies(request: Request):
+    """列出行为异常（P1.1 过程挖掘产出，偏离已学过程模型的 case）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    try:
+        limit = int(request.query_params.get("limit") or 100)
+    except (TypeError, ValueError):
+        return error("limit 必须是整数")
+    rows = await asyncio.to_thread(
+        rt.store.list_behavior_anomalies,
+        (request.query_params.get("status") or "").strip() or None,
+        (request.query_params.get("day_from") or "").strip() or None,
+        (request.query_params.get("day_to") or "").strip() or None,
+        (request.query_params.get("room") or "").strip() or None,
+        max(1, min(limit, 1000)),
+    )
+    return ok({"anomalies": rows, "count": len(rows)})
+
+
+async def behavior_anomaly_update(request: Request):
+    """复核行为异常：confirmed（确属异常）/ ignored（误报）/ new（复位）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    body = await json_body(request)
+    rt = runtime(request)
+    anomaly_id = (body.get("anomaly_id") or "").strip()
+    status = (body.get("status") or "").strip()
+    if not anomaly_id:
+        return error("缺少 anomaly_id")
+    if status not in ("new", "confirmed", "ignored"):
+        return error("status 必须是 new/confirmed/ignored")
+    changed = await asyncio.to_thread(
+        rt.store.set_behavior_anomaly_status, anomaly_id, status
+    )
+    if not changed:
+        return error("异常不存在", 404)
+    return ok({"anomaly_id": anomaly_id, "status": status})
+
+
 ROUTES = [
     Route("/api/behaviors", behaviors_current, methods=["GET"]),
     Route("/api/behaviors/states", behaviors_states, methods=["GET"]),
@@ -129,4 +200,7 @@ ROUTES = [
     Route("/api/behaviors/candidate-rules", candidate_rules_list, methods=["GET"]),
     Route("/api/behaviors/candidate-rules/update", candidate_rule_update, methods=["POST"]),
     Route("/api/behaviors/candidate-rules/export", candidate_rules_export, methods=["GET"]),
+    Route("/api/behaviors/mine-process", behaviors_mine_process, methods=["POST"]),
+    Route("/api/behaviors/anomalies", behaviors_anomalies, methods=["GET"]),
+    Route("/api/behaviors/anomalies/update", behavior_anomaly_update, methods=["POST"]),
 ]

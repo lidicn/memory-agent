@@ -30,6 +30,9 @@ WRITE_TOOLS = frozenset({
     # 活动规则 / 信号学习
     "define_activity",
     "teach_signal",
+    # P1.1 过程挖掘：刷新行为异常（落库）+ 人工复核
+    "refresh_behavior_anomalies",
+    "review_behavior_anomaly",
     # Agent 记忆生命周期
     "add_semantic_memory",
     "promote_memory",

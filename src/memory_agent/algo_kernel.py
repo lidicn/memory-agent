@@ -380,68 +380,19 @@ def spike_compare_activity(
 
 # ── 2) 过程挖掘 + 一致性检验（pm4py） ────────────────────────────────────────
 
-def _dfg_deviation_flags(
-    log: Sequence[Any],
-    min_edge_support: float = 0.1,
-    min_activity_support: float = 0.1,
-) -> dict[str, dict]:
-    """基于直接跟随图的**稀有边/稀有活动**检出偏离 case。
-
-    归纳出的 Petri 网对小样本日志可能过于宽松（token 回放判不出偏差），因此
-    叠加一层更敏感、更可解释的判据：某条轨迹若使用了支撑度低于阈值的
-    ``a->b`` 转移或活动，即视为偏离常态。
-    """
-    n = len(log)
-    if n == 0:
-        return {}
-    edge_count: Counter = Counter()
-    act_count: Counter = Counter()
-    for tr in log:
-        acts = [ev["concept:name"] for ev in tr]
-        for a in set(acts):
-            act_count[a] += 1
-        for a, b in zip(acts, acts[1:]):
-            edge_count[(a, b)] += 1
-
-    flags: dict[str, dict] = {}
-    for tr in log:
-        acts = [ev["concept:name"] for ev in tr]
-        rare_edges = [f"{a}->{b}" for a, b in zip(acts, acts[1:])
-                      if edge_count[(a, b)] / n < min_edge_support]
-        rare_acts = [a for a in sorted(set(acts))
-                     if act_count[a] / n < min_activity_support]
-        if rare_edges or rare_acts:
-            flags[tr.attributes.get("concept:name")] = {
-                "rare_edges": rare_edges, "rare_activities": rare_acts,
-            }
-    return flags
-
-
-def mine_process_model(
+def build_process_cases(
     events: Sequence[dict],
     tag_of: Callable[[str, str], set],
     primary_tag: Optional[Callable[[set], str]] = None,
     min_case_events: int = 3,
     max_cases: int = 3000,
-    min_edge_support: float = 0.1,
-    min_activity_support: float = 0.1,
-) -> dict:
-    """从事件流挖掘行为**过程模型**并做一致性检验（异常 = 偏离模型）。
+) -> list[dict]:
+    """事件流 → 过程挖掘 case 列表（``case = 房间|日期``，活动 = ``tag_on``）。
 
-    case = ``房间|日期``（一天一房间一条轨迹），activity = ``tag_on``。
-    异常判据 = token 回放不通过 **或** 使用了稀有直接跟随边/稀有活动（更敏感）。
-
-    :returns: 变体统计 / 直接跟随关系 / 归纳 Petri 网 / 逐 case 一致性 / 异常 case
+    连续重复活动会压缩（同一标签连续触发只算一步），短于 ``min_case_events``
+    的 case 丢弃。返回 ``[{"case": str, "day": str, "room": str,
+    "activities": [str]}]``，纯 Python、无第三方依赖。
     """
-    if importlib.util.find_spec("pm4py") is None:
-        return {"ok": False, "error": "pm4py 未安装"}
-    try:
-        import pm4py  # noqa: F401
-        from pm4py.objects.log.obj import EventLog, Trace, Event
-        from pm4py.algo.conformance import tokenreplay
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"pm4py 导入失败: {exc}"}
-
     def _primary(tags: set) -> str:
         if primary_tag is not None:
             try:
@@ -466,78 +417,189 @@ def mine_process_model(
             continue
         case = f"{(e.get('room') or '未知').strip()}|{ts.date().isoformat()}"
         grouped.setdefault(case, []).append((ts, f"{_primary(tags)}_on"))
-    if not grouped:
-        return {"ok": True, "cases": 0, "note": "无可用事件"}
 
-    log = EventLog()
+    out: list[dict] = []
     for case, items in list(grouped.items())[:max_cases]:
         items.sort(key=lambda x: x[0])
-        # 连续重复活动压缩（同一标签连续触发只算一次）
         acts: list[str] = []
         for _, a in items:
             if not acts or acts[-1] != a:
                 acts.append(a)
         if len(acts) < min_case_events:
             continue
-        tr = Trace()
-        tr.attributes["concept:name"] = case
-        for i, a in enumerate(acts):
-            ev = Event()
-            ev["concept:name"] = a
-            ev["time:timestamp"] = items[i][0]
-            tr.append(ev)
-        log.append(tr)
-    if len(log) == 0:
-        return {"ok": True, "cases": 0, "note": "轨迹均少于 min_case_events"}
+        room, _, day = case.partition("|")
+        out.append({"case": case, "room": room, "day": day, "activities": acts})
+    return out
 
-    variants = Counter(tuple(ev["concept:name"] for ev in tr) for tr in log)
-    rare_flags = _dfg_deviation_flags(log, min_edge_support, min_activity_support)
-    try:
-        dfg, start_acts, end_acts = pm4py.discover_dfg(log)
-        net, im, fm = pm4py.discover_petri_net_inductive(log)
-        diag = tokenreplay.algorithm.apply(log, net, im, fm)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "cases": len(log), "error": f"过程挖掘失败: {exc}"}
+
+def mine_process_model_pure(
+    cases: Sequence[dict],
+    min_edge_support: float = 0.1,
+    min_activity_support: float = 0.1,
+) -> dict:
+    """纯 Python 过程模型 + 一致性检验（**无第三方依赖**）。
+
+    做法等价于 pm4py 的 DFG 挖掘 + 一致性检验，但只保留对"发现异常"真正有用的
+    部分：直接跟随图（DFG）+ 变体统计 + 稀有边/稀有活动判据。
+
+    为何把它作为**主路径**而非 pm4py 的退路：P1 spike 实测中 17 个异常 case 的
+    判据**全部**来自 ``rare_edges``，Petri 网 + token 回放的 ``replay_not_fit``
+    没有额外贡献（归纳出的网对小样本日志过于宽松）。而纯 Python 版无 AGPL 约束、
+    无重型依赖、导入零成本，更适合常驻在 J3455 NAS 上。
+    pm4py 仍作为可选增强（补充 Petri 网库所/变迁与更严格的一致性判据）。
+    """
+    n = len(cases)
+    if n == 0:
+        # 返回结构保持完整（空结果与正常结果同构，调用方无需分支处理）
+        return {"ok": True, "engine": "pure", "cases": 0, "note": "无可用 case",
+                "fitness_rate": 1.0, "dfg_edges": 0, "start_activities": 0,
+                "end_activities": 0, "activities": 0, "top_variants": [],
+                "variants_by_room": {}, "anomaly_count": 0, "anomalies": []}
+
+    variants: Counter = Counter(tuple(c["activities"]) for c in cases)
+    edge_count: Counter = Counter()
+    act_count: Counter = Counter()
+    start_count: Counter = Counter()
+    end_count: Counter = Counter()
+    for c in cases:
+        acts = c["activities"]
+        for a in set(acts):
+            act_count[a] += 1
+        for a, b in zip(acts, acts[1:]):
+            edge_count[(a, b)] += 1
+        start_count[acts[0]] += 1
+        end_count[acts[-1]] += 1
 
     anomalies: list[dict] = []
-    for i, tr in enumerate(log):
-        case = tr.attributes.get("concept:name")
-        d = diag[i] if i < len(diag) else {}
-        fit = bool(d.get("trace_is_fit", True))
-        flags = rare_flags.get(case) or {}
+    for c in cases:
+        acts = c["activities"]
+        rare_edges = [f"{a}->{b}" for a, b in zip(acts, acts[1:])
+                      if edge_count[(a, b)] / n < min_edge_support]
+        rare_acts = [a for a in sorted(set(acts))
+                     if act_count[a] / n < min_activity_support]
         reasons: list[str] = []
-        if not fit:
-            reasons.append("replay_not_fit")
-        if flags.get("rare_edges"):
+        if rare_edges:
             reasons.append("rare_edges")
-        if flags.get("rare_activities"):
+        if rare_acts:
             reasons.append("rare_activities")
         if not reasons:
             continue
+        # 严重度 0-1：越稀有的边/活动越多越严重（供排序与前端展示）
+        severity = round(min(1.0, (len(rare_edges) + len(rare_acts)) / max(1, len(acts))), 3)
         anomalies.append({
-            "case": case,
-            "fitness": round(float(d.get("trace_fitness") or 0.0), 3),
-            "reasons": reasons,
-            "activities": [ev["concept:name"] for ev in tr],
-            "rare_edges": flags.get("rare_edges", []),
-            "rare_activities": flags.get("rare_activities", []),
-            "missing_tokens": d.get("missing_tokens"),
-            "remaining_tokens": d.get("remaining_tokens"),
+            "case": c["case"], "day": c["day"], "room": c["room"],
+            "reasons": reasons, "activities": acts,
+            "rare_edges": rare_edges, "rare_activities": rare_acts,
+            "severity": severity,
         })
-    anomalies.sort(key=lambda x: (x["fitness"], x["case"] or ""))
-    fit_n = len(log) - len(anomalies)
+    anomalies.sort(key=lambda x: (-x["severity"], x["case"]))
+
+    # 按房间的高频变体：房间是行为语义的关键维度，供服务层产出带房间的候选规则
+    by_room: dict[str, Counter] = {}
+    for c in cases:
+        by_room.setdefault(c["room"], Counter())[tuple(c["activities"])] += 1
+    variants_by_room = {
+        rm: [{"activities": list(k), "count": v} for k, v in cnt.most_common(5)]
+        for rm, cnt in by_room.items()
+    }
+
     return {
         "ok": True,
-        "cases": len(log),
-        "fitness_rate": round(fit_n / len(log), 3),
-        "places": len(net.places), "transitions": len(net.transitions),
-        "start_activities": len(start_acts), "end_activities": len(end_acts),
-        "dfg_edges": len(dfg),
+        "engine": "pure",
+        "cases": n,
+        "fitness_rate": round((n - len(anomalies)) / n, 3),
+        "dfg_edges": len(edge_count),
+        "start_activities": len(start_count), "end_activities": len(end_count),
+        "activities": len(act_count),
         "top_variants": [{"activities": list(k), "count": v}
                          for k, v in variants.most_common(8)],
+        "variants_by_room": variants_by_room,
         "anomaly_count": len(anomalies),
-        "anomalies": anomalies[:20],
+        "anomalies": anomalies,
     }
+
+
+def mine_process_model(
+    events: Sequence[dict],
+    tag_of: Callable[[str, str], set],
+    primary_tag: Optional[Callable[[set], str]] = None,
+    min_case_events: int = 3,
+    max_cases: int = 3000,
+    min_edge_support: float = 0.1,
+    min_activity_support: float = 0.1,
+    with_pm4py: bool = True,
+) -> dict:
+    """从事件流挖掘行为**过程模型**并做一致性检验（异常 = 偏离模型）。
+
+    case = ``房间|日期``（一天一房间一条轨迹），activity = ``tag_on``。
+    异常判据 = 使用了稀有直接跟随边 / 稀有活动（可选叠加 pm4py token 回放）。
+
+    :param with_pm4py: 装了 pm4py 时是否额外做 Petri 网 + token 回放增强
+        （默认 True；纯 Python 核心已足够产出异常，pm4py 仅补充严格一致性）。
+    :returns: 变体统计 / DFG / 一致性 / 异常 case（``engine`` 标明实际引擎）
+    """
+    cases = build_process_cases(events, tag_of, primary_tag=primary_tag,
+                               min_case_events=min_case_events, max_cases=max_cases)
+    res = mine_process_model_pure(cases, min_edge_support, min_activity_support)
+    if not cases or not with_pm4py:
+        return res
+    if importlib.util.find_spec("pm4py") is None:
+        res["pm4py"] = "未安装（纯 Python 路径，异常判定不受影响）"
+        return res
+    try:
+        return _enrich_with_pm4py(res, cases)
+    except Exception as exc:  # noqa: BLE001 —— 增强失败不影响纯 Python 结论
+        res["pm4py"] = f"增强失败（已忽略）: {exc}"
+        return res
+
+
+def _enrich_with_pm4py(res: dict, cases: Sequence[dict]) -> dict:
+    """用 pm4py 补 Petri 网/库所变迁数 + token 回放，追加 ``replay_not_fit`` 判据。"""
+    import pm4py  # noqa: F401
+    from pm4py.objects.log.obj import EventLog, Trace, Event
+    from pm4py.algo.conformance import tokenreplay
+
+    log = EventLog()
+    for c in cases:
+        tr = Trace()
+        tr.attributes["concept:name"] = c["case"]
+        for i, a in enumerate(c["activities"]):
+            ev = Event()
+            ev["concept:name"] = a
+            tr.append(ev)
+        log.append(tr)
+
+    dfg, start_acts, end_acts = pm4py.discover_dfg(log)
+    net, im, fm = pm4py.discover_petri_net_inductive(log)
+    diag = tokenreplay.algorithm.apply(log, net, im, fm)
+
+    by_case = {a["case"]: a for a in res.get("anomalies") or []}
+    for c, d in zip(cases, diag):
+        if bool(d.get("trace_is_fit", True)):
+            continue
+        entry = by_case.get(c["case"])
+        if entry is None:
+            entry = {"case": c["case"], "day": c["day"], "room": c["room"],
+                     "reasons": [], "activities": c["activities"],
+                     "rare_edges": [], "rare_activities": [], "severity": 0.0}
+            res.setdefault("anomalies", []).append(entry)
+        entry["reasons"].append("replay_not_fit")
+        entry["fitness"] = round(float(d.get("trace_fitness") or 0.0), 3)
+        entry["missing_tokens"] = d.get("missing_tokens")
+        entry["remaining_tokens"] = d.get("remaining_tokens")
+
+    n = len(cases)
+    res["engine"] = "pure+pm4py"
+    res["places"] = len(net.places)
+    res["transitions"] = len(net.transitions)
+    res["dfg_edges"] = max(res.get("dfg_edges") or 0, len(dfg))
+    res["start_activities"] = len(start_acts)
+    res["end_activities"] = len(end_acts)
+    res["anomaly_count"] = len(res.get("anomalies") or [])
+    res["fitness_rate"] = round((n - res["anomaly_count"]) / n, 3) if n else 0.0
+    res["anomalies"] = sorted(res.get("anomalies") or [],
+                              key=lambda x: (-x.get("severity") or 0.0, x["case"]))
+    return res
 
 
 # ── 3) 在线异常 + 概念漂移（river） ──────────────────────────────────────────
