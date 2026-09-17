@@ -20,6 +20,27 @@ class HAClient:
             "Content-Type": "application/json"
         }
     
+    def get_states(self) -> Optional[list]:
+        """批量拉取全部实体状态（单请求）。
+
+        用于需要同时读多个实体的轻量轮询场景（如客厅盒侧 AI 事件接入），
+        避免逐实体 N 次 HTTP 往返。失败返回 None，调用方可回退逐实体读取。
+        """
+        try:
+            with httpx.Client() as client:
+                response = client.get(
+                    f"{self.base_url}/api/states",
+                    headers=self.headers,
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, list):
+                        return data
+        except Exception as e:
+            print(f"批量获取状态失败: {e}")
+        return None
+
     def get_state(self, entity_id: str) -> Optional[Dict[str, Any]]:
         """获取实体状态"""
         try:

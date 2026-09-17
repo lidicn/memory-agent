@@ -1482,6 +1482,10 @@ class Store:
         )
         conn = self.connect()
         with self._lock:
+            # 用 total_changes 差值判定是否真写入：INSERT OR IGNORE 命中唯一约束时
+            # 不产生变更；而 cur.rowcount 在不同 sqlite3 版本/驱动下对 IGNORE 的
+            # 取值不一致（线上容器实测为 0 但行已写入），不能作为判据。
+            before = conn.total_changes
             cur = conn.execute(
                 """INSERT OR IGNORE INTO perception_events(
                      event_id, server_ts, day, source, kind, room, entity_id, confidence,
@@ -1502,9 +1506,9 @@ class Store:
                 ),
             )
             conn.commit()
-            # INSERT OR IGNORE 命中唯一约束时 cur.rowcount=0（未插入），
-            # 此时 lastrowid 仍是上一条的 rowid，故以 rowcount 判定是否真写入
-            return int(cur.lastrowid or 0) if cur.rowcount else 0
+            if conn.total_changes <= before:
+                return 0  # 幂等命中：事件已存在，未新增
+            return int(cur.lastrowid or 0)
 
     def list_perception_events(
         self, source: str | None = None, kind: str | None = None,

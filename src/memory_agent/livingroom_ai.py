@@ -20,8 +20,16 @@ from .announcer import Announcer
 
 logger = logging.getLogger("memory_agent.livingroom_ai")
 
-# 盒侧 AI 事件实体只来自小米摄像机；排除其他 event 实体（如 HA 自动化事件）
-_EVENT_PREFIX = "event.chuangmi_camera"
+# 盒侧 AI 事件实体只来自小米摄像机；排除其他 event 实体（如 HA 自动化事件）。
+# 实测实体 id 有两种形态：``event.chuangmi_camera_051a01_*``（旧集成）与
+# ``event.chuangmi_cn_1072229835_051a01_*``（米家集成，线上实际形态），
+# 因此前缀只取到 ``event.chuangmi``，靠 perception_ingest 的后缀映射区分语义。
+_EVENT_PREFIX = "event.chuangmi"
+
+# 有意**不入库**的高频环境事件（后缀）：物体/人形移动、昼夜切换每次检测都触发，
+# 入库会淹没语义事件并让 VLM Gate 恒判"边缘信号新鲜"→ 过度跳过取帧。
+# 需要时再按房间降频采样，不要简单加进 _CHUANGMI_KIND_MAP。
+_SKIP_SUFFIXES = ("object_motion_e_8_1", "people_motion_e_8_2")
 
 # 实体列表发现缓存刷新间隔（秒）：discover_entities 较重，10 分钟刷一次足够
 _DISCOVER_TTL = 600
@@ -68,9 +76,12 @@ class LivingRoomAIIngest:
                     continue
             ents = info.get("entities", {})
             for eid in ents:
-                if eid.startswith(_EVENT_PREFIX):
-                    ids.append(eid)
-                    room_map[eid] = room
+                if not eid.startswith(_EVENT_PREFIX):
+                    continue
+                if eid.endswith(_SKIP_SUFFIXES):
+                    continue  # 高频环境事件，有意不入库（见 _SKIP_SUFFIXES 注释）
+                ids.append(eid)
+                room_map[eid] = room
         self._entity_ids = ids
         self._entity_rooms = room_map
         self._discovered_at = now
@@ -78,18 +89,45 @@ class LivingRoomAIIngest:
             logger.info("livingroom_ai: 发现 %d 个盒侧 AI 事件实体", len(ids))
 
     # -- 单次轮询 ----------------------------------------------------------
+    def _states_index(self) -> dict:
+        """一次 ``/api/states`` 批量取回全部实体状态，避免逐实体 N 次请求。
+
+        现场有 ~14 个盒侧 AI 事件实体，10s 轮询若逐个 GET 会是 ~84 req/min；
+        批量只需 1 req。HA 客户端未提供 ``get_states`` 时返回空字典，
+        自动回退到逐实体 ``get_state``（单测的 FakeHA 即走该路径）。
+        """
+        bulk = getattr(self.ha, "get_states", None)
+        if not callable(bulk):
+            return {}
+        try:
+            states = bulk()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("livingroom_ai: 批量取状态失败，回退逐实体: %s", exc)
+            return {}
+        if not isinstance(states, list):
+            return {}
+        out: dict = {}
+        for s in states:
+            if isinstance(s, dict) and s.get("entity_id"):
+                out[s["entity_id"]] = s
+        return out
+
     def poll_once(self) -> int:
         """拉取一次客厅盒侧 AI 事件，返回本次新写入条数。"""
         self._discover()
         if not self._entity_ids:
             return 0
+        index = self._states_index()
         ingested = 0
         for eid in self._entity_ids:
-            try:
-                state = self.ha.get_state(eid)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("livingroom_ai: get_state %s 失败: %s", eid, exc)
-                continue
+            if eid in index:
+                state = index[eid]
+            else:
+                try:
+                    state = self.ha.get_state(eid)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("livingroom_ai: get_state %s 失败: %s", eid, exc)
+                    continue
             if not isinstance(state, dict):
                 continue
             last = state.get("last_changed") or state.get("last_updated")
