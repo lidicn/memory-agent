@@ -33,14 +33,22 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
+from .entity_resolution import (  # 归一化/相似度/概率解析：唯一口径（P2）
+    PREFIX_MERGE_MIN,
+    SIMILARITY_THRESHOLD,
+    ProbabilisticMatcher,
+    _CJK,
+    _common_prefix_len,
+    normalize_name,
+    similarity,
+)
 from .store import now_local
 
-# 名称相似度阈值：≥ 此值且同 area + 同 domain 才判定为同一物理设备
-SIMILARITY_THRESHOLD = 0.85
-# 加固：同 room 同 domain 的实体，若归一化名称共享公共前缀 ≥ 此字符数，也判定为同一
-# 物理设备并合并。用于同一台电视在 HA 里被拆成多个 media_player 实体的场景
-# （如「lidicn的电视电视」与「lidicn的电视播放控制」）。值设较大以抑制误并。
-PREFIX_MERGE_MIN = 6
+# SIMILARITY_THRESHOLD / PREFIX_MERGE_MIN / normalize_name / similarity /
+# _common_prefix_len 现已定义于 entity_resolution（概率解析与字符串工具同源，
+# 保证"硬规则"与"概率判定"口径一致）；此处再导出，使 identity.similarity 等
+# 既有引用方式继续可用。
+
 # 超过该天数未在 HA 注册表出现 → 标记 stale
 STALE_DAYS = 30
 # 解析结果缓存 TTL（秒）
@@ -48,16 +56,6 @@ CACHE_TTL_SECONDS = 300
 # 视为「离线/不可信」的 HA 状态
 OFFLINE_STATES = {"unavailable", "unknown", "none", ""}
 # 设备状态字段里代表「当前在线」之外的取值（off 也是设备存在，仅 unavailable 才算失联）
-
-_CJK = r"\u4e00-\u9fff"
-
-
-# ── 归一化与相似度 ──────────────────────────────────────────────────────────
-
-def normalize_name(name: str) -> str:
-    """归一化设备名：小写、去掉空白与标点，仅保留字母数字与中日韩字符。"""
-    s = (name or "").strip().lower()
-    return re.sub(rf"[^0-9a-z{_CJK}]+", "", s)
 
 
 def slugify(text: str) -> str:
@@ -70,27 +68,6 @@ def make_stable_id(domain: str, friendly_name: str) -> str:
     """逻辑设备稳定主键：``域名__归一化名``（永不因 entity_id 漂移而改变）。"""
     n = normalize_name(friendly_name)
     return f"{domain}__{n}" if n else domain
-
-
-def similarity(a: str, b: str) -> float:
-    """归一化后的名称相似度（0~1），用于 A1 重匹配与 A2 冗余合并。"""
-    na, nb = normalize_name(a), normalize_name(b)
-    if not na or not nb:
-        return 0.0
-    if na == nb:
-        return 1.0
-    return difflib.SequenceMatcher(None, na, nb).ratio()
-
-
-def _common_prefix_len(a: str, b: str) -> int:
-    """两个字符串的最长公共前缀长度（按字符计，用于加固合并判定）。"""
-    n = 0
-    for ca, cb in zip(a, b):
-        if ca == cb:
-            n += 1
-        else:
-            break
-    return n
 
 
 def looks_like_entity_id(ref: str) -> bool:
@@ -298,6 +275,7 @@ class IdentityReconciler:
         stale_days: int = STALE_DAYS,
         threshold: float = SIMILARITY_THRESHOLD,
         tz_offset_hours: float = 8.0,
+        matcher: ProbabilisticMatcher | None = None,
     ):
         self.service = service
         self.store = service.store
@@ -306,7 +284,12 @@ class IdentityReconciler:
         self.stale_days = stale_days
         self.threshold = threshold
         self.tz_offset_hours = tz_offset_hours
+        # P2：概率实体解析器（Fellegi-Sunter）。统一给 A2 合并 / A1 复用 / 孤儿
+        # 重匹配三处判定使用，替代原来的「相似度 ≥ 阈值」硬判定。
+        # 未注入时用先验参数构造（行为与历史硬规则等价，见 entity_resolution）。
+        self.matcher = matcher or ProbabilisticMatcher(match_threshold=threshold)
         self._last_seen: set[str] = set()
+        self._needs_review: list[dict] = []
 
     # ── 主流程 ──────────────────────────────────────────────────────────────
 
@@ -380,6 +363,9 @@ class IdentityReconciler:
             "stale": stale,
             "health_changes": changes,
             "bound": bound,
+            # P2：落在灰区的候选配对（未自动合并，交人工复核）——不确定性的出口
+            "needs_review": self._needs_review[:20],
+            "needs_review_count": len(self._needs_review),
         }
 
     # ── 步骤实现 ────────────────────────────────────────────────────────────
@@ -406,39 +392,67 @@ class IdentityReconciler:
                 )
         return out
 
-    def _cluster(self, entities: list[dict]) -> list[dict]:
-        """按 (room, domain) 分组后再按名称相似度聚类（跨 room 不合并）。
+    def _pinned_entities(self) -> set[str]:
+        """人工拆分（user-pinned）后固定下来的实体 id。
 
-        加固：同 room 同 domain 的实体，若归一化名称共享较长公共前缀
-        （≥ ``PREFIX_MERGE_MIN`` 字符，如「lidicn的电视电视」与「lidicn的电视播放控制」
-        实为同一台电视的多个 HA 实体），也并入同一逻辑设备，避免同一物理设备的
-        多个 HA 实体被拆成多个设备、导致按设备查询漏算或模板指向错误实体。
+        拆分的语义是"这两个就不是同一台设备"，若对账时仍可被 A2 重新聚类合并，
+        拆分就失效了——故这些实体不参与合并（各自独立成一簇）。
         """
+        pinned: set[str] = set()
+        try:
+            for dev in self.store.list_logical_devices():
+                if (dev.get("provenance") or "") != "user-pinned":
+                    continue
+                for cand in dev.get("candidates") or []:
+                    if isinstance(cand, dict) and cand.get("entity_id"):
+                        pinned.add(cand["entity_id"])
+        except Exception:  # noqa: BLE001
+            return set()
+        return pinned
+
+    def _cluster(self, entities: list[dict]) -> list[dict]:
+        """按 (room, domain) 分组后做**概率聚类**（跨 room 不合并）。
+
+        P2 升级：判定由「相似度 ≥ 阈值」改为 Fellegi-Sunter 匹配概率——
+        * ``band == match``（概率 ≥ ``match_threshold``）→ 合并
+        * ``band == review``（概率落在灰区）→ **不合并**，但记入 ``needs_review``
+          交人工复核（这正是旧启发式丢失的"不确定性"）
+        * 其他 → 不合并
+
+        历史已验证的合并（归一化相等 / 相似度 ≥0.85 / 公共前缀 ≥6）在
+        ``entity_resolution.name_level`` 里均判为强相似，因此**不会回退**。
+        """
+        pinned = self._pinned_entities()
         clusters: list[dict] = []
+        self._needs_review = []
         for e in sorted(entities, key=lambda x: (x["room"], x["domain"], x["entity_id"])):
+            if e["entity_id"] in pinned:
+                clusters.append({"room": e["room"], "domain": e["domain"],
+                                 "name": e["name"], "members": [e]})
+                continue
             merged = False
+            best_review: dict | None = None
             for cl in clusters:
-                if (
-                    cl["room"] == e["room"]
-                    and cl["domain"] == e["domain"]
-                    and similarity(cl["name"], e["name"]) >= self.threshold
-                ):
+                if e["entity_id"] in pinned:
+                    continue
+                res = self.matcher.compare(
+                    {"entity_id": cl["members"][0]["entity_id"], "name": cl["name"],
+                     "domain": cl["domain"], "room": cl["room"]},
+                    e,
+                )
+                if res["band"] == "match":
                     cl["members"].append(e)
                     merged = True
                     break
-            if not merged:
-                for cl in clusters:
-                    if (
-                        cl["room"] == e["room"]
-                        and cl["domain"] == e["domain"]
-                        and _common_prefix_len(
-                            normalize_name(cl["name"]), normalize_name(e["name"])
-                        )
-                        >= PREFIX_MERGE_MIN
-                    ):
-                        cl["members"].append(e)
-                        merged = True
-                        break
+                if res["band"] == "review":
+                    # 取概率最高的灰区候选，供人工复核
+                    if best_review is None or res["probability"] > best_review["probability"]:
+                        best_review = {"cluster": cl["name"], "entity_id": e["entity_id"],
+                                       "name": e["name"], "room": e["room"],
+                                       "probability": res["probability"],
+                                       "levels": res["levels"]}
+            if not merged and best_review is not None:
+                self._needs_review.append(best_review)
             if not merged:
                 clusters.append(
                     {
@@ -457,8 +471,15 @@ class IdentityReconciler:
         微调」的主路径——复用原 ``stable_id``，避免每次对账都新造一个逻辑设备。
         **跨 room 一律不匹配**，防止把两个房间的同名设备误并。
         """
+        probe = {
+            "entity_id": (cluster["members"][0]["entity_id"]
+                          if cluster.get("members") else ""),
+            "name": cluster["name"],
+            "domain": cluster["domain"],
+            "room": cluster["room"],
+        }
         best: dict | None = None
-        best_score = 0.0
+        best_p = 0.0
         for dev in self.store.list_logical_devices():
             if (dev.get("device_class") or "") != cluster["domain"]:
                 continue
@@ -469,12 +490,25 @@ class IdentityReconciler:
             }
             if rooms and cluster["room"] not in rooms:
                 continue
-            score = similarity(dev.get("display_name") or "", cluster["name"])
+            # P2：与存量设备的 display_name / 各候选逐一做**概率**比对，取最高匹配概率
+            p = self.matcher.compare(
+                {"entity_id": dev.get("primary_entity") or "",
+                 "name": dev.get("display_name") or "",
+                 "domain": cluster["domain"], "room": cluster["room"]},
+                probe,
+            )["probability"]
             for cand in dev.get("candidates") or []:
-                if isinstance(cand, dict):
-                    score = max(score, similarity(cand.get("name") or "", cluster["name"]))
-            if score >= self.threshold and score > best_score:
-                best, best_score = dev, score
+                if not isinstance(cand, dict):
+                    continue
+                p = max(p, self.matcher.compare(
+                    {"entity_id": cand.get("entity_id") or "",
+                     "name": cand.get("name") or "",
+                     "domain": cand.get("domain") or cluster["domain"],
+                     "room": cand.get("room") or cluster["room"]},
+                    probe,
+                )["probability"])
+            if p >= self.matcher.match_threshold and p > best_p:
+                best, best_p = dev, p
         return best
 
     def _stable_id_for(self, cluster: dict) -> str:
@@ -593,18 +627,37 @@ class IdentityReconciler:
                         remapped += 1
                 continue
 
-            # 全部候选都消失 → 找同名同类的新实体（重登漂移的典型形态）
+            # 全部候选都消失 → 找同名同类的新实体（重登漂移的典型形态）。
+            # 注意：漂移后 room 也可能变化，故此处**不要求 room 相同**（沿用旧行为），
+            # 用 P2 概率判定替代原「相似度 ≥ 阈值」。
             domain = row.get("device_class") or ""
+            orphan_matcher = ProbabilisticMatcher(
+                priors=self.matcher.priors, lamb=self.matcher.lamb,
+                match_threshold=self.matcher.match_threshold,
+                review_threshold=self.matcher.review_threshold,
+                require_room=False,
+            )
             best: dict | None = None
-            best_score = 0.0
+            best_p = 0.0
             for e in entities:
                 if domain and e["domain"] != domain:
                     continue
-                score = similarity(row.get("display_name") or "", e["name"])
+                p = orphan_matcher.compare(
+                    {"entity_id": row.get("primary_entity") or "",
+                     "name": row.get("display_name") or "",
+                     "domain": domain or e["domain"], "room": ""},
+                    e,
+                )["probability"]
                 for c in cands:
-                    score = max(score, similarity(c.get("name") or "", e["name"]))
-                if score >= self.threshold and score > best_score:
-                    best, best_score = e, score
+                    p = max(p, orphan_matcher.compare(
+                        {"entity_id": c.get("entity_id") or "",
+                         "name": c.get("name") or "",
+                         "domain": c.get("domain") or domain or e["domain"],
+                         "room": ""},
+                        e,
+                    )["probability"])
+                if p >= orphan_matcher.match_threshold and p > best_p:
+                    best, best_p = e, p
             if best is None:
                 continue
             row["candidates"] = cands + [

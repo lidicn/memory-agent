@@ -32,3 +32,56 @@ def difflib_baseline(names_a: list[str], names_b: list[str], cutoff: float = 0.6
         if best:
             pairs.append((a, best[0]))
     return pairs
+
+
+def compare_resolution(records: list[dict], match_threshold: float = 0.95,
+                       review_threshold: float = 0.5, max_diff: int = 20) -> dict:
+    """对照评估：内置 Fellegi-Sunter vs 原 difflib 硬阈值（P2 升级前后差异）。
+
+    ``records`` 需含 ``entity_id / name / domain / room``。按 ``(room, domain)``
+    分块后块内两两比较（与 ``IdentityReconciler._cluster`` 同口径）。
+
+    返回两法各自的判定计数与**差异清单**——差异主要来自：旧法把"不像"的配对
+    一律判否（丢失"有点像、值得看一眼"的信息），新法把这类配对标为 ``review``。
+    """
+    from .entity_resolution import ProbabilisticMatcher, similarity
+
+    matcher = ProbabilisticMatcher(match_threshold=match_threshold,
+                                   review_threshold=review_threshold)
+    blocks: dict[tuple, list[dict]] = {}
+    for r in records or []:
+        if not isinstance(r, dict):
+            continue
+        key = (r.get("room") or "", r.get("domain") or "")
+        blocks.setdefault(key, []).append(r)
+
+    fs: dict[str, int] = {"match": 0, "review": 0, "non": 0}
+    base = {"match": 0, "non": 0}
+    diffs: list[dict] = []
+    for rows in blocks.values():
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                a, b = rows[i], rows[j]
+                res = matcher.compare(a, b)
+                fs[res["band"]] += 1
+                old = ("match" if similarity(a.get("name") or "", b.get("name") or "")
+                       >= 0.85 else "non")
+                base[old] += 1
+                if res["band"] != old and len(diffs) < max_diff:
+                    diffs.append({
+                        "a": a.get("entity_id"), "b": b.get("entity_id"),
+                        "name_a": a.get("name"), "name_b": b.get("name"),
+                        "room": a.get("room"),
+                        "fs": res["band"], "fs_probability": res["probability"],
+                        "difflib": old,
+                    })
+    return {
+        "ok": True,
+        "engine": "fellegi-sunter(pure-python, splink optional)",
+        "records": len(records or []),
+        "pairs": sum(fs.values()),
+        "fellegi_sunter": fs,
+        "difflib": base,
+        "diff_count": len(diffs),
+        "diffs": diffs,
+    }
