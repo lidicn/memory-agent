@@ -44,8 +44,13 @@ from .acp_auth import ACPTokenMiddleware
 from .acp_server import acp_dispatcher
 from .auth import AuthManager
 from .config import get_config
+from .logging_setup import configure_logging
 from .mcp_auth import MCPTokenMiddleware
 from .runtime import get_runtime, start_runtime, stop_runtime
+
+# 必须在任何模块产生日志**之前**配置：项目此前从未配置 logging，root logger 默认
+# WARNING + lastResort，导致全部 logger.info() 被静默丢弃（线上看不到）。
+configure_logging()
 
 BASE_DIR = os.path.dirname(__file__)
 STATIC_DIR = os.path.join(BASE_DIR, "static")
