@@ -26,11 +26,15 @@ class Announcer:
         tts_entity: str = "",
         enabled: bool = False,
         cooldown_sec: int = 30,
+        target: str = "",
     ) -> None:
         self.ha = ha_client
         self.store = store
         self.tts_entity = tts_entity or ""
-        self.enabled = bool(enabled) and bool(self.tts_entity)
+        # HA 的 tts.speak 需要 media_player_entity_id 才会真正发声；
+        # 未配置播放设备时只合成不播放，故视为未就绪（enabled=False）。
+        self.target = target or ""
+        self.enabled = bool(enabled) and bool(self.tts_entity) and bool(self.target)
         self.cooldown_sec = max(0, int(cooldown_sec))
         self._last: dict[str, float] = {}
 
@@ -66,7 +70,8 @@ class Announcer:
             res = self.ha.execute_action({
                 "device": self.tts_entity,
                 "command": "speak",
-                "params": {"message": msg, "speaker": self.tts_entity},
+                "params": {"message": msg, "speaker": self.tts_entity,
+                           "target": self.target},
             })
         except Exception as exc:  # noqa: BLE001
             logger.warning("announcer: tts.speak 调用失败: %s", exc)

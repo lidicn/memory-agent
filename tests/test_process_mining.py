@@ -77,6 +77,60 @@ def test_pure_engine_empty():
     assert res["ok"] is True and res["cases"] == 0 and res["anomaly_count"] == 0
 
 
+def test_min_cases_per_room_skips_low_data_rooms():
+    """样本不足的房间不做一致性检验——没有"常态"就谈不上"偏离常态"。
+
+    线上实测：14 天 / 13 个房间 → 逐房间样本多为 1-2 天，按比例判稀有边会把
+    37% 的房间-日全判成异常（不可用）。故先按房间样本数过滤。
+    """
+    specs = [("书房", f"2026-09-{d:02d}", ["door_on", "light_on", "computer_on"])
+             for d in range(1, 16)]                      # 15 天，够
+    specs.append(("客房", "2026-09-01",
+                  ["door_on", "light_on", "cover_on", "light_on"]))  # 仅 1 天
+
+    res = ak.mine_process_model_pure(_cases(specs), min_cases_per_room=4)
+    assert res["cases"] == 15 and res["cases_all"] == 16
+    assert res["reviewed_rooms"] == ["书房"]
+    assert res["skipped_rooms"] == ["客房"]
+    assert res["anomaly_count"] == 0
+
+    # 门槛关掉（=1）时客房被纳入评估，但**单天样本不会自证异常**
+    # （房间内比对：自己就是 100% 的常态），仍不会产出假异常
+    loose = ak.mine_process_model_pure(_cases(specs), min_cases_per_room=1)
+    assert loose["cases"] == 16 and loose["skipped_rooms"] == []
+    assert loose["anomaly_count"] == 0
+
+
+def test_anomaly_is_room_scoped():
+    """一致性检验在**房间内**比对：别的房间的日常不会被判成异常。"""
+    specs = [("书房", f"2026-09-{d:02d}", ["door_on", "light_on", "computer_on"])
+             for d in range(1, 16)]
+    # 书房第 16 天多插一步（房间内稀边 → 应判异常）
+    specs.append(("书房", "2026-09-20",
+                  ["door_on", "light_on", "climate_on", "computer_on"]))
+    # 另一个房间完全不同的流程，但自身高度一致 → 不该被判异常
+    specs += [("客房", f"2026-09-{d:02d}", ["door_on", "cover_on", "light_on"])
+              for d in range(1, 16)]
+
+    res = ak.mine_process_model_pure(_cases(specs), min_cases_per_room=4)
+    assert res["cases"] == 31               # 书房 16 天 + 客房 15 天
+    assert res["reviewed_rooms"] == ["书房", "客房"]
+    assert {a["case"] for a in res["anomalies"]} == {"书房|2026-09-20"}
+    assert res["anomaly_count"] == 1
+    assert res["fitness_rate"] == round(30 / 31, 3)
+    # 全局 dfg_edges 仍汇总两房间的边
+    assert res["dfg_edges"] >= 4
+
+
+def test_min_cases_per_room_all_insufficient():
+    specs = [("A", "2026-09-01", ["door_on", "light_on", "media_on"]),
+             ("B", "2026-09-01", ["door_on", "light_on", "media_on"])]
+    res = ak.mine_process_model_pure(_cases(specs), min_cases_per_room=3)
+    assert res["ok"] is True and res["cases"] == 0 and res["cases_all"] == 2
+    assert sorted(res["skipped_rooms"]) == ["A", "B"]
+    assert res["anomaly_count"] == 0
+
+
 def test_variants_grouped_by_room():
     specs = [
         ("书房", "2026-09-01", ["door_on", "light_on", "computer_on"]),
@@ -107,6 +161,59 @@ def test_build_process_cases_compresses_and_filters_short():
     assert cases[0]["activities"] == ["door_on", "light_on", "computer_on"]  # 连续重复已压缩
     assert cases[0]["room"] == "书房" and cases[0]["day"] == "2026-09-15"
     assert cases[0]["case"] == "书房|2026-09-15"
+
+
+def test_build_process_cases_buckets_high_frequency_alternation():
+    """真实家庭事件是秒级交替的（电视/在场来回），须聚合成粗粒度轨迹。
+
+    否则一天的轨迹会有上百步且每天都不重样 → 变体支持度恒为 1、稀边遍地，
+    异常判定被噪声主导（线上实测踩到）。聚合口径：按 10min 桶，只在标签
+    **相对上一桶新出现**时记一步。
+    """
+    def tag_of(eid, name):
+        if "tv" in eid:
+            return {"media"}
+        if "pir" in eid:
+            return {"presence"}
+        return {"door"} if "door" in eid else {"light"}
+
+    base = datetime(2026, 9, 15, 20, 0, 0)
+    evs = []
+    for i in range(180):  # 20:00-20:30，每 10 秒交替一次（3 个桶全是 media+presence）
+        dom = "media_player.tv" if i % 2 == 0 else "binary_sensor.pir_occupancy"
+        evs.append({"ts": (base + timedelta(seconds=10 * i)).isoformat(sep="T"),
+                    "entity_id": dom, "new_state": "on", "room": "客厅"})
+    # 仅 media/presence 反复 → 收敛为 2 步，不足以成为一条轨迹
+    assert ak.build_process_cases(evs, tag_of) == []
+
+    # 补上真正"依次发生"的事（20:40 门、20:50 灯）→ 才构成一条轨迹
+    evs.append({"ts": (base + timedelta(minutes=40)).isoformat(sep="T"),
+                "entity_id": "binary_sensor.hall_door_contact", "new_state": "on",
+                "room": "客厅"})
+    evs.append({"ts": (base + timedelta(minutes=50)).isoformat(sep="T"),
+                "entity_id": "light.living_ceiling", "new_state": "on", "room": "客厅"})
+    cases = ak.build_process_cases(evs, tag_of)
+    assert len(cases) == 1
+    acts = cases[0]["activities"]
+    # presence 优先于 media（TAG_VOCAB 顺序），且后续桶无新标签 → 共 4 步
+    assert acts == ["presence_on", "media_on", "door_on", "light_on"]
+
+    # bucket_sec=0 → 退化为逐事件（仅调试用），会压缩相邻重复
+    raw = ak.build_process_cases(evs, tag_of, bucket_sec=0)
+    assert len(raw[0]["activities"]) > 100
+
+
+def test_build_process_cases_skips_junk_rooms():
+    """HA 未分区/未知/空房间名不产生 case（避免无意义的过程轨迹）。"""
+    tag_of = lambda eid, name: ({"door"} if eid.endswith("d") else {"light"})  # noqa: E731
+    base = datetime(2026, 9, 15, 10, 0, 0)
+    evs = [{"ts": (base + timedelta(minutes=15 * i)).isoformat(sep="T"),
+            "entity_id": f"binary_sensor.s{i}_{'d' if i % 2 == 0 else 'l'}",
+            "new_state": "on", "room": "未分区"} for i in range(4)]
+
+    assert ak.build_process_cases(evs, tag_of) == []
+    kept = ak.build_process_cases(evs, tag_of, skip_rooms=())
+    assert len(kept) == 1 and len(kept[0]["activities"]) == 4
 
 
 def test_mine_process_model_pure_path_without_pm4py():

@@ -147,6 +147,13 @@ async def behaviors_mine_process(request: Request):
         persist=bool(body.get("persist", True)),
         emit_rules=bool(body.get("emit_rules", True)),
         min_variant_support=int(body.get("min_variant_support") or 3),
+        bucket_sec=(int(body["bucket_sec"]) if body.get("bucket_sec") is not None else None),
+        min_cases_per_room=(
+            int(body["min_cases_per_room"])
+            if body.get("min_cases_per_room") is not None else None),
+        min_case_events=(
+            int(body["min_case_events"])
+            if body.get("min_case_events") is not None else None),
     )
     return ok(res)
 

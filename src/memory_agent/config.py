@@ -110,6 +110,9 @@ class Config:
     process_mining_min_edge_support: float = 0.1      # 稀有直接跟随边阈值（低于即判异常）
     process_mining_min_activity_support: float = 0.1  # 稀有活动阈值（低于即判异常）
     process_mining_min_variant_support: int = 3       # 变体产出候选规则的最低支持度
+    process_mining_bucket_sec: int = 600              # 轨迹时间桶粒度（秒，抗秒级交替噪声）
+    process_mining_min_cases_per_room: int = 4        # 房间最少样本天数（不足不做一致性检验）
+    process_mining_min_case_events: int = 2           # 一条轨迹最少步数（桶聚合后轨迹较短）
     process_mining_retention_days: int = 90           # 行为异常保留天数（confirmed 不清理）
 
     # ── 主动感知 v2.0 · 客厅盒侧 AI 事件接入（Phase 0.1）──────────────────────
@@ -117,8 +120,9 @@ class Config:
     livingroom_ai_interval_seconds: int = 10          # 轮询间隔（秒，默认 10s）
 
     # ── 主动感知 v2.0 · 主动播报闭环（Phase 0.4，doubao2api TTS）────────────────
-    announce_enabled: bool = False                    # 主动播报总开关（默认关，需配置 tts 实体）
-    announce_tts_entity: str = ""                     # HA 中 doubao_tts 实体 id，如 "tts.doubao_tts"
+    announce_enabled: bool = False                    # 主动播报总开关（默认关，需配 tts 实体+播放设备）
+    announce_tts_entity: str = ""                     # HA 的 tts 实体，如 "tts.doubao_tts" / "tts.edgetts_*"
+    announce_target: str = ""                         # 播放设备 media_player.*（tts.speak 必需，否则只合成不发声）
     announce_cooldown_sec: int = 30                   # 同类事件最小播报间隔，防刷屏
 
     # ── 主动感知 v2.0 · VLM 取帧降级（Phase 0.3）────────────────────────────

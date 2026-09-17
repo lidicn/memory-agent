@@ -179,6 +179,7 @@ class AppRuntime:
             tts_entity=getattr(self.config, "announce_tts_entity", "") or "",
             enabled=getattr(self.config, "announce_enabled", False),
             cooldown_sec=getattr(self.config, "announce_cooldown_sec", 30),
+            target=getattr(self.config, "announce_target", "") or "",
         )
         self._livingroom_ai = LivingRoomAIIngest(
             self.ha, self.store,

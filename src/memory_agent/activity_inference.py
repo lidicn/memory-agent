@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from . import algo_kernel
-from .store import now_local
+from .store import TELEMETRY_DOMAINS, now_local
 
 
 # ── 内置有序序列规则（开发计划 §4.2；room 为关键词列表，空=任意房间）──────────
@@ -451,21 +451,24 @@ class ActivityInferenceService:
 
     # ── P1.1 过程挖掘：行为过程模型 + 一致性检验（行为异常）────────────────
     def _iter_events(self, start: str, end: str, rooms: list | None = None,
-                     max_rows: int = 60000) -> list[dict]:
-        """取窗口内事件（分页全量）。
+                     max_rows: int = 200000) -> list[dict]:
+        """取窗口内事件（分页全量，**排除纯遥测域**）。
 
         ``store.query_events`` 单次 LIMIT 硬上限 5000 会**静默截断**，直接传大
         limit 只会拿到最早一段；优先复用 ``insights._iter_all_events`` 分页。
+        同时排除 ``TELEMETRY_DOMAINS``（功率/温湿度等固定周期上报）：它们没有行为
+        标签、却占绝大多数行——不排除会让分页上限被遥测吃满，窗口只覆盖到最早几天
+        （线上实测：30 天窗口反而只看到 3 个 case）。
         """
+        kw = {"rooms": rooms, "order": "asc", "exclude_domains": list(TELEMETRY_DOMAINS)}
         ins = self.insights
         if ins is not None and hasattr(ins, "_iter_all_events"):
             try:
-                return ins._iter_all_events(start, end, max_rows=max_rows,
-                                            rooms=rooms, order="asc")
+                return ins._iter_all_events(start, end, max_rows=max_rows, **kw)
             except TypeError:
-                return ins._iter_all_events(start, end, max_rows=max_rows, rooms=rooms)
-        return self.store.query_events(start=start, end=end, rooms=rooms,
-                                       order="asc", limit=5000)
+                kw.pop("exclude_domains", None)
+                return ins._iter_all_events(start, end, max_rows=max_rows, **kw)
+        return self.store.query_events(start=start, end=end, limit=5000, **kw)
 
     def mine_process(self, start: str | None = None, end: str | None = None,
                      days: int = 7, rooms: list | None = None, *,
@@ -473,7 +476,10 @@ class ActivityInferenceService:
                      min_activity_support: float | None = None,
                      persist: bool = True, emit_rules: bool = True,
                      min_variant_support: int | None = None, max_rules: int = 8,
-                     max_rows: int = 60000) -> dict:
+                     bucket_sec: int | None = None,
+                     min_cases_per_room: int | None = None,
+                     min_case_events: int | None = None,
+                     max_rows: int = 200000) -> dict:
         """挖行为**过程模型**并检出偏离常态的 case（P1.1；异常 = 一致性检验）。
 
         与 ``mine_sequences``（朴素 n-gram 频次）互补：本方法把 ``(房间·天)`` 当
@@ -498,6 +504,14 @@ class ActivityInferenceService:
         if min_variant_support is None:
             min_variant_support = int(
                 getattr(cfg, "process_mining_min_variant_support", 3) or 3)
+        if bucket_sec is None:
+            bucket_sec = int(getattr(cfg, "process_mining_bucket_sec", 600) or 0)
+        if min_cases_per_room is None:
+            min_cases_per_room = int(
+                getattr(cfg, "process_mining_min_cases_per_room", 4) or 1)
+        if min_case_events is None:
+            min_case_events = int(
+                getattr(cfg, "process_mining_min_case_events", 2) or 2)
         now = now_local(cfg.tz_offset_hours)
         end = end or now.isoformat(sep="T")
         if not start:
@@ -513,6 +527,9 @@ class ActivityInferenceService:
                 events, self._tags_of, primary_tag=self._primary_tag,
                 min_edge_support=min_edge_support,
                 min_activity_support=min_activity_support,
+                bucket_sec=bucket_sec,
+                min_cases_per_room=min_cases_per_room,
+                min_case_events=min_case_events,
             )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"过程挖掘失败: {exc}"}
@@ -566,7 +583,13 @@ class ActivityInferenceService:
             "ok": True,
             "engine": res.get("engine"),
             "start": start, "end": end,
-            "cases": res.get("cases"), "events": len(events),
+            "cases": res.get("cases"), "cases_all": res.get("cases_all"),
+            "events": len(events),
+            "reviewed_rooms": res.get("reviewed_rooms"),
+            "skipped_rooms": res.get("skipped_rooms"),
+            "min_cases_per_room": res.get("min_cases_per_room"),
+            "min_case_events": min_case_events,
+            "bucket_sec": res.get("bucket_sec"),
             "fitness_rate": res.get("fitness_rate"),
             "dfg_edges": res.get("dfg_edges"),
             "top_variants": (res.get("top_variants") or [])[:5],

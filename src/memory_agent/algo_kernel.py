@@ -386,12 +386,19 @@ def build_process_cases(
     primary_tag: Optional[Callable[[set], str]] = None,
     min_case_events: int = 3,
     max_cases: int = 3000,
+    bucket_sec: int = 600,
+    skip_rooms: Sequence[str] = ("", "未知", "未分区"),
 ) -> list[dict]:
     """事件流 → 过程挖掘 case 列表（``case = 房间|日期``，活动 = ``tag_on``）。
 
-    连续重复活动会压缩（同一标签连续触发只算一步），短于 ``min_case_events``
-    的 case 丢弃。返回 ``[{"case": str, "day": str, "room": str,
-    "activities": [str]}]``，纯 Python、无第三方依赖。
+    **时间桶聚合（关键）**：家庭事件是秒级的（电视/在场传感器来回交替），若一条
+    事件一步，一天的轨迹会有上百步且每天都不重样 —— 变体支持度恒为 1、DFG 稀边
+    遍地都是，异常判定被噪声主导。因此先把事件压进 ``bucket_sec``（默认 10min）
+    时间桶：桶内出现过的标签各记一步（按首次出现顺序），再压缩跨桶的相邻重复，
+    得到"这一天大致怎么走"的粗粒度过程轨迹。
+
+    :param bucket_sec: 时间桶粒度（秒）；``0`` 表示不聚合（逐事件，仅调试用）
+    :param skip_rooms: 丢弃的伪房间名（HA 未分区/未知），避免产生无意义 case
     """
     def _primary(tags: set) -> str:
         if primary_tag is not None:
@@ -405,9 +412,13 @@ def build_process_cases(
         return "other"
 
     grouped: dict[str, list] = {}
+    skip = set(skip_rooms or ())
     for e in events:
         ts = _parse_ts(e.get("ts") or e.get("server_ts"))
         if ts is None or not is_on(e.get("new_state") if "new_state" in e else e.get("state")):
+            continue
+        room = (e.get("room") or "").strip()
+        if room in skip:
             continue
         try:
             tags = tag_of(e.get("entity_id") or "", e.get("friendly_name") or "")
@@ -415,20 +426,41 @@ def build_process_cases(
             tags = set()
         if not tags:
             continue
-        case = f"{(e.get('room') or '未知').strip()}|{ts.date().isoformat()}"
-        grouped.setdefault(case, []).append((ts, f"{_primary(tags)}_on"))
+        case = f"{room or '未知'}|{ts.date().isoformat()}"
+        grouped.setdefault(case, []).append((ts, _primary(tags)))
 
+    order = {t: i for i, t in enumerate(TAG_VOCAB)}
     out: list[dict] = []
     for case, items in list(grouped.items())[:max_cases]:
         items.sort(key=lambda x: x[0])
         acts: list[str] = []
-        for _, a in items:
-            if not acts or acts[-1] != a:
-                acts.append(a)
+        if bucket_sec and int(bucket_sec) > 0:
+            # 先按时间桶收集标签集合（保持桶顺序）
+            buckets: list[tuple[int, set]] = []
+            step = int(bucket_sec)
+            for ts, tag in items:
+                key = int(ts.timestamp()) // step
+                if not buckets or buckets[-1][0] != key:
+                    buckets.append((key, set()))
+                buckets[-1][1].add(tag)
+            # 只在标签**相对上一桶新出现**时记一步（"这一步是这桶新起的活动"）。
+            # 这样长时间挂着的在场/媒体不会每个桶都记一遍，轨迹长度收敛到
+            # "一天里大致依次发生了哪些事"，与过程挖掘的语义一致。
+            prev: set = set()
+            for _key, tags in buckets:
+                for t in sorted(tags - prev, key=lambda x: order.get(x, 99)):
+                    if not acts or acts[-1] != t:
+                        acts.append(t)
+                prev = tags
+        else:
+            for _, tag in items:
+                if not acts or acts[-1] != tag:
+                    acts.append(tag)
         if len(acts) < min_case_events:
             continue
         room, _, day = case.partition("|")
-        out.append({"case": case, "room": room, "day": day, "activities": acts})
+        out.append({"case": case, "room": room, "day": day,
+                    "activities": [f"{a}_on" for a in acts]})
     return out
 
 
@@ -436,6 +468,7 @@ def mine_process_model_pure(
     cases: Sequence[dict],
     min_edge_support: float = 0.1,
     min_activity_support: float = 0.1,
+    min_cases_per_room: int = 1,
 ) -> dict:
     """纯 Python 过程模型 + 一致性检验（**无第三方依赖**）。
 
@@ -448,65 +481,107 @@ def mine_process_model_pure(
     无重型依赖、导入零成本，更适合常驻在 J3455 NAS 上。
     pm4py 仍作为可选增强（补充 Petri 网库所/变迁与更严格的一致性判据）。
     """
-    n = len(cases)
+    cases_all = len(cases)
+    n = cases_all
     if n == 0:
         # 返回结构保持完整（空结果与正常结果同构，调用方无需分支处理）
         return {"ok": True, "engine": "pure", "cases": 0, "note": "无可用 case",
                 "fitness_rate": 1.0, "dfg_edges": 0, "start_activities": 0,
                 "end_activities": 0, "activities": 0, "top_variants": [],
-                "variants_by_room": {}, "anomaly_count": 0, "anomalies": []}
+                "variants_by_room": {}, "anomaly_count": 0, "anomalies": [],
+                "cases_all": 0, "skipped_rooms": []}
+
+    # 「观测充分度」门槛：某房间只有 1-2 天历史时根本不存在"常态"可偏离，
+    # 按比例判稀有边必然把这两天全判成异常（线上实测：14 天 / 13 房间 →
+    # 37% 房间-日被判异常，完全不可用）。故先剔除样本不足的房间，
+    # 只在"有足够历史可比"的房间内做一致性检验。
+    room_counts = Counter(c["room"] for c in cases)
+    if min_cases_per_room and int(min_cases_per_room) > 1:
+        thr = int(min_cases_per_room)
+        kept = [c for c in cases if room_counts[c["room"]] >= thr]
+        skipped_rooms = sorted(r for r, cnt in room_counts.items() if cnt < thr)
+        cases = kept
+        n = len(cases)
+        if n == 0:
+            return {"ok": True, "engine": "pure", "cases": 0,
+                    "note": f"各房间样本均不足 {thr} 天，暂不做一致性检验",
+                    "fitness_rate": 1.0, "dfg_edges": 0, "start_activities": 0,
+                    "end_activities": 0, "activities": 0, "top_variants": [],
+                    "variants_by_room": {}, "anomaly_count": 0, "anomalies": [],
+                    "cases_all": cases_all,
+                    "skipped_rooms": skipped_rooms, "min_cases_per_room": thr}
 
     variants: Counter = Counter(tuple(c["activities"]) for c in cases)
     edge_count: Counter = Counter()
     act_count: Counter = Counter()
     start_count: Counter = Counter()
     end_count: Counter = Counter()
+
+    # **一致性检验必须按房间做**：每个房间有各自的行为过程（厨房 vs 卧室完全不同），
+    # 用全局 DFG 判"稀有边"会把"厨房的日常"当成"相对客厅的稀有事"——线上实测
+    # 全局口径下 50% 的房间-日被判异常，噪声完全淹没信号。改为房间内比对后，
+    # "异常"才真的表示"这个房间今天不像它平时的样子"。
+    by_room_cases: dict[str, list[dict]] = {}
     for c in cases:
-        acts = c["activities"]
-        for a in set(acts):
-            act_count[a] += 1
-        for a, b in zip(acts, acts[1:]):
-            edge_count[(a, b)] += 1
-        start_count[acts[0]] += 1
-        end_count[acts[-1]] += 1
+        by_room_cases.setdefault(c["room"], []).append(c)
 
     anomalies: list[dict] = []
-    for c in cases:
-        acts = c["activities"]
-        rare_edges = [f"{a}->{b}" for a, b in zip(acts, acts[1:])
-                      if edge_count[(a, b)] / n < min_edge_support]
-        rare_acts = [a for a in sorted(set(acts))
-                     if act_count[a] / n < min_activity_support]
-        reasons: list[str] = []
-        if rare_edges:
-            reasons.append("rare_edges")
-        if rare_acts:
-            reasons.append("rare_activities")
-        if not reasons:
-            continue
-        # 严重度 0-1：越稀有的边/活动越多越严重（供排序与前端展示）
-        severity = round(min(1.0, (len(rare_edges) + len(rare_acts)) / max(1, len(acts))), 3)
-        anomalies.append({
-            "case": c["case"], "day": c["day"], "room": c["room"],
-            "reasons": reasons, "activities": acts,
-            "rare_edges": rare_edges, "rare_activities": rare_acts,
-            "severity": severity,
-        })
+    for rm, room_cases in by_room_cases.items():
+        rn = len(room_cases)
+        r_edge: Counter = Counter()
+        r_act: Counter = Counter()
+        for c in room_cases:
+            acts = c["activities"]
+            for a in set(acts):
+                r_act[a] += 1
+            for a, b in zip(acts, acts[1:]):
+                r_edge[(a, b)] += 1
+            start_count[acts[0]] += 1
+            end_count[acts[-1]] += 1
+        edge_count.update(r_edge)   # 全局汇总仅用于报告（dfg_edges 等）
+        act_count.update(r_act)
+
+        for c in room_cases:
+            acts = c["activities"]
+            rare_edges = [f"{a}->{b}" for a, b in zip(acts, acts[1:])
+                          if r_edge[(a, b)] / rn < min_edge_support]
+            rare_acts = [a for a in sorted(set(acts))
+                         if r_act[a] / rn < min_activity_support]
+            reasons: list[str] = []
+            if rare_edges:
+                reasons.append("rare_edges")
+            if rare_acts:
+                reasons.append("rare_activities")
+            if not reasons:
+                continue
+            # 严重度 0-1：越稀有的边/活动越多越严重（供排序与前端展示）
+            severity = round(
+                min(1.0, (len(rare_edges) + len(rare_acts)) / max(1, len(acts))), 3)
+            anomalies.append({
+                "case": c["case"], "day": c["day"], "room": c["room"],
+                "reasons": reasons, "activities": acts,
+                "rare_edges": rare_edges, "rare_activities": rare_acts,
+                "severity": severity,
+            })
     anomalies.sort(key=lambda x: (-x["severity"], x["case"]))
 
     # 按房间的高频变体：房间是行为语义的关键维度，供服务层产出带房间的候选规则
-    by_room: dict[str, Counter] = {}
-    for c in cases:
-        by_room.setdefault(c["room"], Counter())[tuple(c["activities"])] += 1
     variants_by_room = {
-        rm: [{"activities": list(k), "count": v} for k, v in cnt.most_common(5)]
-        for rm, cnt in by_room.items()
+        rm: [{"activities": list(k), "count": v} for k, v in
+             Counter(tuple(c["activities"]) for c in room_cases).most_common(5)]
+        for rm, room_cases in by_room_cases.items()
     }
 
     return {
         "ok": True,
         "engine": "pure",
         "cases": n,
+        "cases_all": cases_all,
+        "reviewed_rooms": sorted({c["room"] for c in cases}),
+        "skipped_rooms": sorted(
+            r for r, cnt in room_counts.items() if cnt < int(min_cases_per_room or 1)
+        ) if int(min_cases_per_room or 1) > 1 else [],
+        "min_cases_per_room": int(min_cases_per_room or 1),
         "fitness_rate": round((n - len(anomalies)) / n, 3),
         "dfg_edges": len(edge_count),
         "start_activities": len(start_count), "end_activities": len(end_count),
@@ -528,6 +603,9 @@ def mine_process_model(
     min_edge_support: float = 0.1,
     min_activity_support: float = 0.1,
     with_pm4py: bool = True,
+    bucket_sec: int = 600,
+    skip_rooms: Sequence[str] = ("", "未知", "未分区"),
+    min_cases_per_room: int = 4,
 ) -> dict:
     """从事件流挖掘行为**过程模型**并做一致性检验（异常 = 偏离模型）。
 
@@ -536,11 +614,15 @@ def mine_process_model(
 
     :param with_pm4py: 装了 pm4py 时是否额外做 Petri 网 + token 回放增强
         （默认 True；纯 Python 核心已足够产出异常，pm4py 仅补充严格一致性）。
+    :param bucket_sec: 轨迹时间桶粒度（秒），见 ``build_process_cases``
     :returns: 变体统计 / DFG / 一致性 / 异常 case（``engine`` 标明实际引擎）
     """
     cases = build_process_cases(events, tag_of, primary_tag=primary_tag,
-                               min_case_events=min_case_events, max_cases=max_cases)
-    res = mine_process_model_pure(cases, min_edge_support, min_activity_support)
+                               min_case_events=min_case_events, max_cases=max_cases,
+                               bucket_sec=bucket_sec, skip_rooms=skip_rooms)
+    res = mine_process_model_pure(cases, min_edge_support, min_activity_support,
+                                  min_cases_per_room=min_cases_per_room)
+    res["bucket_sec"] = int(bucket_sec or 0)
     if not cases or not with_pm4py:
         return res
     if importlib.util.find_spec("pm4py") is None:

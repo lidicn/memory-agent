@@ -120,6 +120,11 @@ class HAClient:
         elif command == "speak":
             service_data["message"] = params.get("message", "")
             service_data["entity_id"] = params.get("speaker", device)
+            # HA 的 tts.speak 只给 entity_id(tts 实体) 不会发声：
+            # 必须再给 media_player_entity_id 指定播放设备（target）。
+            target = params.get("target") or params.get("media_player")
+            if target:
+                service_data["media_player_entity_id"] = target
         
         return self.call_service(domain, service, device, service_data)
     
