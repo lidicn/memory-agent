@@ -255,6 +255,33 @@ async def behaviors_drifts(request: Request):
     return ok(payload)
 
 
+async def behaviors_audit_rule_recall(request: Request):
+    """规则召回审计（P1.4）：eligible/matched/near-miss + 卡点诊断（+ 可选产出放宽建议）。
+
+    body 可选：``days``（默认 14）、``rooms``(list)、``persist``、``min_near_miss``。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    body = await json_body(request)
+    rt = runtime(request)
+    try:
+        days = int(body.get("days") or 14)
+    except (TypeError, ValueError):
+        return error("days 必须是整数")
+    rooms = body.get("rooms")
+    res = await asyncio.to_thread(
+        rt.activity.audit_rule_recall,
+        (body.get("start") or "").strip() or None,
+        (body.get("end") or "").strip() or None,
+        max(1, min(days, 180)),
+        [str(r) for r in rooms] if isinstance(rooms, list) and rooms else None,
+        persist=bool(body.get("persist", True)),
+        min_near_miss=int(body.get("min_near_miss") or 2),
+    )
+    return ok(res)
+
+
 ROUTES = [
     Route("/api/behaviors", behaviors_current, methods=["GET"]),
     Route("/api/behaviors/states", behaviors_states, methods=["GET"]),
@@ -267,4 +294,6 @@ ROUTES = [
     Route("/api/behaviors/anomalies/update", behavior_anomaly_update, methods=["POST"]),
     Route("/api/behaviors/mine-drift", behaviors_mine_drift, methods=["POST"]),
     Route("/api/behaviors/drifts", behaviors_drifts, methods=["GET"]),
+    Route("/api/behaviors/audit-rule-recall", behaviors_audit_rule_recall,
+          methods=["POST"]),
 ]

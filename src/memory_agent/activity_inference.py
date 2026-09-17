@@ -222,6 +222,20 @@ class ActivityInferenceService:
                 t0 = prev = None
         return hits
 
+    def _prepare_events(self, events: list[dict], deb: int) -> list[dict]:
+        """给事件补 ``tags`` / ``state`` 并做 PIR 去抖——规则匹配的统一前置口径。
+
+        ``run`` 与 ``audit_rule_recall`` 必须共用它，否则两处的"规则是否命中"
+        会因输入口径不同而对不上（审计就失去意义）。
+        """
+        names = self._friendly_names()
+        for e in events:
+            e["tags"] = self._tags_of(
+                e.get("entity_id") or "", names.get(e.get("entity_id"), ""))
+            # events 表用 new_state 表示「变更后状态」，统一成 state 供规则匹配
+            e["state"] = e.get("new_state")
+        return self._debounce(events, deb)
+
     # ── 主流程 ───────────────────────────────────────────────────────────
     def run(self, start: str | None = None, end: str | None = None,
             window_minutes: int | None = None) -> dict:
@@ -243,12 +257,7 @@ class ActivityInferenceService:
         except Exception as exc:  # pragma: no cover
             return {"ok": False, "error": f"事件查询失败: {exc}"}
 
-        names = self._friendly_names()
-        for e in events:
-            e["tags"] = self._tags_of(e.get("entity_id") or "", names.get(e.get("entity_id"), ""))
-            # events 表用 new_state 表示「变更后状态」，统一成 state 供规则匹配
-            e["state"] = e.get("new_state")
-        events = self._debounce(events, deb)
+        events = self._prepare_events(events, deb)
 
         # 按房间分组（事件 room 由采集端由 config.rooms 推出）
         by_room: dict[str, list[dict]] = {}
@@ -448,6 +457,145 @@ class ActivityInferenceService:
 
         return {"ok": True, "start": start, "end": end,
                 "candidates": len(rules), "rules": rules}
+
+    # ── P1.4 规则召回审计（用统计补召回，而不是替换规则）────────────────────
+    def _rule_prefix_blocker(self, day_events: list[dict], rule: dict) -> Optional[int]:
+        """诊断规则卡在第几步（1-based 步号）。
+
+        做法：用规则的**前 k 步**去匹配，找到第一个匹配不上的 k。复用同一个
+        ``_match_rule``，保证"卡住点"的判定与真实命中判定完全同口径。
+        返回 ``None`` 表示各前缀都能匹配 → 卡住的是 ``time_window`` 或末步之后的约束。
+        """
+        steps = rule.get("steps") or []
+        for k in range(1, len(steps) + 1):
+            if not self._match_rule(day_events, {**rule, "steps": steps[:k]}):
+                return k
+        return None
+
+    def audit_rule_recall(self, start: str | None = None, end: str | None = None,
+                          days: int = 14, rooms: list | None = None, *,
+                          persist: bool = True, min_near_miss: int = 2,
+                          max_gaps: int = 10,
+                          extra_rules: list | None = None) -> dict:
+        """审计序列规则的**召回缺口**（P1.4）。
+
+        背景：spike 实测手写规则是**高精确 / 低召回**（sleeping P=0.988 / R=0.585）
+        ——规则触发时几乎总是对的，但大量该判的时段它没判。所以正确方向不是
+        "换成 HMM"，而是**补召回**：找出"原材料齐备却没命中"的场景，诊断卡在哪一步。
+
+        口径（与 P1.1 一致的「房间·天」粒度，便于交叉核对）：
+
+        * **eligible（应命中）**：该房间当天出现了规则所有步骤所需的标签
+        * **matched**：当天规则确实命中
+        * **near_miss**：eligible 但未命中 → 召回缺口
+        * **estimated_recall** = matched / eligible（规则自身口径下的召回上界估计）
+        * **blocker**：对每个 near_miss 天诊断第一个匹配不上的步骤
+
+        ``persist=True`` 且某缺口出现次数 ≥ ``min_near_miss`` 时，产出**放宽建议**
+        候选规则（去掉卡住那一步，``source="recall_gap"``）供人工审核——
+        这是"补召回"的落地形式，不自动改线上规则。
+        """
+        cfg = self.config
+        now = now_local(cfg.tz_offset_hours)
+        end = end or now.isoformat(sep="T")
+        if not start:
+            start = (now.replace(microsecond=0)
+                     - timedelta(days=max(1, days))).isoformat(sep="T")
+        try:
+            events = self._iter_events(start, end, rooms=rooms)
+        except Exception as exc:  # pragma: no cover
+            return {"ok": False, "error": f"事件查询失败: {exc}"}
+        deb = int(getattr(cfg, "pir_debounce_sec", 30) or 0)
+        events = self._prepare_events(events, deb)
+
+        by_room_day: dict[tuple, list[dict]] = {}
+        for e in events:
+            ts = _parse_ts(e.get("ts") or "")
+            if ts is None:
+                continue
+            rm = (e.get("room") or "").strip() or "未知"
+            by_room_day.setdefault((rm, ts.date().isoformat()), []).append(e)
+
+        rules = list(self.rules) + list(extra_rules or [])
+        audit: list[dict] = []
+        gaps: list[dict] = []
+        for rule in rules:
+            steps = rule.get("steps") or []
+            anchors = {s.get("tag") for s in steps if s.get("tag")}
+            if not anchors:
+                continue
+            eligible = matched = 0
+            near_miss: list[str] = []
+            blockers: dict[str, int] = {}
+            for (rm, day), evs in by_room_day.items():
+                if not self._room_ok(rm, rule):
+                    continue
+                present = {t for e in evs for t in (e.get("tags") or set())}
+                if not anchors.issubset(present):
+                    continue  # 原材料不全 → 不该要求规则命中
+                eligible += 1
+                if self._match_rule(evs, rule):
+                    matched += 1
+                    continue
+                near_miss.append(f"{rm}|{day}")
+                idx = self._rule_prefix_blocker(evs, rule)
+                if idx is None:
+                    key = "time_window"
+                else:
+                    st = steps[idx - 1]
+                    key = f"{st.get('tag')}({st.get('state', 'any')})@step{idx}"
+                blockers[key] = blockers.get(key, 0) + 1
+
+            top = sorted(blockers.items(), key=lambda x: -x[1])
+            audit.append({
+                "rule": rule.get("name"), "infer": rule.get("infer"),
+                "anchors": sorted(anchors),
+                "eligible_days": eligible, "matched_days": matched,
+                "near_miss_days": len(near_miss),
+                "estimated_recall": (round(matched / eligible, 3) if eligible else None),
+                "top_blockers": [{"blocker": k, "count": v} for k, v in top[:3]],
+                "examples": near_miss[:5],
+            })
+
+            if not (persist and top and top[0][1] >= max(1, int(min_near_miss))):
+                continue
+            if len(gaps) >= max_gaps:
+                continue
+            blocker, count = top[0]
+            if blocker == "time_window" or "@step" not in blocker:
+                continue
+            try:
+                idx = int(blocker.split("@step")[1])
+            except (IndexError, ValueError):
+                continue
+            relaxed = [s for i, s in enumerate(steps, 1) if i != idx]
+            if len(relaxed) < 2:
+                continue
+            name = f"召回放宽[{rule.get('name')}]:去掉第{idx}步"
+            try:
+                rid, action = self.store.upsert_candidate_rule(
+                    name=name, steps=relaxed,
+                    time_window=rule.get("time_window", ""),
+                    infer=rule.get("infer", ""),
+                    # 宽松变体：置信度按原规则打 9 折，交人工复核后再决定是否启用
+                    confidence=round(float(rule.get("confidence") or 0.5) * 0.9, 2),
+                    source="recall_gap",
+                    evidence=[{"rule": rule.get("name"), "blocker": blocker,
+                               "near_miss_days": len(near_miss),
+                               "eligible_days": eligible, "matched_days": matched}],
+                )
+                gaps.append({"rule_id": rid, "action": action, "name": name,
+                             "blocker": blocker, "count": count,
+                             "near_miss_days": len(near_miss)})
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Activity] 召回放宽建议写库失败: {exc}")
+
+        return {
+            "ok": True, "start": start, "end": end, "days": max(1, days),
+            "events": len(events), "room_days": len(by_room_day),
+            "rules": len(rules), "audit": audit,
+            "gap_count": len(gaps), "gaps": gaps,
+        }
 
     # ── P1.1 过程挖掘：行为过程模型 + 一致性检验（行为异常）────────────────
     def _iter_events(self, start: str, end: str, rooms: list | None = None,

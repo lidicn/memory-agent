@@ -1504,6 +1504,36 @@ def _build_server():
         return {"ok": True, "count": len(rows), "day_from": day_from, "drifts": rows}
 
     @mcp.tool()
+    async def audit_rule_recall(days: int = 14, rooms: str = "") -> dict:
+        """序列规则**召回审计**（只读）：找出"该判没判"的场景，并诊断卡在哪一步。
+
+        回答的是『哪条规则可能漏了、漏在哪里』。口径：以「房间·天」为单位，
+        当天出现了规则所有步骤所需的标签（eligible）却没命中 → 记为召回缺口
+        （near_miss），并给出第一个匹配不上的步骤（blocker）与估计召回率。
+
+        适用『就寝识别是不是漏了很多』『房间移动规则为什么很少触发』。
+        注：只审计内置序列规则（书房工作/就寝/房间移动）。不落库。
+
+        :param days: 回溯天数，默认 14
+        :param rooms: 逗号分隔房间白名单，留空=全部
+        """
+        rt = get_runtime()
+        room_list = [r.strip() for r in (rooms or "").split(",") if r.strip()] or None
+        return await asyncio.to_thread(
+            rt.activity.audit_rule_recall, None, None, days, room_list, persist=False)
+
+    @mcp.tool()
+    async def refresh_rule_recall_gaps(days: int = 14) -> dict:
+        """重算并**落库**召回放宽建议（写工具，需 read+write 令牌）。
+
+        对反复卡在同一步的缺口，产出「去掉该步骤」的宽松变体，写 ``candidate_rules``
+        （source=recall_gap，staging 待人工审核）。不会自动改动线上规则。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.activity.audit_rule_recall, None, None, days, None, persist=True)
+
+    @mcp.tool()
     async def explain_insight(insight_id: str) -> dict:
         """证据溯源：给定 insight(活动id) 或 agent 记忆 id，返回底层触发事件与 source_refs 解析。
 

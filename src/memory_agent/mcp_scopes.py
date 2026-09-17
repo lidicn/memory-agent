@@ -35,6 +35,8 @@ WRITE_TOOLS = frozenset({
     "review_behavior_anomaly",
     # P1.2 在线异常/漂移：刷新（落库）
     "refresh_behavior_drift",
+    # P1.4 规则召回：产出放宽建议（落库）
+    "refresh_rule_recall_gaps",
     # Agent 记忆生命周期
     "add_semantic_memory",
     "promote_memory",

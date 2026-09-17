@@ -123,6 +123,11 @@ class Config:
     drift_k: float = 3.0                              # 同小时偏离判据：|z| >= k 视为异常时段
     drift_min_delta: float = 10.0                     # 同小时偏离的绝对量下限（防凌晨起夜式噪声）
     drift_retention_days: int = 90                    # 漂移点保留天数
+
+    # ── P1.4 规则召回审计（用统计补召回，而非替换规则）──────────────────────
+    rule_recall_enabled: bool = True                  # 每日一次规则召回审计
+    rule_recall_days: int = 14                        # 审计回溯天数
+    rule_recall_min_near_miss: int = 2                # 产出放宽建议所需的最少缺口天数
     process_mining_retention_days: int = 90           # 行为异常保留天数（confirmed 不清理）
 
     # ── 主动感知 v2.0 · 客厅盒侧 AI 事件接入（Phase 0.1）──────────────────────

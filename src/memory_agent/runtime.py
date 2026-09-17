@@ -409,6 +409,27 @@ class AppRuntime:
                                         f"异常时段 {dres.get('anomaly_count')}"
                                         f"（落库 {dres.get('persisted')}）"
                                     )
+                            # P1.4：每日一次规则召回审计（补召回，不替换规则）
+                            if getattr(self.config, "rule_recall_enabled", True):
+                                rres = await asyncio.to_thread(
+                                    self.activity.audit_rule_recall,
+                                    None, None,
+                                    int(getattr(self.config, "rule_recall_days", 14) or 14),
+                                    None,
+                                    min_near_miss=int(getattr(
+                                        self.config, "rule_recall_min_near_miss", 2) or 2),
+                                )
+                                if rres.get("ok"):
+                                    worst = min(
+                                        (a for a in (rres.get("audit") or [])
+                                         if a.get("estimated_recall") is not None),
+                                        key=lambda a: a["estimated_recall"], default=None)
+                                    print(
+                                        f"[Activity] 召回审计：{rres.get('rules')} 条规则，"
+                                        f"缺口建议 {rres.get('gap_count')} 条"
+                                        + (f"，召回最低 {worst['rule']}="
+                                           f"{worst['estimated_recall']}" if worst else "")
+                                    )
                     except Exception as exc:  # noqa: BLE001
                         print(f"[Activity] 行为推断异常: {exc}")
                 await asyncio.sleep(interval)
