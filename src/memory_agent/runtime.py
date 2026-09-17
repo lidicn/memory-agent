@@ -385,6 +385,30 @@ class AppRuntime:
                                         f"异常 {pres.get('anomaly_count')}（落库 {pres.get('persisted')}），"
                                         f"候选规则 {pres.get('candidates')}"
                                     )
+                            # P1.2：每日一次在线异常 + 概念漂移检测（river）
+                            if getattr(self.config, "drift_enabled", True):
+                                try:
+                                    keep_d = int(getattr(
+                                        self.config, "drift_retention_days", 90) or 90)
+                                    bd = (
+                                        now_local(self.config.tz_offset_hours)
+                                        - timedelta(days=keep_d)
+                                    ).strftime("%Y-%m-%d")
+                                    await asyncio.to_thread(
+                                        self.store.purge_behavior_drifts, bd)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                dres = await asyncio.to_thread(
+                                    self.activity.mine_drift, None, None,
+                                    int(getattr(self.config, "drift_days", 14) or 14),
+                                )
+                                if dres.get("ok"):
+                                    print(
+                                        f"[Activity] 漂移检测：{dres.get('points')} 点，"
+                                        f"漂移 {dres.get('drift_count')}，"
+                                        f"异常时段 {dres.get('anomaly_count')}"
+                                        f"（落库 {dres.get('persisted')}）"
+                                    )
                     except Exception as exc:  # noqa: BLE001
                         print(f"[Activity] 行为推断异常: {exc}")
                 await asyncio.sleep(interval)

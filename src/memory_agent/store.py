@@ -655,6 +655,28 @@ class Store:
                 "CREATE INDEX IF NOT EXISTS idx_behavior_anomalies_status "
                 "ON behavior_anomalies(status)"
             )
+            # P1.2 在线异常/概念漂移（river）：行为活跃度分布突变点 + 异常时段
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS behavior_drifts (
+                    drift_id    TEXT PRIMARY KEY,
+                    bucket_ts   TEXT NOT NULL,
+                    day         TEXT NOT NULL DEFAULT '',
+                    kind        TEXT NOT NULL DEFAULT 'drift',
+                    density     REAL NOT NULL DEFAULT 0.0,
+                    score       REAL NOT NULL DEFAULT 0.0,
+                    tags_json   TEXT NOT NULL DEFAULT '[]',
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    detected_at TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_behavior_drifts_key "
+                "ON behavior_drifts(bucket_ts, kind)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_behavior_drifts_day "
+                "ON behavior_drifts(day)"
+            )
             # v0.9 MCP 契约：幂等键表（写工具防重复执行）
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS idempotency_keys (
@@ -1852,6 +1874,92 @@ class Store:
                 "DELETE FROM behavior_anomalies WHERE day < ? AND status != 'confirmed'",
                 (before_day,),
             )
+            conn.commit()
+            return int(cur.rowcount or 0)
+
+    # ── 在线异常 / 概念漂移（P1.2，river）────────────────────────────────
+
+    def upsert_behavior_drift(
+        self, bucket_ts: str, kind: str = "drift", day: str = "",
+        density: float = 0.0, score: float = 0.0,
+        tags: list | None = None, detail: dict | None = None,
+    ) -> tuple[str, str]:
+        """按 ``(bucket_ts, kind)`` 幂等写入漂移/异常点，返回 ``(drift_id, added|updated)``。
+
+        幂等键用时间桶+类型：同一天重跑挖掘不会重复堆记录（与 P1.1 的 case 幂等同理）。
+        """
+        did = hashlib.md5(f"{bucket_ts}|{kind}".encode("utf-8")).hexdigest()[:16]
+        now = now_local(self.tz_offset_hours).isoformat(sep="T")
+        day = day or str(bucket_ts)[:10]
+        conn = self.connect()
+        with self._lock:
+            row = conn.execute(
+                "SELECT drift_id FROM behavior_drifts WHERE bucket_ts = ? AND kind = ?",
+                (bucket_ts, kind),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    """UPDATE behavior_drifts SET day=?, density=?, score=?,
+                       tags_json=?, detail_json=?, detected_at=? WHERE drift_id=?""",
+                    (day, float(density), float(score),
+                     json.dumps(tags or [], ensure_ascii=False),
+                     json.dumps(detail or {}, ensure_ascii=False), now, did),
+                )
+                conn.commit()
+                return did, "updated"
+            conn.execute(
+                """INSERT INTO behavior_drifts(
+                     drift_id, bucket_ts, day, kind, density, score,
+                     tags_json, detail_json, detected_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (did, bucket_ts, day, kind, float(density), float(score),
+                 json.dumps(tags or [], ensure_ascii=False),
+                 json.dumps(detail or {}, ensure_ascii=False), now),
+            )
+            conn.commit()
+        return did, "added"
+
+    def list_behavior_drifts(
+        self, kind: str | None = None, day_from: str | None = None,
+        day_to: str | None = None, limit: int = 200,
+    ) -> list[dict]:
+        """列出漂移/异常点（按时间倒序），解析 JSON 字段。"""
+        sql = "SELECT * FROM behavior_drifts"
+        conds: list[str] = []
+        args: list = []
+        if kind:
+            conds.append("kind = ?")
+            args.append(kind)
+        if day_from:
+            conds.append("day >= ?")
+            args.append(day_from)
+        if day_to:
+            conds.append("day <= ?")
+            args.append(day_to)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY bucket_ts DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 2000)))
+        conn = self.connect()
+        with self._lock:
+            rows = conn.execute(sql, args).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            for key, col in (("tags", "tags_json"), ("detail", "detail_json")):
+                try:
+                    d[key] = json.loads(d.pop(col) or ("[]" if key == "tags" else "{}"))
+                except Exception:
+                    d[key] = [] if key == "tags" else {}
+                    d.pop(col, None)
+            out.append(d)
+        return out
+
+    def purge_behavior_drifts(self, before_day: str) -> int:
+        """清理 ``day < before_day`` 的漂移点。"""
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute("DELETE FROM behavior_drifts WHERE day < ?", (before_day,))
             conn.commit()
             return int(cur.rowcount or 0)
 

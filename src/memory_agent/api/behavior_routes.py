@@ -200,6 +200,60 @@ async def behavior_anomaly_update(request: Request):
     return ok({"anomaly_id": anomaly_id, "status": status})
 
 
+async def behaviors_mine_drift(request: Request):
+    """手动触发在线异常 / 概念漂移检测（P1.2）。
+
+    body 可选：``days``（默认 14）、``bucket_sec``、``window_size``、``persist``。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    body = await json_body(request)
+    rt = runtime(request)
+    try:
+        days = int(body.get("days") or 14)
+    except (TypeError, ValueError):
+        return error("days 必须是整数")
+    res = await asyncio.to_thread(
+        rt.activity.mine_drift, None, None, max(1, min(days, 180)), None,
+        bucket_sec=(int(body["bucket_sec"]) if body.get("bucket_sec") is not None else None),
+        window_size=(int(body["window_size"]) if body.get("window_size") is not None else None),
+        persist=bool(body.get("persist", True)),
+    )
+    return ok(res)
+
+
+async def behaviors_drifts(request: Request):
+    """列出漂移点 / 异常时段；``live=1`` 时顺带现算一次（不落库）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    kind = (request.query_params.get("kind") or "").strip() or None
+    try:
+        limit = int(request.query_params.get("limit") or 100)
+    except (TypeError, ValueError):
+        return error("limit 必须是整数")
+    payload: dict = {}
+    if (request.query_params.get("live") or "").strip() in ("1", "true", "yes"):
+        try:
+            days = int(request.query_params.get("days") or 14)
+        except (TypeError, ValueError):
+            return error("days 必须是整数")
+        payload["live"] = await asyncio.to_thread(
+            rt.activity.mine_drift, None, None, max(1, min(days, 180)), None,
+            persist=False,
+        )
+    rows = await asyncio.to_thread(
+        rt.store.list_behavior_drifts, kind,
+        (request.query_params.get("day_from") or "").strip() or None,
+        (request.query_params.get("day_to") or "").strip() or None,
+        max(1, min(limit, 1000)),
+    )
+    payload.update({"drifts": rows, "count": len(rows)})
+    return ok(payload)
+
+
 ROUTES = [
     Route("/api/behaviors", behaviors_current, methods=["GET"]),
     Route("/api/behaviors/states", behaviors_states, methods=["GET"]),
@@ -210,4 +264,6 @@ ROUTES = [
     Route("/api/behaviors/mine-process", behaviors_mine_process, methods=["POST"]),
     Route("/api/behaviors/anomalies", behaviors_anomalies, methods=["GET"]),
     Route("/api/behaviors/anomalies/update", behavior_anomaly_update, methods=["POST"]),
+    Route("/api/behaviors/mine-drift", behaviors_mine_drift, methods=["POST"]),
+    Route("/api/behaviors/drifts", behaviors_drifts, methods=["GET"]),
 ]

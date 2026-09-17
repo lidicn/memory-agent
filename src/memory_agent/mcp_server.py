@@ -1463,6 +1463,47 @@ def _build_server():
         return {"ok": True, "anomaly_id": anomaly_id, "status": status}
 
     @mcp.tool()
+    async def get_behavior_drift(days: int = 14) -> dict:
+        """在线异常 + 概念漂移检测（只读）：把**每小时行为活跃度**当时间序列在线评估。
+
+        Half-Space Trees 给无监督异常分（哪些时段不像平时），ADWIN 检测活跃度分布的
+        **突变**（"最近作息/活跃度变了"）。适用『最近作息是不是变了』『有没有异常的时段』。
+        与 mine_behavior_process 互补：后者按天做**事后**一致性检验，本工具看**时序突变**。
+        只算不落库；要落库请用 refresh_behavior_drift。
+
+        :param days: 回溯天数，默认 14（1 小时分桶，14 天 ≈ 336 点）
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.activity.mine_drift, None, None, days,
+                                       None, persist=False)
+
+    @mcp.tool()
+    async def refresh_behavior_drift(days: int = 14) -> dict:
+        """重算并**落库**漂移点/异常时段（写工具，需 read+write 令牌）→ behavior_drifts。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.activity.mine_drift, None, None, days,
+                                       None, persist=True)
+
+    @mcp.tool()
+    async def list_behavior_drifts(days: int = 14, kind: str = "",
+                                   limit: int = 50) -> dict:
+        """列出已落库的漂移/异常时段。
+
+        :param kind: drift（活跃度分布突变）| anomaly（异常时段）；留空=全部
+        :param days: 只取最近 N 天，默认 14
+        """
+        from datetime import timedelta
+
+        rt = get_runtime()
+        day_from = (now_local(rt.config.tz_offset_hours)
+                    - timedelta(days=max(1, int(days or 14)))).strftime("%Y-%m-%d")
+        rows = await asyncio.to_thread(
+            rt.store.list_behavior_drifts, kind or None, day_from, None,
+            max(1, min(int(limit or 50), 500)),
+        )
+        return {"ok": True, "count": len(rows), "day_from": day_from, "drifts": rows}
+
+    @mcp.tool()
     async def explain_insight(insight_id: str) -> dict:
         """证据溯源：给定 insight(活动id) 或 agent 记忆 id，返回底层触发事件与 source_refs 解析。
 

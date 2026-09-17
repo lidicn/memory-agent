@@ -113,13 +113,23 @@ class Config:
     process_mining_bucket_sec: int = 600              # 轨迹时间桶粒度（秒，抗秒级交替噪声）
     process_mining_min_cases_per_room: int = 4        # 房间最少样本天数（不足不做一致性检验）
     process_mining_min_case_events: int = 2           # 一条轨迹最少步数（桶聚合后轨迹较短）
+
+    # ── P1.2 在线异常 + 概念漂移（river：HST + ADWIN）────────────────────────
+    drift_enabled: bool = True                        # 每日一次在线异常/漂移检测
+    drift_days: int = 14                              # 回溯天数（1h 分桶 14 天 ≈ 336 点）
+    drift_bucket_sec: int = 3600                      # 时间桶粒度（秒；1h 对应"作息"量级）
+    drift_window_size: int = 0                        # HST 窗口（0=按样本量自适应）
+    drift_retention_days: int = 90                    # 漂移点保留天数
     process_mining_retention_days: int = 90           # 行为异常保留天数（confirmed 不清理）
 
     # ── 主动感知 v2.0 · 客厅盒侧 AI 事件接入（Phase 0.1）──────────────────────
     livingroom_ai_enabled: bool = True                # 客厅盒侧 AI 事件轮询总开关
     livingroom_ai_interval_seconds: int = 10          # 轮询间隔（秒，默认 10s）
 
-    # ── 主动感知 v2.0 · 主动播报闭环（Phase 0.4，doubao2api TTS）────────────────
+    # ── 主动感知 v2.0 · 感知事件记录（Phase 0.4；语音播报已决策不做）────────────
+    # 决策（2026-09-17）：人脸识别不稳定不可靠，**不做语音播报**（避免错误打扰），
+    # 感知事件仅落库记录（perception_events）供人工/离线回溯。以下 Announcer 配置
+    # 保留为"识别稳定后的可选能力"，默认关闭。
     announce_enabled: bool = False                    # 主动播报总开关（默认关，需配 tts 实体+播放设备）
     announce_tts_entity: str = ""                     # HA 的 tts 实体，如 "tts.doubao_tts" / "tts.edgetts_*"
     announce_target: str = ""                         # 播放设备 media_player.*（tts.speak 必需，否则只合成不发声）

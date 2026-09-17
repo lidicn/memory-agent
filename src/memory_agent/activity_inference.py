@@ -600,6 +600,94 @@ class ActivityInferenceService:
             "rules": rules,
         }
 
+    # ── P1.2 在线异常 + 概念漂移（river：HST 异常分 + ADWIN 漂移）────────────
+    def mine_drift(self, start: str | None = None, end: str | None = None,
+                   days: int = 14, rooms: list | None = None, *,
+                   bucket_sec: int | None = None, window_size: int | None = None,
+                   persist: bool = True, max_rows: int = 200000) -> dict:
+        """行为活跃度的**在线异常**与**概念漂移**检测（P1.2）。
+
+        与 P1.1 互补：P1.1 是"事后按天做一致性检验"（这天像不像平时的样子），
+        本方法把「每桶行为活跃度（标签组合 + 事件密度）」当**时间序列**在线喂给
+        river —— Half-Space Trees 给无监督异常分（哪些时段不像平时），
+        ADWIN 监测活跃度分布的**突变**（"最近作息/活跃度变了"）。
+
+        默认按 **1 小时**分桶（作息量级；日以下抖动无意义），14 天 ≈ 336 个点。
+        HST 需要 ≥ ``window_size`` 个样本才出分，样本不足时会自动下调窗口并注明。
+
+        :param persist: 漂移点/异常时段写 ``behavior_drifts``（按 (桶,类型) 幂等）
+        """
+        cfg = self.config
+        if bucket_sec is None:
+            bucket_sec = int(getattr(cfg, "drift_bucket_sec", 3600) or 3600)
+        now = now_local(cfg.tz_offset_hours)
+        end = end or now.isoformat(sep="T")
+        if not start:
+            start = (now.replace(microsecond=0)
+                     - timedelta(days=max(1, days))).isoformat(sep="T")
+        try:
+            events = self._iter_events(start, end, rooms=rooms, max_rows=max_rows)
+        except Exception as exc:  # pragma: no cover
+            return {"ok": False, "error": f"事件查询失败: {exc}"}
+
+        series = algo_kernel.extract_observation_series(
+            events, self._tags_of, bucket_sec=bucket_sec)
+        if len(series) < 10:
+            return {"ok": True, "points": len(series), "drift_count": 0,
+                    "anomaly_count": 0, "persisted": 0,
+                    "note": "样本点不足（<10），暂不做漂移/异常检测"}
+
+        # HST 需要 window_size 个样本才建立正常区间；样本少时下调窗口，避免全程冷启动
+        ws = int(window_size or getattr(cfg, "drift_window_size", 0) or 0)
+        if ws <= 0:
+            ws = max(30, min(250, len(series) // 2))
+        det = algo_kernel.OnlineAnomalyDetector(window_size=ws)
+        res = det.score_stream(series)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error"), "points": len(series)}
+
+        drifts = (res.get("drift") or {}).get("points") or []
+        anomalies = res.get("anomalies") or []
+
+        persisted = 0
+        if persist:
+            by_bucket = {s["bucket"]: s for s in series}
+            for d in drifts:
+                item = by_bucket.get(d.get("bucket")) or {}
+                try:
+                    self.store.upsert_behavior_drift(
+                        bucket_ts=d.get("bucket") or "", kind="drift",
+                        day=str(d.get("bucket") or "")[:10],
+                        density=d.get("density") or 0.0, score=d.get("score") or 0.0,
+                        tags=item.get("tags"), detail={"reason": "adwin_mean_shift"})
+                    persisted += 1
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[Activity] 漂移点写库失败: {exc}")
+            for a in anomalies:
+                item = by_bucket.get(a.get("bucket")) or {}
+                try:
+                    self.store.upsert_behavior_drift(
+                        bucket_ts=a.get("bucket") or "", kind="anomaly",
+                        day=str(a.get("bucket") or "")[:10],
+                        density=item.get("n") or 0.0, score=a.get("score") or 0.0,
+                        tags=a.get("tags"), detail={"reason": "hst_low_density"})
+                    persisted += 1
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[Activity] 异常时段写库失败: {exc}")
+
+        return {
+            "ok": True,
+            "start": start, "end": end,
+            "points": len(series), "bucket_sec": bucket_sec, "window_size": ws,
+            "events": len(events),
+            "score_mean": res.get("score_mean"), "score_max": res.get("score_max"),
+            "drift_count": len(drifts),
+            "anomaly_count": len(anomalies),
+            "persisted": persisted,
+            "drifts": drifts[:10],
+            "anomalies": anomalies[:10],
+        }
+
     # ── 意图/习惯层（任务 D：重复活动 → 长期意图）───────────────────────
     def infer_habits(self, days: int = 14, min_days: int = 3) -> dict:
         """从 ``behavior_states`` 聚合重复活动为长期习惯，写 ``agent_memories``（staging）。
