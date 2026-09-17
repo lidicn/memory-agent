@@ -576,8 +576,11 @@ class ActivityInferenceService:
             if blocker == "time_window" or "@step" not in blocker:
                 continue
             reasons = binfo.get("reasons") or {}
+            # 按**主导病因**判定（真实数据常常是混合的：如 33 例时序 + 8 例缺失，
+            # 若要求"全部同一病因"就会一条建议都不出，反而丢失了主要可改的方向）
+            dominant = max(reasons.items(), key=lambda x: x[1])[0] if reasons else ""
             # 事件根本没出现（设备/采集缺口）→ 放宽规则无意义，交人工先查数据源
-            if reasons.get("missing_event", 0) >= count:
+            if dominant == "missing_event":
                 continue
             try:
                 idx = int(blocker.split("@step")[1])
@@ -585,7 +588,7 @@ class ActivityInferenceService:
                 continue
             st = steps[idx - 1]
             relaxed = [dict(s) for s in steps]
-            if reasons.get("timing_or_order", 0) >= count:
+            if dominant == "timing_or_order":
                 # 事件出现过、只是时间约束不满足 → **放宽该步时间窗**（保留步骤，
                 # 避免"删步骤"把规则退化成无意义）。注意 order 与 timing 在此
                 # 合并统计，建议仍进 staging 由人工结合 evidence 判断。

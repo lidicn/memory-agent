@@ -128,6 +128,25 @@ def test_audit_emits_relaxed_candidate_rule(store):
     assert rule["evidence"][0]["kind"] == "relax_timing"
 
 
+def test_audit_mixed_reasons_uses_dominant(store):
+    """真实数据常是混合病因（多数时序 + 少数缺失）→ 按主导病因产出建议。
+
+    若要求"全部同一病因"，这类混合情况会一条建议都不出，反而丢失主要可改方向。
+    """
+    _day(store, 1, NORMAL)
+    _day(store, 2, SLOW)          # timing_or_order ×2
+    _day(store, 3, SLOW)
+    _day(store, 4, [(0, DOOR, "on"), (3, DOOR, "off"), (20, CLIMATE, "on"),
+                    (30, PC, "on")])   # 无 light 事件 → 但 light 是锚点，这天不 eligible
+
+    svc = ActivityInferenceService(_runtime(store))
+    res = svc.audit_rule_recall(start="2026-09-01T00:00:00", end="2026-09-05T00:00:00",
+                                persist=True, min_near_miss=2)
+    study = next(a for a in res["audit"] if a["rule"] == "书房工作")
+    assert study["top_blockers"][0]["reasons"] == {"timing_or_order": 2}
+    assert any("书房工作" in g["name"] for g in res["gaps"])
+
+
 def test_audit_no_gap_when_below_threshold(store):
     _day(store, 1, NORMAL)
     _day(store, 2, SLOW)                        # 仅 1 天缺口
