@@ -19,6 +19,16 @@ dependencies = [
     "paho-mqtt>=1.6",
 ]
 
+[project.optional-dependencies]
+# 主动感知 v2.0 · P1 算法内核（可选，按需装；模块本身依赖守卫，缺失即优雅降级）
+# 注意：pm4py 为 AGPLv3，商用需开源或采购商业许可；hmmlearn/river 为 BSD-3。
+algo = [
+    "numpy>=1.24",
+    "hmmlearn>=0.3.0",
+    "river>=0.21",
+    "pm4py>=2.7",
+]
+
 [project.scripts]
 memory-agent = "memory_agent.cli:main"
 

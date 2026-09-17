@@ -414,6 +414,10 @@ class AppRuntime:
         activity_task = getattr(self, "_activity_task", None)
         if activity_task is not None:
             activity_task.cancel()
+        # 主动感知 v2.0：客厅盒侧 AI 事件轮询任务
+        lrai_task = getattr(self, "_livingroom_ai_task", None)
+        if lrai_task is not None:
+            lrai_task.cancel()
         try:
             self.mqtt.close()
         except Exception as exc:  # noqa: BLE001
