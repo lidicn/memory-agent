@@ -44,7 +44,7 @@ def compare_resolution(records: list[dict], match_threshold: float = 0.95,
     返回两法各自的判定计数与**差异清单**——差异主要来自：旧法把"不像"的配对
     一律判否（丢失"有点像、值得看一眼"的信息），新法把这类配对标为 ``review``。
     """
-    from .entity_resolution import ProbabilisticMatcher, similarity
+    from .entity_resolution import AGREE, ProbabilisticMatcher, name_level
 
     matcher = ProbabilisticMatcher(match_threshold=match_threshold,
                                    review_threshold=review_threshold)
@@ -64,8 +64,8 @@ def compare_resolution(records: list[dict], match_threshold: float = 0.95,
                 a, b = rows[i], rows[j]
                 res = matcher.compare(a, b)
                 fs[res["band"]] += 1
-                old = ("match" if similarity(a.get("name") or "", b.get("name") or "")
-                       >= 0.85 else "non")
+                # 旧启发式基线：与 FS 完全同口径（含公共前缀规则），否则对比不公平
+                old = "match" if name_level(a.get("name") or "", b.get("name") or "") == AGREE else "non"
                 base[old] += 1
                 if res["band"] != old and len(diffs) < max_diff:
                     diffs.append({

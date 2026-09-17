@@ -77,6 +77,21 @@ def _tokens(entity_id: str) -> set[str]:
             if len(t) >= 4}
 
 
+def _cjk_prefix_len(a: str, b: str) -> int:
+    """共享公共前缀长度，但**要求前缀里含中日韩字符**才算数。
+
+    为何加这条限制：纯 ASCII 前缀极易误伤。真实数据里 ``sensor.backup_*`` 这一族
+    （备份管理器状态 / 上次成功自动备份 / 计划自动备份…）共享 6 个字符的 ``backup``
+    前缀，旧规则会把这些**功能完全不同的传感器并成一台设备**。中文设备名（如
+    「lidicn的电视电视」）才是该规则原本要覆盖的场景，故要求前缀含 CJK。
+    """
+    n = _common_prefix_len(a, b)
+    if n < PREFIX_MERGE_MIN:
+        return 0
+    prefix = a[:n]
+    return n if re.search(rf"[{_CJK}]", prefix) else 0
+
+
 def name_level(a: str, b: str) -> int:
     """名称比较等级。
 
@@ -88,7 +103,7 @@ def name_level(a: str, b: str) -> int:
         return MISSING
     if na == nb or similarity(a, b) >= SIMILARITY_THRESHOLD:
         return AGREE
-    if _common_prefix_len(na, nb) >= PREFIX_MERGE_MIN:
+    if _cjk_prefix_len(na, nb) >= PREFIX_MERGE_MIN:
         return AGREE
     if similarity(a, b) >= 0.6:
         return PARTIAL
@@ -243,10 +258,16 @@ class ProbabilisticMatcher:
         if len(vecs) < max(1, min_pairs):
             return {"ok": False, "error": "样本不足，沿用先验",
                     "pairs": len(vecs), "min_pairs": min_pairs}
+        # 块内恒定的字段（如按 room+domain 分块时的 room/domain）没有判别力，
+        # 让 EM 拟合它们会崩塌成 m≈u≈1（权重归零、信息丢失）。故跳过这些字段。
+        informative = [
+            f for f in self.fields
+            if len({v.get(f) for v in vecs if v.get(f, MISSING) != MISSING}) > 1
+        ]
         for _ in range(max(1, iterations)):
             probs = [self.probability(v) for v in vecs]
             self.lamb = max(1e-4, min(0.99, sum(probs) / len(probs)))
-            for f in self.fields:
+            for f in informative:
                 cnt_m: dict[int, float] = {}
                 cnt_u: dict[int, float] = {}
                 for v, p in zip(vecs, probs):

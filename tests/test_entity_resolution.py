@@ -45,6 +45,26 @@ def test_name_level_agree_covers_existing_hard_rules():
     assert name_level("", "客厅") == MISSING
 
 
+def test_ascii_prefix_does_not_force_merge():
+    """纯 ASCII 公共前缀不算强相似（真实踩坑：sensor.backup_* 被并成一台设备）。"""
+    a = "Backup 备份管理器状态"
+    b = "Backup 上次成功的自动备份"
+    assert name_level(a, b) != AGREE
+    res = ProbabilisticMatcher().compare(
+        {"entity_id": "sensor.backup_backup_manager_state", "name": a,
+         "domain": "sensor", "room": "未分区"},
+        {"entity_id": "sensor.backup_last_successful_automatic_backup", "name": b,
+         "domain": "sensor", "room": "未分区"},
+    )
+    assert res["band"] != "match"
+
+
+def test_cjk_prefix_still_merges():
+    """中文设备名的共享前缀仍是强信号（该规则原本要覆盖的场景）。"""
+    assert name_level("lidicn的电视电视", "lidicn的电视播放控制") == AGREE
+    assert name_level("客厅电视", "客厅电视柜") == AGREE
+
+
 def test_stem_level_uses_device_number_as_strong_signal():
     """同一硬件被双集成接入时，entity_id 会共享设备号段。"""
     assert stem_level("media_player.chuangmi_cn_1072229835_051a01",
@@ -119,6 +139,22 @@ def test_em_fit_runs_and_serialization_roundtrip():
     res1 = m.compare(_rec("light.a", "客厅电视"), _rec("light.b", "客厅电视"))
     res2 = m2.compare(_rec("light.a", "客厅电视"), _rec("light.b", "客厅电视"))
     assert res1["probability"] == res2["probability"]
+
+
+def test_fit_skips_constant_fields_so_priors_do_not_collapse():
+    """按 (room,domain) 分块后 room/domain 恒定 → EM 必须跳过，否则 m=u=1 崩塌。"""
+    from memory_agent.entity_resolution import DEFAULT_PRIORS
+
+    m = ProbabilisticMatcher()
+    pairs = [(_rec(f"light.a{i}", "客厅灯", "客厅", "light"),
+              _rec(f"light.b{i}", "客厅灯", "客厅", "light")) for i in range(30)]
+    # 混入一些不同名配对，保证 name 字段有判别力
+    pairs += [(_rec(f"light.c{i}", "客厅灯", "客厅", "light"),
+               _rec(f"light.d{i}", "客厅空调", "客厅", "light")) for i in range(30)]
+    assert m.fit(pairs, iterations=5)["ok"] is True
+    # room/domain 块内恒定 → 保留先验，不被 EM 推平
+    assert m.priors["room"] == DEFAULT_PRIORS["room"]
+    assert m.priors["domain"] == DEFAULT_PRIORS["domain"]
 
 
 def test_fit_rejects_too_few_pairs():
