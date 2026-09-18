@@ -92,7 +92,7 @@ class AppRuntime:
         )
         # 人脸识别节点池：运行时级共享注册表，vision 与 face_routes 共用同一实例
         self.face = FaceNodeRegistry()
-        self.vision = VisionService(self.config, self.store, self.ha)
+        self.vision = VisionService(self.config, self.store, self.ha, agent_memory=self.agent_memory)
         self.vision.face = self.face
         # 电视截屏多模态（按需调用）：复用视觉服务的 VLM 通道
         self.tv = TVService(self.config, self.ha, self.vision)

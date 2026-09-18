@@ -65,10 +65,12 @@ _PROMPT_PRESETS: dict[str, str] = {
 class VisionService:
     """多模态行为识别中枢。同步实现 + to_thread 包装，巡检为 asyncio 常驻任务。"""
 
-    def __init__(self, config, store, ha) -> None:
+    def __init__(self, config, store, ha, agent_memory=None) -> None:
         self.config = config
         self.store = store
         self.ha = ha
+        # Phase 2.2 家庭画像注入：把 habit:/vision/<room> 记忆注入 VLM prompt
+        self.agent_memory = agent_memory
         # 巡检异常 MQTT 推送（Phase 2 可选）：由 runtime 注入桥接；None 时静默跳过。
         self.mqtt = None
         # 人脸识别节点池（ArcFace 可插拔）。runtime 会注入共享实例；
@@ -253,12 +255,28 @@ class VisionService:
 
     def _vlm_prompt(self, room: str, persons: list[dict] | None) -> str:
         time_str = now_local(self.config.tz_offset_hours).strftime("%Y-%m-%d %H:%M")
+        # Phase 2.2 家庭画像注入：把 habit:/vision/<room> 记忆注入 prompt
+        habit_block = ""
+        if self.agent_memory is not None:
+            try:
+                mems = self.store.list_agent_memories(state="live", limit=500)
+                topic = f"habit:/vision/{room}"
+                habits = [m for m in mems if (m.get("topic_key") or "") == topic]
+                if habits:
+                    lines = "；".join(
+                        (m.get("text") or "").strip() for m in habits[:3] if m.get("text")
+                    )
+                    if lines:
+                        habit_block = f"已知该房间习惯：{lines}。\n"
+            except Exception:
+                pass
         if persons:
             named = "、".join(
                 f"{p.get('name')}（{p.get('score', '')}）" for p in persons if p.get("name")
             ) or "无"
             return (
                 f"你是家庭监控画面分析助手。这是{room}的摄像头画面，时间{time_str}。\n"
+                f"{habit_block}"
                 f"画面中已识别到：{named}。人数应为{len(persons)}人。\n"
                 '请只输出如下 JSON，不要输出其他内容：\n'
                 '{"persons":[{"identity":"<上列名字或\'未识别\'>","action":"<10-20字动作描述>",'
