@@ -251,11 +251,16 @@ def test_identity_resolves_unknown_by_elimination():
 
 
 def test_identity_skips_when_equation_fails():
-    """等式不成立 → 不裁决，保持陌生人。"""
-    roster = [{"id": "m1", "name": "lidicn"}, {"id": "m2", "name": "凯文"}]
+    """等式不成立（unknown != absent）→ 不裁决，保持陌生人。"""
+    roster = [
+        {"id": "m1", "name": "lidicn"},
+        {"id": "m2", "name": "凯文"},
+        {"id": "m3", "name": "Emily"},
+    ]
     occupancy = [
         {"room": "客厅", "persons": [], "count": 2},  # unknown=2
     ]
+    # known=0, absent=3, unknown=2 → 2 != 3 → inconclusive
     store = _FakeStore(roster, occupancy)
     ev = pi.PerceptionEvent(source="edge_ai", kind="face_unknown", room="客厅",
                             server_ts="2026-09-18T20:00:00")
