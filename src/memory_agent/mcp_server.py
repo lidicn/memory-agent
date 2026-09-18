@@ -1375,12 +1375,17 @@ def _build_server():
         }
         if member.get("rooms"):
             try:
+                # 修复（审计 P1-9）：get_behavior_insights 签名为 (compare_days: int = 7)，
+                # 原调用多传了 rooms 参数导致 TypeError，被 except:pass 静默吞掉，
+                # room_insights 永远为空。此处对齐签名，按全局行为环比返回。
                 room_insights = await asyncio.to_thread(
-                    rt.insights.get_behavior_insights, days, ", ".join(member["rooms"])
+                    rt.insights.get_behavior_insights, days
                 )
                 result["room_insights"] = room_insights
-            except Exception:
-                pass
+            except Exception as _exc:
+                logging.getLogger(__name__).warning(
+                    "get_member_persona: get_behavior_insights 调用失败: %s", _exc
+                )
         return result
 
     @mcp.tool()

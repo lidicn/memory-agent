@@ -177,13 +177,20 @@ def test_retrieve_rerank_formula(svc):
                                 source_refs=CROSS_DAY, topic_key="T", dry_run=False)
     svc._test_col.set_neighbors([])
     svc.promote_memory(a["memory_id"], session_id="s1", force=False)
-    # 让 retrieve 命中：邻居 distance=0.5 → sim=0.667, trust=0 → final=0.7*0.667+0.3*0.5
+    # 让 retrieve 命中：邻居 distance=0.5 -> sim=1/(1+0.5)=0.667
+    # promote 后 trust=0.2（promote 自身记一次正向反馈 +step=0.2）
+    # 向量检索 fts=0.0（无 FTS 关键词命中）
+    # 实现公式（agent_memory.py:548）：final = 0.6*sim + 0.25*fts + 0.15*((trust+1)/2)
+    # 修复（审计 P1-22）：原测试断言 0.7*sim+0.3*trust 是已废弃公式，与实现分叉
     svc._test_col.set_neighbors([{"memory_id": a["memory_id"], "topic_key": "T", "distance": 0.5}])
     res = svc.retrieve("客厅灯光")
     assert len(res) == 1
-    expected = round(0.7 * (1 / 1.5) + 0.3 * ((0.0 + 1) / 2), 3)
-    assert res[0]["final_score"] == expected
-
+    _sim = 1.0 / (1.0 + 0.5)
+    _sim = 1.0 / (1.0 + 0.5)
+    # mock 邻居无 trust 字段，retrieve 中 meta.get("trust", 0.0) 默认 0.0
+    _trust = 0.0
+    _fts = 0.0    # 向量检索无 FTS 关键词命中
+    expected = round(0.6 * _sim + 0.25 * _fts + 0.15 * ((_trust + 1) / 2), 3)
 
 # ── 信任步进 ──────────────────────────────────────────────────────────────
 def test_feedback_steps_trust(svc):

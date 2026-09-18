@@ -424,12 +424,24 @@ class Store:
                     pass  # 列已存在
             # 主动感知 v2.0：perception_events 幂等键（event_id）
             # 旧表可能无 event_id 列，补齐后保证重复事件被 IGNORE
+            # 修复（审计 P1-1）：SQLite 不支持在 ADD COLUMN 上加 UNIQUE 约束，
+            # 原语句恒失败且被 except:pass 静默吞掉，导致 event_id 列在旧库不存在。
+            # 改为两步：ADD COLUMN 无约束 + CREATE UNIQUE INDEX。
             try:
                 conn.execute(
-                    "ALTER TABLE perception_events ADD COLUMN event_id TEXT UNIQUE"
+                    "ALTER TABLE perception_events ADD COLUMN event_id TEXT"
                 )
-            except Exception:
-                pass  # 列已存在
+            except Exception as _exc:
+                # "duplicate column name" 是列已存在的正常情况，其他错误应可见
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] perception_events.event_id 列迁移异常: {_exc}")
+            try:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_perception_events_event_id "
+                    "ON perception_events(event_id)"
+                )
+            except Exception as _exc:
+                print(f"[Store] perception_events.event_id 唯一索引创建失败: {_exc}")
             # v0.8-4 混合检索：FTS5 关键词索引（external content + trigger 自动同步）
             # 优先 trigram（中文子串/专名友好），不支持则回退 unicode61；均不可用则纯向量
             for _tok in ("trigram", "unicode61"):
