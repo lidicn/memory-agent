@@ -1519,6 +1519,23 @@ class Store:
             ]
         return out
 
+    def count_room_action_days(self, room: str, action: str, days: int = 7) -> int:
+        """统计同房间+同 action 在最近 N 天内出现的**不同天数**（Phase 2.1 候选晋升）。
+
+        返回值是「跨天证据数」——≥3 天表示该行为模式已跨天重复出现，
+        可晋升为候选记忆（habit:/vision/）。
+        """
+        sql = """
+            SELECT COUNT(DISTINCT day) as n
+            FROM behavior_events
+            WHERE room = ? AND action = ?
+              AND day >= date('now', 'localtime', ?)
+        """
+        conn = self.connect()
+        with self._lock:
+            row = conn.execute(sql, (room, action, f"-{int(days)} days")).fetchone()
+        return int(dict(row).get("n") or 0)
+
     # -- 统一感知总线（主动感知 v2.0） -----------------------------------------
 
     def insert_perception_event(self, payload: dict) -> int:

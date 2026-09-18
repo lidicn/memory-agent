@@ -285,3 +285,38 @@ def test_identity_skips_when_no_room():
     ev = pi.PerceptionEvent(source="edge_ai", kind="face_unknown", room=None,
                             server_ts="2026-09-18T20:00:00")
     assert pi.identity_resolve_unknown(store, ev, 1) is None
+
+
+# ── Phase 2.1 候选晋升 ────────────────────────────────────────────────────────
+
+def test_count_room_action_days():
+    """同房间+同 action 跨天统计。"""
+    s = _store()
+    # 写 3 天不同天的「客厅/熟人出现」
+    for day in ("2026-09-16", "2026-09-17", "2026-09-18"):
+        s.insert_behavior_event({
+            "server_ts": f"{day}T10:00:00",
+            "room": "客厅",
+            "action": "熟人出现",
+            "persons": [{"name": "lidicn"}],
+            "count": 1,
+            "trigger": "edge_ai",
+        })
+    days = s.count_room_action_days("客厅", "熟人出现", 7)
+    assert days == 3
+
+
+def test_count_room_action_days_same_day():
+    """同一天多条只算 1 天。"""
+    s = _store()
+    for h in (10, 11, 12):
+        s.insert_behavior_event({
+            "server_ts": f"2026-09-18T{h:02d}:00:00",
+            "room": "客厅",
+            "action": "陌生人出现",
+            "persons": [{"name": "陌生人"}],
+            "count": 1,
+            "trigger": "edge_ai",
+        })
+    days = s.count_room_action_days("客厅", "陌生人出现", 7)
+    assert days == 1

@@ -187,6 +187,7 @@ class AppRuntime:
             announcer=announcer,
             vision=self.vision,
             omni_enabled=getattr(self.config, "livingroom_ai_omni_enabled", False),
+            agent_memory=self.agent_memory,
         )
         self._livingroom_ai_task = asyncio.create_task(self._periodic_livingroom_ai())
 

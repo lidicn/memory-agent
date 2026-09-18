@@ -45,6 +45,7 @@ class LivingRoomAIIngest:
         announcer: Optional[Announcer] = None,
         vision: Any = None,
         omni_enabled: bool = False,
+        agent_memory: Any = None,
     ) -> None:
         self.ha = ha_client
         self.store = store
@@ -55,6 +56,8 @@ class LivingRoomAIIngest:
         # 等「需要在干嘛」的语义事件会触发一次 VLM analyze_room（复用现有冷却门控）。
         self.vision = vision
         self.omni_enabled = bool(omni_enabled)
+        # Phase 2.1 候选晋升：同房间+同 action 跨天 ≥3 天自动写 staging 候选。
+        self.agent_memory = agent_memory
         self._entity_ids: list[str] = []
         self._entity_rooms: dict[str, str] = {}
         self._seen: dict[str, Optional[str]] = {}
@@ -165,6 +168,38 @@ class LivingRoomAIIngest:
                 # Phase 1.2 Identity 层：face_unknown 即时裁决（名册消除法）
                 if bid and ev.kind == "face_unknown":
                     pi.identity_resolve_unknown(self.store, ev, bid)
+                # Phase 2.1 候选晋升：同房间+同 action 跨天 ≥3 天写 staging 候选
+                if bid and self.agent_memory is not None and ev.room:
+                    try:
+                        action = pi._GATE_BEHAVIOR_KINDS.get(ev.kind, {}).get("action", "")
+                        if action:
+                            days = self.store.count_room_action_days(ev.room, action, 7)
+                            if days >= 3:
+                                person = ""
+                                if ev.kind == "face_known":
+                                    person = pi._known_person_name(ev)
+                                elif ev.kind == "face_unknown":
+                                    person = "陌生人"
+                                text = f"{ev.room}：{action}"
+                                if person:
+                                    text += f"（{person}）"
+                                res = self.agent_memory.add_semantic_memory(
+                                    session_id="perception_auto",
+                                    text=text,
+                                    tags=[f"habit:/vision/{ev.room}"],
+                                    source_refs=[f"event:{bid}"],
+                                    topic_key=f"habit:/vision/{ev.room}",
+                                    dry_run=False,
+                                    source="perception",
+                                    observed_at=ev.server_ts or "",
+                                )
+                                if res.get("ok"):
+                                    logger.info(
+                                        "Phase 2.1 候选晋升：%s@%s 跨天 %d 天 → staging",
+                                        action, ev.room, days,
+                                    )
+                    except Exception as exc:  # 候选晋升失败不影响主流程
+                        logger.warning("Phase 2.1 候选晋升异常: %s", exc)
                 # Phase 1.3 Omni 层：事件驱动补语义。cry/baby_woke/pet 等
                 # 「需要在干嘛」的语义事件触发一次 VLM analyze_room（复用冷却门控，
                 # 冷却内自动 skipped；face_* 已由 Gate/Identity 覆盖，不重复触发）。
