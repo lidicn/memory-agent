@@ -261,6 +261,25 @@ CREATE TABLE IF NOT EXISTS perception_events (
 CREATE INDEX IF NOT EXISTS idx_pe_event_id ON perception_events(event_id);
 CREATE INDEX IF NOT EXISTS idx_pe_source_day ON perception_events(source, day);
 CREATE INDEX IF NOT EXISTS idx_pe_kind_ts ON perception_events(kind, server_ts);
+
+-- Phase 5.3 持久意图 + 周期归档
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id      TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    period       TEXT NOT NULL DEFAULT 'daily',
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_records (
+    record_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id      TEXT NOT NULL,
+    period_key   TEXT NOT NULL,
+    data_json    TEXT NOT NULL DEFAULT '{}',
+    created_at   TEXT NOT NULL,
+    UNIQUE(task_id, period_key)
+);
 """
 
 
