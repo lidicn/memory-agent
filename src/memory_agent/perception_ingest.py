@@ -130,3 +130,92 @@ def ingest_event(store: Any, event: PerceptionEvent) -> int:
             event.source, event.kind, exc,
         )
         return 0
+
+
+# ── Phase 1.1 · Gate 层：edge_ai 事件直接晋升为 behavior_events ──────────────
+# 设计：边缘 AI 事件即"已发生事实"，直接结构化为「人+动作」事件落 behavior_events，
+# 零 VLM 调用（Miloco Gate：已结构化的边缘事件跳过 Omni 补语义）。
+# 仅晋升"人+动作"语义类；环境信号（day_night 昼夜 / fav_area 进出区域 /
+# no_human 长时无人 / gesture 手势）保留在 perception_events，供后续
+# Phase 3 规则 DSL / Phase 5 看护规则消费，不污染行为事件流。
+_GATE_BEHAVIOR_KINDS: dict[str, dict] = {
+    "human":        {"action": "有人出现", "count": 1, "confidence": None},
+    "face_known":   {"action": "熟人出现", "count": 1, "confidence": 0.6},
+    "face_unknown": {"action": "陌生人出现", "count": 1, "confidence": 0.6},
+    "pet":          {"action": "宠物出现", "count": 1, "confidence": None},
+    "cry":          {"action": "婴儿哭声", "count": 1, "confidence": None},
+    "baby_woke":    {"action": "婴儿醒来", "count": 1, "confidence": None},
+}
+
+# 盒侧 known_face 事件 attributes 中可能携带人名的键（按优先级）。
+# HA event 实体 attributes 形如 {"friendly_name": "爸爸", ...}。
+_FACE_NAME_KEYS = ("friendly_name", "name", "person_name")
+
+
+def _known_person_name(event: PerceptionEvent) -> str:
+    """从 known_face 事件提取人名；找不到回退"熟人"。"""
+    sources: list[dict] = []
+    if isinstance(event.payload, dict):
+        sources.append(event.payload)
+    if isinstance(event.raw_event, dict):
+        rattrs = event.raw_event.get("attributes")
+        if isinstance(rattrs, dict):
+            sources.append(rattrs)
+    for src in sources:
+        for key in _FACE_NAME_KEYS:
+            v = src.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return "熟人"
+
+
+def gate_promote_to_behavior(store: Any, event: PerceptionEvent) -> int:
+    """Phase 1.1 Gate 层：edge_ai 事件直接落 ``behavior_events``（零 VLM）。
+
+    返回 behavior_events 自增 id；未晋升（非行为类/无房间）或落库失败返回 0。
+    幂等由上游保证（livingroom_ai 按 ``last_changed`` 去重，且仅在
+    ``ingest_event`` 返回 >0 时调用本函数），本函数不做二次去重。
+    """
+    spec = _GATE_BEHAVIOR_KINDS.get(event.kind)
+    if spec is None:
+        return 0
+    if not event.room:
+        return 0
+
+    persons: list[dict] = []
+    if event.kind == "face_known":
+        persons = [{
+            "name": _known_person_name(event),
+            "via": "edge_ai",
+            "match_confidence": 0.6,
+            "member_id": None,
+            "detail": dict(event.payload or {}),
+        }]
+    elif event.kind == "face_unknown":
+        persons = [{
+            "name": "陌生人",
+            "via": "edge_ai",
+            "match_confidence": 0.6,
+            "member_id": None,
+            "detail": {},
+        }]
+
+    try:
+        return store.insert_behavior_event({
+            "server_ts": event.server_ts,
+            "room": event.room,
+            "camera_src": "",
+            "persons": persons,
+            "count": spec["count"],
+            "action": spec["action"],
+            "scene": "",
+            "confidence": spec["confidence"],
+            "trigger": "edge_ai",
+            "status": "ok",
+        })
+    except Exception as exc:  # 晋升失败不影响主流程（fail-closed）
+        logger.warning(
+            "gate_promote_to_behavior 失败 kind=%s room=%s: %s",
+            event.kind, event.room, exc,
+        )
+        return 0

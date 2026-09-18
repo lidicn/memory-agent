@@ -93,3 +93,106 @@ def test_ingest_event_fail_closed():
         BadStore(), pi.PerceptionEvent(source="edge_ai", kind="human")
     )
     assert n == 0
+
+
+# ── Phase 1.1 · Gate 层：edge_ai → behavior_events ──────────────────────────
+
+def _behavior_rows(s):
+    return s.list_behavior_events(limit=100)
+
+
+def test_gate_promotes_human_event():
+    s = _store()
+    ev = pi.PerceptionEvent(
+        source="edge_ai", kind="human", room="客厅",
+        server_ts="2026-09-18T10:00:00",
+        entity_id="event.chuangmi_cn_1_2_key_area_human_e_11_1",
+    )
+    bid = pi.gate_promote_to_behavior(s, ev)
+    assert bid > 0
+    rows = _behavior_rows(s)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["room"] == "客厅"
+    assert row["action"] == "有人出现"
+    assert row["count"] == 1
+    assert row["trigger"] == "edge_ai"
+    assert row["persons"] == []
+    assert row["status"] == "ok"
+
+
+def test_gate_face_unknown_promotes_stranger():
+    s = _store()
+    ev = pi.PerceptionEvent(
+        source="edge_ai", kind="face_unknown", room="客厅",
+        server_ts="2026-09-18T10:01:00",
+    )
+    assert pi.gate_promote_to_behavior(s, ev) > 0
+    row = _behavior_rows(s)[0]
+    assert row["action"] == "陌生人出现"
+    assert row["persons"] == [{
+        "name": "陌生人", "via": "edge_ai",
+        "match_confidence": 0.6, "member_id": None, "detail": {},
+    }]
+    assert row["confidence"] == 0.6
+
+
+def test_gate_face_known_extracts_name_from_payload():
+    s = _store()
+    ev = pi.from_ha_event(
+        "event.chuangmi_cn_1_2_known_face_e_8_8",
+        {"attributes": {"friendly_name": "爸爸"}, "last_changed": "2026-09-18T10:02:00"},
+        room="客厅",
+    )
+    assert ev is not None
+    assert pi.gate_promote_to_behavior(s, ev) > 0
+    row = _behavior_rows(s)[0]
+    assert row["action"] == "熟人出现"
+    assert row["persons"][0]["name"] == "爸爸"
+    assert row["persons"][0]["via"] == "edge_ai"
+
+
+def test_gate_face_known_falls_back_to_generic():
+    s = _store()
+    ev = pi.PerceptionEvent(
+        source="edge_ai", kind="face_known", room="客厅",
+        server_ts="2026-09-18T10:03:00", payload={},
+    )
+    assert pi.gate_promote_to_behavior(s, ev) > 0
+    row = _behavior_rows(s)[0]
+    assert row["persons"][0]["name"] == "熟人"
+
+
+def test_gate_skips_non_behavior_kinds():
+    s = _store()
+    # 昼夜切换 / 进出区域 / 长时无人 / 手势 都是环境信号，不晋升行为事件
+    for kind in ("day_night", "fav_area", "no_human", "gesture"):
+        ev = pi.PerceptionEvent(
+            source="edge_ai", kind=kind, room="客厅",
+            server_ts="2026-09-18T10:04:00",
+        )
+        assert pi.gate_promote_to_behavior(s, ev) == 0
+    assert _behavior_rows(s) == []
+
+
+def test_gate_skips_when_no_room():
+    s = _store()
+    ev = pi.PerceptionEvent(
+        source="edge_ai", kind="human", room=None,
+        server_ts="2026-09-18T10:05:00",
+    )
+    assert pi.gate_promote_to_behavior(s, ev) == 0
+    assert _behavior_rows(s) == []
+
+
+def test_gate_fail_closed_on_store_error():
+    class BadStore:
+        def insert_behavior_event(self, p):
+            raise RuntimeError("boom")
+
+    ev = pi.PerceptionEvent(
+        source="edge_ai", kind="human", room="客厅",
+        server_ts="2026-09-18T10:06:00",
+    )
+    # 落库失败返回 0 且不抛异常
+    assert pi.gate_promote_to_behavior(BadStore(), ev) == 0

@@ -146,6 +146,9 @@ class LivingRoomAIIngest:
                 continue
             if pi.ingest_event(self.store, ev) > 0:
                 ingested += 1
+                # Phase 1.1 Gate 层：edge_ai 事件即"已发生事实"，直接结构化进
+                # behavior_events（零 VLM 调用）；非行为类 kind 本函数内部忽略。
+                pi.gate_promote_to_behavior(self.store, ev)
                 # Phase 0.4 主动播报闭环：人脸/看护类事件经 doubao_tts 播报
                 if self.announcer is not None and ev.kind in pi.ANNOUNCE_KINDS:
                     self.announcer.announce(ev)
