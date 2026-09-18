@@ -92,3 +92,53 @@ def note_unknown(tool: str) -> None:
     if tool and tool not in WRITE_TOOLS and tool not in _REPORTED_UNKNOWN:
         _REPORTED_UNKNOWN.add(tool)
         _log.debug("MCP 工具未在权限表中登记，按 read 处理: %s", tool)
+
+
+def assert_write_tools_complete() -> list[str]:
+    """启动期完整性断言：检查疑似写工具是否都已登记到 WRITE_TOOLS。
+
+    安全加固（审计 P0-6）：分类表用「例外清单」而非「显式声明」，新增写工具若
+    忘了登记 WRITE_TOOLS，即被当作读工具对所有 scope 开放。本函数在启动时用
+    工具名关键词匹配识别疑似写工具（create/update/delete/trigger/refresh/save/
+    promote/revoke/feedback/teach/define/assign/confirm/review/sweep/rollback 等），
+    检查是否已登记 WRITE_TOOLS，缺失则记 error。
+
+    注意：这是启发式检查，可能漏检（非典型命名的写工具）或误报（命名像写但实际只读）。
+    新增工具时应主动评估是否需要加入 WRITE_TOOLS。
+
+    返回疑似但未登记的写工具名列表（空列表表示通过）。
+    """
+    try:
+        from .tool_schema import TOOL_SPECS
+    except Exception:  # noqa: BLE001
+        _log.warning("无法导入 tool_schema，跳过写工具完整性断言")
+        return []
+
+    # 疑似写工具的关键词前缀（工具名以这些开头）
+    _WRITE_PREFIXES = (
+        "create_", "update_", "delete_", "remove_", "add_", "set_",
+        "trigger_", "refresh_", "save_", "promote_", "revoke_", "rollback_",
+        "feedback_", "teach_", "define_", "assign_", "confirm_", "review_",
+        "sweep_", "merge_", "ingest_", "collect_",
+    )
+
+    missing: list[str] = []
+    for spec in TOOL_SPECS:
+        if "mcp" not in spec.expose:
+            continue
+        name = spec.name
+        if name in WRITE_TOOLS:
+            continue
+        # 启发式：工具名以写关键词开头
+        if any(name.startswith(p) for p in _WRITE_PREFIXES):
+            missing.append(name)
+
+    if missing:
+        _log.error(
+            "【安全告警】以下疑似写工具未登记到 WRITE_TOOLS，将被默认为只读对所有 scope 开放: %s",
+            ", ".join(sorted(missing)),
+        )
+    else:
+        _log.info("MCP 写工具完整性断言通过：未发现疑似写工具漏登记")
+
+    return missing

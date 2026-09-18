@@ -2460,6 +2460,20 @@ class Store:
         m["tags"] = self.list_member_tags(member_id)
         return m
 
+    @staticmethod
+    def member_public_view(member: dict) -> dict:
+        """返回成员的公开视图（剔除生物特征等敏感字段）。
+
+        安全加固（审计 P1-8）：face_feature 是人脸特征向量，属于生物识别数据，
+        不应随 API/MCP 工具结果流出（agent 上下文、日志、转述给用户都可能泄露）。
+        所有对外出参必须过本函数，内部逻辑需要 face_feature 时直接用 get_member。
+        """
+        if not isinstance(member, dict):
+            return member
+        out = dict(member)
+        out.pop("face_feature", None)
+        return out
+
     def list_members(self) -> list[dict]:
         """列出全部成员，并附带其关联房间/设备与标签。
 
@@ -2515,8 +2529,10 @@ class Store:
         ]
 
     def update_member(self, member_id: str, **fields) -> dict | None:
+        # 安全加固（审计 P0-3）：face_feature 不在通用更新白名单内，
+        # 人脸特征必须通过专门的注册/录入流程写入，防止 API 任意篡改生物特征。
         allowed = {"name", "avatar_emoji", "avatar_bg", "avatar_url", "note",
-                   "appearance_json", "face_feature", "profile_json"}
+                   "appearance_json", "profile_json"}
         sets = {k: v for k, v in fields.items() if k in allowed}
         assert set(sets).issubset(allowed), "update_member 列名越出白名单"
         if not sets:

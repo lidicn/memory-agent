@@ -1286,6 +1286,8 @@ def _build_server():
         """列出全部家庭成员（含 rooms/devices/tags 聚合）。"""
         rt = get_runtime()
         members = await asyncio.to_thread(rt.store.list_members)
+        # 安全加固（审计 P1-8）：剔除 face_feature 生物特征向量，防止随工具结果流出
+        members = [rt.store.member_public_view(m) for m in members]
         return {"ok": True, "members": members, "total": len(members)}
 
     @mcp.tool()
@@ -2349,6 +2351,14 @@ if mcp_server is not None:
 # 上方手工 TOOL_CATALOG / _TOOL_NAMES 为兼容历史保留，实际以 tool_schema.TOOL_SPECS 为准。
 TOOL_CATALOG = build_catalog()
 TOOL_NAMES = TOOL_NAMES_FROM_SPEC
+
+# 安全加固（审计 P0-6）：启动期断言所有写工具均已登记 WRITE_TOOLS，
+# 防止新增写工具漏登记后被默认为只读对所有 scope 开放。
+try:
+    from .mcp_scopes import assert_write_tools_complete
+    assert_write_tools_complete()
+except Exception as _exc:  # pragma: no cover
+    logging.getLogger(__name__).warning("写工具完整性断言执行失败：%s", _exc)
 
 
 def get_lifespan_context():

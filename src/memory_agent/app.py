@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import ipaddress
 import json
 import logging
 import os
@@ -126,6 +127,21 @@ APP_ENDPOINTS = (
 )
 
 
+def _is_trusted_source(client_ip: str | None) -> bool:
+    """判断客户端 IP 是否为可信来源（loopback 或内网段）。
+
+    调试令牌（dbg_）仅允许从可信来源访问，防止令牌泄露后被外网利用。
+    无法解析 IP 时视为不可信（fail-closed）。
+    """
+    if not client_ip:
+        return False
+    try:
+        ip = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private
+
+
 class AuthMiddleware:
     """纯 ASGI 鉴权中间件，支持 Bearer JWT / Basic / Cookie 三种凭据。"""
 
@@ -156,14 +172,15 @@ class AuthMiddleware:
             k.decode("latin-1").lower(): v.decode("latin-1")
             for k, v in scope.get("headers", [])
         }
-        user = self._authenticate(headers)
+        client_ip = scope.get("client", (None, None))[0] if scope.get("client") else None
+        user = self._authenticate(headers, client_ip)
 
         if not user:
             await self._reject(send, path)
             return
 
         # 管家令牌只放行白名单路径，超出范围一律 403
-        if user.get("butler") and not self._butler_allowed(path):
+        if user.get("butler") and not self._butler_allowed(path, scope.get("method", "GET")):
             await self._reject(send, path, status=403, message="管家令牌无权访问该接口")
             return
 
@@ -182,12 +199,40 @@ class AuthMiddleware:
             state["user"] = user
         await self.app(scope, receive, send)
 
+    # 管家令牌允许的方法映射（审计 P0-3：白名单必须带方法，防止写操作被未授权访问）
+    BUTLER_GET_PATHS = (
+        "/api/members",
+        "/api/vision/presence",
+        "/api/vision/latest",
+        "/api/insights/member-schedule",
+        "/api/behaviors",
+        "/api/metrics",
+        "/api/tv/state",
+        "/api/tv/screenshot",
+    )
+    BUTLER_POST_PATHS = (
+        "/api/events",
+        "/api/metrics/ingest",
+        "/api/tv/analyze",
+    )
+
     @staticmethod
-    def _butler_allowed(path: str) -> bool:
-        """管家令牌的路径白名单判定（含 /api/members/{id} 这类动态子路径）。"""
-        if path in BUTLER_ENDPOINTS:
-            return True
-        return path.startswith("/api/members/")
+    def _butler_allowed(path: str, method: str = "GET") -> bool:
+        """管家令牌的路径+方法白名单判定（含 /api/members/{id} 这类动态子路径）。
+
+        安全加固（审计 P0-3）：白名单必须区分方法，GET 只读路径不允许 PUT/DELETE。
+        /api/members/{id} 子路径仅允许 GET（成员档案查询），不允许写操作。
+        """
+        if method == "GET":
+            if path in AuthMiddleware.BUTLER_GET_PATHS:
+                return True
+            # /api/members/{id} 动态子路径仅 GET
+            if path.startswith("/api/members/"):
+                return True
+        elif method == "POST":
+            if path in AuthMiddleware.BUTLER_POST_PATHS:
+                return True
+        return False
 
     @staticmethod
     def _arena_allowed(path: str) -> bool:
@@ -223,8 +268,9 @@ class AuthMiddleware:
 
         return get_app_token_store().verify(token)
 
-    def _authenticate(self, headers: dict) -> dict | None:
-        auth_manager = AuthManager(get_config())
+    def _authenticate(self, headers: dict, client_ip: str | None = None) -> dict | None:
+        config = get_config()
+        auth_manager = AuthManager(config)
         authorization = headers.get("authorization", "")
 
         if authorization.startswith("Bearer "):
@@ -247,6 +293,9 @@ class AuthMiddleware:
                 return user
             # 调试令牌（dbg_）回退校验：经运行时 Token 库识别 kind=debug 后授权
             # 访问 /api 调试接口。mcp_ 令牌仅用于 /mcp，不在此放行（保持隔离）。
+            # 安全加固（审计 P0-2）：仅 debug_mode=True 且来源为 loopback/内网段时才放行。
+            if not config.debug_mode or not _is_trusted_source(client_ip):
+                return None
             try:
                 store = getattr(get_runtime(), "tokens", None)
             except Exception:  # noqa: BLE001

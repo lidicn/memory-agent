@@ -273,6 +273,10 @@ class Config:
     db_path: str = "/data/memory_agent.db"
     tz_offset_hours: float = 8.0  # 容器内通常无 TZ，显式声明本地时区偏移
 
+    # 调试模式：仅 debug_mode=True 时 dbg_ 调试令牌才生效，且仅限 loopback/内网段访问。
+    # 生产环境必须保持 False，防止调试令牌被利用获得全接口访问。
+    debug_mode: bool = False
+
     # ── 备份 / 灾难恢复（先于 v0.8 存量记忆改写就位）──────────────────────────
     # SQLite 主库 VACUUM 快照 + chroma 数据目录快照（可选）+ 14 份轮转。
     backup_enabled: bool = False
@@ -410,6 +414,7 @@ def get_config() -> Config:
         "researcher_call_timeout": "RESEARCHER_CALL_TIMEOUT",
         "researcher_max_consecutive_failures": "RESEARCHER_MAX_CONSECUTIVE_FAILURES",
         "researcher_staging_ttl_days": "RESEARCHER_STAGING_TTL_DAYS",
+        "debug_mode": "DEBUG_MODE",
     }
 
     for field_name, env_name in env_map.items():
