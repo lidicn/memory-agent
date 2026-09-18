@@ -350,3 +350,35 @@ def test_build_profile_empty():
     s = _store()
     text = build_profile(s, max_chars=4000)
     assert "# 家庭画像" in text
+
+
+# ── Phase 3 感知规则引擎 ────────────────────────────────────────────────────────
+
+def test_rule_engine_match():
+    from memory_agent.perception_rules import RuleEngine
+    engine = RuleEngine()
+    # face_unknown @ 客厅 → 命中 stranger_alert
+    res = engine.evaluate("face_unknown", "客厅")
+    assert len(res) == 1
+    assert res[0]["rule_id"] == "stranger_alert"
+    assert res[0]["action"] == "alert"
+
+
+def test_rule_engine_cooldown():
+    from memory_agent.perception_rules import RuleEngine
+    engine = RuleEngine()
+    # 第一次触发
+    res1 = engine.evaluate("face_unknown", "客厅")
+    assert len(res1) == 1
+    # 冷却内再触发 → 不命中
+    res2 = engine.evaluate("face_unknown", "客厅")
+    assert len(res2) == 0
+
+
+def test_rule_engine_room_wildcard():
+    from memory_agent.perception_rules import RuleEngine
+    engine = RuleEngine()
+    # day_night 通配所有房间
+    res = engine.evaluate("day_night", "任意房间")
+    assert len(res) == 1
+    assert res[0]["rule_id"] == "day_night_log"
