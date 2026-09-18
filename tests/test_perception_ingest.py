@@ -382,3 +382,21 @@ def test_rule_engine_room_wildcard():
     res = engine.evaluate("day_night", "任意房间")
     assert len(res) == 1
     assert res[0]["rule_id"] == "day_night_log"
+
+
+# ── Phase 4 反馈闭环打包 ──────────────────────────────────────────────────────────
+
+def test_build_feedback_pack(tmp_path):
+    from memory_agent.feedback_pack import build_feedback_pack
+    out = build_feedback_pack(
+        snapshot_path="",
+        trace="VLM 误识别：把猫认成狗",
+        output_dir=str(tmp_path),
+        label="test_case",
+    )
+    assert out is not None
+    assert out.endswith(".tar.gz")
+    import tarfile
+    with tarfile.open(out, "r:gz") as tar:
+        names = tar.getnames()
+        assert "trace.txt" in names
