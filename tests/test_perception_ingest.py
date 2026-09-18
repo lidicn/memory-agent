@@ -400,3 +400,52 @@ def test_build_feedback_pack(tmp_path):
     with tarfile.open(out, "r:gz") as tar:
         names = tar.getnames()
         assert "trace.txt" in names
+
+
+# ── Phase 5 离家安防 + 家庭日常画像 ──────────────────────────────────────────────
+
+def test_away_mode_transition():
+    from memory_agent.away_mode import AwayMode
+    mode = AwayMode(no_human_threshold_seconds=1)
+    assert mode.is_away() is False
+    # 模拟无人超过阈值
+    import time
+    mode.last_human_ts = time.monotonic() - 2
+    result = mode.report_no_human()
+    assert result == "away"
+    assert mode.is_away() is True
+    # 有人 → 切回在家
+    mode.report_human()
+    assert mode.is_away() is False
+
+
+def test_away_mode_alert_unknown():
+    from memory_agent.away_mode import AwayMode
+    mode = AwayMode()
+    assert mode.should_alert_unknown() is False
+    mode.state = "away"
+    assert mode.should_alert_unknown() is True
+
+
+def test_daily_profile_baseline():
+    from memory_agent.daily_profile import compute_return_time_baseline
+    events = [
+        {"server_ts": f"2026-09-{d:02d}T20:00:00", "persons": [{"name": "Kevin"}]}
+        for d in range(10, 17)  # 7 天，每天 20:00 回家
+    ]
+    baseline = compute_return_time_baseline(events, "Kevin", min_days=3)
+    assert baseline is not None
+    assert baseline["days"] == 7
+    assert abs(baseline["median_hour"] - 20.0) < 0.1
+
+
+def test_daily_profile_anomaly():
+    from memory_agent.daily_profile import check_return_time_anomaly
+    baseline = {"median_hour": 20.0, "mad": 0.5}
+    # 22:00 回家，偏离 2 小时 > 2σ → 异常
+    result = check_return_time_anomaly(baseline, 22.0, sigma_threshold=2.0)
+    assert result is not None
+    assert result["anomaly"] is True
+    # 20:30 回家，偏离 0.5 小时 → 正常
+    result2 = check_return_time_anomaly(baseline, 20.5, sigma_threshold=2.0)
+    assert result2 is None
