@@ -320,3 +320,33 @@ def test_count_room_action_days_same_day():
         })
     days = s.count_room_action_days("客厅", "陌生人出现", 7)
     assert days == 1
+
+
+# ── Phase 2.3 原子写 + 权重截断 ─────────────────────────────────────────────────
+
+def test_write_profile_atomic(tmp_path):
+    from memory_agent.home_profile import write_profile_atomic
+    p = tmp_path / "profile.md"
+    write_profile_atomic(str(p), "# 测试\n内容")
+    assert p.read_text(encoding="utf-8") == "# 测试\n内容"
+
+
+def test_truncate_by_weight():
+    from memory_agent.home_profile import truncate_by_weight
+    mems = [
+        {"text": "低权重记忆", "trust": 0.1},
+        {"text": "高权重记忆", "trust": 0.9},
+        {"text": "中权重记忆", "trust": 0.5},
+    ]
+    # max_chars=10：只能放一条（6 字符）
+    kept = truncate_by_weight(mems, max_chars=6)
+    # 高权重优先：保留高权重
+    assert len(kept) == 1
+    assert "高权重" in kept[0]["text"]
+
+
+def test_build_profile_empty():
+    from memory_agent.home_profile import build_profile
+    s = _store()
+    text = build_profile(s, max_chars=4000)
+    assert "# 家庭画像" in text
