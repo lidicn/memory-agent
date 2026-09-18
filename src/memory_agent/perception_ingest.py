@@ -147,13 +147,19 @@ _GATE_BEHAVIOR_KINDS: dict[str, dict] = {
     "baby_woke":    {"action": "婴儿醒来", "count": 1, "confidence": None},
 }
 
-# 盒侧 known_face 事件 attributes 中可能携带人名的键（按优先级）。
-# HA event 实体 attributes 形如 {"friendly_name": "爸爸", ...}。
-_FACE_NAME_KEYS = ("friendly_name", "name", "person_name")
+# 小米人物id → 人名映射表（米家 App 注册的人脸 id 不是人名，是小米内部 id）。
+# HA event 实体 attributes 形如 {"人物id": "98126558687947776", "friendly_name": "自动化场景名"}。
+# friendly_name 是米家 AI 场景自动化的名称，不是识别到的人名——必须用人物id 查表。
+_MIHOUZZ_PERSON_MAP: dict[str, str] = {
+    "98126558687947776": "lidicn",
+    "122448301518780288": "Emily",
+    "98126565163957760": "Kevin",
+}
 
 
 def _known_person_name(event: PerceptionEvent) -> str:
-    """从 known_face 事件提取人名；找不到回退"熟人"。"""
+    """从 known_face 事件的人物id 查表得人名；找不到回退"熟人"。"""
+    pid = None
     sources: list[dict] = []
     if isinstance(event.payload, dict):
         sources.append(event.payload)
@@ -162,10 +168,12 @@ def _known_person_name(event: PerceptionEvent) -> str:
         if isinstance(rattrs, dict):
             sources.append(rattrs)
     for src in sources:
-        for key in _FACE_NAME_KEYS:
-            v = src.get(key)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
+        v = src.get("人物id") or src.get("person_id")
+        if v is not None:
+            pid = str(v).strip()
+            break
+    if pid and pid in _MIHOUZZ_PERSON_MAP:
+        return _MIHOUZZ_PERSON_MAP[pid]
     return "熟人"
 
 

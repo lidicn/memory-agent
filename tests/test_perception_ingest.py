@@ -137,18 +137,20 @@ def test_gate_face_unknown_promotes_stranger():
     assert row["confidence"] == 0.6
 
 
-def test_gate_face_known_extracts_name_from_payload():
+def test_gate_face_known_extracts_name_from_person_id():
+    """face_known 从人物id 查映射表得人名（不是 friendly_name）。"""
     s = _store()
     ev = pi.from_ha_event(
         "event.chuangmi_cn_1_2_known_face_e_8_8",
-        {"attributes": {"friendly_name": "爸爸"}, "last_changed": "2026-09-18T10:02:00"},
+        {"attributes": {"人物id": "98126558687947776", "friendly_name": "自动化场景名"},
+         "last_changed": "2026-09-18T10:02:00"},
         room="客厅",
     )
     assert ev is not None
     assert pi.gate_promote_to_behavior(s, ev) > 0
     row = _behavior_rows(s)[0]
     assert row["action"] == "熟人出现"
-    assert row["persons"][0]["name"] == "爸爸"
+    assert row["persons"][0]["name"] == "lidicn"
     assert row["persons"][0]["via"] == "edge_ai"
 
 
