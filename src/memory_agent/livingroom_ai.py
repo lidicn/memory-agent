@@ -144,6 +144,13 @@ class LivingRoomAIIngest:
             ev = pi.from_ha_event(eid, state, room=room)
             if ev is None:
                 continue
+            # 时间规范化：HA last_changed 是 UTC 带时区 ISO，直接落库会让
+            # perception_events / behavior_events 与 patrol/VLM 巡检行（本地 naive）
+            # 混存，按天聚合与"最近 N 天"查询错位。统一转本地 naive。
+            from .store import parse_ts as _parse_ts
+            _dt = _parse_ts(last, getattr(self.store, "tz_offset_hours", 8.0))
+            if _dt is not None:
+                ev.server_ts = _dt.isoformat(sep="T")
             if pi.ingest_event(self.store, ev) > 0:
                 ingested += 1
                 # Phase 1.1 Gate 层：edge_ai 事件即"已发生事实"，直接结构化进
