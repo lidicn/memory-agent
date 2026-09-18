@@ -219,3 +219,75 @@ def gate_promote_to_behavior(store: Any, event: PerceptionEvent) -> int:
             event.kind, event.room, exc,
         )
         return 0
+
+
+# ── Phase 1.2 · Identity 层：face_unknown 即时裁决 ─────────────────────────────
+# 设计：客厅盒侧 AI 报 face_unknown（陌生人脸）时，立即用 presence_fusion
+# 名册消除法裁决——「当前未识别人数 == 缺席成员数」时，把客厅的陌生人
+# 确定性归位到具体成员。这是两路融合：edge_ai 人脸事件 + 名册消除法。
+# TV ArcFace / VLM 外观匹配是另外两路独立信号，后续接入时并入此处。
+# 零 LLM 调用，纯确定性规则。
+
+_IDENTITY_LOOKBACK_MINUTES = 5
+
+
+def identity_resolve_unknown(store: Any, event: PerceptionEvent, behavior_event_id: int) -> str | None:
+    """Phase 1.2 Identity 层：把 face_unknown 事件即时裁决为具体成员。
+
+    返回裁决到的成员名；无法裁决（等式不成立/无房间/异常）返回 None，
+    保持 persons_json 里的「陌生人」占位。
+    """
+    if event.kind != "face_unknown":
+        return None
+    if not event.room or behavior_event_id <= 0:
+        return None
+
+    try:
+        from datetime import datetime, timedelta
+        from .presence_fusion import fuse_presence
+
+        tz = getattr(store, "tz_offset_hours", 8.0)
+        since_dt = datetime.now() - timedelta(minutes=_IDENTITY_LOOKBACK_MINUTES)
+        since = since_dt.isoformat(timespec="seconds")
+
+        roster = store.list_members()
+        if not roster:
+            return None
+        occupancy = store.recent_occupancy(since)
+        result = fuse_presence(roster, occupancy)
+        if result.get("method") != "elimination":
+            return None
+
+        for inferred in result.get("inferred", []):
+            if (inferred.get("room") or "").strip() == event.room:
+                member_name = (inferred.get("member") or "").strip()
+                if not member_name:
+                    continue
+                confidence = float(inferred.get("confidence") or 0.7)
+                member_id = next(
+                    (m.get("id") for m in roster if m.get("name") == member_name),
+                    None,
+                )
+                new_persons = [{
+                    "name": member_name,
+                    "via": "presence_fusion",
+                    "match_confidence": confidence,
+                    "member_id": member_id,
+                    "detail": {
+                        "reason": inferred.get("reason", ""),
+                        "method": inferred.get("method", "elimination"),
+                        "edge_kind": event.kind,
+                    },
+                }]
+                store.update_behavior_event_persons(behavior_event_id, new_persons)
+                logger.info(
+                    "identity_resolve: face_unknown@%s 裁决为 %s (conf=%.2f)",
+                    event.room, member_name, confidence,
+                )
+                return member_name
+    except Exception as exc:
+        logger.warning(
+            "identity_resolve_unknown 失败 kind=%s room=%s: %s",
+            event.kind, event.room, exc,
+        )
+    return None

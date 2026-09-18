@@ -196,3 +196,85 @@ def test_gate_fail_closed_on_store_error():
     )
     # 落库失败返回 0 且不抛异常
     assert pi.gate_promote_to_behavior(BadStore(), ev) == 0
+
+
+# ── Phase 1.2 · Identity 层：face_unknown 即时裁决 ──────────────────────────
+
+class _FakeStore:
+    """Mock store：roster + occupancy + 捕获 update 调用。"""
+    def __init__(self, roster, occupancy):
+        self._roster = roster
+        self._occupancy = occupancy
+        self.updated = []
+    def list_members(self):
+        return self._roster
+    def recent_occupancy(self, since):
+        return self._occupancy
+    def update_behavior_event_persons(self, event_id, persons, via=None):
+        self.updated.append((event_id, persons))
+
+
+def test_identity_resolves_unknown_by_elimination():
+    """客厅陌生人 + 名册消除法等式成立 → 裁决为缺席成员。"""
+    roster = [
+        {"id": "m1", "name": "lidicn"},
+        {"id": "m2", "name": "凯文"},
+        {"id": "m3", "name": "Emily"},
+    ]
+    # 客厅 count=1，无已识别 → unknown=1；其他房间无事件
+    # known_present=0, absent=3, unknown=1 → 等式不成立（1 != 3）
+    # 需要让等式成立：lidicn 在其他房间，unknown=1, absent=1
+    occupancy = [
+        {"room": "书房", "persons": ["lidicn"], "count": 1},
+        {"room": "客厅", "persons": [], "count": 1},  # 刚写的 face_unknown
+    ]
+    store = _FakeStore(roster, occupancy)
+    ev = pi.PerceptionEvent(source="edge_ai", kind="face_unknown", room="客厅",
+                            server_ts="2026-09-18T20:00:00")
+    result = pi.identity_resolve_unknown(store, ev, 999)
+    # 等式：unknown=1, absent=2（凯文+Emily）→ 1 != 2 → inconclusive
+    # 调整：让 absent=1（凯文/Emily 中一个被识别在其他房间）
+    occupancy2 = [
+        {"room": "主卧", "persons": ["lidicn", "Emily"], "count": 2},
+        {"room": "客厅", "persons": [], "count": 1},
+    ]
+    store2 = _FakeStore(roster, occupancy2)
+    result2 = pi.identity_resolve_unknown(store2, ev, 1000)
+    # known={lidicn,Emily}, absent={凯文}, unknown=1 → 等式成立 → 裁决凯文
+    assert result2 == "凯文", f"got {result2}"
+    assert len(store2.updated) == 1
+    eid, persons = store2.updated[0]
+    assert eid == 1000
+    assert persons[0]["name"] == "凯文"
+    assert persons[0]["via"] == "presence_fusion"
+    assert persons[0]["member_id"] == "m2"
+
+
+def test_identity_skips_when_equation_fails():
+    """等式不成立 → 不裁决，保持陌生人。"""
+    roster = [{"id": "m1", "name": "lidicn"}, {"id": "m2", "name": "凯文"}]
+    occupancy = [
+        {"room": "客厅", "persons": [], "count": 2},  # unknown=2
+    ]
+    store = _FakeStore(roster, occupancy)
+    ev = pi.PerceptionEvent(source="edge_ai", kind="face_unknown", room="客厅",
+                            server_ts="2026-09-18T20:00:00")
+    result = pi.identity_resolve_unknown(store, ev, 1001)
+    assert result is None
+    assert store.updated == []
+
+
+def test_identity_skips_known_face():
+    """face_known 不触发 Identity 裁决。"""
+    store = _FakeStore([], [])
+    ev = pi.PerceptionEvent(source="edge_ai", kind="face_known", room="客厅",
+                            server_ts="2026-09-18T20:00:00")
+    assert pi.identity_resolve_unknown(store, ev, 1) is None
+    assert store.updated == []
+
+
+def test_identity_skips_when_no_room():
+    store = _FakeStore([], [])
+    ev = pi.PerceptionEvent(source="edge_ai", kind="face_unknown", room=None,
+                            server_ts="2026-09-18T20:00:00")
+    assert pi.identity_resolve_unknown(store, ev, 1) is None
