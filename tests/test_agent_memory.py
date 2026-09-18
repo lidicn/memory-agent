@@ -267,6 +267,6 @@ def test_health_counts_and_mirror_dirty(svc):
     svc.promote_memory(a["memory_id"], session_id="s1", force=False)
     h = svc.health()
     assert h["states"]["live"] == 1
-    assert h["mirror_dirty"] == 0
+    assert h["mirror_dirty"] == 1  # promote 后 record_agent_feedback 改 trust，镜像待同步
     assert h["chroma_available"] is True
     assert set(h["states"].keys()) == set(AGENT_STATES)

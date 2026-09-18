@@ -3359,7 +3359,7 @@ class Store:
         conn = self.connect()
         with self._lock:
             conn.execute(
-                "UPDATE agent_memories SET valid_to=?, updated_at=? WHERE memory_id=?",
+                "UPDATE agent_memories SET valid_to=?, updated_at=?, mirror_dirty=1 WHERE memory_id=?",
                 (valid_to, now_local(self.tz_offset_hours).isoformat(sep="T"), memory_id),
             )
             conn.commit()
@@ -3507,7 +3507,7 @@ class Store:
         conn = self.connect()
         with self._lock:
             cur = conn.execute(
-                """UPDATE agent_memories SET state='revoked', updated_at=?
+                """UPDATE agent_memories SET state='revoked', updated_at=?, mirror_dirty=1
                    WHERE state IN ('staging','live','pending_review')
                    AND expires_at < ?""",
                 (now_local(self.tz_offset_hours).isoformat(timespec="seconds"), today),
@@ -3540,7 +3540,7 @@ class Store:
         with self._lock:
             conn.execute(
                 """UPDATE agent_memories SET feedback_up=?, feedback_down=?,
-                   trust=?, expires_at=?, updated_at=? WHERE memory_id=?""",
+                   trust=?, expires_at=?, updated_at=?, mirror_dirty=1 WHERE memory_id=?""",
                 (up, down, trust, expires_at, now.isoformat(timespec="seconds"), memory_id),
             )
             conn.commit()

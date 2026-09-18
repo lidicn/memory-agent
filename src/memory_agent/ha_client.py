@@ -162,25 +162,33 @@ class HAClient:
         try:
             from datetime import datetime, timedelta
             
-            # 解析start_time
+            # 解析start_time，统一转成 aware-UTC 发给 HA（HA 端点按 UTC 解释）
+            # 修复（审计 P1-17）：原代码去掉时区发 naive 本地时间，HA 按 UTC 解释导致
+            # 查询窗口偏移 8 小时，返回 0 条但水位仍前进 → 事件永久丢失
+            tz_offset = getattr(self.config, 'tz_offset_hours', 8)
+            from datetime import timezone, timedelta as _td
+            local_tz = timezone(_td(hours=tz_offset))
             try:
                 start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                if hasattr(start_dt, 'tzinfo') and start_dt.tzinfo:
-                    start_dt = start_dt.replace(tzinfo=None)
+                if start_dt.tzinfo is None:
+                    # naive 时间假设为本地时间，加上本地时区后转 UTC
+                    start_dt = start_dt.replace(tzinfo=local_tz)
+                start_dt = start_dt.astimezone(timezone.utc).replace(tzinfo=None)
             except Exception:
-                start_dt = datetime.now() - timedelta(hours=1)
-            
-            # 解析end_time（如果提供）
+                start_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
+
+            # 解析end_time（如果提供），同样转 UTC
             if end_time:
                 try:
                     end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
-                    if hasattr(end_dt, 'tzinfo') and end_dt.tzinfo:
-                        end_dt = end_dt.replace(tzinfo=None)
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=local_tz)
+                    end_dt = end_dt.astimezone(timezone.utc).replace(tzinfo=None)
                 except Exception:
                     end_dt = start_dt + timedelta(days=1)
             else:
                 end_dt = start_dt + timedelta(days=1)
-            
+
             safe_start = start_dt.isoformat()
 
             with httpx.Client() as client:
