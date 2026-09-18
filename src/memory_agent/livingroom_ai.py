@@ -43,12 +43,18 @@ class LivingRoomAIIngest:
         room_keywords: Optional[list[str]] = None,
         interval_seconds: int = 10,
         announcer: Optional[Announcer] = None,
+        vision: Any = None,
+        omni_enabled: bool = False,
     ) -> None:
         self.ha = ha_client
         self.store = store
         self.room_keywords = room_keywords or ["客厅"]
         self.interval_seconds = max(1, int(interval_seconds))
         self.announcer = announcer
+        # Phase 1.3 Omni 层：事件驱动补语义。默认关，启用后 cry/baby_woke/pet
+        # 等「需要在干嘛」的语义事件会触发一次 VLM analyze_room（复用现有冷却门控）。
+        self.vision = vision
+        self.omni_enabled = bool(omni_enabled)
         self._entity_ids: list[str] = []
         self._entity_rooms: dict[str, str] = {}
         self._seen: dict[str, Optional[str]] = {}
@@ -159,6 +165,17 @@ class LivingRoomAIIngest:
                 # Phase 1.2 Identity 层：face_unknown 即时裁决（名册消除法）
                 if bid and ev.kind == "face_unknown":
                     pi.identity_resolve_unknown(self.store, ev, bid)
+                # Phase 1.3 Omni 层：事件驱动补语义。cry/baby_woke/pet 等
+                # 「需要在干嘛」的语义事件触发一次 VLM analyze_room（复用冷却门控，
+                # 冷却内自动 skipped；face_* 已由 Gate/Identity 覆盖，不重复触发）。
+                if (self.omni_enabled and self.vision is not None
+                        and ev.kind in ("cry", "baby_woke", "pet") and ev.room):
+                    try:
+                        res = self.vision.analyze_room(ev.room, trigger="omni")
+                        if res.get("skipped"):
+                            logger.debug("Omni %s@%s 冷却/门控拦截", ev.kind, ev.room)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Omni analyze_room 异常: %s", exc)
                 # Phase 0.4 主动播报闭环：人脸/看护类事件经 doubao_tts 播报
                 if self.announcer is not None and ev.kind in pi.ANNOUNCE_KINDS:
                     self.announcer.announce(ev)

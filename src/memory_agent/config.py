@@ -133,6 +133,7 @@ class Config:
     # ── 主动感知 v2.0 · 客厅盒侧 AI 事件接入（Phase 0.1）──────────────────────
     livingroom_ai_enabled: bool = True                # 客厅盒侧 AI 事件轮询总开关
     livingroom_ai_interval_seconds: int = 10          # 轮询间隔（秒，默认 10s）
+    livingroom_ai_omni_enabled: bool = False          # Phase 1.3 Omni 层：事件驱动 VLM 补语义（默认关）
 
     # ── 主动感知 v2.0 · 感知事件记录（Phase 0.4；语音播报已决策不做）────────────
     # 决策（2026-09-17）：人脸识别不稳定不可靠，**不做语音播报**（避免错误打扰），

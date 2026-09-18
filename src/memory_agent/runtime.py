@@ -185,6 +185,8 @@ class AppRuntime:
             self.ha, self.store,
             interval_seconds=getattr(self.config, "livingroom_ai_interval_seconds", 10),
             announcer=announcer,
+            vision=self.vision,
+            omni_enabled=getattr(self.config, "livingroom_ai_omni_enabled", False),
         )
         self._livingroom_ai_task = asyncio.create_task(self._periodic_livingroom_ai())
 
