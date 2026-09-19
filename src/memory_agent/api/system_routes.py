@@ -104,10 +104,22 @@ async def check_update(request: Request):
 
 
 async def apply_update(request: Request):
-    """拉取最新代码并重启（管理员）。"""
+    """拉取最新代码并重启（管理员）。
+
+    WO-MA-001 / 审计 P0-10：容器内可写仓库挂载已摘除，在线更新统一走
+    宿主机 deploy_nas.sh。本端点检测到 REPO_DIR 不可写时返回结构化停用错误，
+    而不是抛 500 / traceback。
+    """
     user, err = require_admin(request)
     if err:
         return err
+    # 前置检查：REPO_DIR 必须存在且可写，否则在线更新已停用
+    if not os.path.isdir(REPO_DIR) or not os.access(REPO_DIR, os.W_OK):
+        return JSONResponse({
+            "ok": False,
+            "error": "在线更新已停用，请用宿主 deploy_nas.sh",
+            "detail": f"REPO_DIR={REPO_DIR} 不存在或不可写（WO-MA-001 / 审计 P0-10）",
+        }, status_code=503)
     try:
         cfg = get_config()
     except Exception as exc:

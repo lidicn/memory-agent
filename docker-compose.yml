@@ -39,11 +39,10 @@ services:
       BUTLER_TOKEN: "${BUTLER_TOKEN:-}"
       PYTHONPATH: "/app/src"
     volumes:
-      - ./src:/app/src
+      - ./src:/app/src:ro
       - ./data:/data
       - ./.env:/app/.env:ro
-      # 在线更新：把宿主机仓库根挂入容器，使容器内 git 能更新绑定挂载的 ./src
-      - .:/repo:rw
+      # 在线更新已停用：改由宿主 deploy_nas.sh 承担（WO-MA-001 / 审计 P0-10）
     depends_on:
       - redis
       - chroma
@@ -75,8 +74,8 @@ services:
     image: docker.m.daocloud.io/chromadb/chroma:0.5.23
     container_name: memory-chroma
     restart: unless-stopped
-    ports:
-      - "8082:8000"
+    # 端口已摘除：chroma 明文向量库无鉴权，只走 compose 内部网络
+    # MA 主服务经 chroma:8000 访问（WO-MA-001 / 审计 P0-10）
     volumes:
       - chroma_data:/data
 

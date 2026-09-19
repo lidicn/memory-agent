@@ -1,0 +1,45 @@
+# WO-MA-001 / 审计 P0-10 ④：防止凭据和敏感数据进镜像层
+
+# 数据与配置（含令牌、密钥）
+data/
+.env
+.env.*
+config.json
+*.sqlite
+*.db
+
+# 含摄像头口令的测试脚本和临时文件
+scripts/*token*
+scripts/*secret*
+scripts/*debug*
+tmp/
+*.tmp
+*.bak
+
+# Git
+.git/
+.gitignore
+.github/
+
+# 文档与工单（不需要进镜像）
+docs/
+doc/
+*.md
+!README.md
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 门禁基线（不需要进镜像）
+.gates.toml
+.gates-baseline.txt

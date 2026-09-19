@@ -17,8 +17,12 @@ RUN pip install --no-cache-dir "chromadb==0.5.23" httpx bcrypt "python-jose[cryp
 # 预下载chromadb ONNX嵌入模型（避免首次运行时超时）
 RUN python -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; ef = DefaultEmbeddingFunction(); ef(['warmup'])" || true
 
-# 创建数据目录
-RUN mkdir -p /data/exports /data/templates /data/imported /data/skills
+# 创建数据目录并赋予非 root 用户权限（WO-MA-001 / 审计 P0-10）
+RUN mkdir -p /data/exports /data/templates /data/imported /data/skills \
+    && chown -R 10001:10001 /data /app
+
+# 非 root 用户运行：root 容器 + rw 宿主挂载是同一问题的两半
+USER 10001:10001
 
 EXPOSE 8000
 
