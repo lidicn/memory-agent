@@ -342,12 +342,16 @@ async def acp_handle(
 
     if method == M_SESSION_HISTORY:
         sid = params.get("sessionId")
-        if not sid or sid not in _CONV:
-            return make_error(req_id, ERR_SESSION_NOT_FOUND, "session 不存在"), None
-        # P0-9 修复：会话属主校验
+        if not sid:
+            return make_error(req_id, ERR_INVALID_PARAMS, "缺少 sessionId"), None
+        # P0-9 修复：先查会话存储+属主校验，再查 _CONV（新会话无历史不能短路属主校验）
         _meta = _STORE.get(sid)
-        if _owner and _meta and _meta.get("owner_token") != _owner:
+        if not _meta:
+            return make_error(req_id, ERR_SESSION_NOT_FOUND, "session 不存在"), None
+        if _owner and _meta.get("owner_token") != _owner:
             return make_error(req_id, ERR_INVALID_PARAMS, "无权访问该会话（属主不匹配）"), None
+        if sid not in _CONV:
+            return make_error(req_id, ERR_SESSION_NOT_FOUND, "session 无对话历史"), None
         return (
             make_response(req_id, {"sessionId": sid, "messages": _CONV.get(sid, [])}),
             None,
