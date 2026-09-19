@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 
+import secrets
 from starlette.requests import Request
 from starlette.routing import Route
 
@@ -26,7 +27,7 @@ def _check_device_token(request: Request) -> bool:
     if not token:
         return False
     auth = request.headers.get("authorization", "")
-    return auth == f"Bearer {token}"
+    return secrets.compare_digest(auth, f"Bearer {token}")
 
 
 def _unmask_or_none(value) -> str | None:

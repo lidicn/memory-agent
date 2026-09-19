@@ -1656,7 +1656,7 @@ def _build_server():
         """把一条 staging 记忆晋升为 live（参与检索）。
 
         - 普通会话需满足晋升条件：(a) 提供佐证 insight_id 且高置信，或 (b) 跨 N 天反复观测。
-        - force=True 仅限 config.privileged_sessions 中的会话，可强推（绕过护栏，慎用）。
+        - force=True 仅限 Web 端人工复核（human_override），MCP 调用方不可 force（WO-MA-002/P0-5）。
         - 晋升前自动做矛盾/重复检测：重复禁止晋升，冲突挂起 pending_review。
         """
         rt = get_runtime()

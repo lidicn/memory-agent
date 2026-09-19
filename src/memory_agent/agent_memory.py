@@ -381,11 +381,12 @@ class AgentMemoryService:
         if mem["state"] == "live":
             return {"ok": True, "state": "live", "message": "已是 live"}
 
-        # 安全闸门:force 仅限特权会话(自动化 agent 不可私自放量)。
-        # human_override 仅由 Web 端人工复核触发(已通过 require_user)。
-        privileged = session_id in (getattr(self.config, "privileged_sessions", []) or [])
-        if force and not privileged and not human_override:
-            return {"ok": False, "error": "force=True 仅限特权会话（config.privileged_sessions）"}
+        # 安全闸门（WO-MA-002 / P0-5 修复）：force=True 仅限 human_override。
+        # human_override 仅由 Web 端人工复核触发(已通过 require_user)，硬编码为 True。
+        # 已移除 privileged_sessions 机制：session_id 由调用方自报，填特权 id 即绕过护栏，
+        # 属于「身份由调用方自报」根因。MCP/API 调用方不能 force，只能走正常晋升条件。
+        if force and not human_override:
+            return {"ok": False, "error": "force=True 仅限 Web 端人工复核（human_override），MCP/API 调用方不可 force"}
 
         if not force:
             # 护栏永远优先于"条件达标"：重复 / 矛盾无论是否满足晋升条件都不应进 live。

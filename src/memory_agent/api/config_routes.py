@@ -129,6 +129,15 @@ def _find_saved_backend(saved_list, incoming) -> dict | None:
     return None
 
 
+# P0-7 修复：测试连接返回值脱敏，移除 api_key/secret/token 等敏感字段
+_SENSITIVE_KEYS = {"api_key", "apikey", "secret", "token", "password", "authorization"}
+
+def _sanitize_backend(b: dict) -> dict:
+    if not isinstance(b, dict):
+        return b
+    return {k: ("***" if k.lower() in _SENSITIVE_KEYS else v) for k, v in b.items()}
+
+
 async def get_config_api(request: Request):
     _, err = require_user(request)
     if err:
@@ -305,12 +314,12 @@ async def test_connection(request: Request):
                             f"（主模型 {result.get('model')}）"
                         ),
                         "endpoint": result.get("endpoint"),
-                        "backends": backends,
+                        "backends": [_sanitize_backend(b) for b in backends],
                     }
                 )
             return error(
                 f"LLM 代理池不可用：{ok_count}/{len(backends)} 个后端连通",
-                extra={"backends": backends},
+                extra={"backends": [_sanitize_backend(b) for b in backends]},
             )
 
         if conn_type == "llm_backend":
@@ -330,10 +339,10 @@ async def test_connection(request: Request):
                     {
                         "message": f"连接成功（{r.get('model')}）",
                         "endpoint": r.get("endpoint"),
-                        "backend": r,
+                        "backend": _sanitize_backend(r),
                     }
                 )
-            return error(r.get("error", "连接失败"), extra={"backend": r})
+            return error(r.get("error", "连接失败"), extra={"backend": _sanitize_backend(r)})
 
         if conn_type == "chroma":
             # 只 ping 一下说明不了「向量库真的在工作」，跑一次写入→检索→清理的往返
