@@ -94,19 +94,19 @@ def _mask_backends(backends) -> list:
 
 
 def _restore_backend_keys(new_list, old_list) -> list:
-    """前端回传的代理池里，未改动的 api_key 是掩码占位，需从原存储恢复真实值。"""
+    """前端回传的代理池里，未改动的 api_key 是掩码占位，需从原存储恢复真实值。
+    P0-8 修复：按身份（name+model+api_url）匹配，而非按位置索引（前端列表顺序可能打乱，
+    按位置回填会导致 A 的掩码 key 被还原成 B 的真实 key，进而 401 或越权）。"""
     old_list = old_list or []
     out = []
-    for i, b in enumerate(new_list or []):
+    for b in (new_list or []):
         if not isinstance(b, dict):
             continue
         b = dict(b)
         key = b.get("api_key", "")
         if _is_masked(key):
-            if i < len(old_list) and isinstance(old_list[i], dict):
-                b["api_key"] = old_list[i].get("api_key", "")
-            else:
-                b["api_key"] = ""
+            saved = _find_saved_backend(old_list, b)
+            b["api_key"] = saved.get("api_key", "") if saved else ""
         out.append(b)
     return out
 
