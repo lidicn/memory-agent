@@ -71,14 +71,14 @@ class SessionStore:
         self._sessions: dict[str, dict] = {}
         self._max = max_sessions
 
-    def new(self, session_id: Optional[str] = None) -> str:
+    def new(self, session_id: Optional[str] = None, owner_token: str = "") -> str:
         sid = session_id or f"acp_{uuid.uuid4().hex}"
-        self._sessions[sid] = {"run_id": None, "created_at": time.time()}
+        self._sessions[sid] = {"run_id": None, "created_at": time.time(), "owner_token": owner_token}
         self._trim()
         return sid
 
-    def bind(self, sid: str, run_id: str) -> None:
-        self._sessions.setdefault(sid, {"run_id": None, "created_at": time.time()})
+    def bind(self, sid: str, run_id: str, owner_token: str = "") -> None:
+        self._sessions.setdefault(sid, {"run_id": None, "created_at": time.time(), "owner_token": owner_token})
         self._sessions[sid]["run_id"] = run_id
 
     def get(self, sid: str) -> Optional[dict]:
@@ -88,12 +88,14 @@ class SessionStore:
         self._sessions.pop(sid, None)
         _CONV.pop(sid, None)
 
-    def list(self) -> list[dict]:
+    def list(self, owner_token: str = "") -> list[dict]:
+        # P0-9 修复：只返回当前 owner 的会话
+        items = self._sessions.items()
+        if owner_token:
+            items = [(s, m) for s, m in items if m.get("owner_token") == owner_token]
         return [
             {"sessionId": s, **meta}
-            for s, meta in sorted(
-                self._sessions.items(), key=lambda kv: kv[1].get("created_at", 0)
-            )
+            for s, meta in sorted(items, key=lambda kv: kv[1].get("created_at", 0))
         ]
 
     def _trim(self) -> None:
@@ -300,8 +302,13 @@ def _extract_instruction(params: dict) -> str:
 
 # ── 分发 ───────────────────────────────────────────────────────────────
 async def acp_handle(
-    rt: Any, payload: dict
+    rt: Any, payload: dict, scope: dict | None = None
 ) -> tuple[Optional[dict], Optional[AsyncIterator]]:
+    # P0-1 修复：scope 从参数传入，不再引用未定义变量
+    # P0-9 修复：从 scope 获取当前令牌名，用于会话属主绑定
+    _owner = ""
+    if scope and isinstance(scope.get("state"), dict):
+        _owner = scope["state"].get("acp_token_name", "") or ""
     """解析 JSON-RPC，返回 (json 响应 dict | None, SSE 生成器 | None)。"""
     method = payload.get("method")
     req_id = payload.get("id")
@@ -327,16 +334,20 @@ async def acp_handle(
         ), None
 
     if method == M_SESSION_NEW:
-        sid = _STORE.new(params.get("sessionId"))
+        sid = _STORE.new(params.get("sessionId"), owner_token=_owner)
         return make_response(req_id, {"sessionId": sid}), None
 
     if method == M_SESSION_LIST:
-        return make_response(req_id, {"sessions": _STORE.list()}), None
+        return make_response(req_id, {"sessions": _STORE.list(owner_token=_owner)}), None
 
     if method == M_SESSION_HISTORY:
         sid = params.get("sessionId")
         if not sid or sid not in _CONV:
             return make_error(req_id, ERR_SESSION_NOT_FOUND, "session 不存在"), None
+        # P0-9 修复：会话属主校验
+        _meta = _STORE.get(sid)
+        if _owner and _meta and _meta.get("owner_token") != _owner:
+            return make_error(req_id, ERR_INVALID_PARAMS, "无权访问该会话（属主不匹配）"), None
         return (
             make_response(req_id, {"sessionId": sid, "messages": _CONV.get(sid, [])}),
             None,
@@ -346,6 +357,10 @@ async def acp_handle(
         sid = params.get("sessionId")
         if not sid:
             return make_error(req_id, ERR_INVALID_PARAMS, "缺少 sessionId"), None
+        # P0-9 修复：会话属主校验
+        _meta = _STORE.get(sid)
+        if _owner and _meta and _meta.get("owner_token") != _owner:
+            return make_error(req_id, ERR_INVALID_PARAMS, "无权删除该会话（属主不匹配）"), None
         _STORE.delete(sid)
         return make_response(req_id, {"sessionId": sid, "deleted": True}), None
 
@@ -357,6 +372,9 @@ async def acp_handle(
                 make_error(req_id, ERR_SESSION_NOT_FOUND, "session 无进行中的任务"),
                 None,
             )
+        # P0-9 修复：会话属主校验
+        if _owner and meta.get("owner_token") != _owner:
+            return make_error(req_id, ERR_INVALID_PARAMS, "无权取消该会话（属主不匹配）"), None
         run = _RUNS.get(meta["run_id"])
         if run is not None:
             run.abort()
@@ -390,7 +408,7 @@ async def acp_handle(
             temperature=None,
         )
         _register(run)
-        _STORE.bind(session_id, run.run_id)
+        _STORE.bind(session_id, run.run_id, owner_token=_owner)
         asyncio.create_task(
             _execute_run(
                 rt, run,
@@ -485,7 +503,7 @@ async def acp_dispatcher(scope, receive, send) -> None:
         await resp(scope, receive, send)
         return
 
-    json_resp, sse_gen = await acp_handle(rt, body)
+    json_resp, sse_gen = await acp_handle(rt, body, scope)
     if sse_gen is not None:
         resp: Response = StreamingResponse(
             sse_gen, media_type="text/event-stream", headers=NO_BUFFER_HEADERS
