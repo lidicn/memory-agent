@@ -166,7 +166,6 @@ class Config:
     ha_db_query_timeout: int = 30     # 单条查询读超时（秒）
 
     # ── Agent 记忆（参与式写回向量库）阈值 ─────────────────────────────────
-    privileged_sessions: List[str] = field(default_factory=list)  # [DEPRECATED WO-MA-002/P0-5] 不再生效，force 仅限 Web 端 human_override
     agent_promote_min_days: int = 2          # 跨 N 天反复观测才自动晋升（主路径 (b) 备选）
     agent_trust_step: float = 0.2            # feedback 单次信任分增减
     trust_strict_threshold: float = -0.3     # 低于此值的 session 记忆锁自动晋升

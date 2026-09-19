@@ -406,7 +406,7 @@ category 可选 sleep / diet / activity / media / hygiene / other。**仅当用�
     get_session_trust(session_id="mcp")   # 看会话声誉：avg_trust / live 占比
 
 晋升前自动做矛盾/重复检测：重复禁止晋升，冲突挂起 pending_review。
-普通会话需满足：提供高置信佐证 insight_id，或跨 N 天反复观测。force=True 强推仅限 privileged_sessions 白名单会话。`,
+普通会话需满足：提供高置信佐证 insight_id，或跨 N 天反复观测。force=True 强推仅限 Web 端人工复核（human_override），MCP/API 调用方不可 force。`,
   },
   {
     c: 'memory',

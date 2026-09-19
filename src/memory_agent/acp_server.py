@@ -88,6 +88,16 @@ class SessionStore:
         self._sessions.pop(sid, None)
         _CONV.pop(sid, None)
 
+    def check_owner(self, sid: str, owner_token: str) -> bool:
+        """P0-9 owner check: if owner_token non-empty, session owner must match.
+        Centralized helper to avoid drift across history/delete/cancel."""
+        if not owner_token:
+            return True
+        meta = self.get(sid)
+        if meta is None:
+            return False
+        return meta.get("owner_token") == owner_token
+
     def list(self, owner_token: str = "") -> list[dict]:
         # P0-9 修复：只返回当前 owner 的会话
         items = self._sessions.items()
@@ -348,7 +358,7 @@ async def acp_handle(
         _meta = _STORE.get(sid)
         if not _meta:
             return make_error(req_id, ERR_SESSION_NOT_FOUND, "session 不存在"), None
-        if _owner and _meta.get("owner_token") != _owner:
+        if not _STORE.check_owner(sid, _owner):
             return make_error(req_id, ERR_INVALID_PARAMS, "无权访问该会话（属主不匹配）"), None
         if sid not in _CONV:
             return make_error(req_id, ERR_SESSION_NOT_FOUND, "session 无对话历史"), None
@@ -361,9 +371,8 @@ async def acp_handle(
         sid = params.get("sessionId")
         if not sid:
             return make_error(req_id, ERR_INVALID_PARAMS, "缺少 sessionId"), None
-        # P0-9 修复：会话属主校验
-        _meta = _STORE.get(sid)
-        if _owner and _meta and _meta.get("owner_token") != _owner:
+        # P0-9 owner check (centralized helper)
+        if not _STORE.check_owner(sid, _owner):
             return make_error(req_id, ERR_INVALID_PARAMS, "无权删除该会话（属主不匹配）"), None
         _STORE.delete(sid)
         return make_response(req_id, {"sessionId": sid, "deleted": True}), None
@@ -376,8 +385,8 @@ async def acp_handle(
                 make_error(req_id, ERR_SESSION_NOT_FOUND, "session 无进行中的任务"),
                 None,
             )
-        # P0-9 修复：会话属主校验
-        if _owner and meta.get("owner_token") != _owner:
+        # P0-9 owner check (centralized helper)
+        if not _STORE.check_owner(sid, _owner):
             return make_error(req_id, ERR_INVALID_PARAMS, "无权取消该会话（属主不匹配）"), None
         run = _RUNS.get(meta["run_id"])
         if run is not None:
