@@ -1,0 +1,66 @@
+# 质量门禁 CI —— 复制到 `.github/workflows/gates.yml`
+#
+# 适用：memory-agent、autoflow（有 GitHub remote 的两家）。
+# AutoForge / doubao-butler 没有 remote，请用同目录的 `gates.sh` 挂本地/pre-commit。
+#
+# 两段分工，别混：
+#   AST 门禁   —— runner 自带解释器就够（它不 import 被扫代码，只 parse）。
+#   import 冒烟 —— **必须在部署镜像里跑**，否则第三方依赖没装齐会整片假红。
+#                  见 README 第三节。这里用 docker 步显式做，且在镜像里另建 job。
+
+name: quality-gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # 改成本仓 `.gates.toml` 里的 smoke_targets（空格分隔）。
+  # 这一行是下面那个 job 的唯一自定义点，两处必须一致，否则门禁口径分裂。
+  SMOKE_TARGETS: memory_agent memory_agent.acp_server memory_agent.mcp_server
+
+jobs:
+  ast-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # homesdk 目前走「仓库相邻目录 editable 安装」。
+      # 出 wheel 后改成：pip install homesdk==0.1.0 （私有 index / artifact）
+      - name: Install homesdk (gates tooling)
+        run: |
+          git clone --depth 1 https://github.com/lidicn/homesdk.git "$HOME/homesdk"
+          pip install -e "$HOME/homesdk"
+
+      - name: AST gates (no smoke)
+        run: homesdk-gates . --no-smoke
+
+      # 基线只准减少：这里再跑一次全量口径，把净变化打进日志，方便评审直接引用。
+      - name: Full tally (informational)
+        if: always()
+        continue-on-error: true
+        run: homesdk-gates . --no-baseline --no-smoke --quiet
+
+  smoke-gates:
+    # 冒烟在镜像里跑：装齐依赖之后，这条红才配当结论。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t gates-smoke:${{ github.sha }} .
+
+      - name: import smoke inside image
+        run: |
+          set -e
+          for mod in $SMOKE_TARGETS; do
+            echo "── import $mod"
+            docker run --rm --entrypoint python gates-smoke:${{ github.sha }} -c "import $mod"
+          done
+
