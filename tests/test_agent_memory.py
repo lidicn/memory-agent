@@ -21,7 +21,6 @@ from memory_agent.agent_memory import AgentMemoryService, AGENT_STATES  # noqa: 
 class FakeConfig:
     """复刻 agent_memory.py 中 getattr 默认值的显式配置，行为可预测。"""
 
-    privileged_sessions = []
     agent_trust_step = 0.2
     trust_strict_threshold = -0.3
     agent_retrieve_k = 20

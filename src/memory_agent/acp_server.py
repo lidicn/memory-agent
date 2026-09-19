@@ -89,10 +89,12 @@ class SessionStore:
         _CONV.pop(sid, None)
 
     def check_owner(self, sid: str, owner_token: str) -> bool:
-        """P0-9 owner check: if owner_token non-empty, session owner must match.
-        Centralized helper to avoid drift across history/delete/cancel."""
+        """P0-9 owner check (fail-close): unknown/empty owner_token is DENIED.
+        Centralized helper to avoid drift across history/delete/cancel.
+       经 HTTP 入口时 acp_auth 只在 verify 成功后写 acp_token_name，故 _owner 非空；
+        此处 fail-close 是为了防止未来新增 dispatch 入口时默认静默跳过属主校验。"""
         if not owner_token:
-            return True
+            return False
         meta = self.get(sid)
         if meta is None:
             return False
@@ -379,15 +381,16 @@ async def acp_handle(
 
     if method == M_CANCEL:
         sid = params.get("sessionId")
+        # P0-9 owner check 必须在 run_id 查询之前：避免 B 通过不同错误码探测
+        # A 的会话是否有 in-flight run（跨 principal 运行态 oracle）。
+        if not _STORE.check_owner(sid, _owner):
+            return make_error(req_id, ERR_INVALID_PARAMS, "无权取消该会话（属主不匹配）"), None
         meta = _STORE.get(sid) if sid else None
         if not meta or not meta.get("run_id"):
             return (
                 make_error(req_id, ERR_SESSION_NOT_FOUND, "session 无进行中的任务"),
                 None,
             )
-        # P0-9 owner check (centralized helper)
-        if not _STORE.check_owner(sid, _owner):
-            return make_error(req_id, ERR_INVALID_PARAMS, "无权取消该会话（属主不匹配）"), None
         run = _RUNS.get(meta["run_id"])
         if run is not None:
             run.abort()
