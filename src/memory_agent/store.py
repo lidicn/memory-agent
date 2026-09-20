@@ -366,6 +366,13 @@ def _median_hhmm(values: list[str]) -> str | None:
 class Store:
     """行为事件与采集任务的统一存储。"""
 
+    @staticmethod
+    def _escape_like(s: str) -> str:
+        """P1-5: 转义 LIKE 通配符，防止 name/member_id 含 % 或 _ 时跨成员检索。
+        用法：WHERE col LIKE ? ESCAPE '\\'，参数用 f"%{_escape_like(name)}%"。"""
+        return (s or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
     def __init__(self, db_path: str = "/data/memory_agent.db", tz_offset_hours: float = 8.0):
         self.db_path = db_path
         self.tz_offset_hours = tz_offset_hours
@@ -2256,10 +2263,10 @@ class Store:
         try:
             rows = self.connect().execute(
                 "SELECT topic_key, valid_from, valid_to, text FROM agent_memories "
-                "WHERE tags_json LIKE ? AND topic_key LIKE 'habit:%' "
+                "WHERE tags_json LIKE ? ESCAPE '\\' AND topic_key LIKE 'habit:%' "
                 "AND state <> 'revoked' AND valid_from <> '' "
                 "ORDER BY valid_from ASC",
-                (f"%member:{name}%",),
+                (f"%member:{self._escape_like(name)}%",),
             ).fetchall()
         except Exception:
             return []
@@ -3567,10 +3574,10 @@ class Store:
         """
         import json as _json
         conn = self.connect()
-        keys = [f"member:{member_id}"]
+        keys = [f"member:{self._escape_like(member_id)}"]
         if member_name and member_name != member_id:
-            keys.append(f"member:{member_name}")
-        clause = " OR ".join(["tags_json LIKE ?"] * len(keys))
+            keys.append(f"member:{self._escape_like(member_name)}")
+        clause = " OR ".join(["tags_json LIKE ? ESCAPE '\\'"] * len(keys))
         rows = conn.execute(
             f"SELECT * FROM agent_memories WHERE ({clause}) ORDER BY updated_at DESC LIMIT ?",
             (*[f"%{k}%" for k in keys], limit),
