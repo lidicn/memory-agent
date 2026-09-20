@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from .store import now_local
@@ -29,6 +30,8 @@ def make_activity_id(activity: str, day: str, start_ts: str, end_ts: str, room: 
 
 
 class AgentMemoryService:
+    logger = logging.getLogger("memory_agent.agent_memory")
+
     def __init__(self, config, store, history):
         self.config = config
         self.store = store
@@ -55,6 +58,8 @@ class AgentMemoryService:
             "session_id": mem.get("session_id", ""),
             "memory_id": mem.get("memory_id", ""),
             "topic_key": mem.get("topic_key", ""),
+            # WO-MA-016: member_id 写入镜像 metadata，使向量路 where 过滤生效
+            "member_id": mem.get("member_id", ""),
         }
 
     def _upsert_mirror(self, mem: dict) -> None:
@@ -71,7 +76,8 @@ class AgentMemoryService:
             )
             self.store.mark_mirror_dirty(mem["memory_id"], 0)
         except Exception as exc:  # pragma: no cover - 网络/序列化异常
-            print(f"[AgentMemory] 镜像同步失败 {mem['memory_id']}: {exc}")
+            # WO-MA-016: 静默失败改可观测
+            self.logger.warning("镜像同步失败 %s: %s", mem.get("memory_id"), exc)
             self.store.mark_mirror_dirty(mem["memory_id"], 1)
 
     # ── 溯源校验（v2 #5 真溯源，非空即过 → 必须可解析）──────────────────
@@ -500,15 +506,17 @@ class AgentMemoryService:
 
         # 第一路：向量语义召回
         if col is not None:
-            where = {"state": "live"}
+            # WO-MA-016: 多键 where 必须用 $and（Chroma 要求 where 只能有一个 operator）
+            where_conditions = [{"state": "live"}]
             if trust_min is not None:
-                where["trust"] = {"$gte": trust_min}
+                where_conditions.append({"trust": {"$gte": trust_min}})
             # v0.5：按来源过滤（如只召回本服务原生记忆，或只召回管家生态记忆以隔离低置信摘要）
             if source:
-                where["source"] = source
+                where_conditions.append({"source": source})
             # WO-ADM-001 R-60：按成员归属过滤（butler 传 member_id 时只召回该成员的记忆）
             if member_id:
-                where["member_id"] = member_id
+                where_conditions.append({"member_id": member_id})
+            where = {"$and": where_conditions} if len(where_conditions) > 1 else where_conditions[0]
             try:
                 res = col.query(query_texts=[question], where=where, n_results=k)
                 ids = (res.get("ids") or [[]])[0]
@@ -530,7 +538,8 @@ class AgentMemoryService:
                         "fts": 0.0,
                     }
             except Exception as exc:  # pragma: no cover
-                print(f"[AgentMemory] 向量检索失败: {exc}")
+                # WO-MA-016: 静默失败改可观测
+                self.logger.warning("向量检索失败: %s", exc)
 
         # 第二路：FTS5 关键词召回（专名/设备名/房间名，向量语义易漏）
         try:

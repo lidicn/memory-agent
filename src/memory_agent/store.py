@@ -3551,7 +3551,7 @@ class Store:
             rows = conn.execute(
                 """
                 SELECT a.memory_id, a.text, a.topic_key, a.state, a.trust,
-                       a.source, a.tags_json, f.rank
+                       a.source, a.tags_json, a.member_id, f.rank
                 FROM (
                     SELECT rowid AS rid, bm25(agent_memories_fts) AS rank
                     FROM agent_memories_fts
