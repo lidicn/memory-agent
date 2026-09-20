@@ -120,8 +120,52 @@ def test_check_owner_fail_close():
         _STORE.delete(sid)
 
 
+def test_history_cross_owner_denied():
+    """异主体 → session/history 返回 -32602（属主不匹配）。"""
+    sid = "test_history_cross_owner"
+    owner_a = "owner_A_hist"
+    owner_b = "owner_B_hist"
+    _STORE.delete(sid)
+    try:
+        _STORE.new(sid, owner_token=owner_a)
+        scope = {"state": {"acp_token_name": owner_b}}
+        payload = {"jsonrpc": "2.0", "id": 101, "method": "session.history", "params": {"sessionId": sid}}
+        result, _ = asyncio.run(acp_handle(None, payload, scope))
+        assert result is not None
+        error = result.get("error")
+        assert error is not None, "异主体 history 应返回错误"
+        assert error.get("code") == ERR_INVALID_PARAMS, f"history 应返回 -32602，实际 {error.get('code')}"
+        print(f"PASS: history 异主体返回 {error.get('code')}")
+    finally:
+        _STORE.delete(sid)
+
+
+def test_delete_cross_owner_denied():
+    """异主体 → session/delete 返回 -32602（属主不匹配）。"""
+    sid = "test_delete_cross_owner"
+    owner_a = "owner_A_del"
+    owner_b = "owner_B_del"
+    _STORE.delete(sid)
+    try:
+        _STORE.new(sid, owner_token=owner_a)
+        scope = {"state": {"acp_token_name": owner_b}}
+        payload = {"jsonrpc": "2.0", "id": 102, "method": "session.delete", "params": {"sessionId": sid}}
+        result, _ = asyncio.run(acp_handle(None, payload, scope))
+        assert result is not None
+        error = result.get("error")
+        assert error is not None, "异主体 delete 应返回错误"
+        assert error.get("code") == ERR_INVALID_PARAMS, f"delete 应返回 -32602，实际 {error.get('code')}"
+        # 验证会话未被删除（异主体不应能删）
+        assert _STORE.get(sid) is not None, "异主体不应能删除会话"
+        print(f"PASS: delete 异主体返回 {error.get('code')}，会话未被删")
+    finally:
+        _STORE.delete(sid)
+
+
 if __name__ == "__main__":
     test_cancel_cross_owner_denied_before_run_id_check()
     test_cancel_same_owner_with_run_id_passes_owner_check()
     test_check_owner_fail_close()
-    print("\n3 passed")
+    test_history_cross_owner_denied()
+    test_delete_cross_owner_denied()
+    print("\n5 passed")
