@@ -422,6 +422,13 @@ class Store:
                     )
                 except Exception:
                     pass  # 列已存在
+            # WO-MA-005: 成员归属维度（隐私面），默认空=未归属
+            try:
+                conn.execute(
+                    "ALTER TABLE agent_memories ADD COLUMN member_id TEXT NOT NULL DEFAULT ''"
+                )
+            except Exception:
+                pass  # 列已存在
             # 主动感知 v2.0：perception_events 幂等键（event_id）
             # 旧表可能无 event_id 列，补齐后保证重复事件被 IGNORE
             # 修复（审计 P1-1）：SQLite 不支持在 ADD COLUMN 上加 UNIQUE 约束，
@@ -3320,6 +3327,7 @@ class Store:
         prev_id: str = "",
         valid_from: str = "",
         observed_at: str = "",
+        member_id: str = "",  # WO-MA-005: 成员归属
     ) -> str:
         now = now_local(self.tz_offset_hours)
         created_at = created_at or now.isoformat(timespec="seconds")
@@ -3338,13 +3346,13 @@ class Store:
                     source_refs_json, state, trust, ttl_days,
                     auto_promote_blocked, mirror_dirty, feedback_up,
                     feedback_down, created_at, updated_at, expires_at, prev_id,
-                    valid_from, valid_to, observed_at)
-                   VALUES (?,?,?,?,?,?,?,?,0,?,?,0,0,0,?,?,?,?,?,'',?)""",
+                    valid_from, valid_to, observed_at, member_id)
+                   VALUES (?,?,?,?,?,?,?,?,0,?,?,0,0,0,?,?,?,?,?,'',?,?)""",
                 (
                     memory_id, session_id, text, topic_key, source, tags_json,
                     source_refs_json, state, ttl_days, auto_promote_blocked,
                     created_at, created_at, expires_at, prev_id,
-                    valid_from, observed_at,
+                    valid_from, observed_at, member_id,
                 ),
             )
             conn.commit()
@@ -3436,27 +3444,30 @@ class Store:
             )
             conn.commit()
 
-    def list_agent_memories(self, state: str = "all", source: str = "", limit: int = 500) -> list:
+    def list_agent_memories(self, state: str = "all", source: str = "", limit: int = 500,
+                            member_id: str = "") -> list:
         conn = self.connect()
-        if state == "all" and not source:
+        # WO-MA-005: 成员归属过滤。member_id 非空时只返回该成员的记忆。
+        where_parts = []
+        params: list = []
+        if state != "all":
+            where_parts.append("state=?")
+            params.append(state)
+        if source:
+            where_parts.append("source=?")
+            params.append(source)
+        if member_id:
+            where_parts.append("member_id=?")
+            params.append(member_id)
+        if where_parts:
+            where_sql = "WHERE " + " AND ".join(where_parts)
             rows = conn.execute(
-                "SELECT * FROM agent_memories ORDER BY updated_at DESC LIMIT ?", (limit,)
-            ).fetchall()
-        elif state != "all" and not source:
-            rows = conn.execute(
-                "SELECT * FROM agent_memories WHERE state=? ORDER BY updated_at DESC LIMIT ?",
-                (state, limit),
-            ).fetchall()
-        elif state == "all" and source:
-            rows = conn.execute(
-                "SELECT * FROM agent_memories WHERE source=? ORDER BY updated_at DESC LIMIT ?",
-                (source, limit),
+                f"SELECT * FROM agent_memories {where_sql} ORDER BY updated_at DESC LIMIT ?",
+                (*params, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM agent_memories WHERE state=? AND source=? "
-                "ORDER BY updated_at DESC LIMIT ?",
-                (state, source, limit),
+                "SELECT * FROM agent_memories ORDER BY updated_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
 

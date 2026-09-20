@@ -142,6 +142,7 @@ class AgentMemoryService:
         merge: bool = True,
         valid_from: str = "",
         observed_at: str = "",
+        member_id: str = "",  # WO-MA-005: 成员归属
     ) -> dict:
         tags = tags or []
         source_refs = source_refs or []
@@ -184,6 +185,7 @@ class AgentMemoryService:
                 source_refs=source_refs, ttl_days=ttl_days, source=source,
                 trust=trust_info.get("trust", 0.0),
                 valid_from=valid_from, observed_at=observed_at,
+                member_id=member_id,
             )
 
         mid = self.store.add_agent_memory(
@@ -196,6 +198,7 @@ class AgentMemoryService:
             state="staging",
             auto_promote_blocked=auto_block,
             source=source,
+            member_id=member_id,
         )
         self._upsert_mirror(self.store.get_agent_memory(mid))
         return {
@@ -220,6 +223,7 @@ class AgentMemoryService:
         trust: float = 0.0,
         valid_from: str = "",
         observed_at: str = "",
+        member_id: str = "",  # WO-MA-005: 成员归属
     ) -> dict:
         """v0.8-2 mem0 式记忆操作：写入前向量近邻召回同 topic 旧记忆，按相似度分支。
 
@@ -254,6 +258,7 @@ class AgentMemoryService:
                 session_id=session_id, text=text, topic_key=tk,
                 tags_json=tags_json, source_refs_json=refs_json,
                 ttl_days=ttl_days, state="staging", source=source,
+                member_id=member_id,
             )
             return {"ok": True, "action": "added", "memory_id": mid, "state": "staging",
                     "similarity": 0.0, "source": source, "note": "chroma 不可用，未合并"}
@@ -285,6 +290,7 @@ class AgentMemoryService:
                 session_id=session_id, text=text, topic_key=tk,
                 tags_json=tags_json, source_refs_json=refs_json,
                 ttl_days=ttl_days, state="staging", source=source,
+                member_id=member_id,
             )
             self._upsert_mirror(self.store.get_agent_memory(mid))
             return {"ok": True, "action": "added", "memory_id": mid, "state": "staging",
@@ -303,7 +309,8 @@ class AgentMemoryService:
             mid = self.store.add_agent_memory(
                 session_id=session_id, text=text, topic_key=tk,
                 tags_json=tags_json, source_refs_json=refs_json,
-                ttl_days=ttl_days, state="pending_review", source=source)
+                ttl_days=ttl_days, state="pending_review", source=source,
+                member_id=member_id)
             self._upsert_mirror(self.store.get_agent_memory(mid))
             return {"ok": True, "action": "conflict_pending", "memory_id": mid,
                     "state": "pending_review", "conflict_with": nearest_id,
@@ -328,7 +335,8 @@ class AgentMemoryService:
             session_id=session_id, text=text, topic_key=tk,
             tags_json=tags_json, source_refs_json=refs_json,
             ttl_days=ttl_days, state="staging", source=source, prev_id=nearest_id,
-            valid_from=new_valid_from, observed_at=observed_at or new_valid_from)
+            valid_from=new_valid_from, observed_at=observed_at or new_valid_from,
+            member_id=member_id)
         self._upsert_mirror(self.store.get_agent_memory(mid))
         return {"ok": True, "action": "invalidated_added", "memory_id": mid,
                 "state": "staging", "invalidated": nearest_id,
@@ -439,12 +447,14 @@ class AgentMemoryService:
             return {"ok": False, "error": "memory_id 不存在"}
         return {"ok": True, **res}
 
-    def list_agent_memories(self, state: str = "all", source: str = "") -> dict:
-        rows = self.store.list_agent_memories(state, source)
+    def list_agent_memories(self, state: str = "all", source: str = "",
+                             member_id: str = "") -> dict:
+        rows = self.store.list_agent_memories(state, source, member_id=member_id)
         return {
             "ok": True,
             "state": state,
             "source": source or "all",
+            "member_id": member_id or "all",
             "count": len(rows),
             "memories": [
                 {
@@ -454,6 +464,7 @@ class AgentMemoryService:
                     "state": r["state"],
                     "trust": r["trust"],
                     "source": r.get("source", "ma"),
+                    "member_id": r.get("member_id", ""),
                     "topic_key": r["topic_key"],
                     "tags": json.loads(r["tags_json"] or "[]"),
                     "source_refs": json.loads(r["source_refs_json"] or "[]"),

@@ -17,7 +17,8 @@ _log = logging.getLogger("mcp.scopes")
 
 READ = "read"
 WRITE = "write"
-ALL_SCOPES = (READ, WRITE)
+ADMIN = "admin"  # WO-MA-005: 审计通道，可列全量记忆（含 revoked），需出证
+ALL_SCOPES = (READ, WRITE, ADMIN)
 DEFAULT_SCOPES = [READ]
 
 # 会改变系统状态的工具（写入库 / 改配置 / 触发采集 / 变更记忆状态）

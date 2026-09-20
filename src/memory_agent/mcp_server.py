@@ -1579,6 +1579,7 @@ def _build_server():
         topic_key: str = "",
         dry_run: bool = True,
         session_id: str = "mcp",
+        member_id: str = "",  # WO-MA-005: 成员归属
     ) -> dict:
         """把挖掘出的行为洞察写回向量库（Agent 参与式迭代）。
 
@@ -1591,7 +1592,8 @@ def _build_server():
         return await asyncio.to_thread(
             rt.agent_memory.add_semantic_memory,
             session_id, text, (tags or []), (source_refs or []),
-            (ttl_days or None), topic_key, dry_run,
+            (ttl_days or None), topic_key, dry_run, "ma", True, "", "",
+            member_id,
         )
 
     # ── 事件：最后关闭/打开时间 ─────────────────────────────────────────────
@@ -1684,10 +1686,41 @@ def _build_server():
         return await asyncio.to_thread(rt.agent_memory.feedback_memory, memory_id, useful)
 
     @mcp.tool()
-    async def list_agent_memories(state: str = "all") -> dict:
-        """审计视图：列出 agent 记忆（state=staging|live|revoked|pending_review|all）。"""
+    async def list_agent_memories(state: str = "live", member_id: str = "") -> dict:
+        """列出 agent 记忆（WO-MA-005 隐私面收窄）。
+
+        state: staging|live|revoked|pending_review|all，默认 live（revoked 永不经 MCP 返回）。
+        member_id: 成员归属过滤；非空时只返回该成员记忆。
+        不传 member_id 时：仅 admin scope 令牌可查全量（审计通道，需出证）；
+        普通 read/write 令牌必须传 member_id，否则拒绝。
+        """
         rt = get_runtime()
-        return await asyncio.to_thread(rt.agent_memory.list_agent_memories, state)
+        # WO-MA-005: 入口收窄——member_id 缺失时只允许 admin 审计通道
+        if not member_id:
+            _tok, _scopes, _origin = _caller_context()
+            if "admin" not in (_scopes or []):
+                return {
+                    "ok": False,
+                    "error": "member_id 缺失：普通令牌必须指定 member_id；全量查询需 admin scope",
+                    "code": 403,
+                }
+            # admin 审计通道出证：谁在什么时候列了全量记忆
+            try:
+                rt.store.log_mcp_audit(
+                    token_name=_tok, tool="list_agent_memories",
+                    scope="admin", duration_ms=0, ok=True,
+                    error="AUDIT: full member_id-less listing", origin=_origin,
+                )
+            except Exception:
+                pass  # 审计日志失败不阻断查询
+        # revoked 永不经 MCP 面返回（即使 admin 也只能经专门审计通道）
+        if state == "revoked":
+            _tok, _scopes, _origin = _caller_context()
+            if "admin" not in (_scopes or []):
+                return {"ok": False, "error": "revoked 记忆仅 admin 审计通道可访问", "code": 403}
+        return await asyncio.to_thread(
+            rt.agent_memory.list_agent_memories, state, "", member_id
+        )
 
     @mcp.tool()
     async def get_session_trust(session_id: str = "mcp") -> dict:
