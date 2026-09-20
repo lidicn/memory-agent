@@ -128,7 +128,7 @@ POST /v1/images/analyses
 
 | 实测注意点 | 说明 |
 |---|---|
-| 会话失效风险 | 逆向豆包会话可能过期/风控（历史上 TTS 踩过 710020702）。失效时返回 500/502 → 必须退避并在 WebUI 提示「需扫码重登」（管理面板 `/admin?key=longyin`）。**豆包挂了只影响「在干嘛」，不得影响「是谁」与事件入库** |
+| 会话失效风险 | 逆向豆包会话可能过期/风控（历史上 TTS 踩过 710020702）。失效时返回 500/502 → 必须退避并在 WebUI 提示「需扫码重登」（管理面板 `/admin?key=<REDACTED-弱口令 len=7>`）。**豆包挂了只影响「在干嘛」，不得影响「是谁」与事件入库** |
 | 单次延迟预估 | 3~7s（上传 1s + 推理 2~5s），未最终实测，P0 验收脚本见 §9 |
 | 图片建议 | 下采样至 ≤1280px、JPEG q60~70（单帧 100~200KB），质量和耗时平衡点 |
 
@@ -250,7 +250,7 @@ GO2RTC_BASE_URL=http://192.168.2.200:1984
 GO2RTC_USER=lidicn
 GO2RTC_PASS=***
 DOUBAO_BASE_URL=http://192.168.2.200:9090
-DOUBAO_API_KEY=longyin
+DOUBAO_API_KEY=<REDACTED-弱口令 len=7>
 DOUBAO_VISION_TIMEOUT_S=25
 VISION_ROOMS={"客厅":"cam_客厅","起居室":"cam_小黄人","书房":"cam_书房"}   # room → go2rtc 流名（须带 cam_ 前缀）
 VISION_NO_TV_ROOMS=["起居室"]                        # 纯摄像头房间（启用低频巡检）
@@ -388,7 +388,7 @@ try:
     print("耗时 %.1fs" % (time.time() - t0))
     print(out["choices"][0]["message"]["content"])
 except Exception as e:
-    print("失败(%.1fs): %s —— 多半是豆包会话失效，去 http://192.168.2.200:9090/admin?key=longyin 扫码重登" % (time.time() - t0, e))
+    print("失败(%.1fs): %s —— 多半是豆包会话失效，去 http://192.168.2.200:9090/admin?key=<REDACTED-弱口令 len=7> 扫码重登" % (time.time() - t0, e))
 ```
 
 ---

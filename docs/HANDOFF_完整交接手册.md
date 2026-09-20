@@ -195,7 +195,7 @@
 | 服务 | 地址 | 说明 |
 |---|---|---|
 | new-api（向量/LLM 网关） | 宿主 `192.168.2.200:3001` → 容器 `:3000`；SQLite `/data/one-api.db` | **embedding + LLM 都走它**。token key 明文存 `tokens` 表。当前 memory-agent token = `id=5 name=memory-agent key=0e1e8726d3c762fba381ac385c31f0c85b1c0489f8eda4e71`（49 字符） |
-| go2rtc | `192.168.2.200:1984`，Basic Auth `lidicn/longyin1003` | 取帧 `/api/frame.jpeg?src=<流名>`；流 `cam_客厅`(HD)/`cam_小黄人`/`cam_书房`；**流名写在 `/vol1/1000/docker/go2rtc/go2rtc.yaml`**（非 MA 硬编码），永久改流必须改该 yaml |
+| go2rtc | `192.168.2.200:1984`，Basic Auth `lidicn/<REDACTED-弱口令 len=11>` | 取帧 `/api/frame.jpeg?src=<流名>`；流 `cam_客厅`(HD)/`cam_小黄人`/`cam_书房`；**流名写在 `/vol1/1000/docker/go2rtc/go2rtc.yaml`**（非 MA 硬编码），永久改流必须改该 yaml |
 | Home Assistant | homeassistant 容器 | MA 采集源；`event.chuangmi_cn_<uid>_<did>_*` 为客厅盒侧 AI 事件（前缀 `event.chuangmi`，非 `event.chuangmi_camera`） |
 | doubao2api | `:9090` | VLM 多模态；带 `conversation_id` 不含 system 的续写分支会 500 → MA 侧 VLM 请求**强制 `silent=True`** 规避 |
 | doubao-butler（豆包管家） | `:8095` | 实时反应层；经 `butler_token` 窄接口调 MA |

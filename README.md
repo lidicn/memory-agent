@@ -105,7 +105,7 @@ docker compose up -d --build
 ```env
 VLM_BASE_URL=http://192.168.2.200:9090
 VLM_MODEL=doubao
-VLM_API_KEY=longyin          # doubao2api 管理面板密码
+VLM_API_KEY=<REDACTED-弱口令 len=7>          # doubao2api 管理面板密码
 VLM_ENDPOINT_PATH=/v1/images/analyses   # doubao2api 私有端点
 ```
 
