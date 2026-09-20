@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -371,6 +372,61 @@ class Store:
         """P1-5: 转义 LIKE 通配符，防止 name/member_id 含 % 或 _ 时跨成员检索。
         用法：WHERE col LIKE ? ESCAPE '\\'，参数用 f"%{_escape_like(name)}%"。"""
         return (s or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    @staticmethod
+    def _serialize_persons(persons) -> str:
+        """P1-4: 统一 persons 序列化格式。
+        字符串元素（旧格式 ["alice"]）转为 dict（{"name": "alice", "confidence": 0.0}），
+        确保写侧永远是 dict 数组，读侧不会因 isinstance(p, dict) 为 False 而静默丢弃。"""
+        if not persons:
+            return "[]"
+        if isinstance(persons, str):
+            try:
+                persons = json.loads(persons)
+            except Exception:
+                return "[]"
+        if not isinstance(persons, list):
+            return "[]"
+        normalized = []
+        for p in persons:
+            if isinstance(p, dict):
+                normalized.append(p)
+            elif isinstance(p, str):
+                # 旧格式：字符串数组 → 转为 dict
+                normalized.append({"name": p, "confidence": 0.0})
+            else:
+                # 其他类型跳过
+                continue
+        return json.dumps(normalized, ensure_ascii=False)
+
+    @staticmethod
+    def _deserialize_persons(raw) -> list:
+        """P1-4: 统一 persons 反序列化。
+        解析 JSON，字符串元素转为 dict，遇到格式错误记 ERROR（不静默丢弃）。
+        返回 dict 数组。"""
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            persons = raw
+        else:
+            try:
+                persons = json.loads(raw)
+            except Exception as e:
+                print(f"[Store] persons_json 解析失败: {e}", file=sys.stderr)
+                return []
+        if not isinstance(persons, list):
+            print(f"[Store] persons_json 不是数组: {type(persons).__name__}", file=sys.stderr)
+            return []
+        result = []
+        for p in persons:
+            if isinstance(p, dict):
+                result.append(p)
+            elif isinstance(p, str):
+                # 旧格式兼容：字符串 → dict
+                result.append({"name": p, "confidence": 0.0})
+            else:
+                print(f"[Store] persons 元素格式异常（非dict非str）: {type(p).__name__}", file=sys.stderr)
+        return result
 
 
     def __init__(self, db_path: str = "/data/memory_agent.db", tz_offset_hours: float = 8.0):
@@ -1501,7 +1557,7 @@ class Store:
                     payload.get("day") or str(ts)[:10],
                     payload.get("room") or "",
                     payload.get("camera_src") or "",
-                    json.dumps(payload.get("persons") or [], ensure_ascii=False),
+                    Store._serialize_persons(payload.get("persons") or []),
                     int(payload.get("count") or 0),
                     payload.get("action"),
                     payload.get("scene"),
@@ -1546,7 +1602,7 @@ class Store:
         for r in rows:
             d = dict(r)
             try:
-                d["persons"] = json.loads(d.pop("persons_json") or "[]")
+                d["persons"] = Store._deserialize_persons(d.pop("persons_json"))
             except Exception:
                 d["persons"] = []
             try:
@@ -2093,7 +2149,7 @@ class Store:
         latest: dict[str, dict] = {}
         for r in rows:
             try:
-                persons = json.loads(r["persons_json"] or "[]")
+                persons = Store._deserialize_persons(r["persons_json"])
             except Exception:
                 continue
             if not isinstance(persons, list):
@@ -2155,7 +2211,7 @@ class Store:
             if not rm or rm in latest:
                 continue
             try:
-                persons = json.loads(r["persons_json"] or "[]")
+                persons = Store._deserialize_persons(r["persons_json"])
             except Exception:
                 persons = []
             rec = [
@@ -2209,7 +2265,7 @@ class Store:
         per_day: dict[str, dict] = {}
         for r in rows:
             try:
-                persons = json.loads(r["persons_json"] or "[]")
+                persons = Store._deserialize_persons(r["persons_json"])
             except Exception:
                 continue
             if not isinstance(persons, list):
@@ -2344,7 +2400,7 @@ class Store:
             return None
         d = dict(row)
         try:
-            d["persons"] = json.loads(d.pop("persons_json") or "[]")
+            d["persons"] = Store._deserialize_persons(d.pop("persons_json"))
         except Exception:
             d["persons"] = []
         ap = d.get("appearance_json")
@@ -2367,7 +2423,7 @@ class Store:
         with self._lock:
             conn.execute(
                 "UPDATE behavior_events SET persons_json = ? WHERE id = ?",
-                (json.dumps(persons, ensure_ascii=False), event_id),
+                (Store._serialize_persons(persons), event_id),
             )
             conn.commit()
 
