@@ -26,7 +26,7 @@ write_path_globs = [
     "src/memory_agent/insights.py",
 ]
 
-forbid_local_consent_tables = false   # 本仓 grep 无同意分类器，这条永远该是 false；列在此处只为口径统一
+forbid_local_consent_tables = true   # WO-GATE-001 §八：入口只能收窄，防止日后在 MA 长自己的同意词表
 
 extra_skip_globs = [
     "src/__pycache__/*",
