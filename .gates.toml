@@ -31,4 +31,5 @@ forbid_local_consent_tables = false   # 本仓 grep 无同意分类器，这条�
 extra_skip_globs = [
     "src/__pycache__/*",
     "scripts/*",   # 一次性脚本不参与门禁（repro_debug500.py 等）
+    "src/memory_agent/static/*",  # 前端静态资源目录，不参与 Python AST 门禁
 ]

@@ -1711,8 +1711,8 @@ def _build_server():
                     scope="admin", duration_ms=0, ok=True,
                     error="AUDIT: full member_id-less listing", origin=_origin,
                 )
-            except Exception:
-                pass  # 审计日志失败不阻断查询
+            except Exception as _e:
+                _log.warning("审计日志写入失败（不阻断查询）: %s", _e)
         # revoked 永不经 MCP 面返回（即使 admin 也只能经专门审计通道）
         if state == "revoked":
             _tok, _scopes, _origin = _caller_context()
