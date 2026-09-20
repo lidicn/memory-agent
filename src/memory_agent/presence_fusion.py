@@ -101,36 +101,56 @@ def fuse_presence(roster: list[dict], occupancy: list[dict]) -> dict:
     method = "none"
 
     if total_unknown > 0 and total_unknown == len(absent) and absent:
-        # ── 确定性消除法：未识别人数 == 缺席人数 → 一一归位 ──
-        method = "elimination"
+        # P1-16: 预检查 —— 每个未知 slot 是否都有缺席成员的房间先验匹配
+        # 避免把陌生人脸误判给不在家成员（无先验匹配时不做排除法）
         remaining = list(absent)
+        elimination_valid = True
         for slot_room in unknown_slots:
-            best, best_score = None, -1
-            for m in remaining:
-                score = 0
-                pr = _member_prior_room(m)
-                if pr and pr == slot_room:
-                    score += 2
-                if score > best_score:
-                    best_score, best = score, m
-            if best is None:
-                unresolved += 1
-                continue
-            remaining.remove(best)
-            conf = 0.9 if best_score >= 2 else 0.7
-            reason = (
-                f"消除法：其余成员已确认在 {', '.join(sorted(known_present)) or '其他房间'}"
-                f"；名册余 {best['name']}；{slot_room}未识别 {1} 人 = 缺席人数 → 推断在此"
+            has_match = any(
+                (_member_prior_room(m) or "") == slot_room for m in remaining
             )
-            if best_score < 2:
-                reason += "（无房间先验匹配，置信较低）"
-            inferred.append({
-                "member": best["name"],
-                "room": slot_room,
-                "confidence": conf,
-                "method": "elimination",
-                "reason": reason,
-            })
+            if not has_match:
+                elimination_valid = False
+                break
+            # 模拟分配，移除匹配的成员
+            for m in remaining:
+                if (_member_prior_room(m) or "") == slot_room:
+                    remaining.remove(m)
+                    break
+
+        if elimination_valid:
+            # ── 确定性消除法：未识别人数 == 缺席人数 + 全部有房间先验匹配 → 一一归位 ──
+            method = "elimination"
+            remaining = list(absent)
+            for slot_room in unknown_slots:
+                best, best_score = None, -1
+                for m in remaining:
+                    score = 0
+                    pr = _member_prior_room(m)
+                    if pr and pr == slot_room:
+                        score += 2
+                    if score > best_score:
+                        best_score, best = score, m
+                if best is None:
+                    unresolved += 1
+                    continue
+                remaining.remove(best)
+                conf = 0.9 if best_score >= 2 else 0.7
+                reason = (
+                    f"消除法：其余成员已确认在 {', '.join(sorted(known_present)) or '其他房间'}"
+                    f"；名册余 {best['name']}；{slot_room}未识别 {1} 人 = 缺席人数 → 推断在此"
+                )
+                inferred.append({
+                    "member": best["name"],
+                    "room": slot_room,
+                    "confidence": conf,
+                    "method": "elimination",
+                    "reason": reason,
+                })
+        else:
+            # P1-16: 有未知 slot 无房间先验匹配 → 保守不推断（可能是陌生人）
+            method = "inconclusive"
+            unresolved = total_unknown
     elif total_unknown > 0:
         # ── 等式不成立：保守，不编造身份 ──
         method = "inconclusive"

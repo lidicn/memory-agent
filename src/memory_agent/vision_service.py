@@ -531,6 +531,53 @@ class VisionService:
             score = max(0.0, min(1.0, score))
             if best is None or score > best["score"]:
                 best = {"member_id": m.get("id"), "name": m.get("name"), "score": score}
+        # P1-15: 外观匹配加 margin —— 第一名和第二名分差 < 0.1 时返回 None（避免近似误配）
+        if best is not None:
+            # 重新遍历计算第二名分数（因为得分相同时 > 不触发更新）
+            all_scores = []
+            for m in members:
+                try:
+                    ap = m.get("appearance_json")
+                    ap = json.loads(ap) if isinstance(ap, str) else ap
+                except Exception:
+                    ap = None
+                if not isinstance(ap, dict):
+                    continue
+                # 简化：只比较已计算过的 best 成员和其他成员的得分
+                pass
+            # 更简单的方式：从 members 中排除 best 后，重新计算最高分作为 second_score
+            second_best = None
+            for m in members:
+                if m.get("id") == best["member_id"]:
+                    continue
+                try:
+                    ap = m.get("appearance_json")
+                    ap = json.loads(ap) if isinstance(ap, str) else ap
+                except Exception:
+                    ap = None
+                if not isinstance(ap, dict):
+                    continue
+                s2 = 0.0
+                g1 = cls._norm_gender(appearance.get("gender"))
+                g2 = cls._norm_gender(ap.get("gender"))
+                if g1 and g2:
+                    s2 += 0.4 if g1 == g2 else -0.5
+                a1, a2 = cls._norm_age(appearance.get("approx_age")), cls._norm_age(ap.get("approx_age"))
+                if a1 is not None and a2 is not None:
+                    s2 += max(0.0, 0.3 - abs(a1 - a2) / 50.0)
+                c1, c2 = cls._appearance_tokens(appearance.get("clothing")), cls._appearance_tokens(ap.get("clothing"))
+                if c1 and c2:
+                    s2 += 0.2 * (len(c1 & c2) / max(1, len(c1 | c2)))
+                h1, h2 = cls._appearance_tokens(appearance.get("hair")), cls._appearance_tokens(ap.get("hair"))
+                if h1 and h2:
+                    s2 += 0.1 * (len(h1 & h2) / max(1, len(h1 | h2)))
+                s2 = max(0.0, min(1.0, s2))
+                if second_best is None or s2 > second_best:
+                    second_best = s2
+            if second_best is not None:
+                margin = best["score"] - second_best
+                if margin < 0.1:
+                    return None
         return best
 
     # ── 人脸识别节点池（ArcFace 可插拔，统一识别路由 + VLM 降级）──────────────
@@ -760,6 +807,24 @@ class VisionService:
         confidence = None
         actions: list[str] = []
         persons_out: list[dict] = []
+        # P1-14: TV 端 ArcFace 人员先加入（人脸优先，spec §6）
+        # persons 格式：{"name": "Kevin", "score": 0.95}
+        face_names = set()
+        if persons:
+            for fp in persons:
+                if not isinstance(fp, dict):
+                    continue
+                name = (fp.get("name") or "").strip()
+                if not name:
+                    continue
+                face_names.add(name)
+                score = fp.get("score")
+                score = float(score) if isinstance(score, (int, float)) else 0.0
+                persons_out.append({
+                    "name": name, "via": "face", "detail": fp,
+                    "match_confidence": score, "member_id": None,
+                    "action": "",  # ArcFace 不提供动作，等 VLM 补充
+                })
         # 外观模式（无 TV 人脸）：预载成员档案，用于外观→成员匹配
         members = self.store.list_members() if persons is None else []
         known_names = {m.get("name") for m in members if m.get("name")}
@@ -768,11 +833,20 @@ class VisionService:
             if not isinstance(p, dict):
                 continue
             if persons:
-                # TV 端 ArcFace 已给出身份（高置信），直接采信（spec §6 人脸优先）
-                identity = p.get("identity") or "未识别"
-                via = "face"
+                # P1-14: TV 端模式 —— VLM 结果补充动作 / 去重
+                identity = (p.get("identity") or "").strip() or "未识别"
+                via = "vlm"
                 match_conf = 0.0
                 member_id = None
+                # 如果 ArcFace 已识别此人，用 VLM 的 action 补充动作文案
+                if identity in face_names:
+                    for po in persons_out:
+                        if po["name"] == identity and po["via"] == "face":
+                            if p.get("action"):
+                                po["action"] = p["action"]
+                                actions.append(f"{identity} {p['action']}")
+                            break
+                    continue  # 不重复加入
             else:
                 # 外观模式：VLM identity 候选 + 代码侧外观匹配，取高置信者
                 identity, via, match_conf, member_id = "未识别成员", "appearance", 0.0, None
@@ -791,11 +865,16 @@ class VisionService:
             persons_out.append({
                 "name": identity, "via": via, "detail": p,
                 "match_confidence": match_conf, "member_id": member_id,
+                "action": p.get("action", ""),
             })
             if isinstance(p.get("confidence"), (int, float)):
                 confidence = max(confidence or 0, p["confidence"])
-            if p.get("action"):
+            if p.get("action") and identity not in face_names:
                 actions.append(f"{identity} {p['action']}")
+        # P1-14: ArcFace 人员如果 VLM 没补充动作，也加入动作文案（仅名字）
+        for po in persons_out:
+            if po["via"] == "face" and not po.get("action"):
+                actions.append(f"{po['name']} 在画面中")
         action = "；".join(actions) if actions else "未检测到人"
 
         # 8.5) 生物识别补认（face_node_pool）：VLM 之后接 Arcface 节点池，
