@@ -200,9 +200,15 @@ def assert_write_tools_complete() -> list[str]:
             missing.append(name)
 
     if missing:
+        # WO-MA-012 R-23：fail-close，发现未登记写工具时启动拒绝，不再只记 log。
+        # 未登记写工具会被默认为只读对所有 scope 开放，是安全隐患。
         _log.error(
-            "【安全告警】以下疑似写工具未登记到 WRITE_TOOLS，将被默认为只读对所有 scope 开放: %s",
+            "【安全告警·启动拒绝】以下疑似写工具未登记到 WRITE_TOOLS，将被默认为只读对所有 scope 开放: %s",
             ", ".join(sorted(missing)),
+        )
+        raise SystemExit(
+            f"MCP 写工具完整性断言失败：{len(missing)} 个疑似写工具未登记到 WRITE_TOOLS: "
+            f"{', '.join(sorted(missing))}。请将这些工具加入 WRITE_TOOLS 或确认其为只读。"
         )
     else:
         _log.info("MCP 写工具完整性断言通过：未发现疑似写工具漏登记")

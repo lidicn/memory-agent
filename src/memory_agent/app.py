@@ -194,6 +194,13 @@ class AuthMiddleware:
             await self._reject(send, path, status=403, message="应用令牌无权访问该接口")
             return
 
+        # WO-MA-012 R-22：调试令牌（dbg_）只放行 /api/debug/* 前缀，超出范围一律 403。
+        # 生产环境 debug_mode=False 时 dbg_ 令牌在 _authenticate 阶段已被拒绝（L297），
+        # 此处是 debug_mode=True 时的路径收窄，防止调试令牌通吃所有 /api/*。
+        if user.get("debug") and not path.startswith("/api/debug/"):
+            await self._reject(send, path, status=403, message="调试令牌仅可访问 /api/debug/* 端点")
+            return
+
         state = scope.setdefault("state", {})
         if isinstance(state, dict):
             state["user"] = user
