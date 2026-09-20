@@ -5,8 +5,8 @@
 * **默认只读**：新令牌只带 ``read``；写工具必须显式授权 ``write``。
 * **分类按「是否改变状态」**：会写入库 / 改配置 / 触发外部动作的工具归 ``write``，
   其余（含会花钱但不改数据的 ``ask_memory`` / ``analyze_camera``）仍是 ``read``。
-* **未知工具保守放行 read**：新增工具若忘了登记，按 read 处理并在日志提示，
-  不因为漏登记就拒绝调用（避免升级即断链）。
+* **WO-MA-004 ② fail-close**：未在 REGISTERED_TOOLS / WRITE_TOOLS 登记的工具
+  直接拒绝，不再默认按 read 放行。新增工具必须同步登记，否则 requires() 拒绝。
 """
 
 from __future__ import annotations
@@ -18,8 +18,60 @@ _log = logging.getLogger("mcp.scopes")
 READ = "read"
 WRITE = "write"
 ADMIN = "admin"  # WO-MA-005: 审计通道，可列全量记忆（含 revoked），需出证
+UNKNOWN = "unknown"  # WO-MA-004 ②：未登记工具的 scope，requires() 一律拒绝
 ALL_SCOPES = (READ, WRITE, ADMIN)
 DEFAULT_SCOPES = [READ]
+
+# WO-MA-004 ②：所有已注册的 MCP 读工具名（手写 @mcp.tool() + TOOL_SPECS generated）。
+# 写工具在 WRITE_TOOLS；两者并集 = 全部已注册工具。未在并集中的工具视为未登记，
+# scope_of 返回 UNKNOWN，requires() 拒绝（fail-close，不再默认 read 放行）。
+REGISTERED_TOOLS = frozenset({
+    "agent_memory_health",
+    "analyze_camera",
+    "ask_memory",
+    "audit_rule_recall",
+    "explain_insight",
+    "export_history",
+    "export_insight",
+    "get_behavior_drift",
+    "get_behavior_insights",
+    "get_behavior_insights_compare",
+    "get_behavior_summary",
+    "get_climate_sessions",
+    "get_collect_status",
+    "get_data_coverage",
+    "get_data_quality",
+    "get_device_health",
+    "get_device_usage",
+    "get_entity_catalog",
+    "get_last_event",
+    "get_member_persona",
+    "get_person_history",
+    "get_session_trust",
+    "get_skill",
+    "get_user_persona",
+    "get_vision_status",
+    "help",
+    "infer_activities",
+    "list_agent_memories",
+    "list_analysis_templates",
+    "list_behavior_anomalies",
+    "list_behavior_drifts",
+    "list_device_health",
+    "list_members",
+    "list_rooms_entities",
+    "list_signal_rules",
+    "list_skills",
+    "list_vision_cameras",
+    "mine_behavior_process",
+    "query_behavior_events",
+    "query_device_usage",
+    "query_events",
+    "retrieve_agent_memories",
+    "route_question",
+    "run_analysis_template",
+    "search_events",
+})
 
 # 会改变系统状态的工具（写入库 / 改配置 / 触发采集 / 变更记忆状态）
 WRITE_TOOLS = frozenset({
@@ -58,17 +110,27 @@ _REPORTED_UNKNOWN: set[str] = set()
 
 
 def scope_of(tool: str) -> str:
-    """返回工具所需 scope：write 或 read（默认）。"""
+    """返回工具所需 scope：write / read / unknown。
+
+    WO-MA-004 ②：未登记工具返回 UNKNOWN（fail-close），不再默认 READ。
+    """
     if not tool:
-        return READ
+        return UNKNOWN
     if tool in WRITE_TOOLS:
         return WRITE
-    return READ
+    if tool in REGISTERED_TOOLS:
+        return READ
+    return UNKNOWN
 
 
 def requires(tool: str, granted: list[str] | tuple[str, ...] | None) -> bool:
-    """判断令牌的 scopes 是否足以调用该工具。"""
+    """判断令牌的 scopes 是否足以调用该工具。
+
+    WO-MA-004 ②：未登记工具（scope == UNKNOWN）一律拒绝。
+    """
     need = scope_of(tool)
+    if need == UNKNOWN:
+        return False
     if need == READ:
         return True
     return WRITE in (granted or [])
@@ -89,10 +151,13 @@ def normalize(scopes) -> list[str]:
 
 
 def note_unknown(tool: str) -> None:
-    """记录未登记的工具名（只提示一次），便于后续补登记。"""
-    if tool and tool not in WRITE_TOOLS and tool not in _REPORTED_UNKNOWN:
+    """记录未登记的工具名（只提示一次），便于后续补登记。
+
+    WO-MA-004 ②：未登记工具会被 requires() 拒绝，此处仅用于日志告警。
+    """
+    if tool and tool not in WRITE_TOOLS and tool not in REGISTERED_TOOLS and tool not in _REPORTED_UNKNOWN:
         _REPORTED_UNKNOWN.add(tool)
-        _log.debug("MCP 工具未在权限表中登记，按 read 处理: %s", tool)
+        _log.warning("MCP 工具未登记到 REGISTERED_TOOLS/WRITE_TOOLS，将被拒绝调用: %s", tool)
 
 
 def assert_write_tools_complete() -> list[str]:

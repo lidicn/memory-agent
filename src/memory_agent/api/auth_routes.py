@@ -59,10 +59,17 @@ async def register(request: Request):
 
 
 def _client_ip(request: Request) -> str:
-    """取客户端 IP（优先 X-Forwarded-For 首个，兼容反向代理）。"""
+    """取客户端 IP（WO-MA-004 ⑤b：取 X-Forwarded-For 最后一个元素）。
+
+    首元素可被攻击者伪造（自行决定被限速的 IP = 限速器反向失效）。
+    反向代理（Caddy）会把真实客户端 IP 追加到 XFF 末尾，因此取最后一个。
+    无 XFF 时回退到 TCP 对端 IP。
+    """
     xff = request.headers.get("x-forwarded-for", "")
     if xff:
-        return xff.split(",")[0].strip()
+        parts = [p.strip() for p in xff.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     client = request.client
     return client.host if client else "unknown"
 

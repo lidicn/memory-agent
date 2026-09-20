@@ -53,7 +53,15 @@ async def _git(args: list[str], timeout: int = 120) -> subprocess.CompletedProce
 
 
 async def get_version(request: Request):
-    """返回当前版本信息：commit / branch / tag / dirty / 更新源。"""
+    """返回当前版本信息：commit / branch / tag / dirty / 更新源。
+
+    WO-MA-004 ①：原无门，暴露内部版本/分支/仓库地址。改为 require_admin，
+    与 apply_update 同级别。version 信息含 commit/branch/repo_url，
+    属于内部实现细节，不应对未认证请求公开。
+    """
+    user, err = require_admin(request)
+    if err:
+        return err
     info: dict = {
         "version": __app_version__,
         "repo_dir": REPO_DIR,
@@ -77,7 +85,15 @@ async def get_version(request: Request):
 
 
 async def check_update(request: Request):
-    """比对本地 HEAD 与远端分支，返回是否有更新。"""
+    """比对本地 HEAD 与远端分支，返回是否有更新。
+
+    WO-MA-004 ①：原无门，内含 git ls-remote 出网点（未认证即可触发出网，
+    且单次请求可占线程池 120 秒）。改为 require_admin，出网点必须落在
+    有门路径后。
+    """
+    user, err = require_admin(request)
+    if err:
+        return err
     try:
         cfg = get_config()
     except Exception as exc:
@@ -200,8 +216,14 @@ async def _reexec() -> None:
 async def breakers_status(request: Request):
     """v0.9 离线降级：各依赖断路器状态（LLM / embedding …）。
 
+    WO-MA-004 ①：原无门，暴露内部熔断器状态（可用于探测服务依赖和
+    降级状态）。改为 require_admin。
+
     ``degraded`` 列出当前非 closed 的断路器名，便于判断「是否在降级运行」。
     """
+    user, err = require_admin(request)
+    if err:
+        return err
     from ..circuit_breaker import all_states
 
     states = all_states()

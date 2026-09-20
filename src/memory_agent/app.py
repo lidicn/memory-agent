@@ -315,12 +315,21 @@ class AuthMiddleware:
                 username, password = decoded.split(":", 1)
             except Exception:
                 return None
+            # WO-MA-004 ⑤a：Basic Auth 与 JWT 登录路径汇到同一份爆破计数。
+            # 原实现直接调 login()，无 login_allowed 检查、无 note_login_failure，
+            # 等于给攻击者开了一条无限次尝试密码的旁路。
+            ip = client_ip or "unknown"
+            allowed, _retry = auth_manager.login_allowed(ip, username)
+            if not allowed:
+                return None
             result = auth_manager.login(username, password)
             if result.get("ok"):
+                auth_manager.note_login_success(ip, username)
                 return {
                     "username": result["username"],
                     "is_admin": result.get("is_admin", False),
                 }
+            auth_manager.note_login_failure(ip, username)
             return None
 
         cookie_header = headers.get("cookie", "")

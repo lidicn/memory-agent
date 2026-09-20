@@ -15,9 +15,9 @@ from typing import Any, Dict, List
 
 CONFIG_FILE = "/data/config.json"
 
-# JWT 内置默认密钥（公开可预测）。get_config() 检测到仍为此值/为空时，
-# 会自动生成强随机密钥并持久化，避免部署者忘记改密钥导致认证形同虚设。
-DEFAULT_JWT_SECRET = "change_this_to_random_string"
+# WO-MA-004 ③：JWT 密钥不再有源码默认值。未显式配置（环境变量 / config.json）
+# 时 get_config() 直接拒绝启动，避免"可预测默认密钥"或"自动生成制造已配错觉"。
+# 部署者必须通过 JWT_SECRET 环境变量或 config.json 显式设置。
 
 
 @dataclass
@@ -62,8 +62,8 @@ class Config:
     embedding_model: str = ""
     embedding_api_key: str = ""
 
-    # JWT配置（默认值见 DEFAULT_JWT_SECRET；get_config 检测到默认/空值会自动换成随机密钥）
-    jwt_secret: str = DEFAULT_JWT_SECRET
+    # JWT配置（WO-MA-004 ③：无默认值，未显式配置则拒绝启动）
+    jwt_secret: str = ""
 
     # MCP配置
     mcp_auth_token: str = ""
@@ -463,16 +463,15 @@ def get_config() -> Config:
             "enabled": True,
         }]
 
-    # ── 安全加固（审计 C1）：JWT 密钥不得为空或为内置默认值 ──────────────
-    # 默认值 "change_this_to_random_string" 公开可预测，任何拿到源码的人都能伪造
-    # JWT 绕过认证。检测到默认/空值时自动生成强随机密钥并持久化，避免部署者忘记
-    # 修改密钥导致认证形同虚设（只在首次触发一次）。
-    if not config.jwt_secret or config.jwt_secret == DEFAULT_JWT_SECRET:
-        config.jwt_secret = secrets.token_urlsafe(48)
-        try:
-            config.save()
-            print("[Config] 已自动生成并持久化新的 JWT 密钥（原密钥为空或为默认值）")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[Config] JWT 密钥写盘失败，本次运行使用内存态密钥: {exc}")
+    # ── WO-MA-004 ③：JWT 密钥未显式配置则拒绝启动 ──────────────────────
+    # 不再自动生成随机密钥（那会制造"已经配了"的错觉，且重启后密钥变化
+    # 会使所有已签发 JWT 失效）。部署者必须通过 JWT_SECRET 环境变量
+    # 或 config.json 显式设置一个强随机密钥。
+    if not config.jwt_secret:
+        raise RuntimeError(
+            "JWT 密钥未配置：请通过 JWT_SECRET 环境变量或 config.json 的 "
+            "jwt_secret 字段显式设置一个强随机密钥（如 python -c \"import secrets; print(secrets.token_urlsafe(48))\"）。"
+            "WO-MA-004 ③ 不再接受默认值或自动生成。"
+        )
 
     return config
