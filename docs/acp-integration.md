@@ -44,7 +44,7 @@
 所有 `/acp` 请求必须携带 **kind=`acp`** 的令牌（与 WebUI JWT、MCP 的 `mcp_` 令牌完全隔离）：
 
 ```
-Authorization: Bearer acp_xxxxxxxxxxxxxxxx
+Authorization: Bearer acp_<REDACTED-Bearer字面量 len=17>
 # 或
 x-acp-token: acp_xxxxxxxxxxxxxxxx
 ```
