@@ -84,7 +84,7 @@ flowchart TD
 
 ### 3.1 go2rtc —— 全屋统一「眼睛」
 
-- 基址：`http://192.168.2.200:1984`，Basic Auth：`lidicn` / `longyin1003`（api 与 rtsp 同套，见 NAS `/vol1/1000/docker/go2rtc/go2rtc.yaml`）
+- 基址：`http://<REDACTED-非回环内网地址 len=15>:1984`，Basic Auth：`lidicn` / `<REDACTED-web口令 len=10>`（api 与 rtsp 同套，见 NAS `/vol1/1000/docker/go2rtc/go2rtc.yaml`）
 - 已配置流（`streams:`，2026-09-15 核对 `/vol1/1000/docker/go2rtc/go2rtc.yaml` 实测）：
 
   | 流名 | 设备 | IP | 机型 / 码流 |
@@ -108,11 +108,11 @@ GET /api/frame.jpeg?src=<URL编码的流名>
 |---|---|---|
 | `frame.jpeg` 单帧延迟 | 4~13s（米家 IPC 关键帧间隔长） | 巡检/触发拉帧按**异步任务**设计，不要同步等待；单帧超时设 20s |
 | `GET /api/stream.mjpeg` | 本次实测返回 `200` 但 body 0 字节（握手/头未调通） | 后续可换持久 MJPEG 提帧率；**MVP 不依赖它** |
-| RTSP 直连 | `rtsp://lidicn:longyin1003@192.168.2.200:8554/客厅` 可用 | 容器内若已有 ffmpeg 可作备选，非必需 |
+| RTSP 直连 | `rtsp://lidicn:<REDACTED-web口令 len=10>@<REDACTED-非回环内网地址 len=15>:8554/客厅` 可用 | 容器内若已有 ffmpeg 可作备选，非必需 |
 
 ### 3.2 doubao2api —— 多模态推理网关（零改造）
 
-- 基址：`http://192.168.2.200:9090`，`Authorization: Bearer longyin`
+- 基址：`http://<REDACTED-非回环内网地址 len=15>:9090`，`Authorization: Bearer <REDACTED-默认API key len=6>`
 - 图片分析端点（OpenAI Vision 标准格式，详见其 `IMAGE_ANALYSIS_API.md`）：
 
 ```
@@ -380,7 +380,7 @@ payload = {"model": "doubao", "messages": [{"role": "user", "content": [
     {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}}]}]}
 req = urllib.request.Request("http://192.168.2.200:9090/v1/images/analyses",
     data=json.dumps(payload).encode(),
-    headers={"Content-Type": "application/json", "Authorization": "Bearer longyin"})
+    headers={"Content-Type": "application/json", "Authorization": "Bearer <REDACTED-默认API key len=6>"})
 t0 = time.time()
 try:
     with urllib.request.urlopen(req, timeout=60) as r:
