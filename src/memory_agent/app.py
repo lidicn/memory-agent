@@ -222,13 +222,17 @@ class AuthMiddleware:
         "/api/metrics/ingest",
         "/api/tv/analyze",
     )
+    # WO-ADM-001 R-62：butler 需 PATCH 更新成员档案（profile_routes.py:95）
+    BUTLER_PATCH_PATHS = (
+        # /api/members/{member_id} 动态子路径允许 PATCH（局部更新成员档案）
+    )
 
     @staticmethod
     def _butler_allowed(path: str, method: str = "GET") -> bool:
         """管家令牌的路径+方法白名单判定（含 /api/members/{id} 这类动态子路径）。
 
         安全加固（审计 P0-3）：白名单必须区分方法，GET 只读路径不允许 PUT/DELETE。
-        /api/members/{id} 子路径仅允许 GET（成员档案查询），不允许写操作。
+        /api/members/{id} 子路径：GET 允许查询，PATCH 允许局部更新（WO-ADM-001 R-62）。
         """
         if method == "GET":
             if path in AuthMiddleware.BUTLER_GET_PATHS:
@@ -238,6 +242,10 @@ class AuthMiddleware:
                 return True
         elif method == "POST":
             if path in AuthMiddleware.BUTLER_POST_PATHS:
+                return True
+        elif method == "PATCH":
+            # WO-ADM-001 R-62：butler PATCH 更新成员档案
+            if path.startswith("/api/members/"):
                 return True
         return False
 

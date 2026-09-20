@@ -1736,21 +1736,31 @@ def _build_server():
 
     @mcp.tool()
     async def retrieve_agent_memories(
-        question: str, trust_min: float = -1.0, top_k: int = 5
+        question: str = "", trust_min: float = -1.0, top_k: int = 5,
+        member_id: str = "", query: str = ""
     ) -> dict:
         """从 Agent 记忆库检索已晋升 live 的记忆（按相似度+trust 重排）。
 
-        question: 查询问题或自然语言主题。
+        WO-ADM-001 R-60：加 member_id 成员归属过滤 + query/question 参数名兼容。
+
+        question: 查询问题或自然语言主题（优先使用）。
+        query: 查询问题（butler 旧参数名，兼容别名；question 为空时取 query）。
+        member_id: 成员归属过滤（只召回该成员的记忆；空=全部）。
         trust_min: 最低信任分过滤（默认 -1 不限制）。
         top_k: 返回条数（默认 5，最多受配置 agent_retrieve_k 约束）。
-        返回 {ok, count, memories: [{memory_id, text, similarity, trust, final_score, topic_key}]}。
+        返回 {ok, count, memories: [{memory_id, text, member_id, similarity, trust, final_score, topic_key}]}。
         """
+        # WO-ADM-001 R-60：query/question 兼容（butler 旧版传 query，新版传 question）
+        q = question or query
+        if not q:
+            return {"ok": False, "error": "question/query 不能为空", "count": 0, "memories": []}
         rt = get_runtime()
         hits = await asyncio.to_thread(
             rt.agent_memory.retrieve,
-            question,
+            q,
             trust_min=trust_min if trust_min > -1 else None,
             top_k=max(1, int(top_k)),
+            member_id=member_id,
         )
         return {"ok": True, "count": len(hits), "memories": hits}
 

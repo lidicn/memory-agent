@@ -492,7 +492,8 @@ class AgentMemoryService:
 
     # ── 检索（v0.8-4 混合检索：向量 + FTS5 关键词融合重排）──────────────
     def retrieve(self, question: str, trust_min: Optional[float] = None, top_k: int = 5,
-                 source: str = "", as_of: str = "") -> List[dict]:
+                 source: str = "", as_of: str = "", member_id: str = "") -> List[dict]:
+        """WO-ADM-001 R-60：加 member_id 过滤，修复 butler→MA 成员归属丢失。"""
         col = self._col
         k = max(1, min(int(getattr(self.config, "agent_retrieve_k", 20)), 50))
         merged: dict = {}
@@ -505,6 +506,9 @@ class AgentMemoryService:
             # v0.5：按来源过滤（如只召回本服务原生记忆，或只召回管家生态记忆以隔离低置信摘要）
             if source:
                 where["source"] = source
+            # WO-ADM-001 R-60：按成员归属过滤（butler 传 member_id 时只召回该成员的记忆）
+            if member_id:
+                where["member_id"] = member_id
             try:
                 res = col.query(query_texts=[question], where=where, n_results=k)
                 ids = (res.get("ids") or [[]])[0]
@@ -521,6 +525,7 @@ class AgentMemoryService:
                         "similarity": sim,
                         "trust": float(meta.get("trust", 0.0)),
                         "source": meta.get("source", "ma"),
+                        "member_id": meta.get("member_id", ""),
                         "topic_key": meta.get("topic_key", ""),
                         "fts": 0.0,
                     }
@@ -538,6 +543,9 @@ class AgentMemoryService:
                 continue
             if trust_min is not None and float(r.get("trust", 0.0)) < trust_min:
                 continue
+            # WO-ADM-001 R-60：FTS 路按成员归属过滤（SQL 层不支持，结果层过滤）
+            if member_id and (r.get("member_id") or "") != member_id:
+                continue
             if mid in merged:
                 merged[mid]["fts"] = 1.0
             else:
@@ -547,6 +555,7 @@ class AgentMemoryService:
                     "similarity": 0.0,
                     "trust": float(r.get("trust", 0.0)),
                     "source": r.get("source", "ma"),
+                    "member_id": r.get("member_id", ""),
                     "topic_key": r.get("topic_key", ""),
                     "fts": 1.0,
                 }
@@ -564,6 +573,7 @@ class AgentMemoryService:
                 "similarity": round(sim, 3),
                 "trust": round(trust, 3),
                 "source": m["source"],
+                "member_id": m.get("member_id", ""),
                 "topic_key": m["topic_key"],
                 "fts_hit": bool(fts),
                 "final_score": round(final, 3),

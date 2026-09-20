@@ -159,7 +159,7 @@ class MqttBridge:
                 print(f"[MQTT] 客户端尚未连接，跳过发布 {topic}")
                 return False
             body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-            client.publish(topic, body, qos=0, retain=retain)
+            client.publish(topic, body, qos=1, retain=retain)  # WO-ADM-001 R-49: 统一 QoS=1，与 butler subscribe 对齐
             return True
         except Exception as exc:  # noqa: BLE001 - 旁路能力，失败不得上抛
             print(f"[MQTT] 发布 {topic} 失败: {exc}")
@@ -177,7 +177,7 @@ class MqttBridge:
             if client is None:
                 return False
             body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-            client.publish(topic, body, qos=0, retain=retain)
+            client.publish(topic, body, qos=1, retain=retain)  # WO-ADM-001 R-49: 统一 QoS=1，与 butler subscribe 对齐
             return True
         except Exception as exc:  # noqa: BLE001 - 旁路能力，失败不得上抛
             print(f"[MQTT] 发布 {topic} 失败: {exc}")
