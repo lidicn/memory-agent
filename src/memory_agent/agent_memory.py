@@ -192,6 +192,7 @@ class AgentMemoryService:
                 trust=trust_info.get("trust", 0.0),
                 valid_from=valid_from, observed_at=observed_at,
                 member_id=member_id,
+                auto_promote_blocked=auto_block,  # P1-13: merge 路径同样携带 blocked 标志
             )
 
         mid = self.store.add_agent_memory(
@@ -230,6 +231,7 @@ class AgentMemoryService:
         valid_from: str = "",
         observed_at: str = "",
         member_id: str = "",  # WO-MA-005: 成员归属
+        auto_promote_blocked: int = 0,  # P1-13: merge 路径同样消费 blocked 标志
     ) -> dict:
         """v0.8-2 mem0 式记忆操作：写入前向量近邻召回同 topic 旧记忆，按相似度分支。
 
@@ -264,10 +266,11 @@ class AgentMemoryService:
                 session_id=session_id, text=text, topic_key=tk,
                 tags_json=tags_json, source_refs_json=refs_json,
                 ttl_days=ttl_days, state="staging", source=source,
-                member_id=member_id,
+                member_id=member_id, auto_promote_blocked=auto_promote_blocked,
             )
             return {"ok": True, "action": "added", "memory_id": mid, "state": "staging",
-                    "similarity": 0.0, "source": source, "note": "chroma 不可用，未合并"}
+                    "similarity": 0.0, "source": source, "note": "chroma 不可用，未合并",
+                    "auto_promote_blocked": auto_promote_blocked}
 
         # 近邻召回：有 topic_key 则同 topic 过滤（更准），否则全局最近
         where = {"topic_key": tk} if tk != "general" else {}
@@ -296,11 +299,12 @@ class AgentMemoryService:
                 session_id=session_id, text=text, topic_key=tk,
                 tags_json=tags_json, source_refs_json=refs_json,
                 ttl_days=ttl_days, state="staging", source=source,
-                member_id=member_id,
+                member_id=member_id, auto_promote_blocked=auto_promote_blocked,
             )
             self._upsert_mirror(self.store.get_agent_memory(mid))
             return {"ok": True, "action": "added", "memory_id": mid, "state": "staging",
-                    "similarity": round(nearest_sim, 3), "source": source}
+                    "similarity": round(nearest_sim, 3), "source": source,
+                    "auto_promote_blocked": auto_promote_blocked}
 
         # 分支 2：相似（≥ dup_sim）→ 兼容/补充 → UPDATE 旧（保留演变链）
         if nearest_state == "live":
@@ -316,7 +320,7 @@ class AgentMemoryService:
                 session_id=session_id, text=text, topic_key=tk,
                 tags_json=tags_json, source_refs_json=refs_json,
                 ttl_days=ttl_days, state="pending_review", source=source,
-                member_id=member_id)
+                member_id=member_id, auto_promote_blocked=auto_promote_blocked)
             self._upsert_mirror(self.store.get_agent_memory(mid))
             return {"ok": True, "action": "conflict_pending", "memory_id": mid,
                     "state": "pending_review", "conflict_with": nearest_id,
