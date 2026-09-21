@@ -282,6 +282,48 @@ async def behaviors_audit_rule_recall(request: Request):
     return ok(res)
 
 
+async def behaviors_task_records(request: Request):
+    """Phase 5.3 持久意图 + 周期归档：查询任务记录。
+
+    查询参数：``task_id``（可选）、``period_key``（可选，如 2026-09-18）。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    task_id = (request.query_params.get("task_id") or "").strip()
+    period_key = (request.query_params.get("period_key") or "").strip()
+    try:
+        limit = int(request.query_params.get("limit") or 100)
+    except (TypeError, ValueError):
+        return error("limit 必须是整数")
+    conn = rt.store.connect()
+    sql = "SELECT * FROM task_records"
+    conds, args = [], []
+    if task_id:
+        conds.append("task_id = ?")
+        args.append(task_id)
+    if period_key:
+        conds.append("period_key = ?")
+        args.append(period_key)
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY period_key DESC LIMIT ?"
+    args.append(max(1, min(limit, 1000)))
+    with rt.store._lock:
+        rows = conn.execute(sql, args).fetchall()
+    import json as _json
+    records = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["data"] = _json.loads(d.pop("data_json", "{}"))
+        except Exception:
+            d["data"] = {}
+        records.append(d)
+    return ok({"records": records, "count": len(records)})
+
+
 async def behaviors_return_profile(request: Request):
     """Phase 5.2 家庭日常画像：每人回家时间基线 + 异常检测。
 
@@ -324,4 +366,5 @@ ROUTES = [
     Route("/api/behaviors/audit-rule-recall", behaviors_audit_rule_recall,
           methods=["POST"]),
     Route("/api/behaviors/return-profile", behaviors_return_profile, methods=["GET"]),
+    Route("/api/behaviors/task-records", behaviors_task_records, methods=["GET"]),
 ]

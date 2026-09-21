@@ -461,6 +461,28 @@ class Store:
         conn = self.connect()
         with self._lock:
             conn.executescript(_SCHEMA_SQL)
+            # Phase 5.3 持久意图 + 周期归档：tasks / task_records 表
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    task_id      TEXT PRIMARY KEY,
+                    name         TEXT NOT NULL,
+                    description  TEXT NOT NULL DEFAULT '',
+                    period       TEXT NOT NULL DEFAULT 'daily',
+                    enabled      INTEGER NOT NULL DEFAULT 1,
+                    created_at   TEXT NOT NULL,
+                    updated_at   TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS task_records (
+                    record_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id      TEXT NOT NULL,
+                    period_key   TEXT NOT NULL,
+                    data_json    TEXT NOT NULL DEFAULT '{}',
+                    created_at   TEXT NOT NULL,
+                    UNIQUE(task_id, period_key)
+                )
+            """)
             conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
