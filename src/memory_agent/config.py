@@ -130,6 +130,10 @@ class Config:
     rule_recall_min_near_miss: int = 2                # 产出放宽建议所需的最少缺口天数
     process_mining_retention_days: int = 90           # 行为异常保留天数（confirmed 不清理）
 
+    # ── Phase 4.2 建议语义去重（复用 embedding 端点）──────────────────────────
+    semantic_dedup_enabled: bool = True               # 建议/洞察语义去重总开关
+    semantic_dedup_threshold: float = 0.85            # 余弦相似度阈值（0-1），超过视为重复
+
     # ── 主动感知 v2.0 · 客厅盒侧 AI 事件接入（Phase 0.1）──────────────────────
     livingroom_ai_enabled: bool = True                # 客厅盒侧 AI 事件轮询总开关
     livingroom_ai_interval_seconds: int = 10          # 轮询间隔（秒，默认 10s）

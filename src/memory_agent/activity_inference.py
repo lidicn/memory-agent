@@ -519,6 +519,12 @@ class ActivityInferenceService:
         rules = list(self.rules) + list(extra_rules or [])
         audit: list[dict] = []
         gaps: list[dict] = []
+        # Phase 4.2 建议语义去重：已生成建议名称列表（用于 is_duplicate 检查）
+        generated_suggestion_names: list[str] = []
+        dedup_suppressed: list[dict] = []
+        dedup_enabled = bool(getattr(self.config, "semantic_dedup_enabled", True))
+        dedup_threshold = float(getattr(self.config, "semantic_dedup_threshold", 0.85))
+        deduper = getattr(self.rt, "semantic_dedup", None)
         for rule in rules:
             steps = rule.get("steps") or []
             anchors = {s.get("tag") for s in steps if s.get("tag")}
@@ -611,6 +617,16 @@ class ActivityInferenceService:
                 label = f"去掉第{idx}步"
                 gap_kind = "drop_step"
             name = f"召回放宽[{rule.get('name')}]:{label}"
+            # Phase 4.2 建议语义去重：检查是否与已生成建议语义重复
+            if dedup_enabled and deduper is not None and generated_suggestion_names:
+                dup_check = deduper.is_duplicate(name, generated_suggestion_names, threshold=dedup_threshold)
+                if dup_check.get("duplicate"):
+                    dedup_suppressed.append({
+                        "name": name, "duplicate_of": dup_check.get("duplicate_of"),
+                        "similarity": dup_check.get("similarity"), "method": dup_check.get("method"),
+                        "rule": rule.get("name"), "blocker": blocker, "count": count,
+                    })
+                    continue
             try:
                 rid, action = self.store.upsert_candidate_rule(
                     name=name, steps=relaxed,
@@ -629,6 +645,7 @@ class ActivityInferenceService:
                              "kind": gap_kind, "blocker": blocker, "count": count,
                              "reasons": reasons,
                              "near_miss_days": len(near_miss)})
+                generated_suggestion_names.append(name)
             except Exception as exc:  # noqa: BLE001
                 print(f"[Activity] 召回放宽建议写库失败: {exc}")
 
@@ -637,6 +654,10 @@ class ActivityInferenceService:
             "events": len(events), "room_days": len(by_room_day),
             "rules": len(rules), "audit": audit,
             "gap_count": len(gaps), "gaps": gaps,
+            "dedup_suppressed_count": len(dedup_suppressed),
+            "dedup_suppressed": dedup_suppressed,
+            "dedup_enabled": dedup_enabled,
+            "dedup_threshold": dedup_threshold,
         }
 
     # ── P1.1 过程挖掘：行为过程模型 + 一致性检验（行为异常）────────────────

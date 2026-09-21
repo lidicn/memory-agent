@@ -46,6 +46,7 @@ from .templates import TemplateManager
 from .tv_service import TVService
 from .vision_service import VisionService
 from .alert_dispatcher import AlertDispatcher
+from .semantic_dedup import SemanticDeduplicator
 from .livingroom_ai import LivingRoomAIIngest
 from .announcer import Announcer
 
@@ -95,6 +96,8 @@ class AppRuntime:
         self.face = FaceNodeRegistry()
         # Phase 4.1 统一告警分发单飞：全局单例，注入 vision 与 away_mode
         self.alert_dispatcher = AlertDispatcher(default_cooldown_seconds=300)
+        # Phase 4.2 建议语义去重：复用 embedding 端点，embedding 不可用时回退精确匹配
+        self.semantic_dedup = SemanticDeduplicator(self.config)
         self.vision = VisionService(self.config, self.store, self.ha, agent_memory=self.agent_memory, alert_dispatcher=self.alert_dispatcher)
         self.vision.face = self.face
         # 电视截屏多模态（按需调用）：复用视觉服务的 VLM 通道
