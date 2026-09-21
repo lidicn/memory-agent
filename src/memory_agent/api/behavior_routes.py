@@ -282,6 +282,33 @@ async def behaviors_audit_rule_recall(request: Request):
     return ok(res)
 
 
+async def behaviors_return_profile(request: Request):
+    """Phase 5.2 家庭日常画像：每人回家时间基线 + 异常检测。
+
+    查询参数：``person``（可选，指定某人）、``days``（默认 14）。
+    不指定 person 时返回所有人的画像。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    person = (request.query_params.get("person") or "").strip()
+    try:
+        days = int(request.query_params.get("days") or 14)
+    except (TypeError, ValueError):
+        return error("days 必须是整数")
+    from ..daily_profile import get_return_time_profile, list_all_return_profiles
+    if person:
+        profile = await asyncio.to_thread(
+            get_return_time_profile, rt.store, person, max(1, min(days, 60))
+        )
+        return ok({"profile": profile})
+    profiles = await asyncio.to_thread(
+        list_all_return_profiles, rt.store, None, max(1, min(days, 60))
+    )
+    return ok({"profiles": profiles, "count": len(profiles)})
+
+
 ROUTES = [
     Route("/api/behaviors", behaviors_current, methods=["GET"]),
     Route("/api/behaviors/states", behaviors_states, methods=["GET"]),
@@ -296,4 +323,5 @@ ROUTES = [
     Route("/api/behaviors/drifts", behaviors_drifts, methods=["GET"]),
     Route("/api/behaviors/audit-rule-recall", behaviors_audit_rule_recall,
           methods=["POST"]),
+    Route("/api/behaviors/return-profile", behaviors_return_profile, methods=["GET"]),
 ]

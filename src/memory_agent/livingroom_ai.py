@@ -18,6 +18,7 @@ from . import perception_ingest as pi
 from .store import Store
 from .announcer import Announcer
 from .away_mode import AwayModeManager
+from . import daily_profile as dp
 
 logger = logging.getLogger("memory_agent.livingroom_ai")
 
@@ -226,6 +227,22 @@ class LivingRoomAIIngest:
                             logger.warning("离家模式告警: %s", ar.get("reason"))
                     except Exception as exc:
                         logger.warning("离家模式处理异常: %s", exc)
+                # Phase 5.2 家庭日常画像：face_known 时检查回家时间是否偏离基线
+                if ev.kind == "face_known" and ev.room == "客厅":
+                    try:
+                        from .perception_ingest import _known_person_name
+                        person = _known_person_name(ev)
+                        if person:
+                            profile = dp.get_return_time_profile(self.store, person, days=14)
+                            if profile.get("anomaly_today"):
+                                anom = profile["anomaly_today"]
+                                logger.warning(
+                                    "回家时间异常: %s 偏离基线 %.2fh（基线中位数 %.2f, MAD %.2f）",
+                                    person, anom.get("deviation_hours", 0),
+                                    anom.get("baseline_median", 0), anom.get("baseline_mad", 0),
+                                )
+                    except Exception as exc:
+                        logger.warning("回家时间画像检测异常: %s", exc)
                 # Phase 0.4 主动播报闭环：人脸/看护类事件经 doubao_tts 播报
                 if self.announcer is not None and ev.kind in pi.ANNOUNCE_KINDS:
                     self.announcer.announce(ev)
