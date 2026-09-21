@@ -108,9 +108,20 @@ class DebugRun:
         self.cancelled = True
 
 
+# P1-21: 僵尸 run 阈值——超过这个时间仍 running 视为僵尸（客户端断开/任务卡住）
+_ZOMBIE_RUN_TTL_S = 600  # 10 分钟
+
+
 def _register(run: DebugRun) -> None:
     _RUNS[run.run_id] = run
     if len(_RUNS) > _MAX_RUNS:
+        now = time.time()
+        # P1-21: 先标记僵尸 run（超过 10 分钟仍 running）为 terminal，再一起驱逐
+        for r in _RUNS.values():
+            if not r.terminal and (now - r.created_at) > _ZOMBIE_RUN_TTL_S:
+                r.status = "aborted"
+                r.error = f"僵尸 run 自动清理（运行超过 {_ZOMBIE_RUN_TTL_S}s）"
+                r.finish()
         finished = sorted(
             (r for r in _RUNS.values() if r.terminal),
             key=lambda r: r.created_at,

@@ -221,6 +221,19 @@ def build_acp_tools(kind: str = "acp") -> list[dict]:
     return tools
 
 
+def build_acp_llm_tools(kind: str = "acp") -> list[dict]:
+    """P1-21: ACP 循环 LLM 调用用的 OpenAI 格式工具表。
+
+    build_acp_tools() 返回的是 ACP 协议格式（name/description/inputSchema），
+    用于 initialize 响应；但 _execute_run 里 rt.llm.chat() 需要 OpenAI 格式
+    （type:function + function:{name,description,parameters}）。
+    之前把 ACP 格式直接传给 LLM，导致模型看不到工具，表现为「agent 只会聊天」。
+    """
+    if kind == "arena":
+        return tool_schema.build_openai_tools(("arena",))
+    return ACP_TOOLS
+
+
 # ACP 循环用的 OpenAI 工具表：builtin 集 + delegate
 ACP_TOOLS: list[dict] = tool_schema.build_openai_tools(("builtin",)) + [
     {
@@ -428,7 +441,7 @@ async def acp_handle(
         asyncio.create_task(
             _execute_run(
                 rt, run,
-                tools=build_acp_tools(_acp_kind(rt, scope)),
+                tools=build_acp_llm_tools(_acp_kind(rt, scope)),  # P1-21: LLM 需要 OpenAI 格式
                 run_tool=_make_arena_run_tool(rt, _acp_kind(rt, scope)),
             )
         )
