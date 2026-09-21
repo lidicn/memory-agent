@@ -282,6 +282,34 @@ async def behaviors_audit_rule_recall(request: Request):
     return ok(res)
 
 
+async def behaviors_rules(request: Request):
+    """Phase 3 主动规则引擎：查看 STATIC 规则列表和冷却状态。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    from ..perception_rules import STATIC_RULES
+    rules = []
+    for r in STATIC_RULES:
+        rid = r["id"]
+        last = rt.rule_engine._last_triggered.get(rid, 0.0) if hasattr(rt, "rule_engine") else 0.0
+        cooldown = float(r.get("cooldown_seconds", 0))
+        import time
+        elapsed = time.monotonic() - last if last > 0 else None
+        in_cd = elapsed is not None and elapsed < cooldown
+        rules.append({
+            "id": rid,
+            "trigger": r.get("trigger"),
+            "room": r.get("room", ""),
+            "action": r.get("action"),
+            "cooldown_seconds": cooldown,
+            "description": r.get("description", ""),
+            "in_cooldown": in_cd,
+            "seconds_remaining": max(0, int(cooldown - elapsed)) if in_cd else 0,
+        })
+    return ok({"rules": rules, "count": len(rules)})
+
+
 async def behaviors_home_profile(request: Request):
     """Phase 2.3 家庭画像：从 live 记忆生成 profile.md（原子写+权重截断）。
 
@@ -421,4 +449,5 @@ ROUTES = [
     Route("/api/behaviors/task-records", behaviors_task_records, methods=["GET"]),
     Route("/api/behaviors/feedback-pack", behaviors_feedback_pack, methods=["POST"]),
     Route("/api/behaviors/home-profile", behaviors_home_profile, methods=["GET"]),
+    Route("/api/behaviors/rules", behaviors_rules, methods=["GET"]),
 ]

@@ -113,6 +113,9 @@ class AppRuntime:
         self.researcher = ResearcherService(self)
         # 主动感知·行为推断（v0.9.5）：从 events 产出 canonical 行为状态，供 GET /api/behaviors
         self.activity = ActivityInferenceService(self)
+        # Phase 3 主动规则引擎：STATIC 规则 + 滑窗去抖
+        from .perception_rules import RuleEngine
+        self.rule_engine = RuleEngine()
         self._started = False
 
     # ── 生命周期 ─────────────────────────────────────────────────────────

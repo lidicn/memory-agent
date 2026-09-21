@@ -243,6 +243,17 @@ class LivingRoomAIIngest:
                                 )
                     except Exception as exc:
                         logger.warning("回家时间画像检测异常: %s", exc)
+                # Phase 3 主动规则引擎：评估事件，命中 STATIC 规则则触发动作
+                try:
+                    if self.rt is not None and hasattr(self.rt, "rule_engine"):
+                        hits = self.rt.rule_engine.evaluate(ev.kind, ev.room or "")
+                        for hit in hits:
+                            if hit["action"] == "alert":
+                                logger.warning("规则告警[%s]: %s", hit["rule_id"], hit.get("description", ""))
+                            elif hit["action"] == "log":
+                                logger.info("规则记录[%s]: %s", hit["rule_id"], hit.get("description", ""))
+                except Exception as exc:
+                    logger.warning("规则引擎评估异常: %s", exc)
                 # Phase 0.4 主动播报闭环：人脸/看护类事件经 doubao_tts 播报
                 if self.announcer is not None and ev.kind in pi.ANNOUNCE_KINDS:
                     self.announcer.announce(ev)
