@@ -282,6 +282,30 @@ async def behaviors_audit_rule_recall(request: Request):
     return ok(res)
 
 
+async def behaviors_home_profile(request: Request):
+    """Phase 2.3 家庭画像：从 live 记忆生成 profile.md（原子写+权重截断）。
+
+    查询参数：``max_chars``（默认 4000）、``write``（是否写入 /data/home_profile.md，默认 false）。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    try:
+        max_chars = int(request.query_params.get("max_chars") or 4000)
+    except (TypeError, ValueError):
+        return error("max_chars 必须是整数")
+    write = request.query_params.get("write", "").lower() in ("1", "true", "yes")
+    from ..home_profile import build_profile, write_profile_atomic
+    profile_text = build_profile(rt.store, max_chars=max(100, min(max_chars, 20000)))
+    written_path = None
+    if write:
+        out_path = "/data/home_profile.md"
+        write_profile_atomic(out_path, profile_text)
+        written_path = out_path
+    return ok({"profile": profile_text, "chars": len(profile_text), "written": written_path})
+
+
 async def behaviors_feedback_pack(request: Request):
     """Phase 4.3 反馈闭环：导出 VLM 误识别 bad-case 包（tar.gz）。
 
@@ -396,4 +420,5 @@ ROUTES = [
     Route("/api/behaviors/return-profile", behaviors_return_profile, methods=["GET"]),
     Route("/api/behaviors/task-records", behaviors_task_records, methods=["GET"]),
     Route("/api/behaviors/feedback-pack", behaviors_feedback_pack, methods=["POST"]),
+    Route("/api/behaviors/home-profile", behaviors_home_profile, methods=["GET"]),
 ]
