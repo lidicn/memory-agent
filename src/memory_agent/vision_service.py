@@ -1,4 +1,4 @@
-"""视觉识别服务：go2rtc 取帧 + doubao 多模态识别 + 光线门槛与节流
+﻿"""视觉识别服务：go2rtc 取帧 + doubao 多模态识别 + 光线门槛与节流
 
 对应 docs/vision-behavior-spec.md。职责边界：
 - 本服务是「何时调 VLM」节流策略的唯一持有者（spec §2）；
@@ -603,7 +603,7 @@ class VisionService:
             payload_img = "data:image/jpeg;base64," + base64.b64encode(bytes(image)).decode()
         else:
             payload_img = image  # 已是 b64 / data URL
-        url = (node.url or "").rstrip("/") + "/recognize"
+        url = (node.url or "").rstrip("/") + "/api/recognize"
         try:
             resp = httpx.post(
                 url, json={"image": payload_img, "min_conf": min_conf}, timeout=timeout
@@ -706,6 +706,7 @@ class VisionService:
         trigger: str = "patrol",
         persons: list[dict] | None = None,
         device_ts: int | None = None,
+        client: str | None = None,
     ) -> dict:
         """识别一个房间当前画面。同步实现，路由层用 asyncio.to_thread 包装。
 
@@ -1028,7 +1029,7 @@ class VisionService:
 
     def record_face_event(
         self, room: str, persons: list[dict], trigger: str, device_ts: int | None,
-        camera: str | None = None,
+        camera: str | None = None, client: str | None = None,
     ) -> dict:
         """TV 端人脸事件（spec §5.1）。空 persons = 「房间没人了」，直接入库不调 VLM。"""
         if persons:
@@ -1037,7 +1038,7 @@ class VisionService:
                 asyncio.to_thread(
                     self.analyze_room, room,
                     trigger=trigger or "identity_change",
-                    persons=persons, device_ts=device_ts,
+                    persons=persons, device_ts=device_ts, client=client,
                 )
             )
             return {"accepted": True, "deduped": False, "vlm_dispatched": True}
@@ -1045,7 +1046,7 @@ class VisionService:
             "room": room, "camera_src": camera or (self.camera_for_room(room) or {}).get("stream", ""),
             "persons": [], "count": 0, "action": "房间无人",
             "trigger": trigger or "count_change", "device_ts": device_ts,
-            "status": "ok",
+            "status": "ok", "client": client or "",
         })
         return {"accepted": True, "deduped": False, "vlm_dispatched": False}
 

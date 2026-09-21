@@ -172,9 +172,10 @@ async def events_face(request: Request):
     persons = body.get("persons") if isinstance(body.get("persons"), list) else []
     trigger = (body.get("trigger") or "heartbeat").strip()
     device_ts = body.get("ts")
+    client = (body.get("client") or "").strip()
     rt = runtime(request)
     result = rt.vision.record_face_event(
-        room, persons, trigger, device_ts, camera=body.get("camera")
+        room, persons, trigger, device_ts, camera=body.get("camera"), client=client
     )
     return ok(result, status_code=202)
 
