@@ -5,7 +5,7 @@
 * 节点（TV / 手机）启动后 ``register``，定时 ``heartbeat`` 续活；
 * memory-agent 按节点类型给稳定性权重（``phone=100`` / ``tv=20``），
   选路时取权重最高的**在线**节点；
-* 心跳超时（>30s）自动剔除，避免打到已死节点拖垮识别链路；
+* 心跳超时（>120s）自动剔除，避免打到已死节点拖垮识别链路；
 * 选路失败 / 节点调用失败 → 返回 ``None``，由上层降级到 VLM（不报错）。
 
 节点契约（memory-agent → 节点）
@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-_HEARTBEAT_TTL_S = 30.0          # 心跳超时阈值：超过即视为离线并剔除
+_HEARTBEAT_TTL_S = 120.0         # 心跳超时阈值：超过即视为离线并剔除（TV端默认60s心跳，留2倍余量）
 _NODE_WEIGHTS = {"phone": 100, "tv": 20, "default": 10}
 
 

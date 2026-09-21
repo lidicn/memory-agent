@@ -769,6 +769,45 @@ class VisionService:
         try:
             frame, fetch_ms = self.fetch_frame(stream)
         except Exception as exc:  # noqa: BLE001
+            # P1-14 补漏：TV 端已上报 persons 时，即使 go2rtc 取帧失败，
+            # 也保留 TV 端 ArcFace 识别结果直接入库（VLM 只是补充动作，不是必需）
+            if persons:
+                persons_out = []
+                actions = []
+                for fp in persons:
+                    if not isinstance(fp, dict):
+                        continue
+                    name = (fp.get("name") or "").strip()
+                    if not name:
+                        continue
+                    score = fp.get("score") or fp.get("confidence")
+                    score = float(score) if isinstance(score, (int, float)) else 0.0
+                    persons_out.append({
+                        "name": name, "via": "face", "detail": fp,
+                        "match_confidence": score, "member_id": None,
+                        "action": "",
+                    })
+                    actions.append(f"{name} 在画面中")
+                action = "；".join(actions) if actions else "未检测到人"
+                self.store.insert_behavior_event({
+                    "room": room,
+                    "camera_src": stream,
+                    "persons": persons_out,
+                    "count": len(persons_out),
+                    "action": action,
+                    "scene": "",
+                    "confidence": None,
+                    "appearance": None,
+                    "trigger": trigger,
+                    "vlm_latency_ms": 0,
+                    "snapshot_path": "",
+                    "raw_response": f"go2rtc 取帧失败，保留 TV 端识别结果: {exc}",
+                    "status": "ok",
+                    "device_ts": device_ts,
+                })
+                self._last_call[room] = time.monotonic()
+                return {"ok": True, "persons": persons_out, "action": action,
+                        "vlm_failed": True, "reason": "go2rtc_failed_but_tv_face_retained"}
             self._register_failure(room, stream, trigger, f"go2rtc 取帧失败: {exc}")
             return {"ok": False, "error": f"go2rtc 取帧失败: {exc}"}
 
