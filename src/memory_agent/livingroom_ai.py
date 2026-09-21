@@ -17,6 +17,7 @@ from typing import Any, Optional
 from . import perception_ingest as pi
 from .store import Store
 from .announcer import Announcer
+from .away_mode import AwayModeManager
 
 logger = logging.getLogger("memory_agent.livingroom_ai")
 
@@ -46,6 +47,7 @@ class LivingRoomAIIngest:
         vision: Any = None,
         omni_enabled: bool = False,
         agent_memory: Any = None,
+        away_mode: AwayModeManager | None = None,
     ) -> None:
         self.ha = ha_client
         self.store = store
@@ -58,6 +60,8 @@ class LivingRoomAIIngest:
         self.omni_enabled = bool(omni_enabled)
         # Phase 2.1 候选晋升：同房间+同 action 跨天 ≥3 天自动写 staging 候选。
         self.agent_memory = agent_memory
+        # Phase 5.1 离家模式状态机：no_human→离家，face_known→回家，离家时face_unknown立即告警。
+        self.away_mode = away_mode or AwayModeManager(store, room="客厅")
         self._entity_ids: list[str] = []
         self._entity_rooms: dict[str, str] = {}
         self._seen: dict[str, Optional[str]] = {}
@@ -211,6 +215,17 @@ class LivingRoomAIIngest:
                             logger.debug("Omni %s@%s 冷却/门控拦截", ev.kind, ev.room)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("Omni analyze_room 异常: %s", exc)
+                # Phase 5.1 离家模式状态机：no_human→离家，face_known→回家，
+                # 离家模式下 face_unknown 立即告警（不等名册消除法）。
+                if self.away_mode is not None and ev.kind in ("no_human", "face_known", "face_unknown"):
+                    try:
+                        ar = self.away_mode.handle_event(ev.kind, ev.room or "", ev.server_ts or "")
+                        if ar.get("state_changed"):
+                            logger.info("离家模式状态变化: %s", ar.get("reason"))
+                        if ar.get("alert"):
+                            logger.warning("离家模式告警: %s", ar.get("reason"))
+                    except Exception as exc:
+                        logger.warning("离家模式处理异常: %s", exc)
                 # Phase 0.4 主动播报闭环：人脸/看护类事件经 doubao_tts 播报
                 if self.announcer is not None and ev.kind in pi.ANNOUNCE_KINDS:
                     self.announcer.announce(ev)
