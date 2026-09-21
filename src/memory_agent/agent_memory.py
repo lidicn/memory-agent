@@ -346,7 +346,7 @@ class AgentMemoryService:
             tags_json=tags_json, source_refs_json=refs_json,
             ttl_days=ttl_days, state="staging", source=source, prev_id=nearest_id,
             valid_from=new_valid_from, observed_at=observed_at or new_valid_from,
-            member_id=member_id)
+            member_id=member_id, auto_promote_blocked=auto_promote_blocked)  # P1-13: 分支4同样携带 blocked 标志
         self._upsert_mirror(self.store.get_agent_memory(mid))
         return {"ok": True, "action": "invalidated_added", "memory_id": mid,
                 "state": "staging", "invalidated": nearest_id,

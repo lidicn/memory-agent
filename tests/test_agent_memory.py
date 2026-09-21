@@ -12,6 +12,7 @@ _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
+import json
 import pytest  # noqa: E402
 
 from memory_agent.store import Store  # noqa: E402
@@ -29,6 +30,7 @@ class FakeConfig:
     agent_promote_min_days = 2
     agent_corroborate_min_conf = 0.6
     agent_default_ttl_days = 30
+    tz_offset_hours = 0.0
 
 
 class FakeCollection:
@@ -269,3 +271,76 @@ def test_health_counts_and_mirror_dirty(svc):
     assert h["mirror_dirty"] == 1  # promote 后 record_agent_feedback 改 trust，镜像待同步
     assert h["chroma_available"] is True
     assert set(h["states"].keys()) == set(AGENT_STATES)
+
+
+# ── P1-13: auto_promote_blocked 在 merge 分支4(INVALIDATE+ADD)不丢失 ──────
+def test_p113_merge_invalidated_add_preserves_blocked(svc):
+    """分支4：旧是 staging 且矛盾(0.85<=sim<0.92) → INVALIDATE旧+ADD新。
+    新记忆必须继承 auto_promote_blocked=1，否则低信任会话的记忆会被 sweep 错误晋升。"""
+    # 先建一条 staging 邻居（非 live）
+    neighbor = svc.add_semantic_memory("s1", "客厅夜间灯光频繁开启。",
+                                        source_refs=CROSS_DAY, topic_key="T", dry_run=False)
+    assert neighbor["state"] == "staging"
+
+    # 设置 FakeCollection 邻居：distance=0.12 → sim=1/1.12=0.893（在 0.85~0.92 之间）
+    # state 必须是非 live，才能走到分支4最后的 INVALIDATE+ADD
+    svc._test_col.response = {
+        "ids": [[neighbor["memory_id"]]],
+        "distances": [[0.12]],
+        "documents": [["doc-neighbor"]],
+        "metadatas": [[{"topic_key": "T", "state": "staging"}]],
+    }
+
+    # 调用 merge，auto_promote_blocked=1（模拟低信任/严格会话）
+    r = svc.merge_semantic_memory(
+        session_id="s1", text="客厅夜间灯光从不开启。",
+        topic_key="T", source_refs=CROSS_DAY,
+        auto_promote_blocked=1,
+    )
+    assert r["ok"] is True
+    assert r["action"] == "invalidated_added"
+    new_id = r["memory_id"]
+
+    # 验证新记忆 auto_promote_blocked=1（P1-13 核心断言）
+    new_mem = svc.store.get_agent_memory(new_id)
+    assert new_mem["auto_promote_blocked"] == 1, \
+        f"P1-13 FAIL: 分支4新记忆 auto_promote_blocked={new_mem['auto_promote_blocked']}, 期望 1"
+
+    # 验证 sweep 跳过这条 blocked 记忆（不被自动晋升）
+    svc._test_col.set_neighbors([])  # 清除邻居，避免冲突扫描干扰
+    before = svc.store.get_agent_memory(new_id)["state"]
+    out = svc.sweep_promote_candidates()
+    after = svc.store.get_agent_memory(new_id)["state"]
+    assert after == before == "staging", \
+        f"P1-13 FAIL: blocked 记忆被 sweep 晋升了: {before} -> {after}"
+
+
+def test_p113_merge_added_branch_preserves_blocked(svc):
+    """分支1：无相似 → ADD 新。验证 auto_promote_blocked 正确传递（已有路径，回归保护）。"""
+    svc._test_col.set_neighbors([])  # 无邻居 → 分支1 ADD
+    r = svc.merge_semantic_memory(
+        session_id="s1", text="全新的记忆内容。",
+        topic_key="NEW", source_refs=CROSS_DAY,
+        auto_promote_blocked=1,
+    )
+    assert r["ok"] is True and r["action"] == "added"
+    mem = svc.store.get_agent_memory(r["memory_id"])
+    assert mem["auto_promote_blocked"] == 1
+
+
+def test_p113_sweep_skips_blocked_memory(svc):
+    """sweep 必须跳过 auto_promote_blocked=1 的 staging 记忆。"""
+    # 直接建一条 blocked=1 的 staging 记忆
+    mid = svc.store.add_agent_memory(
+        session_id="s1", text="被阻止自动晋升的记忆。",
+        topic_key="BLOCKED", tags_json="[]", source_refs_json=json.dumps(CROSS_DAY),
+        ttl_days=30, state="staging", source="test",
+        auto_promote_blocked=1,
+    )
+    svc._test_col.set_neighbors([])
+    out = svc.sweep_promote_candidates()
+    mem = svc.store.get_agent_memory(mid)
+    assert mem["state"] == "staging", \
+        f"P1-13 FAIL: blocked 记忆被 sweep 晋升为 {mem['state']}"
+    # scanned 不包含 blocked 记忆（sweep 里 continue 跳过）
+    assert out["scanned"] == 0
