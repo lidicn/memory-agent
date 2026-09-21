@@ -44,7 +44,7 @@ async def vision_status(request: Request):
     if err:
         return err
     rt = runtime(request)
-    return ok(rt.vision.status())
+    return ok(await rt.vision.status())
 
 
 async def vision_lights(request: Request):

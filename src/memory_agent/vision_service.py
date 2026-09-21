@@ -1106,14 +1106,17 @@ class VisionService:
 
     # ── 状态（设置页运行状态块）──────────────────────────────────────────
 
-    def status(self) -> dict:
+    async def status(self) -> dict:
+        """P1-19: 改 async + 并发查询，避免 N 路摄像头串行同步 HTTP 阻塞事件循环。"""
+        import asyncio
         cfg = self.config
-        rooms = []
-        for camera in self.cameras:
+
+        async def _room_status(camera):
             room = camera.get("room") or ""
-            gate = self.room_light_state(room, camera)
+            # room_light_state 里的 _light_on 是同步 HTTP（带缓存），放线程池
+            gate = await asyncio.to_thread(self.room_light_state, room, camera)
             backoff = self._backoff_remaining(room)
-            rooms.append({
+            return {
                 "room": room,
                 "stream": camera.get("stream"),
                 "enabled": bool(camera.get("enabled", True)),
@@ -1131,7 +1134,9 @@ class VisionService:
                 "backoff_remaining_s": round(backoff),
                 "skips": dict(self._skip_counts.get(room, {})),
                 "last_result": self._last_result.get(room),
-            })
+            }
+
+        rooms = await asyncio.gather(*[_room_status(cam) for cam in self.cameras])
         return {
             "enabled": bool(cfg.vision_enabled),
             "light_gate": bool(cfg.vision_light_gate),
