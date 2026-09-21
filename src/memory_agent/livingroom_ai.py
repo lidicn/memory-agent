@@ -49,6 +49,7 @@ class LivingRoomAIIngest:
         omni_enabled: bool = False,
         agent_memory: Any = None,
         away_mode: AwayModeManager | None = None,
+        alert_dispatcher=None,
     ) -> None:
         self.ha = ha_client
         self.store = store
@@ -62,7 +63,7 @@ class LivingRoomAIIngest:
         # Phase 2.1 候选晋升：同房间+同 action 跨天 ≥3 天自动写 staging 候选。
         self.agent_memory = agent_memory
         # Phase 5.1 离家模式状态机：no_human→离家，face_known→回家，离家时face_unknown立即告警。
-        self.away_mode = away_mode or AwayModeManager(store, room="客厅")
+        self.away_mode = away_mode or AwayModeManager(store, room="客厅", alert_dispatcher=alert_dispatcher)
         self._entity_ids: list[str] = []
         self._entity_rooms: dict[str, str] = {}
         self._seen: dict[str, Optional[str]] = {}

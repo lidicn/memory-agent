@@ -1,4 +1,4 @@
-﻿"""视觉识别服务：go2rtc 取帧 + doubao 多模态识别 + 光线门槛与节流
+"""视觉识别服务：go2rtc 取帧 + doubao 多模态识别 + 光线门槛与节流
 
 对应 docs/vision-behavior-spec.md。职责边界：
 - 本服务是「何时调 VLM」节流策略的唯一持有者（spec §2）；
@@ -65,7 +65,7 @@ _PROMPT_PRESETS: dict[str, str] = {
 class VisionService:
     """多模态行为识别中枢。同步实现 + to_thread 包装，巡检为 asyncio 常驻任务。"""
 
-    def __init__(self, config, store, ha, agent_memory=None) -> None:
+    def __init__(self, config, store, ha, agent_memory=None, alert_dispatcher=None) -> None:
         self.config = config
         self.store = store
         self.ha = ha
@@ -73,6 +73,8 @@ class VisionService:
         self.agent_memory = agent_memory
         # 巡检异常 MQTT 推送（Phase 2 可选）：由 runtime 注入桥接；None 时静默跳过。
         self.mqtt = None
+        # Phase 4.1 统一告警分发单飞：由 runtime 注入；None 时不冷却（向后兼容）
+        self.alert_dispatcher = alert_dispatcher
         # 人脸识别节点池（ArcFace 可插拔）。runtime 会注入共享实例；
         # 兜底：此处自建一个独立实例，保证不直接依赖 runtime。
         self.face: FaceNodeRegistry | None = FaceNodeRegistry()
@@ -989,6 +991,19 @@ class VisionService:
         strangers = [p for p in (persons or []) if (p.get("name") or "") in self._STRANGER_NAMES]
         if not strangers:
             return
+        # Phase 4.1：统一分发单飞（同 session 同类型冷却期内只发一次）
+        dispatcher = getattr(self, "alert_dispatcher", None)
+        if dispatcher is not None:
+            cooldown = int(getattr(self.config, "vision_alert_cooldown_s", 300) or 300)
+            result = dispatcher.should_send(
+                session_id=f"vision:{room}",
+                alert_type="stranger",
+                priority=5,  # 视觉陌生人告警优先级（中，低于离家模式）
+                cooldown_seconds=cooldown,
+            )
+            if not result["send"]:
+                print(f"[Vision] 告警单飞抑制: {room}陌生人（{result['reason']}，已合并 {result['merged_count']} 次）")
+                return
         topic = getattr(self.config, "vision_alert_mqtt_topic", "") or "butler/trigger/gu_anheng_alert"
         try:
             mqtt.publish_raw(topic, {

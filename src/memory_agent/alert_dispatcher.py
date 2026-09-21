@@ -17,7 +17,7 @@ class AlertDispatcher:
     """统一告警分发器：单飞 + 合并 + 优先级淘汰。"""
 
     def __init__(self, default_cooldown_seconds: int = 300) -> None:
-        self._default_cooldown = max(1, int(default_cooldown_seconds))
+        self._default_cooldown = max(0.01, float(default_cooldown_seconds))
         # session_id -> {alert_type: {"last_ts": float, "count": int, "priority": int}}
         self._recent: dict[str, dict[str, dict]] = {}
         # 全局上限，防止内存泄漏
@@ -47,7 +47,7 @@ class AlertDispatcher:
 
         priority: 数字越大优先级越高。高优先级告警可绕过低优先级的冷却。
         """
-        cooldown = cooldown_seconds if cooldown_seconds is not None else self._default_cooldown
+        cooldown = max(0.01, float(cooldown_seconds)) if cooldown_seconds is not None else self._default_cooldown
         now = time.monotonic()
 
         self._evict_if_needed()

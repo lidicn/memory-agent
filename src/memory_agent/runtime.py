@@ -45,6 +45,7 @@ from .store import Store, now_local
 from .templates import TemplateManager
 from .tv_service import TVService
 from .vision_service import VisionService
+from .alert_dispatcher import AlertDispatcher
 from .livingroom_ai import LivingRoomAIIngest
 from .announcer import Announcer
 
@@ -92,7 +93,9 @@ class AppRuntime:
         )
         # 人脸识别节点池：运行时级共享注册表，vision 与 face_routes 共用同一实例
         self.face = FaceNodeRegistry()
-        self.vision = VisionService(self.config, self.store, self.ha, agent_memory=self.agent_memory)
+        # Phase 4.1 统一告警分发单飞：全局单例，注入 vision 与 away_mode
+        self.alert_dispatcher = AlertDispatcher(default_cooldown_seconds=300)
+        self.vision = VisionService(self.config, self.store, self.ha, agent_memory=self.agent_memory, alert_dispatcher=self.alert_dispatcher)
         self.vision.face = self.face
         # 电视截屏多模态（按需调用）：复用视觉服务的 VLM 通道
         self.tv = TVService(self.config, self.ha, self.vision)
@@ -191,6 +194,7 @@ class AppRuntime:
             vision=self.vision,
             omni_enabled=getattr(self.config, "livingroom_ai_omni_enabled", False),
             agent_memory=self.agent_memory,
+            alert_dispatcher=self.alert_dispatcher,
         )
         self._livingroom_ai_task = asyncio.create_task(self._periodic_livingroom_ai())
 

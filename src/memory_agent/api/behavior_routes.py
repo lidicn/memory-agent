@@ -431,6 +431,23 @@ async def behaviors_return_profile(request: Request):
     return ok({"profiles": profiles, "count": len(profiles)})
 
 
+async def alerts_stats(request: Request):
+    """Phase 4.1 告警分发统计：查看 AlertDispatcher 的单飞/合并/优先级淘汰状态。
+
+    查询参数 ``session_id``（可选）限定某个会话（如 away_mode / vision:客厅）。
+    鉴权走 require_user（WebUI JWT）。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    dispatcher = getattr(rt, "alert_dispatcher", None)
+    if dispatcher is None:
+        return error("alert_dispatcher 未初始化")
+    session_id = (request.query_params.get("session_id") or "").strip()
+    stats = dispatcher.get_stats(session_id=session_id or None)
+    return ok(stats)
+
 ROUTES = [
     Route("/api/behaviors", behaviors_current, methods=["GET"]),
     Route("/api/behaviors/states", behaviors_states, methods=["GET"]),
@@ -450,4 +467,5 @@ ROUTES = [
     Route("/api/behaviors/feedback-pack", behaviors_feedback_pack, methods=["POST"]),
     Route("/api/behaviors/home-profile", behaviors_home_profile, methods=["GET"]),
     Route("/api/behaviors/rules", behaviors_rules, methods=["GET"]),
+    Route("/api/alerts/stats", alerts_stats, methods=["GET"]),
 ]
