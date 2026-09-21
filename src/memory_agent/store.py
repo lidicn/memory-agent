@@ -244,6 +244,9 @@ CREATE TABLE IF NOT EXISTS behavior_events (
   status TEXT NOT NULL DEFAULT 'ok'  -- ok | vlm_failed | low_confidence | skipped
 );
 CREATE INDEX IF NOT EXISTS idx_be_day_room ON behavior_events(day, room);
+-- P1-7: 热路径查询索引 - 在场查询按时间范围/房间+时间范围过滤
+CREATE INDEX IF NOT EXISTS idx_be_server_ts ON behavior_events(server_ts);
+CREATE INDEX IF NOT EXISTS idx_be_room_server_ts ON behavior_events(room, server_ts);
 
 -- 统一感知总线（主动感知 v2.0）：边缘 AI / VLM / sensor 三类来源归一化收口
 CREATE TABLE IF NOT EXISTS perception_events (

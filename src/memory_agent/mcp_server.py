@@ -659,12 +659,14 @@ def _extract_error_text(result):
     return "is_error"
 
 
-def _record_mcp_call(name, dt_ms, is_err, err_text):
+async def _record_mcp_call(name, dt_ms, is_err, err_text):
     # v0.7.5-2 操作审计：落库（带身份/来源），与内存统计互补。
+    # P1-7: 审计写改异步（asyncio.to_thread），避免同步 commit 阻塞事件循环
     # 旁路：失败只记日志，绝不影响工具调用本身。
     try:
         token_name, _granted, origin = _caller_context()
-        get_runtime().store.log_mcp_audit(
+        await asyncio.to_thread(
+            get_runtime().store.log_mcp_audit,
             token_name=token_name,
             tool=name,
             scope=scope_of(name),
@@ -850,7 +852,7 @@ async def _tracked_call_tool(server, name, arguments, context=None):
             "MCP 权限拒绝: token=%s tool=%s need=write granted=%s", _tok, name, _scopes
         )
         result = _denied_result(name, _tok, _scopes)
-        _record_mcp_call(name, 0.0, True, f"DENIED scope: {name}")
+        await _record_mcp_call(name, 0.0, True, f"DENIED scope: {name}")
         return result
 
     # v0.9 任务3 故障注入矩阵：注入的故障优先于真实执行（含幂等缓存），用于契约验证 / 混沌演练。
@@ -858,7 +860,7 @@ async def _tracked_call_tool(server, name, arguments, context=None):
     if fault_code:
         _mcp_stats_log.warning("MCP 故障注入: tool=%s code=%s", name, fault_code)
         result = _fault_result(name, fault_code)
-        _record_mcp_call(name, 0.0, True, f"FAULT-INJECT:{fault_code}")
+        await _record_mcp_call(name, 0.0, True, f"FAULT-INJECT:{fault_code}")
         return result
 
     # v0.9 幂等键：写工具可传 idempotency_key 防重复执行（分发层消费，工具签名无需改）
@@ -869,7 +871,7 @@ async def _tracked_call_tool(server, name, arguments, context=None):
     if cache_key:
         cached = _idem_get(cache_key)
         if cached is not None:
-            _record_mcp_call(name, 0.0, bool(cached.get("is_error")), "IDEMPOTENT-HIT")
+            await _record_mcp_call(name, 0.0, bool(cached.get("is_error")), "IDEMPOTENT-HIT")
             return _idem_result(cached)
 
     t0 = time.monotonic()
@@ -895,7 +897,7 @@ async def _tracked_call_tool(server, name, arguments, context=None):
         raise
     finally:
         dt = (time.monotonic() - t0) * 1000
-        _record_mcp_call(name, dt, is_err, err_text)
+        await _record_mcp_call(name, dt, is_err, err_text)
 
 
 def _install_mcp_tracking(server):
