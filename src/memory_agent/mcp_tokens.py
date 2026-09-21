@@ -106,6 +106,13 @@ class MCPTokenStore:
             return {"ok": False, "error": "缺少 Token 名称"}
         if len(name) > 64:
             return {"ok": False, "error": "名称过长（上限 64 字符）"}
+        # P1-20: kind 白名单校验 —— 只允许 mcp / acp；
+        # debug kind 只能通过 /api/debug/tokens 专门接口生成（require_admin + 环境限制），
+        # 防止低权限入口通过 create_token 传 kind="debug" 绕过 admin 校验。
+        allowed_kinds = {"mcp", "acp"}
+        kind_val = (kind or "mcp").strip().lower()
+        if kind_val not in allowed_kinds:
+            return {"ok": False, "error": f"非法 kind: {kind_val}（允许: mcp / acp；debug 请用调试令牌专用接口）"}
         prefix = prefix or TOKEN_PREFIX
         granted = normalize(scopes) if scopes is not None else list(DEFAULT_SCOPES)
         with self._lock:
@@ -119,7 +126,7 @@ class MCPTokenStore:
                 "created_at": self._now(),
                 "last_used_at": "",
                 "use_count": 0,
-                "kind": kind or "mcp",
+                "kind": kind_val,
                 "scopes": granted,
             }
             tokens[name] = record

@@ -419,6 +419,20 @@ class AgentMemoryService:
             if not eligible:
                 return {"ok": False, "state": mem["state"], "error": f"未满足晋升条件：{reason}"}
 
+        # P1-20: human_override 强制晋升时记录审计（谁在什么时候绕过信任度模型晋升了哪条记忆）
+        if human_override:
+            try:
+                self.store.log_mcp_audit(
+                    token_name="human_override",
+                    tool="promote_memory",
+                    scope="write",
+                    duration_ms=0.0,
+                    ok=True,
+                    error="",
+                    origin=f"force_promote:{memory_id}",
+                )
+            except Exception:  # noqa: BLE001 —— 审计失败不影响主流程
+                pass
         self.store.set_agent_memory_state(memory_id, "live", mirror_dirty=0)
         self._upsert_mirror(self.store.get_agent_memory(memory_id))
         self.store.record_agent_feedback(memory_id, True)  # 晋升成功 → 信任 +

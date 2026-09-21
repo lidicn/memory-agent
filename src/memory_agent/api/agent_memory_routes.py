@@ -8,7 +8,7 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.routing import Route
 
-from .deps import error, json_body, ok, require_user, runtime
+from .deps import error, json_body, ok, require_admin, require_user, runtime
 from ..config import get_config
 
 
@@ -80,7 +80,8 @@ async def memory_health(request: Request):
 
 
 async def promote(request: Request):
-    _, err = require_user(request)
+    # P1-20: human_override/force 晋升需要 admin 权限，普通用户不可绕过信任度模型
+    _, err = require_admin(request)
     if err:
         return err
     body = await json_body(request)
