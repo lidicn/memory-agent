@@ -362,6 +362,87 @@ async def behaviors_feedback_pack(request: Request):
     return ok({"path": result, "size_bytes": size, "label": body.get("label", "bad_case")})
 
 
+async def behaviors_bad_cases_list(request: Request):
+    """Phase 4.3 反馈闭环：列出最近的 VLM 失败 bad-case 事件。
+
+    查询参数：``limit``（可选，默认 20）、``room``（可选，按房间过滤）。
+    返回 vlm_failed 状态的行为事件列表（含 snapshot_path、raw_response 摘要）。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    limit = min(int(request.query_params.get("limit", 20) or 20), 100)
+    room = (request.query_params.get("room") or "").strip()
+    try:
+        events = rt.store.query_events(
+            status="vlm_failed", room=room or None, limit=limit,
+        )
+    except Exception as exc:
+        return error(f"查询失败: {exc}")
+    # 脱敏：raw_response 只返回前 200 字符
+    out = []
+    for e in events:
+        raw = e.get("raw_response") or ""
+        out.append({
+            "id": e.get("id"), "ts": e.get("ts"), "room": e.get("room"),
+            "camera_src": e.get("camera_src"), "trigger": e.get("trigger"),
+            "snapshot_path": e.get("snapshot_path"),
+            "error_summary": raw[:200] + ("..." if len(raw) > 200 else ""),
+            "device_ts": e.get("device_ts"),
+        })
+    return ok({"count": len(out), "events": out})
+
+
+async def behaviors_bad_case_export(request: Request):
+    """Phase 4.3 反馈闭环：根据事件 ID 一键导出 bad-case 包。
+
+    Body: ``event_id``（必填，行为事件 ID）、``label``（可选，默认 bad_case_{id}）。
+    从数据库读取事件的 snapshot_path 和 raw_response，打包成 tar.gz。
+    fail-closed：脱敏失败宁可丢 trace。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    body = await json_body(request)
+    event_id = body.get("event_id")
+    if not event_id:
+        return error("缺少 event_id")
+    rt = runtime(request)
+    from ..feedback_pack import build_feedback_pack
+    output_dir = "/data/feedback_packs"
+    os.makedirs(output_dir, exist_ok=True)
+    # 从数据库读取事件
+    try:
+        events = rt.store.query_events(limit=1)
+        # query_events 不支持按 id 过滤，用 get_event 或直接查
+        event = None
+        if hasattr(rt.store, "get_behavior_event"):
+            event = rt.store.get_behavior_event(event_id)
+        if event is None:
+            # 回退：从最近事件中找
+            all_events = rt.store.query_events(limit=500)
+            for e in all_events:
+                if str(e.get("id")) == str(event_id):
+                    event = e
+                    break
+    except Exception as exc:
+        return error(f"查询事件失败: {exc}")
+    if event is None:
+        return error(f"事件 {event_id} 不存在")
+    label = body.get("label") or f"bad_case_{event_id}"
+    result = build_feedback_pack(
+        snapshot_path=event.get("snapshot_path", ""),
+        trace=event.get("raw_response", ""),
+        output_dir=output_dir,
+        label=label,
+    )
+    if result is None:
+        return error("反馈包打包失败（脱敏/打包异常，已 fail-closed）")
+    size = os.path.getsize(result) if os.path.exists(result) else 0
+    return ok({"path": result, "size_bytes": size, "label": label, "event_id": event_id})
+
+
 async def behaviors_task_records(request: Request):
     """Phase 5.3 持久意图 + 周期归档：查询任务记录。
 
@@ -465,6 +546,8 @@ ROUTES = [
     Route("/api/behaviors/return-profile", behaviors_return_profile, methods=["GET"]),
     Route("/api/behaviors/task-records", behaviors_task_records, methods=["GET"]),
     Route("/api/behaviors/feedback-pack", behaviors_feedback_pack, methods=["POST"]),
+    Route("/api/behaviors/bad-cases", behaviors_bad_cases_list, methods=["GET"]),
+    Route("/api/behaviors/bad-cases/export", behaviors_bad_case_export, methods=["POST"]),
     Route("/api/behaviors/home-profile", behaviors_home_profile, methods=["GET"]),
     Route("/api/behaviors/rules", behaviors_rules, methods=["GET"]),
     Route("/api/alerts/stats", alerts_stats, methods=["GET"]),

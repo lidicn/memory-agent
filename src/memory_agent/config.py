@@ -134,6 +134,10 @@ class Config:
     semantic_dedup_enabled: bool = True               # 建议/洞察语义去重总开关
     semantic_dedup_threshold: float = 0.85            # 余弦相似度阈值（0-1），超过视为重复
 
+    # ── Phase 4.3 反馈闭环 fail-closed（VLM 误识别 bad-case）──────────────────
+    vlm_fail_closed: bool = True                    # VLM 识别失败时不自动晋升，保存 bad-case 待审核
+    vlm_bad_case_retention_days: int = 30           # bad-case 保留天数
+
     # ── 主动感知 v2.0 · 客厅盒侧 AI 事件接入（Phase 0.1）──────────────────────
     livingroom_ai_enabled: bool = True                # 客厅盒侧 AI 事件轮询总开关
     livingroom_ai_interval_seconds: int = 10          # 轮询间隔（秒，默认 10s）
