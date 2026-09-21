@@ -282,6 +282,34 @@ async def behaviors_audit_rule_recall(request: Request):
     return ok(res)
 
 
+async def behaviors_feedback_pack(request: Request):
+    """Phase 4.3 反馈闭环：导出 VLM 误识别 bad-case 包（tar.gz）。
+
+    Body: ``snapshot_path``（可选，VLM 快照路径）、``trace``（可选，trace 文本）、
+    ``label``（可选，默认 bad_case）。
+    返回打包后的文件路径。脱敏失败宁可丢 trace（fail-closed）。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    body = await json_body(request)
+    rt = runtime(request)
+    from ..feedback_pack import build_feedback_pack
+    output_dir = "/data/feedback_packs"
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+    result = build_feedback_pack(
+        snapshot_path=body.get("snapshot_path", ""),
+        trace=body.get("trace", ""),
+        output_dir=output_dir,
+        label=body.get("label", "bad_case"),
+    )
+    if result is None:
+        return error("反馈包打包失败（脱敏/打包异常，已 fail-closed）")
+    size = os.path.getsize(result) if os.path.exists(result) else 0
+    return ok({"path": result, "size_bytes": size, "label": body.get("label", "bad_case")})
+
+
 async def behaviors_task_records(request: Request):
     """Phase 5.3 持久意图 + 周期归档：查询任务记录。
 
@@ -367,4 +395,5 @@ ROUTES = [
           methods=["POST"]),
     Route("/api/behaviors/return-profile", behaviors_return_profile, methods=["GET"]),
     Route("/api/behaviors/task-records", behaviors_task_records, methods=["GET"]),
+    Route("/api/behaviors/feedback-pack", behaviors_feedback_pack, methods=["POST"]),
 ]
