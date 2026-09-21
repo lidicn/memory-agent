@@ -70,3 +70,56 @@ def check_return_time_anomaly(
             "baseline_mad": mad,
         }
     return None
+
+
+# ── 从 store 查询并计算画像 ──────────────────────────────────────────────────
+
+def get_return_time_profile(store, person: str, days: int = 14, min_days: int = 3) -> dict:
+    """从 behavior_events 查询某人的回家时间画像。
+
+    返回:
+        {"person": str, "baseline": dict|None, "anomaly_today": dict|None, "data_days": int}
+    """
+    from datetime import datetime, timedelta
+
+    # 查询最近 N 天的 face_known 事件（客厅）
+    today = datetime.now().strftime("%Y-%m-%d")
+    day_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    events = store.list_behavior_events(
+        room="客厅", member=person, day_from=day_from, day_to=today, limit=500,
+    )
+    # 只看 action 包含"回家"或"有人"的事件（Gate 层 face_known 的 action）
+    face_events = [e for e in events if "回家" in e.get("action", "") or "有人" in e.get("action", "")]
+
+    baseline = compute_return_time_baseline(face_events, person, min_days=min_days)
+
+    # 检查今天是否异常（如果今天有 face_known 事件）
+    anomaly_today = None
+    if baseline:
+        today_events = [e for e in face_events if e.get("day") == today]
+        if today_events:
+            # 今天第一次出现的时间
+            ts = today_events[-1].get("server_ts", "")  # DESC 排序，最后一个是最早的
+            if len(ts) >= 16:
+                current_hour = float(ts[11:13]) + float(ts[14:16]) / 60.0
+                anomaly_today = check_return_time_anomaly(baseline, current_hour)
+
+    return {
+        "person": person,
+        "baseline": baseline,
+        "anomaly_today": anomaly_today,
+        "data_days": baseline.get("days", 0) if baseline else 0,
+        "total_events": len(face_events),
+    }
+
+
+def list_all_return_profiles(store, persons: list[str] | None = None, days: int = 14) -> list[dict]:
+    """批量查询所有人的回家时间画像。"""
+    if persons is None:
+        # 从 members 表获取成员列表
+        try:
+            members = store.list_members()
+            persons = [m.get("name", "") for m in members if m.get("name")]
+        except Exception:
+            persons = []
+    return [get_return_time_profile(store, p, days=days) for p in persons if p]
