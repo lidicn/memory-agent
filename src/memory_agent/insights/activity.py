@@ -9,7 +9,7 @@ from .models import ActivityMatch, EventRecord, InsightConfig, TimeRange, day_ke
 from .parser.entity import EntityResolver
 from .parser.timeframe import split_days
 
-__all__ = ["Signal", "ActivityRule", "BUILTIN_ACTIVITIES", "ActivityEngine"]
+__all__ = ["Signal", "ActivityRule", "BUILTIN_ACTIVITIES", "ActivityEngine", "analyze_rhythm"]
 
 
 @dataclass
@@ -295,3 +295,53 @@ class ActivityEngine:
 def _ts_dt(ts: float):
     from datetime import datetime
     return datetime.fromtimestamp(ts)
+
+
+def analyze_rhythm(buckets: List[int], coverage: float = 0.8) -> Dict[str, Any]:
+    """从 24 小时直方图里推断作息。
+
+    ``active_window`` 取「覆盖 ``coverage`` 比例事件的最窄环形时段」——
+    用「大于均值」这类阈值法在稀疏数据上会退化成 00:00-24:00，等于没说。
+    环形窗口能正确表达「22:00-次日 02:00」这种跨零点的作息。
+
+    从旧版 InsightService._rhythm 迁移而来，行为完全一致。
+    """
+    total = sum(buckets)
+    if not total:
+        return {
+            "active_window": "",
+            "active_hours": [],
+            "peak_hour": None,
+            "quiet_hours": list(range(24)),
+            "first_activity_hour": None,
+            "last_activity_hour": None,
+            "night_ratio_percent": 0.0,
+        }
+
+    need = total * coverage
+    best: Optional[Tuple[int, int]] = None  # (length, start)
+    for start in range(24):
+        acc = 0
+        for length in range(1, 25):
+            acc += buckets[(start + length - 1) % 24]
+            if acc >= need:
+                if best is None or length < best[0]:
+                    best = (length, start)
+                break
+    window = ""
+    active_hours: List[int] = []
+    if best:
+        length, start = best
+        active_hours = [(start + i) % 24 for i in range(length)]
+        window = f"{start:02d}:00-{(start + length) % 24:02d}:00"
+
+    nonzero = [h for h, v in enumerate(buckets) if v > 0]
+    return {
+        "active_window": window,
+        "active_hours": active_hours,
+        "peak_hour": buckets.index(max(buckets)),
+        "quiet_hours": [h for h, v in enumerate(buckets) if v == 0],
+        "first_activity_hour": min(nonzero) if nonzero else None,
+        "last_activity_hour": max(nonzero) if nonzero else None,
+        "night_ratio_percent": round(sum(buckets[0:6]) / total * 100, 1),
+    }

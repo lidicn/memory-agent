@@ -1437,46 +1437,13 @@ class InsightService:
         ``active_window`` 取「覆盖 ``coverage`` 比例事件的最窄环形时段」——
         用「大于均值」这类阈值法在稀疏数据上会退化成 00:00-24:00，等于没说。
         环形窗口能正确表达「22:00-次日 02:00」这种跨零点的作息。
+
+        Phase 3 迁移：已迁移到新版 insights.activity.analyze_rhythm，
+        此处保留为兼容包装，行为完全一致。
         """
-        total = sum(buckets)
-        if not total:
-            return {
-                "active_window": "",
-                "active_hours": [],
-                "peak_hour": None,
-                "quiet_hours": list(range(24)),
-                "first_activity_hour": None,
-                "last_activity_hour": None,
-                "night_ratio_percent": 0.0,
-            }
+        from .insights.activity import analyze_rhythm
+        return analyze_rhythm(buckets, coverage)
 
-        need = total * coverage
-        best: tuple[int, int] | None = None  # (length, start)
-        for start in range(24):
-            acc = 0
-            for length in range(1, 25):
-                acc += buckets[(start + length - 1) % 24]
-                if acc >= need:
-                    if best is None or length < best[0]:
-                        best = (length, start)
-                    break
-        window = ""
-        active_hours: list[int] = []
-        if best:
-            length, start = best
-            active_hours = [(start + i) % 24 for i in range(length)]
-            window = f"{start:02d}:00-{(start + length) % 24:02d}:00"
-
-        nonzero = [h for h, v in enumerate(buckets) if v > 0]
-        return {
-            "active_window": window,
-            "active_hours": active_hours,
-            "peak_hour": buckets.index(max(buckets)),
-            "quiet_hours": [h for h, v in enumerate(buckets) if v == 0],
-            "first_activity_hour": min(nonzero) if nonzero else None,
-            "last_activity_hour": max(nonzero) if nonzero else None,
-            "night_ratio_percent": round(sum(buckets[0:6]) / total * 100, 1),
-        }
 
     @staticmethod
     def _num_stale(entity: dict):
