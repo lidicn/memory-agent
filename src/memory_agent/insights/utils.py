@@ -92,6 +92,21 @@ def as_float(v: Any) -> Optional[float]:
         return None
 
 
+def num_stale(entity: Dict[str, Any]) -> Optional[float]:
+    """取实体的 stale_days 数值。
+
+    ``entity_catalog`` 里 stale_days 是 ``round(x, 1)`` 得到的 **float**，
+    而旧代码用 ``isinstance(v, int)`` 判断 —— 永远为 False。这正是
+    「device_health 的 stale 恒为 0」「anomalies 恒为空」的直接原因。
+
+    从旧版 InsightService._num_stale 迁移而来，行为完全一致。
+    """
+    v = entity.get("stale_days")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -104,4 +119,5 @@ __all__ = [
     "fmt_duration",
     "parse_attrs",
     "as_float",
+    "num_stale",
 ]

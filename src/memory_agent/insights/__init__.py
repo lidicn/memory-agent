@@ -8,7 +8,7 @@
 - Phase 0（已完成）：备份旧版，引入新框架，保持向后兼容
 - Phase 1（已完成）：模型层 + 解析器层可通过子模块访问
 - Phase 2（已完成）：工具函数迁移到新版 utils.py，旧版函数名保持兼容
-- Phase 3（进行中）：迁移 Service 层业务逻辑（从 _rhythm 作息分析开始）
+- Phase 3（进行中）：迁移 Service 层业务逻辑（_rhythm, _num_stale 等）
 - Phase 4（计划中）：完全替换旧版
 """
 
@@ -29,6 +29,7 @@ from .utils import (  # noqa: F401
     tokenize,
     state_is_off,
     state_is_on,
+    num_stale,
 )
 
 # 旧版函数名别名（保持向后兼容）
@@ -60,7 +61,7 @@ __version__ = "2.0.0-phase3"
 # 迁移状态说明
 MIGRATION_STATUS = {
     "phase": "phase3_service_migration",
-    "description": "Service 层业务逻辑迁移（从 _rhythm 作息分析开始），旧版方法调用新版实现",
+    "description": "Service 层业务逻辑迁移（_rhythm, _num_stale 等），旧版方法调用新版实现",
     "completed": [
         "Phase 0: 备份旧版 insights.py 为 insights_legacy.py",
         "Phase 0: 引入新版模块化框架（13个文件）",
@@ -70,12 +71,14 @@ MIGRATION_STATUS = {
         "Phase 2: 工具函数从新版导入，旧版函数名保持兼容（别名）",
         "Phase 3: 迁移 _rhythm 作息节律分析到新版 activity.analyze_rhythm",
         "Phase 3: 旧版 InsightService._rhythm 改为调用新版实现（兼容包装）",
+        "Phase 3: 迁移 _num_stale 到新版 utils.num_stale",
+        "Phase 3: 旧版 InsightService._num_stale 改为调用新版实现（兼容包装）",
     ],
     "in_progress": [
-        "Phase 3: 验证 _rhythm 迁移后的行为一致性",
+        "Phase 3: 验证 _num_stale 迁移后的行为一致性",
     ],
     "next_steps": [
-        "Phase 3: 继续迁移其他 Service 层方法（如 _num_stale, data_coverage 等）",
+        "Phase 3: 继续迁移其他 Service 层方法（如 data_coverage, _parse_time_range 等）",
         "Phase 4: 完全替换 insights_legacy.py",
     ],
 }
