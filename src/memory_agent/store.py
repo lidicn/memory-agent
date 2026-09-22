@@ -579,8 +579,8 @@ class Store:
                         END;
                         """
                     )
-                    # 启动即重建索引，保证 tokenizer 变更/历史数据一致（记忆量小，成本可忽略）
-                    conn.execute("INSERT INTO agent_memories_fts(agent_memories_fts) VALUES('rebuild')")
+                    # 触发器已保证增量同步；不再每次启动全量 rebuild
+                    # （418M 库全量重建需数分钟，会阻塞启动事件）
                     print(f"[Store] FTS5 关键词索引就绪（tokenize={_tok}）")
                     break
                 except Exception as exc:

@@ -3,6 +3,16 @@
 set -e
 cd /vol1/1000/docker/memory-agent
 
+# P0-A3: 部署前备份（保留最近 5 份）
+BACKUP_DIR="/vol1/1000/docker/_backups/memory-agent"
+mkdir -p "$BACKUP_DIR"
+BACKUP_NAME="deploy_$(date +%Y%m%d_%H%M%S)"
+echo "== 备份当前版本到 $BACKUP_DIR/$BACKUP_NAME =="
+tar czf "$BACKUP_DIR/$BACKUP_NAME.tar.gz" --exclude='./data' --exclude='./.git' . 2>/dev/null || true
+# 只保留最近 5 份备份
+ls -t "$BACKUP_DIR"/deploy_*.tar.gz 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+echo "BACKUP_DONE"
+
 # 1) 叠加最新代码（只更新被 git 跟踪的文件，不动本地私有文件）
 git init -q
 git remote remove origin 2>/dev/null || true

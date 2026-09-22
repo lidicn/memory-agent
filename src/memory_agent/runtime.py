@@ -126,6 +126,16 @@ class AppRuntime:
 
     # ── 生命周期 ─────────────────────────────────────────────────────────
 
+
+    async def _run_retention_cleanup(self) -> None:
+        """后台执行数据保留清理，不阻塞启动。"""
+        try:
+            await asyncio.to_thread(
+                self.store.purge_old, self.config.data_retention_days
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Runtime] 数据保留清理失败（不影响运行）: {exc}")
+
     async def startup(self) -> None:
         if self._started:
             return
@@ -148,9 +158,11 @@ class AppRuntime:
         if seeded:
             print(f"[Runtime] 种子化 {seeded} 个内置技能到 {self.config.skills_dir}")
 
+        # 数据清理移到后台异步执行，不阻塞启动
+        # events 表 100 万行时 DELETE 可能需数分钟，同步执行会卡死 startup
         if self.config.data_retention_days > 0:
-            await asyncio.to_thread(
-                self.store.purge_old, self.config.data_retention_days
+            self._retention_task = asyncio.create_task(
+                self._run_retention_cleanup()
             )
 
         await self.collector.start()
