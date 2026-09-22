@@ -164,6 +164,19 @@ def prior_boost(posterior: Optional[dict[str, float]], member_id: str,
     return max(-0.6, min(0.6, beta))
 
 
+# ── 等级严重程度比较 ────────────────────────────────────────────────
+
+def _more_severe(a: Level, b: Level) -> Level:
+    """返回更严重的等级。"""
+    severity = {
+        Level.HIGH: 0,
+        Level.MED: 1,
+        Level.LOW: 2,
+        Level.NEEDS_REVIEW: 3,
+    }
+    return a if severity[a] >= severity[b] else b
+
+
 # ── 冲突规则 ────────────────────────────────────────────────────────
 
 def evaluate_conflicts(signals: list[SignalEvidence], scores: list[CandidateScore],
@@ -284,7 +297,11 @@ def fuse(slot_room: str,
 
     # ── 计算每个候选者的得分 ────────────────────────────────────────
     scores: list[CandidateScore] = []
-    total_weight = sum(W.values())
+    # 只计算出现的信号源的权重之和
+    active_weights = set()
+    for s in sigs:
+        active_weights.add(s.source)
+    total_weight = sum(W.get(src, 0.1) for src in active_weights)
     for member_id, pairs in candidates.items():
         score_raw = sum(w * c for w, c in pairs) / total_weight
         # 先验修正
@@ -323,15 +340,15 @@ def fuse(slot_room: str,
     chosen_id = top_score.candidate_id if top_score.candidate_id != "stranger" else None
 
     # 根据得分判定等级
-    if top_score.score_final >= cfg.high_threshold and cap == Level.HIGH:
+    if top_score.score_final >= cfg.high_threshold:
         level = Level.HIGH
     elif top_score.score_final >= cfg.med_threshold:
         level = Level.MED
     else:
         level = Level.LOW
 
-    # 冲突规则可能封顶
-    level = min(level, cap, key=lambda x: list(Level).index(x))
+    # 冲突规则可能封顶（取更严重的等级）
+    level = _more_severe(level, cap)
 
     # 是否需要人工确认
     needs_review = level == Level.NEEDS_REVIEW
