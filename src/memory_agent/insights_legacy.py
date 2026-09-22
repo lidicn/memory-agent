@@ -1,4 +1,4 @@
-"""行为洞察服务 —— 把「事件数据层」升级为「行为洞察层」
+﻿"""行为洞察服务 —— 把「事件数据层」升级为「行为洞察层」
 
 设计原则（来自真实使用反馈）
 --------------------------
@@ -192,13 +192,18 @@ class InsightService:
             start_dt = end_dt - timedelta(days=span)
         if start_dt > end_dt:
             start_dt, end_dt = end_dt, start_dt
+        # E-MA-02: 返回带时区后缀的 ISO 字符串，调用方无需再读 meta 猜时区
+        from datetime import timezone, timedelta as _td
+        tz = timezone(_td(hours=self.tz))
+        start_iso = start_dt.replace(tzinfo=tz).isoformat(sep="T")
+        end_iso = end_dt.replace(tzinfo=tz).isoformat(sep="T")
         meta = {
-            "start": start_dt.isoformat(sep="T"),
-            "end": end_dt.isoformat(sep="T"),
+            "start": start_iso,
+            "end": end_iso,
             "timezone": f"UTC{self.tz:+g}",
             "days": round((end_dt - start_dt).total_seconds() / 86400, 2),
         }
-        return meta["start"], meta["end"], meta
+        return start_iso, end_iso, meta
 
     def _parse(self, raw: str) -> datetime | None:
         text = str(raw or "").strip()
