@@ -176,6 +176,47 @@ def clip_to_time_range(seg_start: datetime, seg_end: datetime,
     return out
 
 
+
+def summarize_events(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """把裸事件压成「谁、变了多少次、都变成了什么」。
+
+    从旧版 InsightService._summarize 迁移而来，行为完全一致。
+    """
+    by_entity: Dict[str, Dict[str, Any]] = {}
+    by_hour = [0] * 24
+    for r in rows:
+        eid = r.get("entity_id", "")
+        slot = by_entity.setdefault(
+            eid,
+            {
+                "entity_id": eid,
+                "friendly_name": r.get("friendly_name", ""),
+                "room": r.get("room", ""),
+                "changes": 0,
+                "states": {},
+                "first_ts": r.get("ts", ""),
+                "last_ts": r.get("ts", ""),
+            },
+        )
+        slot["changes"] += 1
+        st = str(r.get("new_state", ""))
+        slot["states"][st] = slot["states"].get(st, 0) + 1
+        ts = r.get("ts", "")
+        if ts:
+            slot["first_ts"] = min(slot["first_ts"] or ts, ts)
+            slot["last_ts"] = max(slot["last_ts"] or ts, ts)
+            try:
+                by_hour[int(ts[11:13])] += 1
+            except (ValueError, IndexError):
+                pass
+    entities = sorted(by_entity.values(), key=lambda e: -e["changes"])
+    return {
+        "entities": entities[:30],
+        "hourly_distribution": by_hour,
+        "busiest_hour": by_hour.index(max(by_hour)) if any(by_hour) else None,
+    }
+
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -192,4 +233,5 @@ __all__ = [
     "parse_time_range",
     "split_by_day",
     "clip_to_time_range",
+    "summarize_events",
 ]

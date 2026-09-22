@@ -33,6 +33,7 @@ from .utils import (  # noqa: F401
     parse_time_range,
     split_by_day,
     clip_to_time_range,
+    summarize_events,
 )
 
 # 旧版函数名别名（保持向后兼容）
@@ -80,12 +81,14 @@ MIGRATION_STATUS = {
         "Phase 3: 迁移 _split_by_day 到新版 utils.split_by_day",
         "Phase 3: 迁移 _clip_to_time_range 到新版 utils.clip_to_time_range",
         "Phase 3: 旧版三个时间处理方法改为调用新版实现（兼容包装）",
+        "Phase 3: 迁移 _summarize 到新版 utils.summarize_events",
+        "Phase 3: 旧版 InsightService._summarize 改为调用新版实现（兼容包装）",
     ],
     "in_progress": [
-        "Phase 3: 验证时间处理方法迁移后的行为一致性",
+        "Phase 3: 验证 _summarize 迁移后的行为一致性",
     ],
     "next_steps": [
-        "Phase 3: 继续迁移其他 Service 层方法（如 data_coverage, _summarize 等）",
+        "Phase 3: 继续迁移其他 Service 层方法（如 data_coverage, _diagnose_empty 等）",
         "Phase 4: 完全替换 insights_legacy.py",
     ],
 }
