@@ -8,7 +8,7 @@
 - Phase 0（已完成）：备份旧版，引入新框架，保持向后兼容
 - Phase 1（已完成）：模型层 + 解析器层可通过子模块访问
 - Phase 2（已完成）：工具函数迁移到新版 utils.py，旧版函数名保持兼容
-- Phase 3（进行中）：迁移 Service 层业务逻辑（_rhythm, _num_stale 等）
+- Phase 3（进行中）：迁移 Service 层业务逻辑（_rhythm, _num_stale, 时间处理等）
 - Phase 4（计划中）：完全替换旧版
 """
 
@@ -30,6 +30,9 @@ from .utils import (  # noqa: F401
     state_is_off,
     state_is_on,
     num_stale,
+    parse_time_range,
+    split_by_day,
+    clip_to_time_range,
 )
 
 # 旧版函数名别名（保持向后兼容）
@@ -61,7 +64,7 @@ __version__ = "2.0.0-phase3"
 # 迁移状态说明
 MIGRATION_STATUS = {
     "phase": "phase3_service_migration",
-    "description": "Service 层业务逻辑迁移（_rhythm, _num_stale 等），旧版方法调用新版实现",
+    "description": "Service 层业务逻辑迁移（_rhythm, _num_stale, 时间处理等），旧版方法调用新版实现",
     "completed": [
         "Phase 0: 备份旧版 insights.py 为 insights_legacy.py",
         "Phase 0: 引入新版模块化框架（13个文件）",
@@ -73,12 +76,16 @@ MIGRATION_STATUS = {
         "Phase 3: 旧版 InsightService._rhythm 改为调用新版实现（兼容包装）",
         "Phase 3: 迁移 _num_stale 到新版 utils.num_stale",
         "Phase 3: 旧版 InsightService._num_stale 改为调用新版实现（兼容包装）",
+        "Phase 3: 迁移 _parse_time_range 到新版 utils.parse_time_range",
+        "Phase 3: 迁移 _split_by_day 到新版 utils.split_by_day",
+        "Phase 3: 迁移 _clip_to_time_range 到新版 utils.clip_to_time_range",
+        "Phase 3: 旧版三个时间处理方法改为调用新版实现（兼容包装）",
     ],
     "in_progress": [
-        "Phase 3: 验证 _num_stale 迁移后的行为一致性",
+        "Phase 3: 验证时间处理方法迁移后的行为一致性",
     ],
     "next_steps": [
-        "Phase 3: 继续迁移其他 Service 层方法（如 data_coverage, _parse_time_range 等）",
+        "Phase 3: 继续迁移其他 Service 层方法（如 data_coverage, _summarize 等）",
         "Phase 4: 完全替换 insights_legacy.py",
     ],
 }

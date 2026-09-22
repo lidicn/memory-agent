@@ -833,57 +833,36 @@ class InsightService:
     @staticmethod
     def _parse_time_range(tr: str):
         """解析 'HH:MM-HH:MM' -> (start_min, end_min, crosses_midnight)。空/无效返回 None。
-        crosses_midnight 表示 end <= start（如 '22:00-07:00' 跨零点）。"""
-        if not tr or "-" not in tr:
-            return None
-        try:
-            a, b = tr.split("-", 1)
-            sh, sm = (int(x) for x in a.split(":"))
-            eh, em = (int(x) for x in b.split(":"))
-        except Exception:
-            return None
-        if not (0 <= sh < 24 and 0 <= sm < 60 and 0 <= eh < 24 and 0 <= em < 60):
-            return None
-        smin, emin = sh * 60 + sm, eh * 60 + em
-        if smin == 0 and emin >= 1439:
-            return None  # 全天窗口（如 00:00-23:59），无需裁剪，等价于不过滤
-        return (smin, emin, emin <= smin)
+        crosses_midnight 表示 end <= start（如 '22:00-07:00' 跨零点）。
+
+        Phase 3 迁移：已迁移到新版 insights.utils.parse_time_range，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import parse_time_range
+        return parse_time_range(tr)
 
     @staticmethod
     def _split_by_day(seg_start, seg_end):
-        """把 [seg_start, seg_end] 按自然日切成连续切片，返回 [(s, e), ...]。"""
-        out = []
-        cur = seg_start
-        while cur < seg_end:
-            nxt = (cur + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            pe = min(seg_end, nxt)
-            if pe > cur:
-                out.append((cur, pe))
-            cur = nxt
-        return out
+        """把 [seg_start, seg_end] 按自然日切成连续切片，返回 [(s, e), ...]。
+
+        Phase 3 迁移：已迁移到新版 insights.utils.split_by_day，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import split_by_day
+        return split_by_day(seg_start, seg_end)
 
     @staticmethod
     def _clip_to_time_range(seg_start, seg_end, tr):
         """把 segment 按自然日切片，仅保留落在 time_range 周期窗口内的部分。
         tr=None 表示不裁剪（返回整段按天切片，使跨午夜会话正确归到各自日期）。
-        返回交集区间 [(s, e), ...]，每段按实际日期，供 by_day/timeline 使用。"""
-        pieces = InsightService._split_by_day(seg_start, seg_end)
-        if not tr:
-            return pieces
-        smin, emin, crosses = tr
-        out = []
-        for ps, pe in pieces:
-            day = ps.date()
-            day_start = datetime(day.year, day.month, day.day)
-            day_end = day_start + timedelta(days=1)
-            windows = [(day_start + timedelta(minutes=smin), day_start + timedelta(minutes=emin))] if not crosses \
-                else [(day_start + timedelta(minutes=smin), day_end),
-                      (day_start, day_start + timedelta(minutes=emin))]
-            for ws, we in windows:
-                iss, ie = max(ps, ws), min(pe, we)
-                if ie > iss:
-                    out.append((iss, ie))
-        return out
+        返回交集区间 [(s, e), ...]，每段按实际日期，供 by_day/timeline 使用。
+
+        Phase 3 迁移：已迁移到新版 insights.utils.clip_to_time_range，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import clip_to_time_range
+        return clip_to_time_range(seg_start, seg_end, tr)
+
 
     def _usage_one(
         self,
