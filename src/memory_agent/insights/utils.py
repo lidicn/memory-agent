@@ -217,6 +217,35 @@ def summarize_events(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+
+def fallback_name(entity_id: str) -> str:
+    """没配友好名时，从 entity_id 里挤出一个还算能看的名字。
+
+    从旧版 InsightService._fallback_name 迁移而来，行为完全一致。
+    """
+    import re
+    tail = entity_id.split(".", 1)[-1]
+    tail = re.sub(r"_(p_)?\d+(_\d+)*$", "", tail)
+    tail = re.sub(r"[a-z]{2}_\d{6,}_?", "", tail)
+    return tail.replace("_", " ").strip() or entity_id
+
+
+def make_activity(day, kind, conf, evidence, start_h, end_h, **extra) -> Dict[str, Any]:
+    """构造活动结果字典。
+
+    从旧版 InsightService._act 迁移而来，行为完全一致。
+    """
+    out = {
+        "day": day,
+        "activity": kind,
+        "confidence": conf,
+        "evidence": evidence,
+        "typical_window": f"{start_h:02d}:00-{end_h:02d}:00",
+    }
+    out.update(extra)
+    return out
+
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -234,4 +263,6 @@ __all__ = [
     "split_by_day",
     "clip_to_time_range",
     "summarize_events",
+    "fallback_name",
+    "make_activity",
 ]

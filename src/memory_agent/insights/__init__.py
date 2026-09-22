@@ -34,6 +34,8 @@ from .utils import (  # noqa: F401
     split_by_day,
     clip_to_time_range,
     summarize_events,
+    fallback_name,
+    make_activity,
 )
 
 # 旧版函数名别名（保持向后兼容）
@@ -83,9 +85,13 @@ MIGRATION_STATUS = {
         "Phase 3: 旧版三个时间处理方法改为调用新版实现（兼容包装）",
         "Phase 3: 迁移 _summarize 到新版 utils.summarize_events",
         "Phase 3: 旧版 InsightService._summarize 改为调用新版实现（兼容包装）",
+        "Phase 3: 迁移 _fallback_name 到新版 utils.fallback_name",
+        "Phase 3: 旧版 InsightService._fallback_name 改为调用新版实现（兼容包装）",
+        "Phase 3: 迁移 _act 到新版 utils.make_activity",
+        "Phase 3: 旧版 InsightService._act 改为调用新版实现（兼容包装）",
     ],
     "in_progress": [
-        "Phase 3: 验证 _summarize 迁移后的行为一致性",
+        "Phase 3: 验证 _fallback_name 和 _act 迁移后的行为一致性",
     ],
     "next_steps": [
         "Phase 3: 继续迁移其他 Service 层方法（如 data_coverage, _diagnose_empty 等）",

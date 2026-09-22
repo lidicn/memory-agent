@@ -390,11 +390,13 @@ class InsightService:
 
     @staticmethod
     def _fallback_name(entity_id: str) -> str:
-        """没配友好名时，从 entity_id 里挤出一个还算能看的名字。"""
-        tail = entity_id.split(".", 1)[-1]
-        tail = re.sub(r"_(p_)?\d+(_\d+)*$", "", tail)
-        tail = re.sub(r"[a-z]{2}_\d{6,}_?", "", tail)
-        return tail.replace("_", " ").strip() or entity_id
+        """没配友好名时，从 entity_id 里挤出一个还算能看的名字。
+
+        Phase 3 迁移：已迁移到新版 insights.utils.fallback_name，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import fallback_name
+        return fallback_name(entity_id)
 
     # 能力后缀归一：把厂商前缀 / MAC / MIoT 属性号剥掉，只留「这个实体测什么」。
     # 顺序敏感——长词必须排在其前缀词之前（power_cost_today 要在 power 之前）。
@@ -3207,15 +3209,13 @@ class InsightService:
 
     @staticmethod
     def _act(day, kind, conf, evidence, start_h, end_h, **extra):
-        out = {
-            "day": day,
-            "activity": kind,
-            "confidence": conf,
-            "evidence": evidence,
-            "typical_window": f"{start_h:02d}:00-{end_h:02d}:00",
-        }
-        out.update(extra)
-        return out
+        """构造活动结果字典。
+
+        Phase 3 迁移：已迁移到新版 insights.utils.make_activity，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import make_activity
+        return make_activity(day, kind, conf, evidence, start_h, end_h, **extra)
 
     def _synthesize_answer(self, data: dict, window_desc: str) -> str:
         """把结构化洞察合成为一句自然语言回答 + 证据引用（不依赖 LLM，纯规则合成）。
