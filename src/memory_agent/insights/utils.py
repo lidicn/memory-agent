@@ -960,6 +960,43 @@ def extract_attr_value(row: dict, attribute: str) -> Any:
     attr_key = attribute.split(".", 1)[1] if attribute.startswith("attributes.") else attribute
     return parse_attrs(row.get("attrs_json")).get(attr_key)
 
+
+
+def apply_semantic_filter(
+    items: list[dict],
+    rooms: set[str] | None = None,
+    domains: set[str] | None = None,
+    q_tokens: list[str] | None = None,
+) -> list[dict]:
+    """按 room/domain/query 关键词过滤实体列表。
+
+    从旧版 InsightsService._apply_semantic_filter 迁移而来。
+    有精确命中就用精确结果，否则回退到宽松结果。
+    """
+    rooms = rooms or set()
+    domains = domains or set()
+    q_tokens = q_tokens or []
+
+    loose: list[dict] = []
+    strict: list[dict] = []
+    for it in items:
+        if rooms and it.get("room", "") not in rooms:
+            continue
+        if domains and normalize_text(it.get("domain", "")) not in domains:
+            continue
+        loose.append(it)
+        if q_tokens:
+            haystack = normalize_text(
+                f"{it.get('entity_id', '')} {it.get('friendly_name', '')} {it.get('room', '')} {it.get('domain', '')}"
+            )
+            if any(t in haystack for t in q_tokens):
+                strict.append(it)
+    if not q_tokens:
+        return loose
+    if strict:
+        return strict
+    return loose if (rooms or domains) else []
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",

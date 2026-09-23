@@ -490,32 +490,17 @@ class InsightService:
         domain: str = "",
         query: str = "",
     ) -> list[dict]:
+        """语义过滤：按 room/domain/query 关键词过滤实体列表。
+
+        Phase 3 迁移：核心过滤逻辑已迁移到新版 insights.utils.apply_semantic_filter，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import apply_semantic_filter
         room, query = self.split_room_from_query(room, query)
         rooms = set(self.match_rooms(room)) if room else set()
         domains = set(self.domains_for(category, domain, query))
         q_tokens = [t for t in _tokens(query) if t not in KEYWORD_DOMAINS]
-
-        loose: list[dict] = []   # 只过 room/domain
-        strict: list[dict] = []  # 还额外命中了 query 关键词
-        for it in items:
-            if rooms and it["room"] not in rooms:
-                continue
-            if domains and _norm(it["domain"]) not in domains:
-                continue
-            loose.append(it)
-            if q_tokens:
-                haystack = _norm(
-                    f"{it['entity_id']} {it['friendly_name']} {it['room']} {it['domain']}"
-                )
-                if any(t in haystack for t in q_tokens):
-                    strict.append(it)
-        if not q_tokens:
-            return loose
-        # 有关键词命中就用精确结果，避免「房间电脑」被摊成整个房间的设备；
-        # 一个都没命中时，仅在有 room/domain 约束的情况下回退到宽松结果。
-        if strict:
-            return strict
-        return loose if (rooms or domains) else []
+        return apply_semantic_filter(items, rooms=rooms, domains=domains, q_tokens=q_tokens)
 
     def resolve_entities(
         self, room: str = "", category: str = "", domain: str = "", query: str = ""
