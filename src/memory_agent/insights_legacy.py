@@ -455,18 +455,13 @@ class InsightService:
         }
 
     def domains_for(self, category: str = "", domain: str = "", query: str = "") -> list[str]:
-        """把「类别 / domain / 自由文本」统一解析成 domain 列表。"""
-        out: set[str] = set()
-        if category:
-            out.update(CATEGORY_DOMAINS.get(_norm(category), ()))
-        if domain:
-            out.update(d.strip() for d in _norm(domain).split(",") if d.strip())
-        if query:
-            q = _norm(query)
-            for keyword, domains in KEYWORD_DOMAINS.items():
-                if keyword in q:
-                    out.update(domains)
-        return sorted(out)
+        """把「类别 / domain / 自由文本」统一解析成 domain 列表。
+
+        Phase 3 迁移：已迁移到新版 insights.utils.resolve_domains，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import resolve_domains
+        return resolve_domains(category, domain, query)
 
     def _apply_semantic_filter(
         self,

@@ -1094,6 +1094,25 @@ def normalize_text(text) -> str:
     """
     return str(text or "").strip().lower()
 
+
+
+def resolve_domains(category: str = "", domain: str = "", query: str = "") -> list[str]:
+    """把「类别 / domain / 自由文本」统一解析成 domain 列表。
+
+    从旧版 insights_legacy.domains_for 迁移而来。
+    """
+    out: set[str] = set()
+    if category:
+        out.update(CATEGORY_DOMAINS.get(normalize_text(category), ()))
+    if domain:
+        out.update(d.strip() for d in normalize_text(domain).split(",") if d.strip())
+    if query:
+        q = normalize_text(query)
+        for keyword, domains in KEYWORD_DOMAINS.items():
+            if keyword in q:
+                out.update(domains)
+    return sorted(out)
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
