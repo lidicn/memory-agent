@@ -1028,6 +1028,35 @@ INACTIVE_STATES: frozenset[str] = frozenset({
     "standby", "not_home", "", "false",
 })
 
+
+
+def parse_attrs(raw) -> dict:
+    """解析事件的 attrs_json 字段，返回 dict。
+
+    从旧版 insights_legacy._parse_attrs 迁移而来。
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    import json as _json
+    try:
+        val = _json.loads(raw)
+        return val if isinstance(val, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def as_float(v):
+    """安全转换为 float，失败返回 None。
+
+    从旧版 insights_legacy._as_float 迁移而来。
+    """
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",

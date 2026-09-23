@@ -3585,21 +3585,7 @@ class InsightService:
         return resolve_nl_window(q, default_days)
 
 
-def _parse_attrs(raw):
-    if not raw:
-        return {}
-    if isinstance(raw, dict):
-        return raw
-    import json as _json
-    try:
-        val = _json.loads(raw)
-        return val if isinstance(val, dict) else {}
-    except (TypeError, ValueError):
-        return {}
-
-
-def _as_float(v):
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
+# Phase 3 迁移：parse_attrs 和 as_float 已迁移到新版 insights.utils。
+# 旧版保留为兼容别名，避免大量调用点同时修改。
+from .insights.utils import parse_attrs as _parse_attrs
+from .insights.utils import as_float as _as_float
