@@ -703,6 +703,43 @@ def compare_windows(compare_days: int, tz_offset_hours: float = 8.0) -> tuple[st
     prev_start = (today + timedelta(days=1) - timedelta(days=2 * cd)).isoformat() + "T00:00:00"
     return cur_start, cur_end, prev_start, prev_end
 
+
+
+# ─────────────────────────────────────────────────────────────
+# 行为洞察模块常量（从旧版 insights_legacy.py 迁移而来）
+# ─────────────────────────────────────────────────────────────
+
+#: 噪声判定阈值：某实体事件数 > 房间事件数 * NOISE_RATIO_CAP 即视为垄断型噪声。
+# NOISE_RATIO_CAP = 0.6  # 已存在，跳过
+
+#: 关状态集合（设备关闭/待机/离线等）。
+OFF_STATES: frozenset[str] = frozenset(
+    {
+        "off", "unavailable", "unknown", "none", "", "idle",
+        "standby", "power off", "poweroff", "down",
+    }
+)
+
+#: 房间聚合词（表示"所有房间/全屋"的关键词）。
+ROOM_AGGREGATE_WORDS: tuple[str, ...] = (
+    "全屋", "所有房间", "全部房间", "每个房间", "整体", "家里", "家中",
+)
+
+#: 通用房间词（需要消歧的房间名，如"卧室"可能指"主卧室"或"次卧室"）。
+GENERIC_ROOM_WORDS: frozenset[str] = frozenset({"房间", "卧室", "屋子", "房子", "家里"})
+
+#: 关键词 → 域映射（用于从用户查询推断设备类别）。
+KEYWORD_DOMAINS: dict[str, tuple[str, ...]] = {
+    "light": ("light", "switch.light"),
+    "switch": ("switch", "input_boolean"),
+    "climate": ("climate", "humidifier", "fan"),
+    "media": ("media_player", "remote"),
+    "sensor": ("sensor", "binary_sensor"),
+    "tv": ("media_player.tv", "remote.tv"),
+    "ac": ("climate.ac",),
+    "aircon": ("climate.ac",),
+}
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
