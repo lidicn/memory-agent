@@ -1196,6 +1196,35 @@ KEYWORD_DOMAINS: dict[str, tuple[str, ...]] = {
     "窗帘": ("cover",),
 }
 
+
+
+#: 语义标签匹配规则：entity_id token 与中文友好名双通道匹配
+TAG_RULES: dict[str, tuple[tuple, tuple]] = {
+    "presence": (
+        ("occupancy", "presence", "motion", "pir", "radar", "human", "body", "occupied"),
+        ("人体", "存在", "占用", "移动", "雷达", "感应"),
+    ),
+    "door": (
+        ("contact", "door", "window", "opening", "magnet"),
+        ("门", "窗", "门磁", "门窗"),
+    ),
+    "media": (
+        ("media_player", "_tv", ".tv", "television", "projector", "soundbar"),
+        ("电视", "影音", "投影", "音响", "机顶盒"),
+    ),
+    "computer": (
+        ("pc", "computer", "workstation", "desktop", "imac", "macbook", "nas"),
+        ("电脑", "主机", "工作站", "显示器"),
+    ),
+    "light": (("light.",), ("灯",)),
+    "cover": (("cover.", "curtain"), ("窗帘", "卷帘")),
+    "climate": (("climate.",), ("空调", "地暖", "暖气")),
+    "appliance": (
+        ("switch.", "socket", "plug", "outlet"),
+        ("插座", "开关", "电饭煲", "油烟机", "热水器"),
+    ),
+}
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
