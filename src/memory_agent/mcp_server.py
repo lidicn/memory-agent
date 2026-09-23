@@ -1895,6 +1895,35 @@ def _build_server():
         )
 
     @mcp.tool()
+    async def get_behavior_prediction(
+        person: str, weekday: int = -1
+    ) -> dict:
+        """P4a 行为预测：基于历史事件预测某人的到家时间和日常作息。
+
+        Args:
+            person: 人名（如 "Kevin"、"Emily"、"lidicn"）
+            weekday: 0=周一, 6=周日。-1=用所有日期统计（默认）。
+        """
+        rt = get_runtime()
+        events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
+        if not events:
+            return {"ok": False, "error": "无历史行为事件数据"}
+
+        from .behavior_predictor import predict_daily_routine, predict_arrival_time
+
+        wd = None if weekday < 0 else weekday
+        arrival = predict_arrival_time(events, person, weekday=wd)
+        routine = predict_daily_routine(events, person)
+
+        return {
+            "ok": True,
+            "person": person,
+            "weekday": wd,
+            "arrival_prediction": arrival,
+            "daily_routine": routine,
+        }
+
+    @mcp.tool()
     async def list_rooms_entities(only_enabled: bool = True) -> dict:
         """房间与实体清单（含友好名）。需要活跃度与最后在线请用 get_entity_catalog。"""
         rt = get_runtime()

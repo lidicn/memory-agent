@@ -334,6 +334,82 @@ async def behaviors_home_profile(request: Request):
     return ok({"profile": profile_text, "chars": len(profile_text), "written": written_path})
 
 
+# ── Phase 3.1 主动规则引擎 ──────────────────────────────────────────────
+
+async def behaviors_list_rules(request: Request):
+    """列出所有主动规则。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    from ..rule_engine import get_rule_engine
+    engine = get_rule_engine(rt.store, rt.alert_dispatcher)
+    rules = engine.list_rules()
+    return ok({"rules": rules, "count": len(rules)})
+
+
+async def behaviors_add_rule(request: Request):
+    """添加主动规则。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    try:
+        body = await request.json()
+    except Exception:
+        return error("请求体必须是 JSON")
+    name = body.get("name")
+    condition = body.get("condition")
+    action = body.get("action")
+    if not name or not condition or not action:
+        return error("缺少必填字段: name, condition, action")
+    from ..rule_engine import get_rule_engine
+    engine = get_rule_engine(rt.store, rt.alert_dispatcher)
+    result = engine.add_rule(
+        name=name,
+        condition=condition,
+        action=action,
+        description=body.get("description", ""),
+        enabled=body.get("enabled", True),
+        cooldown_seconds=body.get("cooldown_seconds", 300),
+    )
+    if not result.get("ok"):
+        return error(result.get("error", "添加失败"))
+    return ok(result)
+
+
+async def behaviors_update_rule(request: Request, rule_id: str):
+    """更新主动规则。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    try:
+        body = await request.json()
+    except Exception:
+        return error("请求体必须是 JSON")
+    from ..rule_engine import get_rule_engine
+    engine = get_rule_engine(rt.store, rt.alert_dispatcher)
+    result = engine.update_rule(rule_id, **body)
+    if not result.get("ok"):
+        return error(result.get("error", "更新失败"))
+    return ok(result)
+
+
+async def behaviors_delete_rule(request: Request, rule_id: str):
+    """删除主动规则。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    from ..rule_engine import get_rule_engine
+    engine = get_rule_engine(rt.store, rt.alert_dispatcher)
+    result = engine.delete_rule(rule_id)
+    if not result.get("ok"):
+        return error(result.get("error", "删除失败"))
+    return ok(result)
+
+
 async def behaviors_feedback_pack(request: Request):
     """Phase 4.3 反馈闭环：导出 VLM 误识别 bad-case 包（tar.gz）。
 
@@ -529,10 +605,53 @@ async def alerts_stats(request: Request):
     stats = dispatcher.get_stats(session_id=session_id or None)
     return ok(stats)
 
+
+async def behaviors_predictions(request: Request):
+    """P4a 行为预测：基于历史事件预测家人的行为模式。
+
+    查询参数：
+    - person: 人名（如 "Kevin"），必填
+    - weekday: 0=周一, 6=周日，可选（默认所有日期）
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    person = (request.query_params.get("person") or "").strip()
+    if not person:
+        return error("缺少 person 参数")
+    weekday_str = (request.query_params.get("weekday") or "").strip()
+    weekday = None
+    if weekday_str:
+        try:
+            weekday = int(weekday_str)
+            if not (0 <= weekday <= 6):
+                return error("weekday 必须是 0-6（周一到周日）")
+        except ValueError:
+            return error("weekday 必须是整数")
+
+    events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
+    if not events:
+        return ok({"person": person, "predictions": None, "note": "无历史事件数据"})
+
+    from ..behavior_predictor import predict_daily_routine, predict_arrival_time
+
+    arrival = predict_arrival_time(events, person, weekday=weekday)
+    routine = predict_daily_routine(events, person)
+
+    return ok({
+        "person": person,
+        "weekday": weekday,
+        "arrival_prediction": arrival,
+        "daily_routine": routine,
+    })
+
+
 ROUTES = [
     Route("/api/behaviors", behaviors_current, methods=["GET"]),
     Route("/api/behaviors/states", behaviors_states, methods=["GET"]),
     Route("/api/behaviors/run", behaviors_run, methods=["POST"]),
+    Route("/api/behaviors/predictions", behaviors_predictions, methods=["GET"]),
     Route("/api/behaviors/candidate-rules", candidate_rules_list, methods=["GET"]),
     Route("/api/behaviors/candidate-rules/update", candidate_rule_update, methods=["POST"]),
     Route("/api/behaviors/candidate-rules/export", candidate_rules_export, methods=["GET"]),
