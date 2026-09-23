@@ -924,6 +924,42 @@ def compare_climate(current: dict, previous: dict) -> dict:
         "delta_avg_setpoint_c": d_sp,
     }
 
+
+
+def match_pattern(value: Any, target: Any, pattern: str = "eq") -> bool:
+    """根据 pattern 判断 value 是否匹配 target。
+
+    从旧版 InsightsService._count_by_filter 迁移而来。
+    pattern: eq / contains / ne / regex
+    """
+    import re as _re
+    if value is None:
+        return False
+    sv = normalize_text(value)
+    tv = normalize_text(target)
+    if pattern == "contains":
+        return tv in sv
+    if pattern == "ne":
+        return sv != tv
+    if pattern == "regex":
+        try:
+            return _re.search(str(target), sv) is not None
+        except Exception:
+            return False
+    return sv == tv
+
+
+def extract_attr_value(row: dict, attribute: str) -> Any:
+    """从事件行提取属性值。
+
+    从旧版 InsightsService._count_by_filter 迁移而来。
+    attribute: "state" / "new_state" / "attributes.xxx"
+    """
+    if attribute in ("", "state", "new_state"):
+        return row.get("new_state")
+    attr_key = attribute.split(".", 1)[1] if attribute.startswith("attributes.") else attribute
+    return parse_attrs(row.get("attrs_json")).get(attr_key)
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",

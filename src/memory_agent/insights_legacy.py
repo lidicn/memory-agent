@@ -1061,29 +1061,18 @@ class InsightService:
         start_iso: str,
         end_iso: str,
     ) -> dict:
-        """按状态或属性过滤，统计匹配事件数与分日分布（metric=count 用）。"""
-        attr_key = attribute.split(".", 1)[1] if attribute.startswith("attributes.") else attribute
+        """按状态或属性过滤，统计匹配事件数与分日分布（metric=count 用）。
+
+        Phase 3 迁移：匹配逻辑已迁移到新版 insights.utils，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import match_pattern, extract_attr_value
 
         def val_of(row):
-            if attribute in ("", "state", "new_state"):
-                return row.get("new_state")
-            return _parse_attrs(row.get("attrs_json")).get(attr_key)
+            return extract_attr_value(row, attribute)
 
         def matches(v) -> bool:
-            if v is None:
-                return False
-            sv = _norm(v)
-            tv = _norm(value)
-            if pattern == "contains":
-                return tv in sv
-            if pattern == "ne":
-                return sv != tv
-            if pattern == "regex":
-                try:
-                    return re.search(str(value), sv) is not None
-                except Exception:
-                    return False
-            return sv == tv
+            return match_pattern(v, value, pattern)
 
         rows = self.store.query_events(
             start_iso, end_iso, entities=[entity_id], limit=5000, order="asc"
