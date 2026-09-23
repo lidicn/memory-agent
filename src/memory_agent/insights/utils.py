@@ -997,6 +997,19 @@ def apply_semantic_filter(
         return strict
     return loose if (rooms or domains) else []
 
+
+
+def is_device_on(state: Any, allow_on: set[str] | None = None) -> bool:
+    """判断设备状态是否为「开启」。
+
+    从旧版 InsightsService._usage_one 迁移而来。
+    allow_on: 若指定，只有在这个集合里的状态才算开启；否则用 OFF_STATES 判断。
+    """
+    s = normalize_text(state)
+    if allow_on:
+        return s in allow_on
+    return s not in OFF_STATES
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",

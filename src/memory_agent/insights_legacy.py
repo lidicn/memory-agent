@@ -807,11 +807,9 @@ class InsightService:
             start_iso, end_iso, entities=[entity_id], limit=5000, order="asc"
         )
 
+        from .insights.utils import is_device_on
         def is_on(state: Any) -> bool:
-            s = _norm(state)
-            if allow_on:
-                return s in allow_on
-            return s not in OFF_STATES
+            return is_device_on(state, allow_on)
 
         window_start = datetime.fromisoformat(start_iso)
         window_end = min(datetime.fromisoformat(end_iso), now_local(self.tz))
@@ -905,30 +903,17 @@ class InsightService:
     ) -> dict:
         """按「属性值」判定的开启时长（覆盖 source=='HDMI 3' 这类属性级条件）。
 
-        与 ``_usage_one`` 算法一致（状态配对 / 跨窗口截断 / 去抖 / 跨天拆分），
-        仅把「是否开启」的判定从 ``new_state`` 改为事件属性值匹配。
-        属性在 store 中是 diff 存储，需要沿时间轴 carry-forward 最近一次取值。
+        Phase 3 迁移：匹配逻辑已复用新版 insights.utils.match_pattern，
+        此处保留为兼容包装，行为完全一致。
         """
+        from .insights.utils import match_pattern, extract_attr_value
         attr_key = attribute.split(".", 1)[1] if attribute.startswith("attributes.") else attribute
 
         def get_attr(row):
-            return _parse_attrs(row.get("attrs_json")).get(attr_key)
+            return extract_attr_value(row, attribute)
 
         def matches(v) -> bool:
-            if v is None:
-                return False
-            sv = _norm(v)
-            tv = _norm(value)
-            if pattern == "contains":
-                return tv in sv
-            if pattern == "ne":
-                return sv != tv
-            if pattern == "regex":
-                try:
-                    return re.search(str(value), sv) is not None
-                except Exception:
-                    return False
-            return sv == tv
+            return match_pattern(v, value, pattern)
 
         window_start = datetime.fromisoformat(start_iso)
         window_end = min(datetime.fromisoformat(end_iso), now_local(self.tz))
