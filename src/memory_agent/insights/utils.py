@@ -1132,6 +1132,14 @@ def is_on_state(state) -> bool:
     s = normalize_text(state)
     return s in CN_ON_STATES
 
+
+
+#: 中文关闭状态集合
+CN_OFF_STATES: frozenset[str] = frozenset({"关", "关闭", "门关", "闭合", "断开", "无", "否", "0"})
+
+#: 中文开启状态集合
+CN_ON_STATES: frozenset[str] = frozenset({"开", "打开", "门开", "开启", "接通", "有", "是", "1"})
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",

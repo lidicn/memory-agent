@@ -112,8 +112,9 @@ OFF_STATES: frozenset[str] = frozenset(
 )
 
 # 中文环境下常见的「关闭/开启」状态词（门窗传感器、开关等可能上报中文状态）
-_CN_OFF_STATES: frozenset[str] = frozenset({"关", "关闭", "门关", "闭合", "断开", "无", "否", "0"})
-_CN_ON_STATES: frozenset[str] = frozenset({"开", "打开", "门开", "开启", "接通", "有", "是", "1"})
+# Phase 3 迁移：_CN_OFF_STATES 和 _CN_ON_STATES 已迁移到新版 insights.utils。
+from .insights.utils import CN_OFF_STATES as _CN_OFF_STATES
+from .insights.utils import CN_ON_STATES as _CN_ON_STATES
 
 
 # Phase 3 迁移：_state_is_off 和 _state_is_on 已迁移到新版 insights.utils。
