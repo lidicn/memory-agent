@@ -1,4 +1,4 @@
-"""
+﻿"""
 行为洞察服务 —— 把「事件数据层」升级为「行为洞察层」
 
 设计原则（来自真实使用反馈）
@@ -145,23 +145,9 @@ def _norm(text: Any) -> str:
     return str(text or "").strip().lower()
 
 
-def _tokens(text: str) -> list[str]:
-    """粗分词：中文按连续汉字块 + 英文按单词切。够用且零依赖。"""
-    return [t for t in re.split(r"[\s,，、_./|-]+", _norm(text)) if t]
-
-
-def fmt_duration(total_seconds: float) -> str:
-    total = max(0, int(total_seconds))
-    d, rem = divmod(total, 86400)
-    h, rem = divmod(rem, 3600)
-    m, s = divmod(rem, 60)
-    if d:
-        return f"{d}天{h}小时{m}分"
-    if h:
-        return f"{h}小时{m}分"
-    if m:
-        return f"{m}分{s}秒"
-    return f"{s}秒"
+# Phase 3 迁移：_tokens 和 fmt_duration 已迁移到新版 insights.utils。
+from .insights.utils import tokenize as _tokens
+from .insights.utils import fmt_duration
 
 
 class InsightService:
@@ -3589,3 +3575,4 @@ class InsightService:
 # 旧版保留为兼容别名，避免大量调用点同时修改。
 from .insights.utils import parse_attrs as _parse_attrs
 from .insights.utils import as_float as _as_float
+

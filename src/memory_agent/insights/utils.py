@@ -1057,6 +1057,34 @@ def as_float(v):
     except (TypeError, ValueError):
         return None
 
+
+
+def tokenize(text: str) -> list[str]:
+    """粗分词：中文按连续汉字块 + 英文按单词切。够用且零依赖。
+
+    从旧版 insights_legacy._tokens 迁移而来。
+    """
+    import re as _re
+    return [t for t in _re.split(r"[\s,，、_./|-]+", normalize_text(text)) if t]
+
+
+def fmt_duration(total_seconds: float) -> str:
+    """把秒数格式化为人类可读时长。
+
+    从旧版 insights_legacy.fmt_duration 迁移而来。
+    """
+    total = max(0, int(total_seconds))
+    d, rem = divmod(total, 86400)
+    h, rem = divmod(rem, 3600)
+    m, s = divmod(rem, 60)
+    if d:
+        return f"{d}天{h}小时{m}分"
+    if h:
+        return f"{h}小时{m}分"
+    if m:
+        return f"{m}分{s}秒"
+    return f"{s}秒"
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
