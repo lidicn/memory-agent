@@ -402,6 +402,59 @@ def synthesize_persona(persona: dict, top_rooms: list, most_active: str, days: i
     return "\n".join(lines)
 
 
+def synthesize_compare(comparison: dict, days: int, climate_cmp: dict = None) -> str:
+    """合成环比比较文本。
+
+    输入：comparison dict、days int、climate_cmp dict
+    输出：环比比较文本
+    """
+    if not comparison:
+        base = f"近 {days} 天与上一个 {days} 天窗口均无足够活动数据做环比。"
+    else:
+        ups, downs, flats = [], [], []
+        for t, c in comparison.items():
+            d = c["delta_occurrences"]
+            if d > 0:
+                ups.append(f"{t}(+{d}次)")
+            elif d < 0:
+                downs.append(f"{t}({d}次)")
+            else:
+                flats.append(t)
+        # 时长变化（仅列有累计时长的活动，修复 #9：强度维度）
+        dur_parts = []
+        for t, c in comparison.items():
+            dm = c["delta_minutes"]
+            if dm:
+                arrow = "↑" if dm > 0 else "↓"
+                dur_parts.append(f"{t}{arrow}{fmt_duration(abs(dm) * 60)}")
+        parts = []
+        if ups:
+            parts.append("次数上升：" + "、".join(ups))
+        if downs:
+            parts.append("次数下降：" + "、".join(downs))
+        if flats:
+            parts.append("次数持平：" + "、".join(flats))
+        if dur_parts:
+            parts.append("时长变化：" + "、".join(dur_parts))
+        base = f"近 {days} 天 vs 上一个 {days} 天行为环比 —— " + ("；".join(parts) if parts else "无变化")
+    # 温控维度（修复 #9）
+    if climate_cmp:
+        cur = climate_cmp["current"]
+        prev = climate_cmp["previous"]
+        dh = climate_cmp["delta_hours"]
+        sign = "+" if dh >= 0 else ""
+        bits = [f"空调开启 {cur['hours']}h（上周 {prev['hours']}h，{sign}{dh}h）"]
+        csp, psp = cur["avg_setpoint_c"], prev["avg_setpoint_c"]
+        if csp is not None and psp is not None:
+            dsp = climate_cmp["delta_avg_setpoint_c"]
+            ssp = "+" if dsp >= 0 else ""
+            bits.append(f"平均设定 {csp}°C（上周 {psp}°C，{ssp}{dsp}°C）")
+        if cur["avg_room_temp_c"] is not None:
+            bits.append(f"室温均 {cur['avg_room_temp_c']}°C")
+        base += "。温控：" + "；".join(bits)
+    return base
+
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -426,4 +479,5 @@ __all__ = [
     "finalize_climate_session",
     "resolve_nl_window",
     "synthesize_persona",
+    "synthesize_compare",
 ]
