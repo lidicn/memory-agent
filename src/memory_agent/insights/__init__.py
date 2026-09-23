@@ -42,6 +42,12 @@ from .utils import (  # noqa: F401
     resolve_nl_window,
     synthesize_persona,
     synthesize_compare,
+    CAPABILITY_KEYWORDS,
+    CAPABILITY_ALIASES,
+    TAG_RULES,
+    capability_of,
+    tags_of,
+    get_runtime,
 )
 
 # 旧版函数名别名（保持向后兼容）
@@ -105,9 +111,12 @@ MIGRATION_STATUS = {
         "Phase 3: 旧版 InsightService._synthesize_persona 改为调用新版实现（兼容包装）",
         "Phase 3: 迁移 _synthesize_compare 到新版 utils.synthesize_compare",
         "Phase 3: 旧版 InsightService._synthesize_compare 改为调用新版实现（兼容包装）",
+        "Phase 3: 迁移 _capability_of + CAPABILITY_KEYWORDS/ALIASES 到新版 utils",
+        "Phase 3: 迁移 _tags_of + TAG_RULES 到新版 utils",
+        "Phase 3: 迁移 _get_rt 到新版 utils.get_runtime",
     ],
     "in_progress": [
-        "Phase 3: 验证 _synthesize_compare 迁移后的行为一致性",
+        "Phase 3: 验证 _capability_of/_tags_of/_get_rt 迁移后的行为一致性",
     ],
     "next_steps": [
         "Phase 3: 继续迁移其他 Service 层方法（如 data_coverage, _diagnose_empty 等）",

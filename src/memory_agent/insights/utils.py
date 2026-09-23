@@ -455,6 +455,85 @@ def synthesize_compare(comparison: dict, days: int, climate_cmp: dict = None) ->
     return base
 
 
+# ── 能力识别常量 ──────────────────────────────────────────────────────────
+CAPABILITY_KEYWORDS = (
+    "contact_state", "door_state", "window_state", "contact",
+    "occupancy_status", "occupancy", "presence_state", "presence",
+    "motion_state", "motion", "illuminance", "temperature", "humidity",
+    "battery_level", "battery", "power_cost_today", "power_cost",
+    "electric_power", "power", "energy", "voltage", "current",
+    "distance", "brightness", "position", "switch_status",
+)
+
+CAPABILITY_ALIASES = {
+    "contact_state": "contact",
+    "door_state": "contact",
+    "window_state": "contact",
+    "occupancy_status": "occupancy",
+    "presence_state": "presence",
+    "motion_state": "motion",
+    "battery_level": "battery",
+}
+
+# ── 标签规则常量 ──────────────────────────────────────────────────────────
+TAG_RULES: dict = {
+    "presence": (
+        ("occupancy", "presence", "motion", "pir", "radar", "human", "body", "occupied"),
+        ("人体", "存在", "占用", "移动", "雷达", "感应"),
+    ),
+    "door": (
+        ("contact", "door", "window", "opening", "magnet"),
+        ("门", "窗", "门磁", "门窗"),
+    ),
+    "media": (
+        ("media_player", "_tv", ".tv", "television", "projector", "soundbar"),
+        ("电视", "影音", "投影", "音响", "机顶盒"),
+    ),
+    "computer": (
+        ("pc", "computer", "workstation", "desktop", "imac", "macbook", "nas"),
+        ("电脑", "主机", "工作站", "显示器"),
+    ),
+    "light": (("light.",), ("灯",)),
+    "cover": (("cover.", "curtain"), ("窗帘", "卷帘")),
+    "climate": (("climate.",), ("空调", "地暖", "暖气")),
+    "appliance": (
+        ("switch.", "socket", "plug", "outlet"),
+        ("插座", "开关", "电饭煲", "油烟机", "热水器"),
+    ),
+}
+
+
+def capability_of(entity_id: str) -> str:
+    """从 entity_id 提取归一化的能力后缀，用于识别同一物理设备的重复上报。"""
+    tail = entity_id.split(".", 1)[-1].lower()
+    tail = re.sub(r"_(p_)?\d+(_\d+)*$", "", tail)      # 去 MIoT 属性号 _p_2_1
+    tail = re.sub(r"[0-9a-f]{12}", "", tail)            # 去 MAC 片段
+    tail = re.sub(r"_?[a-z]{2,4}_[a-z]{2}_\d{6,}_?", "_", tail)  # 去 lumi_cn_123456
+    tail = re.sub(r"_?[a-z]{2}_\d{6,}_?", "_", tail)
+    for kw in CAPABILITY_KEYWORDS:
+        if kw in tail:
+            return CAPABILITY_ALIASES.get(kw, kw)
+    parts = [p for p in tail.split("_") if p and not p.isdigit()]
+    return parts[-1] if parts else tail
+
+
+def tags_of(eid: str, name: str) -> set:
+    """从 entity_id 和 name 提取标签集合。"""
+    low = (eid or "").lower()
+    nm = name or ""
+    tags = set()
+    for tag, (id_tokens, name_tokens) in TAG_RULES.items():
+        if any(t in low for t in id_tokens) or any(t in nm for t in name_tokens):
+            tags.add(tag)
+    return tags
+
+
+def get_runtime():
+    """获取 runtime 单例。"""
+    from ..runtime import get_runtime
+    return get_runtime()
+
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -480,4 +559,10 @@ __all__ = [
     "resolve_nl_window",
     "synthesize_persona",
     "synthesize_compare",
+    "CAPABILITY_KEYWORDS",
+    "CAPABILITY_ALIASES",
+    "TAG_RULES",
+    "capability_of",
+    "tags_of",
+    "get_runtime",
 ]

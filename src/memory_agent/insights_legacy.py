@@ -422,17 +422,13 @@ class InsightService:
 
     @classmethod
     def _capability_of(cls, entity_id: str) -> str:
-        """从 entity_id 提取归一化的能力后缀，用于识别同一物理设备的重复上报。"""
-        tail = entity_id.split(".", 1)[-1].lower()
-        tail = re.sub(r"_(p_)?\d+(_\d+)*$", "", tail)      # 去 MIoT 属性号 _p_2_1
-        tail = re.sub(r"[0-9a-f]{12}", "", tail)            # 去 MAC 片段
-        tail = re.sub(r"_?[a-z]{2,4}_[a-z]{2}_\d{6,}_?", "_", tail)  # 去 lumi_cn_123456
-        tail = re.sub(r"_?[a-z]{2}_\d{6,}_?", "_", tail)
-        for kw in cls._CAPABILITY_KEYWORDS:
-            if kw in tail:
-                return cls._CAPABILITY_ALIASES.get(kw, kw)
-        parts = [p for p in tail.split("_") if p and not p.isdigit()]
-        return parts[-1] if parts else tail
+        """[已迁移] 从 entity_id 提取归一化的能力后缀。
+
+        新版实现：insights.utils.capability_of
+        """
+        from .insights.utils import capability_of
+        return capability_of(entity_id)
+
 
     # ── 语义匹配 ──────────────────────────────────────────────────────────
 
@@ -2581,13 +2577,13 @@ class InsightService:
 
     @classmethod
     def _tags_of(cls, eid: str, name: str) -> set:
-        low = (eid or "").lower()
-        nm = name or ""
-        tags = set()
-        for tag, (id_tokens, name_tokens) in cls._TAG_RULES.items():
-            if any(t in low for t in id_tokens) or any(t in nm for t in name_tokens):
-                tags.add(tag)
-        return tags
+        """[已迁移] 从 entity_id 和 name 提取标签集合。
+
+        新版实现：insights.utils.tags_of
+        """
+        from .insights.utils import tags_of
+        return tags_of(eid, name)
+
 
     def _detect_activities(self, rows, activity_filter=None, exclude_entities=None,
                            start_iso=None, end_iso=None) -> dict:
@@ -3182,11 +3178,13 @@ class InsightService:
 
     @staticmethod
     def _get_rt():
-        try:
-            from .runtime import get_runtime
-            return get_runtime()
-        except Exception:
-            return None
+        """[已迁移] 获取 runtime 单例。
+
+        新版实现：insights.utils.get_runtime
+        """
+        from .insights.utils import get_runtime
+        return get_runtime()
+
 
     def _semantic_evidence(self, q: str, rt):
         """取语义副驾证据：系统集合 semantic_search + agent 写回记忆（已晋升 live，按 trust 重排）。
