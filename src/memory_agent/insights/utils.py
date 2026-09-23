@@ -1225,6 +1225,30 @@ TAG_RULES: dict[str, tuple[tuple, tuple]] = {
     ),
 }
 
+
+
+#: 能力后缀关键词：把厂商前缀 / MAC / MIoT 属性号剥掉，只留「这个实体测什么」
+#: 顺序敏感——长词必须排在其前缀词之前（power_cost_today 要在 power 之前）
+CAPABILITY_KEYWORDS = (
+    "contact_state", "door_state", "window_state", "contact",
+    "occupancy_status", "occupancy", "presence_state", "presence",
+    "motion_state", "motion", "illuminance", "temperature", "humidity",
+    "battery_level", "battery", "power_cost_today", "power_cost",
+    "electric_power", "power", "energy", "voltage", "current",
+    "distance", "brightness", "position", "switch_status",
+)
+
+#: 能力别名映射
+CAPABILITY_ALIASES = {
+    "contact_state": "contact",
+    "door_state": "contact",
+    "window_state": "contact",
+    "occupancy_status": "occupancy",
+    "presence_state": "presence",
+    "motion_state": "motion",
+    "battery_level": "battery",
+}
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",

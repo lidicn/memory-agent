@@ -321,25 +321,9 @@ class InsightService:
         from .insights.utils import fallback_name
         return fallback_name(entity_id)
 
-    # 能力后缀归一：把厂商前缀 / MAC / MIoT 属性号剥掉，只留「这个实体测什么」。
-    # 顺序敏感——长词必须排在其前缀词之前（power_cost_today 要在 power 之前）。
-    _CAPABILITY_KEYWORDS = (
-        "contact_state", "door_state", "window_state", "contact",
-        "occupancy_status", "occupancy", "presence_state", "presence",
-        "motion_state", "motion", "illuminance", "temperature", "humidity",
-        "battery_level", "battery", "power_cost_today", "power_cost",
-        "electric_power", "power", "energy", "voltage", "current",
-        "distance", "brightness", "position", "switch_status",
-    )
-    _CAPABILITY_ALIASES = {
-        "contact_state": "contact",
-        "door_state": "contact",
-        "window_state": "contact",
-        "occupancy_status": "occupancy",
-        "presence_state": "presence",
-        "motion_state": "motion",
-        "battery_level": "battery",
-    }
+    # Phase 3 迁移：_CAPABILITY_KEYWORDS 和 _CAPABILITY_ALIASES 已迁移到新版 insights.utils
+    from .insights.utils import CAPABILITY_KEYWORDS as _CAPABILITY_KEYWORDS
+    from .insights.utils import CAPABILITY_ALIASES as _CAPABILITY_ALIASES
 
     @classmethod
     def _capability_of(cls, entity_id: str) -> str:
