@@ -19,6 +19,7 @@ import os
 import sqlite3
 import sys
 import threading
+from contextlib import contextmanager
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -456,6 +457,12 @@ class Store:
             conn.execute("PRAGMA foreign_keys=ON")
             self._conn = conn
             return conn
+
+    @contextmanager
+    def _db(self):
+        """P1-3: Acquire lock and yield connection, protecting execute/commit."""
+        with self._lock:
+            yield self.connect()
 
     def init_schema(self) -> None:
         conn = self.connect()
@@ -2351,7 +2358,8 @@ class Store:
     def _member_habit_segments(self, name: str, day_from: str, day_to: str, per_day: dict) -> list:
         """按成员习惯记忆的有效窗口对样本分段，给出每段作息中位值（演变可回溯）。"""
         try:
-            rows = self.connect().execute(
+            with self._db() as conn:
+                rows = conn.execute(
                 "SELECT topic_key, valid_from, valid_to, text FROM agent_memories "
                 "WHERE tags_json LIKE ? ESCAPE '\\' AND topic_key LIKE 'habit:%' "
                 "AND state <> 'revoked' AND valid_from <> '' "
@@ -3390,8 +3398,8 @@ class Store:
 
     def get_event(self, event_id: str):
         """按 id 取单条事件（供 source_refs 真溯源校验）。"""
-        conn = self.connect()
-        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+        with self._db() as conn:
+            row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         return dict(row) if row else None
 
     def get_events_by_entity(self, entity_id: str, day: str = "") -> list:
@@ -3506,10 +3514,10 @@ class Store:
             conn.commit()
 
     def get_agent_memory(self, memory_id: str):
-        conn = self.connect()
-        row = conn.execute(
-            "SELECT * FROM agent_memories WHERE memory_id = ?", (memory_id,)
-        ).fetchone()
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_memories WHERE memory_id = ?", (memory_id,)
+            ).fetchone()
         return dict(row) if row else None
 
     def set_agent_memory_state(self, memory_id: str, state: str, mirror_dirty: int = 0) -> None:
@@ -3604,10 +3612,10 @@ class Store:
         return [dict(r) for r in rows]
 
     def list_dirty_agent_mirrors(self) -> list:
-        conn = self.connect()
-        rows = conn.execute(
-            "SELECT * FROM agent_memories WHERE mirror_dirty=1"
-        ).fetchall()
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM agent_memories WHERE mirror_dirty=1"
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def expire_overdue_agent_memories(self) -> int:
