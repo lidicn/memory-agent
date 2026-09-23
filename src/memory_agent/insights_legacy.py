@@ -251,11 +251,13 @@ class InsightService:
 
     @staticmethod
     def category_of(domain: str) -> str:
-        d = _norm(domain)
-        for cat, domains in CATEGORY_DOMAINS.items():
-            if d in domains:
-                return cat
-        return "other"
+        """根据 domain 返回 category。
+
+        Phase 3 迁移：已迁移到新版 insights.utils.category_of，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import category_of
+        return category_of(domain)
 
     def entity_catalog(
         self,

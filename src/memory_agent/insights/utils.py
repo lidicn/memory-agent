@@ -246,6 +246,30 @@ def make_activity(day, kind, conf, evidence, start_h, end_h, **extra) -> Dict[st
     return out
 
 
+
+CATEGORY_DOMAINS: Dict[str, Tuple[str, ...]] = {
+    "climate": ("climate", "fan", "humidifier", "water_heater"),
+    "lighting": ("light",),
+    "media": ("media_player",),
+    "presence": ("binary_sensor", "device_tracker", "person"),
+    "appliance": ("switch", "vacuum", "input_boolean"),
+    "security": ("lock", "cover", "alarm_control_panel", "camera"),
+    "telemetry": ("sensor", "number"),
+}
+
+
+def category_of(domain: str) -> str:
+    """根据 domain 返回 category。
+
+    从旧版 InsightService.category_of 迁移而来，行为完全一致。
+    """
+    d = normalize_text(domain)
+    for cat, domains in CATEGORY_DOMAINS.items():
+        if d in domains:
+            return cat
+    return "other"
+
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -265,4 +289,6 @@ __all__ = [
     "summarize_events",
     "fallback_name",
     "make_activity",
+    "CATEGORY_DOMAINS",
+    "category_of",
 ]

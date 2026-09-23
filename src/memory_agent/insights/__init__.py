@@ -36,6 +36,8 @@ from .utils import (  # noqa: F401
     summarize_events,
     fallback_name,
     make_activity,
+    CATEGORY_DOMAINS,
+    category_of,
 )
 
 # 旧版函数名别名（保持向后兼容）
@@ -89,9 +91,11 @@ MIGRATION_STATUS = {
         "Phase 3: 旧版 InsightService._fallback_name 改为调用新版实现（兼容包装）",
         "Phase 3: 迁移 _act 到新版 utils.make_activity",
         "Phase 3: 旧版 InsightService._act 改为调用新版实现（兼容包装）",
+        "Phase 3: 迁移 CATEGORY_DOMAINS 常量和 category_of 方法到新版 utils",
+        "Phase 3: 旧版 InsightService.category_of 改为调用新版实现（兼容包装）",
     ],
     "in_progress": [
-        "Phase 3: 验证 _fallback_name 和 _act 迁移后的行为一致性",
+        "Phase 3: 验证 category_of 迁移后的行为一致性",
     ],
     "next_steps": [
         "Phase 3: 继续迁移其他 Service 层方法（如 data_coverage, _diagnose_empty 等）",
