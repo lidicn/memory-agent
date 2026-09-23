@@ -2433,19 +2433,16 @@ class InsightService:
     def _tv_from_telemetry(self, start_iso: str, end_iso: str) -> list[dict]:
         """从电视自报的「播放时长」遥测传感器反推观看行为。
 
-        注意口径：这类传感器报的是**昨日累计**，所以归属到事件日期的前一天；
-        原始值没有单位（可能是小时），因此只给结论不硬编时段。
+        Phase 3 迁移：传感器识别逻辑已迁移到新版 insights.utils，
+        此处保留为兼容包装，行为完全一致。
         """
+        from .insights.utils import is_tv_duration_sensor, is_yesterday_duration_sensor
         names = self.name_map()
         # 先按名字挑出候选实体再查，避免把整个 sensor 域拉回来（还会撞上 5000 条上限）
         candidates = []
         for eid, info in names.items():
             disp = str((info or {}).get("friendly_name") or "")
-            blob = (eid + disp).lower()
-            if ("电视" in disp or "tv" in blob) and (
-                "播放时长" in disp or "观看时长" in disp
-                or "duration" in blob or "playtime" in blob
-            ):
+            if is_tv_duration_sensor(eid, disp):
                 candidates.append(eid)
         if not candidates:
             return []
@@ -2464,7 +2461,7 @@ class InsightService:
             ts = str(r.get("ts", ""))
             # 「昨日播放时长」→ 实际观看发生在前一天
             day = ts[:10]
-            if "昨日" in disp or "yesterday" in blob:
+            if is_yesterday_duration_sensor(eid, disp):
                 d = parse_ts(ts)
                 if d:
                     day = (d - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -3083,35 +3080,11 @@ class InsightService:
     def _synthesize_answer(self, data: dict, window_desc: str) -> str:
         """把结构化洞察合成为一句自然语言回答 + 证据引用（不依赖 LLM，纯规则合成）。
 
-        解决 ask_memory「只做路由、没有任何自然语言回答」的问题：即便向量库没命中，
-        也至少给出一段可读的总结，并明确声明检索方式，避免把用户蒙在鼓里。
+        Phase 3 迁移：已迁移到新版 insights.utils.synthesize_answer，
+        此处保留为兼容包装，行为完全一致。
         """
-        parts = [f"关于「{window_desc or '该时段'}」的行为记忆检索结果："]
-        total = data.get("total_events", 0)
-        parts.append(f"区间内共 {total} 条事件。")
-        rooms = data.get("rooms") or {}
-        if rooms:
-            top = sorted(rooms.items(), key=lambda kv: -kv[1].get("event_count", 0))[:3]
-            parts.append(
-                "最活跃房间：" + "、".join(f"{r}({v.get('event_count', 0)})" for r, v in top) + "。"
-            )
-        anomalies = data.get("anomalies") or []
-        if anomalies:
-            parts.append(
-                f"检测到 {len(anomalies)} 处异常："
-                + "；".join(a.get("title", "") for a in anomalies[:3])
-                + "。"
-            )
-        else:
-            parts.append("未检测到明显异常。")
-        sessions = data.get("climate_sessions") or []
-        if sessions:
-            parts.append(f"空调/温控会话 {len(sessions)} 段。")
-        parts.append(
-            "（以上为基于结构化事件库的统计检索；向量语义检索仅在命中时附加 similarity 证据，"
-            "未命中则完全不依赖向量库。）"
-        )
-        return "".join(parts)
+        from .insights.utils import synthesize_answer
+        return synthesize_answer(data, window_desc)
 
     @staticmethod
     def _get_rt():

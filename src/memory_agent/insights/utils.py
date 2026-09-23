@@ -830,6 +830,65 @@ def clean_device_query(q: str) -> str:
         qq = qq.replace(normalize_text(w), " ")
     return qq.strip()
 
+
+
+def synthesize_answer(data: dict, window_desc: str = "") -> str:
+    """把结构化洞察合成为一句自然语言回答 + 证据引用（不依赖 LLM，纯规则合成）。
+
+    从旧版 InsightsService._synthesize_answer 迁移而来。
+    """
+    parts = [f"关于「{window_desc or '该时段'}」的行为记忆检索结果："]
+    total = data.get("total_events", 0)
+    parts.append(f"区间内共 {total} 条事件。")
+    rooms = data.get("rooms") or {}
+    if rooms:
+        top = sorted(rooms.items(), key=lambda kv: -kv[1].get("event_count", 0))[:3]
+        parts.append(
+            "最活跃房间：" + "、".join(f"{r}({v.get('event_count', 0)})" for r, v in top) + "。"
+        )
+    anomalies = data.get("anomalies") or []
+    if anomalies:
+        parts.append(
+            f"检测到 {len(anomalies)} 处异常："
+            + "；".join(a.get("title", "") for a in anomalies[:3])
+            + "。"
+        )
+    else:
+        parts.append("未检测到明显异常。")
+    sessions = data.get("climate_sessions") or []
+    if sessions:
+        parts.append(f"空调/温控会话 {len(sessions)} 段。")
+    parts.append(
+        "（以上为基于结构化事件库的统计检索；向量语义检索仅在命中时附加 similarity 证据，"
+        "未命中则完全不依赖向量库。）"
+    )
+    return "".join(parts)
+
+
+
+def is_tv_duration_sensor(entity_id: str, friendly_name: str = "") -> bool:
+    """判断是否为电视播放时长传感器。
+
+    从旧版 InsightsService._tv_from_telemetry 迁移而来。
+    识别规则：名称含「电视/tv」且含「播放时长/观看时长/duration/playtime」。
+    """
+    disp = str(friendly_name or "")
+    blob = (entity_id + disp).lower()
+    return ("电视" in disp or "tv" in blob) and (
+        "播放时长" in disp or "观看时长" in disp
+        or "duration" in blob or "playtime" in blob
+    )
+
+
+def is_yesterday_duration_sensor(entity_id: str, friendly_name: str = "") -> bool:
+    """判断是否为「昨日累计」类型的传感器（值归属到前一天）。
+
+    从旧版 InsightsService._tv_from_telemetry 迁移而来。
+    """
+    disp = str(friendly_name or "")
+    blob = (entity_id + disp).lower()
+    return "昨日" in disp or "yesterday" in blob
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
