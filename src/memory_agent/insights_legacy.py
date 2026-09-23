@@ -2112,36 +2112,13 @@ class InsightService:
 
     @staticmethod
     def _finalize_climate_session(sess, still_on: bool = False) -> dict:
-        try:
-            s = parse_ts(sess["start"]) or datetime.strptime(sess["start"][:19], "%Y-%m-%dT%H:%M:%S")
-            e = parse_ts(sess["end"]) or datetime.strptime(sess["end"][:19], "%Y-%m-%dT%H:%M:%S")
-            dur = int((e - s).total_seconds() // 60) if s and e else 0
-        except Exception:
-            dur = 0
-        sp = sess["setpoints"]
-        rt = sess["room_temps"]
-        notes = []
-        if still_on:
-            notes.append("窗口结束时仍未收到 off，会话未闭合，duration 为「至今」时长")
-        if dur == 0:
-            notes.append("会话仅含单条事件（on/off 同秒或采集间隔内完成），时长按 0 计")
-        if not sp and not rt:
-            notes.append("该会话事件未携带温度属性，setpoint/room_temp 为 null")
-        return {
-            "entity_id": sess["entity_id"],
-            "room": sess.get("room", ""),
-            "start": sess["start"],
-            "end": sess["end"],
-            "duration_minutes": dur,
-            "still_on": still_on,
-            "hvac_actions": sorted(sess["hvac_actions"]),
-            "setpoint_c": round(sum(sp) / len(sp), 1) if sp else None,
-            "setpoint_range_c": [round(min(sp), 1), round(max(sp), 1)] if sp else None,
-            "room_temp_c": round(sum(rt) / len(rt), 1) if rt else None,
-            "room_temp_range_c": [round(min(rt), 1), round(max(rt), 1)] if rt else None,
-            "samples": {"setpoint": len(sp), "room_temp": len(rt)},
-            "notes": notes,
-        }
+        """完成气候会话，计算时长、温度统计等。
+
+        Phase 3 迁移：已迁移到新版 insights.utils.finalize_climate_session，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import finalize_climate_session
+        return finalize_climate_session(sess, still_on)
 
     def infer_activities(self, days=7, rooms="", start="", end="", activities=None) -> dict:
         """活动识别：基于设备共现与时段，识别做饭 / 洗澡 / 睡眠 / 看电视 / 离家。

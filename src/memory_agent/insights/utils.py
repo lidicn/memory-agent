@@ -270,6 +270,46 @@ def category_of(domain: str) -> str:
     return "other"
 
 
+
+def finalize_climate_session(sess: Dict[str, Any], still_on: bool = False) -> Dict[str, Any]:
+    """完成气候会话，计算时长、温度统计等。
+
+    从旧版 InsightService._finalize_climate_session 迁移而来，行为完全一致。
+    """
+    from datetime import datetime
+    from ..store import parse_ts
+    try:
+        s = parse_ts(sess["start"]) or datetime.strptime(sess["start"][:19], "%Y-%m-%dT%H:%M:%S")
+        e = parse_ts(sess["end"]) or datetime.strptime(sess["end"][:19], "%Y-%m-%dT%H:%M:%S")
+        dur = int((e - s).total_seconds() // 60) if s and e else 0
+    except Exception:
+        dur = 0
+    sp = sess["setpoints"]
+    rt = sess["room_temps"]
+    notes = []
+    if still_on:
+        notes.append("窗口结束时仍未收到 off，会话未闭合，duration 为「至今」时长")
+    if dur == 0:
+        notes.append("会话仅含单条事件（on/off 同秒或采集间隔内完成），时长按 0 计")
+    if not sp and not rt:
+        notes.append("该会话事件未携带温度属性，setpoint/room_temp 为 null")
+    return {
+        "entity_id": sess["entity_id"],
+        "room": sess.get("room", ""),
+        "start": sess["start"],
+        "end": sess["end"],
+        "duration_minutes": dur,
+        "still_on": still_on,
+        "hvac_actions": sorted(sess["hvac_actions"]),
+        "setpoint_c": round(sum(sp) / len(sp), 1) if sp else None,
+        "setpoint_range_c": [round(min(sp), 1), round(max(sp), 1)] if sp else None,
+        "room_temp_c": round(sum(rt) / len(rt), 1) if rt else None,
+        "room_temp_range_c": [round(min(rt), 1), round(max(rt), 1)] if rt else None,
+        "samples": {"setpoint": len(sp), "room_temp": len(rt)},
+        "notes": notes,
+    }
+
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -291,4 +331,5 @@ __all__ = [
     "make_activity",
     "CATEGORY_DOMAINS",
     "category_of",
+    "finalize_climate_session",
 ]
