@@ -1,4 +1,4 @@
-"""MCP 服务器 —— 基于官方 Python SDK（MCPServer + Streamable HTTP, MCP 2.x）
+﻿"""MCP 服务器 —— 基于官方 Python SDK（MCPServer + Streamable HTTP, MCP 2.x）
 
 定位
 ----
@@ -867,7 +867,9 @@ async def _tracked_call_tool(server, name, arguments, context=None):
     idem_key = ""
     if isinstance(arguments, dict):
         idem_key = str(arguments.pop("idempotency_key", "") or "").strip()
-    cache_key = f"{name}:{idem_key}" if idem_key else ""
+    # P1-10: 幂等键加命名空间（token_name），防止不同调用者撞缓存
+    _token_name, _, _ = _caller_context()
+    cache_key = f"{_token_name or 'anon'}:{name}:{idem_key}" if idem_key else ""
     if cache_key:
         cached = _idem_get(cache_key)
         if cached is not None:
@@ -2404,11 +2406,8 @@ TOOL_NAMES = TOOL_NAMES_FROM_SPEC
 
 # 安全加固（审计 P0-6）：启动期断言所有写工具均已登记 WRITE_TOOLS，
 # 防止新增写工具漏登记后被默认为只读对所有 scope 开放。
-try:
-    from .mcp_scopes import assert_write_tools_complete
-    assert_write_tools_complete()
-except Exception as _exc:  # pragma: no cover
-    logging.getLogger(__name__).warning("写工具完整性断言执行失败：%s", _exc)
+from .mcp_scopes import assert_write_tools_complete
+assert_write_tools_complete()
 
 
 def get_lifespan_context():
