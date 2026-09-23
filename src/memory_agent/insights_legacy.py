@@ -2477,10 +2477,7 @@ class InsightService:
         from collections import defaultdict
 
         names = self.name_map()
-        INACTIVE = {
-            "off", "idle", "0", "unavailable", "unknown", "none", "closed",
-            "standby", "not_home", "", "false",
-        }
+        from .insights.utils import INACTIVE_STATES as INACTIVE
 
         _excl = set(exclude_entities or set())
         events: list[dict] = []

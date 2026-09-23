@@ -1020,6 +1020,14 @@ CLIMATE_OPEN_STATES: frozenset[str] = frozenset({
 #: 温控实体的关闭状态集合。
 CLIMATE_CLOSED_STATES: frozenset[str] = frozenset({"off"})
 
+
+
+#: 设备非活动状态集合（用于活动检测的静默判断）。
+INACTIVE_STATES: frozenset[str] = frozenset({
+    "off", "idle", "0", "unavailable", "unknown", "none", "closed",
+    "standby", "not_home", "", "false",
+})
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
