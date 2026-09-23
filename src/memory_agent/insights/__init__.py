@@ -114,9 +114,16 @@ MIGRATION_STATUS = {
         "Phase 3: 迁移 _capability_of + CAPABILITY_KEYWORDS/ALIASES 到新版 utils",
         "Phase 3: 迁移 _tags_of + TAG_RULES 到新版 utils",
         "Phase 3: 迁移 _get_rt 到新版 utils.get_runtime",
+        "Phase 3: 迁移 _cache_get/_cache_put 到新版 utils.ResultCache",
+        "Phase 3: 迁移 _parse 到新版 utils.parse_datetime",
+        "Phase 3: 迁移 _diagnose_empty 到新版 utils.diagnose_empty_result",
+        "Phase 3: 迁移 _noise_entities 到新版 utils.identify_noise_entities",
+        "Phase 3: 迁移 _last_boot_time 到新版 utils.find_last_boot_time",
+        "Phase 3: 迁移 _compare_windows 到新版 utils.compare_windows",
+        "Phase 3: 旧版 insights_legacy.py 文件头添加冻结遗留代码警告",
     ],
     "in_progress": [
-        "Phase 3: 验证 _capability_of/_tags_of/_get_rt 迁移后的行为一致性",
+        "Phase 3: 继续迁移剩余业务方法（_usage_one/_anomalies/_semantic_anomalies 等）",
     ],
     "next_steps": [
         "Phase 3: 继续迁移其他 Service 层方法（如 data_coverage, _diagnose_empty 等）",
