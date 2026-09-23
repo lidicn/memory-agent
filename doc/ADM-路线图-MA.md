@@ -30,7 +30,7 @@
 | Phase 3 主动规则引擎 | ✅ 已完成 | 100% |
 | Phase 4 主动分发与反馈闭环 | ✅ 已完成 | 100% |
 | Phase 5 离家安防+家庭日常画像 | ✅ 已完成 | 100% |
-| 投产准备 | 🔄 进行中 | 85% |
+| 投产准备 | 🔄 进行中 | 90% |
 | 行为洞察模块化重构 | ✅ | 绞杀者模式完成：32方法迁移+27方法FROZEN标记 |
 
 ---
@@ -56,13 +56,13 @@
 |---|---|---|---|---|
 | P1-1 | event_id 迁移 ALTER TABLE UNIQUE 静默失败 | ✅ | — | — |
 | P1-2 | mirror_dirty 多副本一致性 | ✅ | — | — |
-| P1-3 | _lock 只保护连接创建，不保护 execute/commit | ⏳ 待开始 | 2.5d | 架构性改动，投产前后均可 |
+| P1-3 | _lock 只保护连接创建，不保护 execute/commit | ✅ | eeb02ce | _db() 上下文管理器 + 4处无保护点修复 |
 | P1-4 | persons 字符串数组写入，读取方要求 dict → 在场人员静默丢弃 | ✅ | — | 2dea19d |
 | P1-5 | LIKE '%member:{name}%' 未转义通配符 → 跨成员检索 | ✅ | — | fdf6650 |
 | P1-7 | 热路径查询无索引 + 审计写同步阻塞事件循环 | ✅ | — | dc3550b |
 | P1-8 | list_members 返回 face_feature 向量 | ✅ | — | — |
 | P1-9 | get_behavior_insights 签名不匹配 | ✅ | — | — |
-| P1-10 | 幂等键命名空间不足 + ContextVar 绑错 + 全文件零超时 | ⏳ 待开始 | 2.5d | 架构性改动，投产前后均可 |
+| P1-10 | 幂等键命名空间不足 + ContextVar 绑错 + 全文件零超时 | ✅ | 1a04520 | 幂等键加 token_name 前缀；HTTP timeout 已全覆盖 |
 | P1-12 | duplicate/conflict 阈值反了 | ✅ | — | P1-22 |
 | P1-13 | auto_promote_blocked 在 merge=True 路径被丢弃；原地覆写活行 | ✅ | 9b55600 | — |
 | P1-14/15/16 | 视觉感知链可信度（ArcFace 忽略 + 人脸错配 + 排除法误判） | ✅ | — | e113098 + d095990 |
@@ -195,6 +195,7 @@
 | 09-20 | WO-MA-015 homesdk 兼管 + WO-ADM-001 MA 侧 4 bug | dc2b9ef |
 | 09-20 | P0-8 补回归测试(6 passed) + WO-GATE-001 §八 + P1-5 LIKE转义(3 passed) | c5b4d5a / fd0aa25 / fdf6650 |
 | 09-20 | 路线图 v3：移除日期排期，改为进度驱动 | — |
+| 09-23 | P1-3 锁策略 + P1-10 幂等键命名空间修复 | eeb02ce / 1a04520 |
 | 09-23 | 行为洞察模块化重构完成（绞杀者模式）+ P2 三bug核实已修 + 路线图更新 | 4d061e0 |
 | 09-21 | TV端ArcFace链路修复：心跳超时30→120秒 + go2rtc失败时保留TV端persons + HA token更新 + vision_device_token掩码修复 | d095990 |
 
