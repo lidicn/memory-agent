@@ -1156,6 +1156,13 @@ ROOM_AGGREGATE_WORDS: tuple[str, ...] = (
 #: 既是日常通用名词、又可能被用户拿来当 area 名的词
 GENERIC_ROOM_WORDS: frozenset[str] = frozenset({"房间", "卧室", "屋子", "房子", "家里"})
 
+
+
+#: 关闭状态集合（英文）
+OFF_STATES: frozenset[str] = frozenset(
+    {"off", "closed", "not_home", "unavailable", "unknown", "idle", "standby", "none", ""}
+)
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",

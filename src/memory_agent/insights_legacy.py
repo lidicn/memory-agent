@@ -107,9 +107,8 @@ KEYWORD_DOMAINS: dict[str, tuple[str, ...]] = {
 
 #: 视为「关闭 / 不可用」的状态值。其余一律视为「开启」。
 #: climate 的 ``heat`` / ``cool``、media_player 的 ``playing`` 都会被正确判为开启。
-OFF_STATES: frozenset[str] = frozenset(
-    {"off", "closed", "not_home", "unavailable", "unknown", "idle", "standby", "none", ""}
-)
+# Phase 3 迁移：OFF_STATES 已迁移到新版 insights.utils。
+from .insights.utils import OFF_STATES
 
 # 中文环境下常见的「关闭/开启」状态词（门窗传感器、开关等可能上报中文状态）
 # Phase 3 迁移：_CN_OFF_STATES 和 _CN_ON_STATES 已迁移到新版 insights.utils。
