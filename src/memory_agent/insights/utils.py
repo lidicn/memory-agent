@@ -1010,6 +1010,16 @@ def is_device_on(state: Any, allow_on: set[str] | None = None) -> bool:
         return s in allow_on
     return s not in OFF_STATES
 
+
+
+#: 温控实体的开启状态集合。
+CLIMATE_OPEN_STATES: frozenset[str] = frozenset({
+    "heat", "cool", "dry", "fan", "auto", "heat_cool", "boost", "fan_only",
+})
+
+#: 温控实体的关闭状态集合。
+CLIMATE_CLOSED_STATES: frozenset[str] = frozenset({"off"})
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",

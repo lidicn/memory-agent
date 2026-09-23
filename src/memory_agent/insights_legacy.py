@@ -1931,8 +1931,7 @@ class InsightService:
             start_iso, end_iso, rooms=[room] if room else None,
             entities=entities, domains=["climate"], limit=5000, order="asc",
         )
-        OPEN = {"heat", "cool", "dry", "fan", "auto", "heat_cool", "boost", "fan_only"}
-        CLOSED = {"off"}
+        from .insights.utils import CLIMATE_OPEN_STATES as OPEN, CLIMATE_CLOSED_STATES as CLOSED
         cur: dict = {}
         sessions: list = []
         rows_seen = 0
