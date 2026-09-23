@@ -22,9 +22,13 @@ from .store import now_local
 TOKEN_PREFIX = "mcp_"
 PREFIX_LEN = 12
 LAST_USED_THROTTLE_SECONDS = 15
-# 迁移/遗留令牌的默认权限：为保证「现有 Agent 不断连」，
-# 存量令牌视作全权（read+write），新建令牌才走「默认只读」。
-LEGACY_SCOPES = list(ALL_SCOPES)
+# P0 安全修复：无 scopes 字段令牌的告警去重（每令牌只报一次）
+_LEGACY_SCOPE_WARNED: set[str] = set()
+# P0 安全修复：存量/遗留令牌的默认权限改为只读（fail-safe）。
+# 原设计为「保证现有 Agent 不断连」而视作全权（read+write+admin），
+# 但这导致无 scopes 字段的令牌可执行写操作，是 fail-open 漏洞。
+# 需要写权限的令牌必须显式设置 scopes（WebUI「MCP 接入」可调整）。
+LEGACY_SCOPES = list(DEFAULT_SCOPES)
 
 
 def _hash(token: str) -> str:
@@ -145,12 +149,20 @@ class MCPTokenStore:
     def scopes(self, name: str) -> list[str]:
         """返回令牌权限。
 
-        存量/迁移令牌没有 ``scopes`` 字段 → 视为全权（read+write），
-        保证升级后现有 Agent 的写操作不被静默拒绝；新建令牌默认只读。
+        P0 安全修复：存量/迁移令牌没有 ``scopes`` 字段 → 视为只读（fail-safe），
+        不再默认全权。需要写权限的令牌必须显式设置 scopes。
         """
         rec = (self.config.agent_tokens or {}).get(name)
         if isinstance(rec, dict) and rec.get("scopes"):
             return normalize(rec.get("scopes"))
+        # P0 安全修复：无 scopes 字段的令牌按只读处理，并告警（节流：每令牌只报一次）
+        if name not in _LEGACY_SCOPE_WARNED:
+            _LEGACY_SCOPE_WARNED.add(name)
+            _log.warning(
+                "【安全】令牌 '%s' 无 scopes 字段，按只读处理（原设计为全权，已修复为 fail-safe）。"
+                "如需写权限，请在 WebUI「MCP 接入」显式设置 scopes。",
+                name,
+            )
         return list(LEGACY_SCOPES)
 
     def update_scopes(self, name: str, scopes) -> bool:
