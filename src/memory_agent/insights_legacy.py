@@ -2252,32 +2252,19 @@ class InsightService:
         return result
 
     def _climate_compare(self, cur_start, cur_end, prev_start, prev_end) -> dict:
-        """温控维度环比（修复 #9）：空调开启时长 + 平均设定/室温 + 设定温度区间变化。"""
+        """温控维度环比（修复 #9）：空调开启时长 + 平均设定/室温 + 设定温度区间变化。
+
+        Phase 3 迁移：聚合逻辑已迁移到新版 insights.utils，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import aggregate_climate_sessions, compare_climate
         def _agg_cl(start, end):
             cs = self.climate_sessions(start=start, end=end)
             sessions = cs.get("sessions", [])
-            total_min = sum(s.get("duration_minutes", 0) for s in sessions)
-            sp = [s["setpoint_c"] for s in sessions if s.get("setpoint_c") is not None]
-            rt = [s["room_temp_c"] for s in sessions if s.get("room_temp_c") is not None]
-            return {
-                "sessions": len(sessions),
-                "hours": round(total_min / 60, 1),
-                "avg_setpoint_c": round(sum(sp) / len(sp), 1) if sp else None,
-                "avg_room_temp_c": round(sum(rt) / len(rt), 1) if rt else None,
-                "min_setpoint_c": round(min(sp), 1) if sp else None,
-                "max_setpoint_c": round(max(sp), 1) if sp else None,
-            }
+            return aggregate_climate_sessions(sessions)
         cur = _agg_cl(cur_start, cur_end)
         prev = _agg_cl(prev_start, prev_end)
-        d_sp = None
-        if cur["avg_setpoint_c"] is not None and prev["avg_setpoint_c"] is not None:
-            d_sp = round(cur["avg_setpoint_c"] - prev["avg_setpoint_c"], 1)
-        return {
-            "current": cur,
-            "previous": prev,
-            "delta_hours": round(cur["hours"] - prev["hours"], 1),
-            "delta_avg_setpoint_c": d_sp,
-        }
+        return compare_climate(cur, prev)
 
     def explain_insight(self, insight_id: str) -> dict:
         """证据溯源：给定 insight(活动 id) 或 agent 记忆 id，返回底层触发事件与 source_refs 解析。

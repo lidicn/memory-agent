@@ -889,6 +889,41 @@ def is_yesterday_duration_sensor(entity_id: str, friendly_name: str = "") -> boo
     blob = (entity_id + disp).lower()
     return "昨日" in disp or "yesterday" in blob
 
+
+
+def aggregate_climate_sessions(sessions: list[dict]) -> dict:
+    """聚合温控会话统计：总时长 + 平均设定/室温 + 设定温度区间。
+
+    从旧版 InsightsService._climate_compare 迁移而来。
+    """
+    total_min = sum(s.get("duration_minutes", 0) for s in sessions)
+    sp = [s["setpoint_c"] for s in sessions if s.get("setpoint_c") is not None]
+    rt = [s["room_temp_c"] for s in sessions if s.get("room_temp_c") is not None]
+    return {
+        "sessions": len(sessions),
+        "hours": round(total_min / 60, 1),
+        "avg_setpoint_c": round(sum(sp) / len(sp), 1) if sp else None,
+        "avg_room_temp_c": round(sum(rt) / len(rt), 1) if rt else None,
+        "min_setpoint_c": round(min(sp), 1) if sp else None,
+        "max_setpoint_c": round(max(sp), 1) if sp else None,
+    }
+
+
+def compare_climate(current: dict, previous: dict) -> dict:
+    """计算两个窗口的温控环比变化。
+
+    从旧版 InsightsService._climate_compare 迁移而来。
+    """
+    d_sp = None
+    if current["avg_setpoint_c"] is not None and previous["avg_setpoint_c"] is not None:
+        d_sp = round(current["avg_setpoint_c"] - previous["avg_setpoint_c"], 1)
+    return {
+        "current": current,
+        "previous": previous,
+        "delta_hours": round(current["hours"] - previous["hours"], 1),
+        "delta_avg_setpoint_c": d_sp,
+    }
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
