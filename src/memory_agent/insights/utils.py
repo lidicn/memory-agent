@@ -1249,6 +1249,71 @@ CAPABILITY_ALIASES = {
     "battery_level": "battery",
 }
 
+# ── 房间语义：从旧版迁移的兼容函数 ─────────────────────────────────
+
+def match_rooms(room: str, rooms_dict: dict) -> list[str]:
+    """房间名模糊匹配。支持「主卧」→「主卧室」这类包含关系。"""
+    if not room:
+        return []
+    target = normalize_text(room)
+    names = list((rooms_dict or {}).keys())
+    exact = [n for n in names if normalize_text(n) == target]
+    if exact:
+        return exact
+    loose = [n for n in names if target in normalize_text(n) or normalize_text(n) in target]
+    return loose
+
+
+def room_names_list(rooms_dict: dict, only_enabled: bool = True) -> list[str]:
+    """HA 中真实存在的区域（area）名，按「长度降序」返回，便于最长优先匹配。"""
+    names: list[str] = []
+    for name, payload in (rooms_dict or {}).items():
+        if not name:
+            continue
+        if only_enabled and isinstance(payload, dict) and not payload.get("enabled", True):
+            continue
+        names.append(str(name))
+    return sorted(set(names), key=lambda n: (-len(n), n))
+
+
+def resolve_room_in_text(
+    text: str,
+    room_names: list[str],
+    aggregate_words: frozenset = None,
+    generic_room_words: frozenset = None,
+) -> dict:
+    """从自由文本里**精确**识别区域名（最长优先）。"""
+    t = normalize_text(text)
+    names = list(room_names) if room_names else []
+    aggregate_words = aggregate_words or ROOM_AGGREGATE_WORDS
+    generic_room_words = generic_room_words or GENERIC_ROOM_WORDS
+    aggregate = any(w in t for w in aggregate_words)
+    matched = sorted(
+        [n for n in names if normalize_text(n) and normalize_text(n) in t],
+        key=lambda n: (-len(n), n),
+    )
+    primary = "" if aggregate else (matched[0] if matched else "")
+    return {
+        "room": primary,
+        "aggregate": aggregate,
+        "matched": matched,
+        "ambiguous": bool(primary) and primary in generic_room_words,
+        "rooms_available": names,
+    }
+
+
+def split_room_from_query(room: str, query: str, room_names: list[str]) -> tuple[str, str]:
+    """调用方只给了 query="房间空调" 时，把区域名切出来变成 room="房间"。"""
+    if room or not query:
+        return room, query
+    hint = resolve_room_in_text(query, room_names)
+    matched = hint.get("room") or ""
+    if not matched:
+        return room, query
+    rest = normalize_text(query).replace(normalize_text(matched), " ").strip()
+    return matched, (rest or query)
+
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -1287,4 +1352,8 @@ __all__ = [
     "identify_noise_entities",
     "find_last_boot_time",
     "compare_windows",
+    "match_rooms",
+    "room_names_list",
+    "resolve_room_in_text",
+    "split_room_from_query",
 ]

@@ -338,51 +338,20 @@ class InsightService:
     # ── 语义匹配 ──────────────────────────────────────────────────────────
 
     def match_rooms(self, room: str) -> list[str]:
-        """房间名模糊匹配。支持「主卧」→「主卧室」这类包含关系。"""
-        if not room:
-            return []
-        target = _norm(room)
-        names = list((self.config.rooms or {}).keys())
-        exact = [n for n in names if _norm(n) == target]
-        if exact:
-            return exact
-        loose = [n for n in names if target in _norm(n) or _norm(n) in target]
-        return loose
+        """[已迁移] 房间名模糊匹配 → insights.utils.match_rooms"""
+        from .insights.utils import match_rooms
+        return match_rooms(room, self.config.rooms or {})
 
     def room_names(self, only_enabled: bool = True) -> list[str]:
-        """HA 中真实存在的区域（area）名，按「长度降序」返回，便于最长优先匹配。"""
-        names: list[str] = []
-        for name, payload in (self.config.rooms or {}).items():
-            if not name:
-                continue
-            if only_enabled and isinstance(payload, dict) and not payload.get("enabled", True):
-                continue
-            names.append(str(name))
-        return sorted(set(names), key=lambda n: (-len(n), n))
+        """[已迁移] 区域名列表 → insights.utils.room_names_list"""
+        from .insights.utils import room_names_list
+        return room_names_list(self.config.rooms or {}, only_enabled)
 
     def resolve_room_in_text(self, text: str, rooms: list[str] | None = None) -> dict:
-        """从自由文本里**精确**识别区域名（最长优先）。
-
-        这是「房间名歧义」的确定性解法：只要 HA 里真的存在同名 area，
-        就按精确区域处理（``房间`` → area「房间」，不是「随便哪个房间」）；
-        只有用户明确说「所有房间 / 全屋」时才认定为跨房间汇总。
-        「主卧室空调」里同时含「主卧室」和「卧室」，取更长的「主卧室」。
-        """
-        t = _norm(text)
+        """[已迁移] 文本中房间识别 → insights.utils.resolve_room_in_text"""
+        from .insights.utils import resolve_room_in_text
         names = self.room_names() if rooms is None else list(rooms)
-        aggregate = any(w in t for w in ROOM_AGGREGATE_WORDS)
-        matched = sorted(
-            [n for n in names if _norm(n) and _norm(n) in t],
-            key=lambda n: (-len(n), n),
-        )
-        primary = "" if aggregate else (matched[0] if matched else "")
-        return {
-            "room": primary,
-            "aggregate": aggregate,
-            "matched": matched,
-            "ambiguous": bool(primary) and primary in GENERIC_ROOM_WORDS,
-            "rooms_available": names,
-        }
+        return resolve_room_in_text(text, names)
 
     def domains_for(self, category: str = "", domain: str = "", query: str = "") -> list[str]:
         """把「类别 / domain / 自由文本」统一解析成 domain 列表。
@@ -425,21 +394,12 @@ class InsightService:
         return [it["entity_id"] for it in items]
 
     def split_room_from_query(self, room: str, query: str) -> tuple[str, str]:
-        """调用方只给了 ``query="房间空调"`` 时，把区域名切出来变成 ``room="房间"``。
-
-        模型经常把房间塞进 query 里，导致跨房间模糊匹配。这里在服务端兜底，
-        让「房间」这类既是通用词又是 area 名的情况也能落到精确区域上。
-        """
-        if room or not query:
-            return room, query
-        hint = self.resolve_room_in_text(query)
-        matched = hint.get("room") or ""
-        if not matched:
-            return room, query
-        rest = _norm(query).replace(_norm(matched), " ").strip()
-        return matched, (rest or query)
+        """[已迁移] query 中切房间 → insights.utils.split_room_from_query"""
+        from .insights.utils import split_room_from_query
+        return split_room_from_query(room, query, self.room_names())
 
     def name_map(self) -> dict[str, dict]:
+        """[已迁移] entity_id → entity 信息映射"""
         return {it["entity_id"]: it for it in self._config_entities(only_enabled=False)}
 
     def decorate(self, rows: Iterable[dict]) -> list[dict]:
