@@ -534,6 +534,175 @@ def get_runtime():
     return get_runtime()
 
 
+import copy
+import time
+
+
+class ResultCache:
+    """内存结果缓存：带 TTL 和容量上限。
+
+    从旧版 InsightsService._cache_get/_cache_put 迁移而来。
+    容量超过 max_entries 时自动清理最旧条目。
+    """
+
+    def __init__(self, ttl: float = 60.0, max_entries: int = 64) -> None:
+        self._ttl = ttl
+        self._max_entries = max_entries
+        self._store: dict[str, tuple[float, Any]] = {}
+
+    def get(self, key: str) -> Any | None:
+        """获取缓存值，过期或不存在返回 None。"""
+        ent = self._store.get(key)
+        if not ent:
+            return None
+        ts, val = ent
+        if time.monotonic() - ts > self._ttl:
+            self._store.pop(key, None)
+            return None
+        return copy.deepcopy(val)
+
+    def put(self, key: str, val: Any) -> None:
+        """写入缓存，超过容量时清理最旧条目。"""
+        self._store[key] = (time.monotonic(), copy.deepcopy(val))
+        if len(self._store) > self._max_entries:
+            oldest = min(self._store, key=lambda k: self._store[k][0])
+            self._store.pop(oldest, None)
+
+
+def parse_datetime(raw: str, tz_offset_hours: float = 8.0) -> datetime | None:
+    """解析时间字符串为 naive datetime（本地时区）。
+
+    从旧版 InsightsService._parse 迁移而来。
+    支持格式：YYYY-MM-DD、ISO 8601（含 Z 后缀）。
+    带时区的时间会转换为指定时区的 naive datetime。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return datetime.fromisoformat(f"{text}T00:00:00")
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        from datetime import timezone
+        dt = dt.astimezone(timezone(timedelta(hours=tz_offset_hours))).replace(tzinfo=None)
+    return dt.replace(microsecond=0)
+
+
+
+
+def diagnose_empty_result(
+    entities: list[str],
+    room: str = "",
+    category: str = "",
+    domains: list[str] | None = None,
+    seen: dict[str, str] | None = None,
+) -> dict:
+    """0 结果时给出明确原因，而不是让调用方猜「没数据还是没采集」。
+
+    从旧版 InsightsService._diagnose_empty 迁移而来。
+    seen: {entity_id: last_seen_ts}，由调用方通过 store.entity_last_seen() 获取。
+    """
+    scope = f"{room or '全屋'} / {category or '不限类别'}"
+    domains = domains or []
+    seen = seen or {}
+
+    if not entities and (room or category or domains):
+        return {
+            "reason": "no_matching_entity",
+            "message": f"「{scope}」下没有配置任何匹配的实体，因此不可能有事件。",
+            "next_step": "用 get_entity_catalog() 看看实际有哪些房间和设备类别",
+        }
+    if entities:
+        never = [e for e in entities if not seen.get(e)]
+        if len(never) == len(entities):
+            return {
+                "reason": "never_collected",
+                "message": (
+                    f"「{scope}」下有 {len(entities)} 个实体，但它们从未产生过任何事件 —— "
+                    f"通常是采集未启用该实体，或 HA 侧本就没有历史。"
+                ),
+                "entities": entities[:20],
+                "next_step": "到 WebUI「采集配置」确认这些实体已勾选，再触发一次采集",
+            }
+        return {
+            "reason": "no_event_in_window",
+            "message": f"实体有历史数据，但在当前时间窗口内没有状态变化。",
+            "last_seen": {e: seen.get(e, "") for e in entities[:20]},
+            "next_step": "放大 days，或去掉 state 过滤条件",
+        }
+    return {
+        "reason": "empty_window",
+        "message": "该时间窗口内没有任何事件，确认采集是否已运行。",
+        "next_step": "调用 get_collect_status() 查看采集进度",
+    }
+
+
+
+#: 噪声判定阈值：某实体事件数 > 房间事件数 * NOISE_RATIO_CAP 即视为垄断型噪声。
+NOISE_RATIO_CAP = 0.6
+
+
+def identify_noise_entities(
+    hist_raw: dict[str, list[int]],
+    tops: list[dict],
+    noise_ratio_cap: float = NOISE_RATIO_CAP,
+) -> set[str]:
+    """识别单实体占比垄断型噪声源。
+
+    从旧版 InsightsService._noise_entities 迁移而来。
+    hist_raw: {room: [hourly_counts]}
+    tops: [{"entity_id": ..., "room": ..., "count": ...}, ...]
+    """
+    noise_ids: set[str] = set()
+    for room, buckets in hist_raw.items():
+        room_total = sum(buckets)
+        if room_total <= 0:
+            continue
+        for t in tops:
+            if t.get("room") != room or t["entity_id"] in noise_ids:
+                continue
+            if t["count"] > noise_ratio_cap * room_total:
+                noise_ids.add(t["entity_id"])
+    return noise_ids
+
+
+def find_last_boot_time(
+    events: list[dict],
+    off_states: frozenset = OFF_STATES,
+) -> str | None:
+    """从事件列表中找最近一次 off -> on 的开机时刻。
+
+    从旧版 InsightsService._last_boot_time 迁移而来。
+    events: 按时间倒序排列的事件列表
+    """
+    for e in events:
+        old = normalize_text(e.get("old_state") or e.get("state_before") or "")
+        new = normalize_text(e.get("new_state") or e.get("state_after") or "")
+        if old in off_states and new not in off_states:
+            return e.get("ts")
+    return None
+
+
+
+def compare_windows(compare_days: int, tz_offset_hours: float = 8.0) -> tuple[str, str, str, str]:
+    """返回对齐到自然日边界的环比窗口。
+
+    从旧版 InsightsService._compare_windows 迁移而来。
+    两个窗口等长、首尾相接不重叠，各恰好 compare_days 个完整自然日。
+    返回 (cur_start, cur_end, prev_start, prev_end) 均为 ISO 字符串。
+    """
+    from ..store import now_local
+    cd = max(1, min(int(compare_days or 7), 365))
+    today = now_local(tz_offset_hours).date()
+    cur_end = (today + timedelta(days=1)).isoformat() + "T00:00:00"
+    cur_start = (today + timedelta(days=1) - timedelta(days=cd)).isoformat() + "T00:00:00"
+    prev_end = cur_start
+    prev_start = (today + timedelta(days=1) - timedelta(days=2 * cd)).isoformat() + "T00:00:00"
+    return cur_start, cur_end, prev_start, prev_end
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -565,4 +734,11 @@ __all__ = [
     "capability_of",
     "tags_of",
     "get_runtime",
+    "ResultCache",
+    "parse_datetime",
+    "diagnose_empty_result",
+    "NOISE_RATIO_CAP",
+    "identify_noise_entities",
+    "find_last_boot_time",
+    "compare_windows",
 ]

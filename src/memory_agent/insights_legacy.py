@@ -1,4 +1,5 @@
-﻿"""行为洞察服务 —— 把「事件数据层」升级为「行为洞察层」
+"""
+行为洞察服务 —— 把「事件数据层」升级为「行为洞察层」
 
 设计原则（来自真实使用反馈）
 --------------------------
@@ -14,6 +15,29 @@
 """
 
 from __future__ import annotations
+
+
+# ⚠️  FROZEN LEGACY CODE — DO NOT ADD NEW CODE HERE
+# ─────────────────────────────────────────────────
+# This file is the ORIGINAL monolithic insights service (~3700 lines).
+# It is being gradually migrated to the modular package in ./insights/.
+#
+# RULES:
+#   ✅ BUG FIXES are allowed here (must also be ported to ./insights/)
+#   ❌ NO new features
+#   ❌ NO new methods
+#   ❌ NO refactoring beyond what is needed to migrate to ./insights/
+#
+# New code MUST go into the modular package:
+#   ./insights/models.py     — data structures
+#   ./insights/parser/       — entity & timeframe resolution
+#   ./insights/repository.py  — SQL / data access
+#   ./insights/service.py    — business logic
+#   ./insights/utils.py      — shared helpers
+#
+# Migration progress tracked in ./insights/__init__.py (MIGRATION_LOG).
+# ─────────────────────────────────────────────────
+
 
 import copy
 import json
@@ -149,25 +173,15 @@ class InsightService:
         # 审计 I1：结果缓存。infer_activities / get_behavior_insights 属全窗口重扫描，
         # 同一窗口短时间内重复调用（Agent 连续问 / 环比内部 cur+prev）直接复用，
         # 避免重复全表扫描。TTL 默认 60s；进程内状态，容器重启清零。
-        self._result_cache: dict = {}
+        from .insights.utils import ResultCache
         self._CACHE_TTL = float(getattr(config, "insight_cache_ttl", 60.0) or 60.0)
+        self._result_cache = ResultCache(ttl=self._CACHE_TTL, max_entries=64)
 
     def _cache_get(self, key):
-        ent = self._result_cache.get(key)
-        if not ent:
-            return None
-        ts, val = ent
-        if time.monotonic() - ts > self._CACHE_TTL:
-            self._result_cache.pop(key, None)
-            return None
-        return copy.deepcopy(val)
+        return self._result_cache.get(key)
 
     def _cache_put(self, key, val) -> None:
-        self._result_cache[key] = (time.monotonic(), copy.deepcopy(val))
-        # 简单容量上限：超过 64 条清理最旧，避免长期驻留无限增长。
-        if len(self._result_cache) > 64:
-            oldest = min(self._result_cache, key=lambda k: self._result_cache[k][0])
-            self._result_cache.pop(oldest, None)
+        self._result_cache.put(key, val)
 
     # ── 时间语义（统一 days / start / end）────────────────────────────────
 
@@ -206,20 +220,8 @@ class InsightService:
         return start_iso, end_iso, meta
 
     def _parse(self, raw: str) -> datetime | None:
-        text = str(raw or "").strip()
-        if not text:
-            return None
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
-            return datetime.fromisoformat(f"{text}T00:00:00")
-        try:
-            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if dt.tzinfo is not None:
-            from datetime import timezone
-
-            dt = dt.astimezone(timezone(timedelta(hours=self.tz))).replace(tzinfo=None)
-        return dt.replace(microsecond=0)
+        from .insights.utils import parse_datetime
+        return parse_datetime(raw, tz_offset_hours=self.tz)
 
     # ── 设备目录 ──────────────────────────────────────────────────────────
 
@@ -695,38 +697,14 @@ class InsightService:
     def _diagnose_empty(
         self, entities: list[str], domains: list[str], room: str, category: str
     ) -> dict:
-        """0 结果时给出明确原因，而不是让调用方猜「没数据还是没采集」。"""
-        scope = f"{room or '全屋'} / {category or '不限类别'}"
-        if not entities and (room or category or domains):
-            return {
-                "reason": "no_matching_entity",
-                "message": f"「{scope}」下没有配置任何匹配的实体，因此不可能有事件。",
-                "next_step": "用 get_entity_catalog() 看看实际有哪些房间和设备类别",
-            }
-        if entities:
-            seen = self.store.entity_last_seen(entities)
-            never = [e for e in entities if not seen.get(e)]
-            if len(never) == len(entities):
-                return {
-                    "reason": "never_collected",
-                    "message": (
-                        f"「{scope}」下有 {len(entities)} 个实体，但它们从未产生过任何事件 —— "
-                        f"通常是采集未启用该实体，或 HA 侧本就没有历史。"
-                    ),
-                    "entities": entities[:20],
-                    "next_step": "到 WebUI「采集配置」确认这些实体已勾选，再触发一次采集",
-                }
-            return {
-                "reason": "no_event_in_window",
-                "message": f"实体有历史数据，但在当前时间窗口内没有状态变化。",
-                "last_seen": {e: seen.get(e, "") for e in entities[:20]},
-                "next_step": "放大 days，或去掉 state 过滤条件",
-            }
-        return {
-            "reason": "empty_window",
-            "message": "该时间窗口内没有任何事件，确认采集是否已运行。",
-            "next_step": "调用 get_collect_status() 查看采集进度",
-        }
+        """0 结果诊断。
+
+        Phase 3 迁移：纯逻辑已迁移到新版 insights.utils.diagnose_empty_result，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import diagnose_empty_result
+        seen = self.store.entity_last_seen(entities) if entities else {}
+        return diagnose_empty_result(entities, room, category, domains, seen)
 
     @staticmethod
     def _summarize(rows: list[dict]) -> dict:
@@ -1145,27 +1123,16 @@ class InsightService:
     # ── 行为洞察（服务端出结论）───────────────────────────────────────────
 
     def _noise_entities(self, start_iso: str, end_iso: str, rooms=None) -> set:
-        """识别单实体占比垄断型噪声源（如加湿器缺水反复跳变、人体传感器误报）。
+        """识别单实体占比垄断型噪声源。
 
-        判定准则与 behavior_insights 完全一致：某实体事件数 > 房间事件数 * NOISE_RATIO_CAP
-        即视为垄断型噪声。返回需从「人的行为 / 房间使用率 / 静默判定」中剔除的 entity_id 集合。
-
-        这些实体只参与设备健康(anomaly)检测，不污染行为洞察与睡眠/离家识别。
+        Phase 3 迁移：核心逻辑已迁移到新版 insights.utils.identify_noise_entities，
+        此处保留为兼容包装，行为完全一致。
         """
+        from .insights.utils import identify_noise_entities, NOISE_RATIO_CAP
         excl = list(TELEMETRY_DOMAINS)
         hist_raw = self.store.hour_histogram(start_iso, end_iso, rooms, excl)
         tops = self.store.top_entities(start_iso, end_iso, rooms, 40, excl)
-        noise_ids: set = set()
-        for room, buckets in hist_raw.items():
-            room_total = sum(buckets)
-            if room_total <= 0:
-                continue
-            for t in tops:
-                if t.get("room") != room or t["entity_id"] in noise_ids:
-                    continue
-                if t["count"] > NOISE_RATIO_CAP * room_total:
-                    noise_ids.add(t["entity_id"])
-        return noise_ids
+        return identify_noise_entities(hist_raw, tops, NOISE_RATIO_CAP)
 
     def behavior_insights(
         self,
@@ -2234,19 +2201,13 @@ class InsightService:
         }
 
     def _compare_windows(self, compare_days: int):
-        """返回对齐到自然日边界的环比窗口（修复 #10：避免 7×24h 滚动窗口跨 8 个日历日）。
+        """返回对齐到自然日边界的环比窗口。
 
-        两个窗口等长、首尾相接不重叠，各恰好 compare_days 个完整自然日。
-        返回 (cur_start, cur_end, prev_start, prev_end) 均为 ISO 字符串。
+        Phase 3 迁移：已迁移到新版 insights.utils.compare_windows，
+        此处保留为兼容包装，行为完全一致。
         """
-        cd = max(1, min(int(compare_days or 7), 365))
-        today = now_local(self.tz).date()
-        # cur 窗口 = 含今天在内的最近 cd 个完整自然日：[tomorrow-cd, tomorrow)
-        cur_end = (today + timedelta(days=1)).isoformat() + "T00:00:00"
-        cur_start = (today + timedelta(days=1) - timedelta(days=cd)).isoformat() + "T00:00:00"
-        prev_end = cur_start
-        prev_start = (today + timedelta(days=1) - timedelta(days=2 * cd)).isoformat() + "T00:00:00"
-        return cur_start, cur_end, prev_start, prev_end
+        from .insights.utils import compare_windows
+        return compare_windows(compare_days, tz_offset_hours=self.tz)
 
     def get_behavior_insights(self, compare_days: int = 7) -> dict:
         """行为环比：最近 compare_days 天 vs 上一个等长窗口。
@@ -3523,17 +3484,17 @@ class InsightService:
         return [e["entity_id"] for e in flat[:5]], True
 
     def _last_boot_time(self, entity_id: str, days: int = 60) -> str | None:
-        """返回该设备最近一次「off -> on」的开机时刻（跨天连续开机时用于说明起点）。"""
+        """返回该设备最近一次「off -> on」的开机时刻。
+
+        Phase 3 迁移：核心逻辑已迁移到新版 insights.utils.find_last_boot_time，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import find_last_boot_time
         try:
             r = self.search_events(entity_id=entity_id, days=days, order="desc", limit=300)
-            for e in r.get("events", []):
-                old = _norm(e.get("old_state") or e.get("state_before") or "")
-                new = _norm(e.get("new_state") or e.get("state_after") or "")
-                if old in OFF_STATES and new not in OFF_STATES:
-                    return e.get("ts")
+            return find_last_boot_time(r.get("events", []), OFF_STATES)
         except Exception:
             return None
-        return None
 
     def get_last_event(self, entity_id=None, domain=None, room=None, transition="off", days=30) -> dict:
         """返回指定实体/域/房间最近一次状态变化事件（transition='off' 为关闭，'on' 为开启，'any' 为任意）。"""
