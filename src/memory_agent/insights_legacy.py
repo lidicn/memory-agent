@@ -121,8 +121,8 @@ from .insights.utils import CN_ON_STATES as _CN_ON_STATES
 from .insights.utils import is_off_state as _state_is_off
 from .insights.utils import is_on_state as _state_is_on
 
-#: 抖动阈值：短于该秒数的开启片段视为误触，不计入时长统计。
-DEFAULT_DEBOUNCE_SECONDS = 5
+# Phase 3 迁移：DEFAULT_DEBOUNCE_SECONDS 已迁移到新版 insights.utils。
+from .insights.utils import DEFAULT_DEBOUNCE_SECONDS
 
 #: 「查所有房间」的汇总意图词。只有命中这些词才把问题当成跨房间汇总，
 #: 否则一律按「精确到某个 area」处理 —— 这是「房间」既是通用名词
