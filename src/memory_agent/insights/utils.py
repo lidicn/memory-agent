@@ -376,6 +376,32 @@ def resolve_nl_window(q: str, default_days: int) -> Tuple[str, str, Dict[str, An
     return start.isoformat(), now.isoformat(), {"timezone": "Asia/Shanghai", "start": start.isoformat(), "end": now.isoformat(), "note": f"最近{default_days}天"}
 
 
+def synthesize_persona(persona: dict, top_rooms: list, most_active: str, days: int) -> str:
+    """合成用户画像文本。
+
+    输入：persona dict、top_rooms list、most_active str、days int
+    输出：用户画像文本
+    """
+    if not persona:
+        return f"近 {days} 天未识别出明确的活动模式（数据不足或被遥测噪声覆盖）。"
+    lines = [f"近 {days} 天用户行为画像（共 {len(persona)} 类活动）："]
+    for t, d in sorted(persona.items(), key=lambda kv: -kv[1]["occurrences"]):
+        rooms = "、".join(d["rooms"]) or "全屋"
+        line = (
+            f"- {t}：出现 {d['occurrences']} 次 / {d['days_observed']} 天，"
+            f"平均置信度 {d['avg_confidence']}，主要房间 {rooms}"
+        )
+        if d["typical_windows"]:
+            line += f"，典型时段 {d['typical_windows'][0]}"
+        lines.append(line)
+    if top_rooms:
+        tr = "、".join(f"{r['room']}({r['events']})" for r in top_rooms)
+        lines.append(f"- 房间活跃度 Top：{tr}")
+    if most_active:
+        lines.append(f"- 最活跃房间：{most_active}")
+    return "\n".join(lines)
+
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -399,4 +425,5 @@ __all__ = [
     "category_of",
     "finalize_climate_session",
     "resolve_nl_window",
+    "synthesize_persona",
 ]

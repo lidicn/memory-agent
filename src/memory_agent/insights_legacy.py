@@ -2404,24 +2404,13 @@ class InsightService:
 
     @staticmethod
     def _synthesize_persona(persona: dict, top_rooms: list, most_active: str, days: int) -> str:
-        if not persona:
-            return f"近 {days} 天未识别出明确的活动模式（数据不足或被遥测噪声覆盖）。"
-        lines = [f"近 {days} 天用户行为画像（共 {len(persona)} 类活动）："]
-        for t, d in sorted(persona.items(), key=lambda kv: -kv[1]["occurrences"]):
-            rooms = "、".join(d["rooms"]) or "全屋"
-            line = (
-                f"- {t}：出现 {d['occurrences']} 次 / {d['days_observed']} 天，"
-                f"平均置信度 {d['avg_confidence']}，主要房间 {rooms}"
-            )
-            if d["typical_windows"]:
-                line += f"，典型时段 {d['typical_windows'][0]}"
-            lines.append(line)
-        if top_rooms:
-            tr = "、".join(f"{r['room']}({r['events']})" for r in top_rooms)
-            lines.append(f"- 房间活跃度 Top：{tr}")
-        if most_active:
-            lines.append(f"- 最活跃房间：{most_active}")
-        return "\n".join(lines)
+        """[已迁移] 合成用户画像文本。
+
+        新版实现：insights.utils.synthesize_persona
+        """
+        from .insights.utils import synthesize_persona
+        return synthesize_persona(persona, top_rooms, most_active, days)
+
 
     @staticmethod
     def _synthesize_compare(comparison: dict, days: int, climate_cmp: dict = None) -> str:
