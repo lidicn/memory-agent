@@ -58,53 +58,9 @@ NOISE_RATIO_CAP = 0.6
 # ── 语义词典 ────────────────────────────────────────────────────────────────
 
 #: 设备类别 → HA domain 集合。让调用方能用「空调 / 灯 / 媒体」这类人话过滤。
-CATEGORY_DOMAINS: dict[str, tuple[str, ...]] = {
-    "climate": ("climate", "fan", "humidifier", "water_heater"),
-    "lighting": ("light",),
-    "media": ("media_player",),
-    "presence": ("binary_sensor", "device_tracker", "person"),
-    "appliance": ("switch", "vacuum", "input_boolean"),
-    "security": ("lock", "cover", "alarm_control_panel", "camera"),
-    "telemetry": ("sensor", "number"),
-}
-
-#: 中文/英文关键词 → domain。用于 ``query="主卧空调"`` 这类自由文本解析。
-KEYWORD_DOMAINS: dict[str, tuple[str, ...]] = {
-    "空调": ("climate",),
-    "冷气": ("climate",),
-    "制冷": ("climate",),
-    "暖气": ("climate",),
-    "地暖": ("climate",),
-    "ac": ("climate",),
-    "风扇": ("fan",),
-    "新风": ("fan",),
-    "加湿": ("humidifier",),
-    "热水器": ("water_heater",),
-    "灯": ("light",),
-    "照明": ("light",),
-    "light": ("light",),
-    "电视": ("media_player",),
-    "音箱": ("media_player",),
-    "媒体": ("media_player",),
-    "播放": ("media_player",),
-    "tv": ("media_player",),
-    "存在": ("binary_sensor",),
-    "人体": ("binary_sensor",),
-    "有人": ("binary_sensor",),
-    "occupancy": ("binary_sensor",),
-    "motion": ("binary_sensor",),
-    "门": ("binary_sensor", "lock", "cover"),
-    "窗帘": ("cover",),
-    "门锁": ("lock",),
-    "插座": ("switch",),
-    "开关": ("switch",),
-    "扫地": ("vacuum",),
-    "温度": ("sensor",),
-    "湿度": ("sensor",),
-    "功率": ("sensor",),
-    "电量": ("sensor",),
-}
-
+# Phase 3 迁移：CATEGORY_DOMAINS 和 KEYWORD_DOMAINS 已迁移到新版 insights.utils。
+from .insights.utils import CATEGORY_DOMAINS
+from .insights.utils import KEYWORD_DOMAINS
 #: 视为「关闭 / 不可用」的状态值。其余一律视为「开启」。
 #: climate 的 ``heat`` / ``cool``、media_player 的 ``playing`` 都会被正确判为开启。
 # Phase 3 迁移：OFF_STATES 已迁移到新版 insights.utils。

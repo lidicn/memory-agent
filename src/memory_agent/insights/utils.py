@@ -1163,6 +1163,39 @@ OFF_STATES: frozenset[str] = frozenset(
     {"off", "closed", "not_home", "unavailable", "unknown", "idle", "standby", "none", ""}
 )
 
+
+
+#: 类别 → domain 映射
+CATEGORY_DOMAINS: dict[str, tuple[str, ...]] = {
+    "climate": ("climate", "fan", "humidifier", "water_heater"),
+    "lighting": ("light",),
+    "media": ("media_player",),
+    "presence": ("binary_sensor", "device_tracker", "person"),
+    "appliance": ("switch", "vacuum", "input_boolean"),
+    "security": ("lock", "cover", "alarm_control_panel", "camera"),
+    "telemetry": ("sensor", "number"),
+}
+
+#: 中文/英文关键词 → domain。用于 query="主卧空调" 这类自由文本解析
+KEYWORD_DOMAINS: dict[str, tuple[str, ...]] = {
+    "空调": ("climate",),
+    "冷气": ("climate",),
+    "制冷": ("climate",),
+    "暖气": ("climate",),
+    "地暖": ("climate",),
+    "ac": ("climate",),
+    "风扇": ("fan",),
+    "新风": ("fan",),
+    "加湿": ("humidifier",),
+    "灯": ("light",),
+    "灯": ("light",),
+    "电视": ("media_player",),
+    "投影": ("media_player",),
+    "扫地": ("vacuum",),
+    "门锁": ("lock",),
+    "窗帘": ("cover",),
+}
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
