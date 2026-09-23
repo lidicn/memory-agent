@@ -740,6 +740,96 @@ KEYWORD_DOMAINS: dict[str, tuple[str, ...]] = {
     "aircon": ("climate.ac",),
 }
 
+
+
+def iter_all_events(
+    query_func,
+    start_iso: str,
+    end_iso: str,
+    max_rows: int = 60000,
+    **kw,
+) -> list[dict]:
+    """分页拉取窗口内全部事件。
+
+    从旧版 InsightsService._iter_all_events 迁移而来。
+    query_func: 可调用对象，签名为 (start_iso, end_iso, limit=, offset=, **kw) -> list[dict]
+    """
+    out: list[dict] = []
+    page = 5000
+    offset = 0
+    while len(out) < max_rows:
+        rows = query_func(
+            start_iso, end_iso, limit=page, offset=offset, **kw
+        )
+        out.extend(rows)
+        if len(rows) < page:
+            break
+        offset += page
+    return out[:max_rows]
+
+
+
+def expand_entities_from_config(
+    rooms_config: dict,
+    category_of_func=None,
+    only_enabled: bool = True,
+) -> list[dict]:
+    """从配置展开实体清单（房间 → 实体）。
+
+    从旧版 InsightsService._config_entities 迁移而来。
+    rooms_config: {room_name: {"enabled": bool, "entities": {entity_id: {...}}}}
+    category_of_func: 可选，根据 domain 返回 category 的函数
+    """
+    out: list[dict] = []
+    for room, payload in (rooms_config or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        room_enabled = bool(payload.get("enabled", True))
+        if only_enabled and not room_enabled:
+            continue
+        for entity_id, info in (payload.get("entities") or {}).items():
+            info = info if isinstance(info, dict) else {}
+            if only_enabled and not info.get("enabled", True):
+                continue
+            domain = info.get("domain") or entity_id.split(".")[0]
+            category = category_of_func(domain) if category_of_func else ""
+            out.append(
+                {
+                    "entity_id": entity_id,
+                    "friendly_name": info.get("name") or "",
+                    "room": room,
+                    "domain": domain,
+                    "category": category,
+                    "enabled": bool(info.get("enabled", True)) and room_enabled,
+                }
+            )
+    return out
+
+
+
+#: 设备查询填充词（从自然语言中剔除的无意义词）。
+DEVICE_QUERY_FILLER: tuple[str, ...] = (
+    "今天", "昨天", "今晚", "昨日", "前天", "这周", "本周", "上周", "周末", "最近",
+    "时候", "多长时间", "了多久", "开灯", "关灯",
+    "开机", "关机", "了", "多久", "时长", "使用", "运行", "在线", "时间", "查询", "问",
+    "多少", "几", "小时", "分钟", "秒", "次", "数", "在", "是", "吗", "怎么", "什么",
+    "哪些", "哪", "些", "?", "？", "的",
+)
+
+
+def clean_device_query(q: str) -> str:
+    """从自然语言设备问题中清洗出设备关键词。
+
+    从旧版 InsightsService._resolve_device_targets 迁移而来。
+    返回清洗后的关键词串，空串表示无法提取有效关键词。
+    """
+    import re as _re
+    qq = _re.sub(r"最近\s*\d+\s*天", "", q)
+    qq = normalize_text(qq)
+    for w in DEVICE_QUERY_FILLER:
+        qq = qq.replace(normalize_text(w), " ")
+    return qq.strip()
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",

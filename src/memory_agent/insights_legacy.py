@@ -226,30 +226,17 @@ class InsightService:
     # ── 设备目录 ──────────────────────────────────────────────────────────
 
     def _config_entities(self, only_enabled: bool = True) -> list[dict]:
-        """从配置展开实体清单（房间 → 实体）。"""
-        out: list[dict] = []
-        for room, payload in (self.config.rooms or {}).items():
-            if not isinstance(payload, dict):
-                continue
-            room_enabled = bool(payload.get("enabled", True))
-            if only_enabled and not room_enabled:
-                continue
-            for entity_id, info in (payload.get("entities") or {}).items():
-                info = info if isinstance(info, dict) else {}
-                if only_enabled and not info.get("enabled", True):
-                    continue
-                domain = info.get("domain") or entity_id.split(".")[0]
-                out.append(
-                    {
-                        "entity_id": entity_id,
-                        "friendly_name": info.get("name") or "",
-                        "room": room,
-                        "domain": domain,
-                        "category": self.category_of(domain),
-                        "enabled": bool(info.get("enabled", True)) and room_enabled,
-                    }
-                )
-        return out
+        """从配置展开实体清单（房间 → 实体）。
+
+        Phase 3 迁移：核心逻辑已迁移到新版 insights.utils.expand_entities_from_config，
+        此处保留为兼容包装，行为完全一致。
+        """
+        from .insights.utils import expand_entities_from_config
+        return expand_entities_from_config(
+            self.config.rooms or {},
+            category_of_func=self.category_of,
+            only_enabled=only_enabled,
+        )
 
     @staticmethod
     def category_of(domain: str) -> str:
@@ -1687,22 +1674,11 @@ class InsightService:
     def _iter_all_events(self, start_iso: str, end_iso: str, max_rows: int = 60000, **kw):
         """分页拉取窗口内全部事件。
 
-        ``store.query_events`` 单次有 ``min(limit, 5000)`` 的硬上限，直接传
-        limit=20000 会被**静默截断**成 5000 条——不报错、只少数据，
-        导致活动识别 / 数据质量扫描看到的是「最早的 5000 条」而非全量。
+        Phase 3 迁移：分页逻辑已迁移到新版 insights.utils.iter_all_events，
+        此处保留为兼容包装，行为完全一致。
         """
-        out: list[dict] = []
-        page = 5000
-        offset = 0
-        while len(out) < max_rows:
-            rows = self.store.query_events(
-                start_iso, end_iso, limit=page, offset=offset, **kw
-            )
-            out.extend(rows)
-            if len(rows) < page:
-                break
-            offset += page
-        return out[:max_rows]
+        from .insights.utils import iter_all_events
+        return iter_all_events(self.store.query_events, start_iso, end_iso, max_rows, **kw)
 
     # ── 数据质量扫描 ────────────────────────────────────────────
     _BATTERY_TOKENS = ("battery", "电量", "电池")
@@ -3454,26 +3430,11 @@ class InsightService:
     def _resolve_device_targets(self, q: str) -> tuple[list[str], bool]:
         """从自然语言设备问题中挤出设备关键词，定位具体 entity_id。
 
-        返回 (entity_ids, resolved)。resolved=True 表示成功定位到具体实体，
-        调用方应改用 entity_id 精确查询，而不是把整句问题当 query 传下去——
-
-        否则 ``_tokens`` 会把「书房电脑今天开机了多久」当成一整个 token，
-        在实体 haystack 里匹配不到，导致 ``device_usage`` 回退成「全部实体」、
-        截断 40 个后把真正的目标设备挤掉（见 HANDOFF_memory_agent_ask_memory）。
+        Phase 3 迁移：查询清洗逻辑已迁移到新版 insights.utils.clean_device_query，
+        此处保留为兼容包装，行为完全一致。
         """
-        import re as _re
-        filler = (
-            "今天", "昨天", "今晚", "昨日", "前天", "这周", "本周", "上周", "周末", "最近",
-            "时候", "多长时间", "了多久", "开灯", "关灯",
-            "开机", "关机", "了", "多久", "时长", "使用", "运行", "在线", "时间", "查询", "问",
-            "多少", "几", "小时", "分钟", "秒", "次", "数", "在", "是", "吗", "怎么", "什么",
-            "哪些", "哪", "些", "?", "？", "的",
-        )
-        qq = _re.sub(r"最近\s*\d+\s*天", "", q)
-        qq = _norm(qq)
-        for w in filler:
-            qq = qq.replace(_norm(w), " ")
-        qq = qq.strip()
+        from .insights.utils import clean_device_query
+        qq = clean_device_query(q)
         if not qq:
             return [], False
         cat = self.entity_catalog(query=qq)
