@@ -12,11 +12,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 import threading
 from typing import Any
 
 from .mcp_scopes import ALL_SCOPES, DEFAULT_SCOPES, normalize
+
+_log = logging.getLogger("mcp.tokens")
 from .store import now_local
 
 TOKEN_PREFIX = "mcp_"
