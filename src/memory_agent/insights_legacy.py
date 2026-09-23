@@ -127,14 +127,9 @@ from .insights.utils import DEFAULT_DEBOUNCE_SECONDS
 #: 「查所有房间」的汇总意图词。只有命中这些词才把问题当成跨房间汇总，
 #: 否则一律按「精确到某个 area」处理 —— 这是「房间」既是通用名词
 #: 又是真实区域名时最关键的一条判据。
-ROOM_AGGREGATE_WORDS: tuple[str, ...] = (
-    "所有房间", "每个房间", "各个房间", "全部房间", "所有区域", "每个区域",
-    "所有的房间", "全屋", "整个家", "全家", "家里所有", "各房间",
-)
-
-#: 既是日常通用名词、又可能被用户拿来当 area 名的词。
-#: 命中时需要在返回里显式消歧，避免模型把它当泛称。
-GENERIC_ROOM_WORDS: frozenset[str] = frozenset({"房间", "卧室", "屋子", "房子", "家里"})
+# Phase 3 迁移：ROOM_AGGREGATE_WORDS 和 GENERIC_ROOM_WORDS 已迁移到新版 insights.utils。
+from .insights.utils import ROOM_AGGREGATE_WORDS
+from .insights.utils import GENERIC_ROOM_WORDS
 
 
 # Phase 3 迁移：_norm 已迁移到新版 insights.utils。
