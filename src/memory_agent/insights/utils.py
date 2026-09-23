@@ -1085,6 +1085,15 @@ def fmt_duration(total_seconds: float) -> str:
         return f"{m}分{s}秒"
     return f"{s}秒"
 
+
+
+def normalize_text(text) -> str:
+    """文本归一化：转字符串、去空格、小写。
+
+    从旧版 insights_legacy._norm 迁移而来。
+    """
+    return str(text or "").strip().lower()
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",

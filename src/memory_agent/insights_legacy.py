@@ -1,4 +1,4 @@
-﻿"""
+"""
 行为洞察服务 —— 把「事件数据层」升级为「行为洞察层」
 
 设计原则（来自真实使用反馈）
@@ -141,8 +141,8 @@ ROOM_AGGREGATE_WORDS: tuple[str, ...] = (
 GENERIC_ROOM_WORDS: frozenset[str] = frozenset({"房间", "卧室", "屋子", "房子", "家里"})
 
 
-def _norm(text: Any) -> str:
-    return str(text or "").strip().lower()
+# Phase 3 迁移：_norm 已迁移到新版 insights.utils。
+from .insights.utils import normalize_text as _norm
 
 
 # Phase 3 迁移：_tokens 和 fmt_duration 已迁移到新版 insights.utils。
