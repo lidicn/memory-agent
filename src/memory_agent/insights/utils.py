@@ -1314,6 +1314,20 @@ def split_room_from_query(room: str, query: str, room_names: list[str]) -> tuple
     return matched, (rest or query)
 
 
+
+
+def decorate_rows(rows, names, fallback_name_fn, category_of_fn):
+    """给原始事件补上友好名和类别，让返回结果不再是 cryptic ID。"""
+    out = []
+    for r in rows:
+        meta = names.get(r.get("entity_id", ""), {})
+        out.append({
+            **r,
+            "friendly_name": meta.get("friendly_name") or fallback_name_fn(r.get("entity_id", "")),
+            "category": meta.get("category") or category_of_fn(r.get("domain", "")),
+        })
+    return out
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
@@ -1356,4 +1370,5 @@ __all__ = [
     "room_names_list",
     "resolve_room_in_text",
     "split_room_from_query",
+    "decorate_rows",
 ]

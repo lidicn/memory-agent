@@ -313,7 +313,7 @@ class InsightService:
 
     @staticmethod
     def _fallback_name(entity_id: str) -> str:
-        """没配友好名时，从 entity_id 里挤出一个还算能看的名字。
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] 没配友好名时，从 entity_id 里挤出一个还算能看的名字。
 
         Phase 3 迁移：已迁移到新版 insights.utils.fallback_name，
         此处保留为兼容包装，行为完全一致。
@@ -385,7 +385,7 @@ class InsightService:
     def resolve_entities(
         self, room: str = "", category: str = "", domain: str = "", query: str = ""
     ) -> list[str]:
-        """语义条件 → entity_id 列表。空列表代表「不加实体过滤」。"""
+        """[FROZEN-LEGACY] 语义条件 → entity_id 列表。空列表代表「不加实体过滤」。"""
         if not any([room, category, domain, query]):
             return []
         items = self._apply_semantic_filter(
@@ -394,7 +394,7 @@ class InsightService:
         return [it["entity_id"] for it in items]
 
     def split_room_from_query(self, room: str, query: str) -> tuple[str, str]:
-        """[已迁移] query 中切房间 → insights.utils.split_room_from_query"""
+        """[FROZEN-LEGACY] [已迁移] query 中切房间 → insights.utils.split_room_from_query"""
         from .insights.utils import split_room_from_query
         return split_room_from_query(room, query, self.room_names())
 
@@ -403,21 +403,10 @@ class InsightService:
         return {it["entity_id"]: it for it in self._config_entities(only_enabled=False)}
 
     def decorate(self, rows: Iterable[dict]) -> list[dict]:
-        """给原始事件补上友好名，让返回结果不再是一堆 cryptic ID。"""
+        """[已迁移] 事件补友好名 → insights.utils.decorate_rows"""
+        from .insights.utils import decorate_rows
         names = self.name_map()
-        out = []
-        for r in rows:
-            meta = names.get(r.get("entity_id", ""), {})
-            out.append(
-                {
-                    **r,
-                    "friendly_name": meta.get("friendly_name")
-                    or self._fallback_name(r.get("entity_id", "")),
-                    "category": meta.get("category")
-                    or self.category_of(r.get("domain", "")),
-                }
-            )
-        return out
+        return decorate_rows(rows, names, self._fallback_name, self.category_of)
 
     # ── 事件搜索（语义过滤 + 可选摘要）────────────────────────────────────
 
@@ -627,7 +616,7 @@ class InsightService:
 
     @staticmethod
     def _parse_time_range(tr: str):
-        """解析 'HH:MM-HH:MM' -> (start_min, end_min, crosses_midnight)。空/无效返回 None。
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] 解析 'HH:MM-HH:MM' -> (start_min, end_min, crosses_midnight)。空/无效返回 None。
         crosses_midnight 表示 end <= start（如 '22:00-07:00' 跨零点）。
 
         Phase 3 迁移：已迁移到新版 insights.utils.parse_time_range，
@@ -772,7 +761,7 @@ class InsightService:
         include_timeline: bool = True,
         time_range: str = "",
     ) -> dict:
-        """按「属性值」判定的开启时长（覆盖 source=='HDMI 3' 这类属性级条件）。
+        """[FROZEN-LEGACY] 按「属性值」判定的开启时长（覆盖 source=='HDMI 3' 这类属性级条件）。
 
         Phase 3 迁移：匹配逻辑已复用新版 insights.utils.match_pattern，
         此处保留为兼容包装，行为完全一致。
@@ -940,7 +929,7 @@ class InsightService:
     # ── 行为洞察（服务端出结论）───────────────────────────────────────────
 
     def _noise_entities(self, start_iso: str, end_iso: str, rooms=None) -> set:
-        """识别单实体占比垄断型噪声源。
+        """[FROZEN-LEGACY] 识别单实体占比垄断型噪声源。
 
         Phase 3 迁移：核心逻辑已迁移到新版 insights.utils.identify_noise_entities，
         此处保留为兼容包装，行为完全一致。
@@ -1118,7 +1107,7 @@ class InsightService:
         end: str = "",
         limit: int = 50,
     ) -> dict:
-        """查询多模态视觉识别记录的历史行为事件（谁在哪个房间、什么时间）。"""
+        """[FROZEN-LEGACY] 查询多模态视觉识别记录的历史行为事件（谁在哪个房间、什么时间）。"""
         start_iso, end_iso, meta = self.resolve_range(days, start, end)
         day_from = start_iso[:10]
         day_to = end_iso[:10]
@@ -1184,7 +1173,7 @@ class InsightService:
 
     @staticmethod
     def _num_stale(entity: dict):
-        """取实体的 stale_days 数值。
+        """[FROZEN-LEGACY] 取实体的 stale_days 数值。
 
         ``entity_catalog`` 里 stale_days 是 ``round(x, 1)`` 得到的 **float**，
         而旧代码用 ``isinstance(v, int)`` 判断 —— 永远为 False。这正是
@@ -1205,7 +1194,7 @@ class InsightService:
         end_iso: str = "",
         store=None,
     ) -> list[dict]:
-        """向后兼容包装：只要异常列表。"""
+        """[FROZEN-LEGACY] 向后兼容包装：只要异常列表。"""
         return self.anomaly_report(by_day, hourly, start_iso, end_iso, store)["anomalies"]
 
     def anomaly_report(
@@ -1329,7 +1318,7 @@ class InsightService:
     def _semantic_anomalies(
         self, start_iso: str, end_iso: str, store, checks: list | None = None
     ) -> list[dict]:
-        """语义层异常：设备失联 / 空调整夜未关 / 睡过头 / 数据质量。"""
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] 语义层异常：设备失联 / 空调整夜未关 / 睡过头 / 数据质量。"""
         from collections import defaultdict
         from datetime import timedelta as _td
 
@@ -1502,7 +1491,7 @@ class InsightService:
         return out
 
     def _iter_all_events(self, start_iso: str, end_iso: str, max_rows: int = 60000, **kw):
-        """分页拉取窗口内全部事件。
+        """[FROZEN-LEGACY] 分页拉取窗口内全部事件。
 
         Phase 3 迁移：分页逻辑已迁移到新版 insights.utils.iter_all_events，
         此处保留为兼容包装，行为完全一致。
@@ -1518,7 +1507,7 @@ class InsightService:
     )
 
     def data_quality_issues(self, start_iso: str, end_iso: str, store, limit=30000) -> list[dict]:
-        """扫描源数据本身的质量问题，把「脏数据」显式暴露而不是默默展示。
+        """[FROZEN-LEGACY] 扫描源数据本身的质量问题，把「脏数据」显式暴露而不是默默展示。
 
         覆盖用户实测到的三类：
         1. **电量倒灌** —— 非充电设备电量从 57 跳回 65，物理上不可能，是坏值；
@@ -1652,7 +1641,7 @@ class InsightService:
     def device_health(
         self, room="", category="", query="", days=7, stale_days=3, only_enabled=True
     ) -> dict:
-        """设备健康探测：基于 entity_catalog 的 has_data / last_seen / stale_days，
+        """[FROZEN-LEGACY] 设备健康探测：基于 entity_catalog 的 has_data / last_seen / stale_days，
         主动揪出失联 / 没电 / 长期静默的设备。
 
         口径与 ``get_entity_catalog`` 对齐：默认 ``only_enabled=True``，即只看
@@ -1739,7 +1728,7 @@ class InsightService:
         }
 
     def data_coverage(self, days=7, start="", end="") -> dict:
-        """数据覆盖报告：明确指出窗口内实际「有数据」的日期，避免误以为前几天也有数据。"""
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] 数据覆盖报告：明确指出窗口内实际「有数据」的日期，避免误以为前几天也有数据。"""
         start_iso, end_iso, meta = self.resolve_range(days, start, end)
         # day_counts() 返回的是 {day: count} 字典（不是元组列表），直接复用即可；
         # 之前用 `for d, c in rows` 当元组迭代，会对字符串键解包 → 崩溃。
@@ -1780,7 +1769,7 @@ class InsightService:
         }
 
     def climate_sessions(self, query="", room="", days=7, start="", end="") -> dict:
-        """气候会话：把 climate 实体的开启时段拼成「设定温度 + 室温 + 运行时长」。
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] 气候会话：把 climate 实体的开启时段拼成「设定温度 + 室温 + 运行时长」。
 
         直接从事件 attrs 解析 current_temperature（室温）与 temperature（设定温度），
         解决原先「只有 hvac_action、缺温度」的问题。
@@ -1880,7 +1869,7 @@ class InsightService:
 
     @staticmethod
     def _finalize_climate_session(sess, still_on: bool = False) -> dict:
-        """完成气候会话，计算时长、温度统计等。
+        """[FROZEN-LEGACY] 完成气候会话，计算时长、温度统计等。
 
         Phase 3 迁移：已迁移到新版 insights.utils.finalize_climate_session，
         此处保留为兼容包装，行为完全一致。
@@ -1889,7 +1878,7 @@ class InsightService:
         return finalize_climate_session(sess, still_on)
 
     def infer_activities(self, days=7, rooms="", start="", end="", activities=None) -> dict:
-        """活动识别：基于设备共现与时段，识别做饭 / 洗澡 / 睡眠 / 看电视 / 离家。
+        """[FROZEN-LEGACY] 活动识别：基于设备共现与时段，识别做饭 / 洗澡 / 睡眠 / 看电视 / 离家。
 
         返回每个活动在窗口内的发生记录（日期 + 时段 + 置信度 + 证据），
         让 Agent 直接拿到「语义层」结论，而不用自己拼原始动线。
@@ -1956,7 +1945,7 @@ class InsightService:
 
     # ── Phase 2-A：用户画像 / 行为环比 / 证据溯源 ──────────────────────────
     def get_user_persona(self, days: int = 14) -> dict:
-        """合成用户滚动行为画像：近期活动聚合（出现天数/频次/时段/房间/置信度）+ 房间活跃度。
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] 合成用户滚动行为画像：近期活动聚合（出现天数/频次/时段/房间/置信度）+ 房间活跃度。
 
         做长期用户理解、个性化、健康提醒时直接调用，不要自己拉原始事件算。
         """
@@ -2006,7 +1995,7 @@ class InsightService:
         }
 
     def _compare_windows(self, compare_days: int):
-        """返回对齐到自然日边界的环比窗口。
+        """[FROZEN-LEGACY] 返回对齐到自然日边界的环比窗口。
 
         Phase 3 迁移：已迁移到新版 insights.utils.compare_windows，
         此处保留为兼容包装，行为完全一致。
@@ -2015,7 +2004,7 @@ class InsightService:
         return compare_windows(compare_days, tz_offset_hours=self.tz)
 
     def get_behavior_insights(self, compare_days: int = 7) -> dict:
-        """行为环比：最近 compare_days 天 vs 上一个等长窗口。
+        """[FROZEN-LEGACY] 行为环比：最近 compare_days 天 vs 上一个等长窗口。
 
         修复 #9：除活动次数/天数外，新增 **时长/强度**（各活动累计分钟）与 **温控维度**
         （空调开启时长、平均设定/室温、设定温度区间变化）；修复 #10：窗口对齐到自然日
@@ -2081,7 +2070,7 @@ class InsightService:
         return result
 
     def _climate_compare(self, cur_start, cur_end, prev_start, prev_end) -> dict:
-        """温控维度环比（修复 #9）：空调开启时长 + 平均设定/室温 + 设定温度区间变化。
+        """[FROZEN-LEGACY] 温控维度环比（修复 #9）：空调开启时长 + 平均设定/室温 + 设定温度区间变化。
 
         Phase 3 迁移：聚合逻辑已迁移到新版 insights.utils，
         此处保留为兼容包装，行为完全一致。
@@ -2096,7 +2085,7 @@ class InsightService:
         return compare_climate(cur, prev)
 
     def explain_insight(self, insight_id: str) -> dict:
-        """证据溯源：给定 insight(活动 id) 或 agent 记忆 id，返回底层触发事件与 source_refs 解析。
+        """[FROZEN-LEGACY] 证据溯源：给定 insight(活动 id) 或 agent 记忆 id，返回底层触发事件与 source_refs 解析。
 
         - insight id 来自 infer_activities 每个活动的 id 字段；
         - agent 记忆 id 来自 add_semantic_memory 返回。
@@ -2153,7 +2142,7 @@ class InsightService:
 
     @staticmethod
     def _synthesize_persona(persona: dict, top_rooms: list, most_active: str, days: int) -> str:
-        """[已迁移] 合成用户画像文本。
+        """[FROZEN-LEGACY] [已迁移] 合成用户画像文本。
 
         新版实现：insights.utils.synthesize_persona
         """
@@ -2206,7 +2195,7 @@ class InsightService:
         return out
 
     def _check_activity_rule_coverage(self, room, tags, window_days: int = 14) -> Optional[dict]:
-        """注册自定义规则前的实体覆盖预检（修复 #7）。
+        """[FROZEN-LEGACY] 注册自定义规则前的实体覆盖预检（修复 #7）。
 
         返回 None 表示覆盖良好；否则返回 warning dict（含 missing_tags 与 message），
         说明规则要求的标签在指定房间（或全屋）最近 window_days 天内没有任何对应实体
@@ -2247,7 +2236,7 @@ class InsightService:
         }
 
     def _tv_from_telemetry(self, start_iso: str, end_iso: str) -> list[dict]:
-        """从电视自报的「播放时长」遥测传感器反推观看行为。
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] [FROZEN-LEGACY] 从电视自报的「播放时长」遥测传感器反推观看行为。
 
         Phase 3 迁移：传感器识别逻辑已迁移到新版 insights.utils，
         此处保留为兼容包装，行为完全一致。
@@ -2301,7 +2290,7 @@ class InsightService:
 
     @classmethod
     def _tags_of(cls, eid: str, name: str) -> set:
-        """[已迁移] 从 entity_id 和 name 提取标签集合。
+        """[FROZEN-LEGACY] [已迁移] 从 entity_id 和 name 提取标签集合。
 
         新版实现：insights.utils.tags_of
         """
@@ -2372,7 +2361,7 @@ class InsightService:
         _sig_pair = {(x["entity_id"], x["scope"]) for x in _sig_excl}
 
         def _signal_excluded(eid, scope):
-            """某实体在某检测维度是否被硬排除（scope='all' 或精确匹配均生效）。"""
+            """[FROZEN-LEGACY] 某实体在某检测维度是否被硬排除（scope='all' 或精确匹配均生效）。"""
             return eid in _sig_all or (eid, scope) in _sig_pair
 
         inventory = {
@@ -2884,7 +2873,7 @@ class InsightService:
 
 
     def _semantic_evidence(self, q: str, rt):
-        """取语义副驾证据：系统集合 semantic_search + agent 写回记忆（已晋升 live，按 trust 重排）。
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] 取语义副驾证据：系统集合 semantic_search + agent 写回记忆（已晋升 live，按 trust 重排）。
 
         v0.9 离线降级：embedding 网关不可达时经断路器**短路**（避免每次调用都付超时代价），
         命中打开态直接跳过语义路，回退纯结构化统计（答案仍由 ``_synthesize_answer`` 合成）。
@@ -2917,7 +2906,7 @@ class InsightService:
     _WATER_PURIFIER_ENTITY = "event.chunmi_cn_334432105_600f2_water_out_finish_e_7_1"
 
     def water_purifier_usage(self, start, end) -> dict:
-        """净水器每日饮水统计（结构化计算，供 ask_memory 的净水器分支调用）。
+        """[FROZEN-LEGACY] 净水器每日饮水统计（结构化计算，供 ask_memory 的净水器分支调用）。
 
         解析净水器 event 实体的 out_data 属性（格式 start_ts-end_ts-volume_mL-tds_in,tds_out），
         按日聚合饮水量与 TDS 变化，返回总量与每日明细。
@@ -3002,7 +2991,7 @@ class InsightService:
             return {"ok": False, "error": f"净水器统计失败：{exc}"}
 
     def plan_question(self, question, days=7) -> dict:
-        """路由/规划工具：内置 LLM 拿到用户问题后**第一步**调用。
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] 路由/规划工具：内置 LLM 拿到用户问题后**第一步**调用。
 
         用确定性代码「摸排」问题：解析时间窗口、匹配设备、判定意图、检索可复用模板，
         返回一份执行计划（推荐工具 + 参数建议 + 步骤）。模型只要照计划调用具体工具，
@@ -3188,7 +3177,7 @@ class InsightService:
             return {"ok": False, "error": f"规划失败：{exc}"}
 
     def _resolve_device_targets(self, q: str) -> tuple[list[str], bool]:
-        """从自然语言设备问题中挤出设备关键词，定位具体 entity_id。
+        """[FROZEN-LEGACY] 从自然语言设备问题中挤出设备关键词，定位具体 entity_id。
 
         Phase 3 迁移：查询清洗逻辑已迁移到新版 insights.utils.clean_device_query，
         此处保留为兼容包装，行为完全一致。
@@ -3218,7 +3207,7 @@ class InsightService:
             return None
 
     def get_last_event(self, entity_id=None, domain=None, room=None, transition="off", days=30) -> dict:
-        """返回指定实体/域/房间最近一次状态变化事件（transition='off' 为关闭，'on' 为开启，'any' 为任意）。"""
+        """[FROZEN-LEGACY] 返回指定实体/域/房间最近一次状态变化事件（transition='off' 为关闭，'on' 为开启，'any' 为任意）。"""
         try:
             cfg = self.entity_catalog()
             name_map = {}
@@ -3257,7 +3246,7 @@ class InsightService:
             return {"ok": False, "error": str(exc)}
 
     def ask_memory(self, question, days=7, route="auto", return_hints=False) -> dict:
-        """自然语言问答：把口语问法映射到既有洞察工具；问法太模糊时回落到向量库语义检索。
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] 自然语言问答：把口语问法映射到既有洞察工具；问法太模糊时回落到向量库语义检索。
 
         关系库（SQL 映射）为主，向量库（semantic_search + agent_memory）为副驾。
 
@@ -3399,7 +3388,7 @@ class InsightService:
         return {"ok": True, "question": q, "window": meta, **data}
 
     def get_data_quality(self, days=30) -> dict:
-        """聚合数据质量：现有 data_quality_issues（电量倒流/单位冲突/心跳/陈旧）+ agent 记忆镜像缺口。"""
+        """[FROZEN-LEGACY] [FROZEN-LEGACY] 聚合数据质量：现有 data_quality_issues（电量倒流/单位冲突/心跳/陈旧）+ agent 记忆镜像缺口。"""
         try:
             health = self.get_device_health(days)
             quality_issues = health.get("data_quality_issues", [])
@@ -3421,7 +3410,7 @@ class InsightService:
 
     @staticmethod
     def _resolve_nl_window(q, default_days):
-        """[已迁移] 从自然语言查询中解析时间窗口。
+        """[FROZEN-LEGACY] [已迁移] 从自然语言查询中解析时间窗口。
 
         新版实现：insights.utils.resolve_nl_window
         支持：昨天/今日/具体星期+时间段/上周/周末/最近N天/默认最近N天。
