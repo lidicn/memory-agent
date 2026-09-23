@@ -116,14 +116,9 @@ _CN_OFF_STATES: frozenset[str] = frozenset({"关", "关闭", "门关", "闭合",
 _CN_ON_STATES: frozenset[str] = frozenset({"开", "打开", "门开", "开启", "接通", "有", "是", "1"})
 
 
-def _state_is_off(state: Any) -> bool:
-    s = _norm(state)
-    return s in OFF_STATES or s in _CN_OFF_STATES
-
-
-def _state_is_on(state: Any) -> bool:
-    s = _norm(state)
-    return s in _CN_ON_STATES
+# Phase 3 迁移：_state_is_off 和 _state_is_on 已迁移到新版 insights.utils。
+from .insights.utils import is_off_state as _state_is_off
+from .insights.utils import is_on_state as _state_is_on
 
 #: 抖动阈值：短于该秒数的开启片段视为误触，不计入时长统计。
 DEFAULT_DEBOUNCE_SECONDS = 5

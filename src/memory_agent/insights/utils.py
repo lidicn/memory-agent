@@ -1113,6 +1113,25 @@ def resolve_domains(category: str = "", domain: str = "", query: str = "") -> li
                 out.update(domains)
     return sorted(out)
 
+
+
+def is_off_state(state) -> bool:
+    """判断状态是否为关闭。
+
+    从旧版 insights_legacy._state_is_off 迁移而来。
+    """
+    s = normalize_text(state)
+    return s in OFF_STATES or s in CN_OFF_STATES
+
+
+def is_on_state(state) -> bool:
+    """判断状态是否为开启。
+
+    从旧版 insights_legacy._state_is_on 迁移而来。
+    """
+    s = normalize_text(state)
+    return s in CN_ON_STATES
+
 __all__ = [
     "DEFAULT_DEBOUNCE_SECONDS",
     "OFF_STATES",
