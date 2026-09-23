@@ -39,6 +39,7 @@ from .utils import (  # noqa: F401
     CATEGORY_DOMAINS,
     category_of,
     finalize_climate_session,
+    resolve_nl_window,
 )
 
 # 旧版函数名别名（保持向后兼容）
@@ -96,9 +97,11 @@ MIGRATION_STATUS = {
         "Phase 3: 旧版 InsightService.category_of 改为调用新版实现（兼容包装）",
         "Phase 3: 迁移 _finalize_climate_session 到新版 utils.finalize_climate_session",
         "Phase 3: 旧版 InsightService._finalize_climate_session 改为调用新版实现（兼容包装）",
+        "Phase 3: 迁移 _resolve_nl_window 到新版 utils.resolve_nl_window",
+        "Phase 3: 旧版 InsightService._resolve_nl_window 改为调用新版实现（兼容包装）",
     ],
     "in_progress": [
-        "Phase 3: 验证 _finalize_climate_session 迁移后的行为一致性",
+        "Phase 3: 验证 _resolve_nl_window 迁移后的行为一致性",
     ],
     "next_steps": [
         "Phase 3: 继续迁移其他 Service 层方法（如 data_coverage, _diagnose_empty 等）",
