@@ -107,6 +107,15 @@ async def face_node_lib_post(request: Request):
     rt = runtime(request)
     member_id = _resolve_member_id(rt, body.get("member_id"), body.get("name"))
     if not member_id:
+        # P1 修复：设备端自动注册——name 不存在则自动创建成员
+        # 设备端（ArcFace TV 节点）是人脸注册入口，用户在电视上注册新人脸时
+        # MA 数据库里还没有这个成员，不应要求先在 WebUI 手动创建。
+        name = (body.get("name") or "").strip()
+        if name:
+            new_member = rt.store.create_member(name)
+            member_id = new_member.get("id", "")
+            print(f"[face_node_lib] 设备端自动创建成员: {name} -> {member_id}")
+    if not member_id:
         return error("需提供 member_id 或可识别的 name")
     if not rt.store.set_member_face_feature(member_id, face_feature):
         return error("成员不存在", 404)
