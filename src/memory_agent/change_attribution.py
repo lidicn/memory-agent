@@ -309,11 +309,14 @@ def _correlation(change_ct: int, baseline_ct: int) -> float:
     return abs(change_ct - baseline_ct) / total if total > 0 else 0.0
 
 
-def _confidence(change_ct: int, baseline_ct: int, corr: float) -> float:
-    """综合置信度 (0~1) = 0.5·相关性 + 0.5·频率变化幅度。
+def _confidence(
+    change_ct: int, baseline_ct: int, corr: float, proximity: float = 0.0,
+) -> float:
+    """综合置信度 (0~1) = 0.35·相关性 + 0.35·频率变化幅度 + 0.3·时间接近度。
 
     频率变化幅度通过 Laplace 平滑的折叠变化率映射：
     fold=1 → 0, fold=3 (或 1/3) → 封顶 1.0。
+    proximity 为时间接近度（0~1），默认 0.0（向后兼容）。
     """
     fold = (change_ct + 1) / (baseline_ct + 1)
     mag = (
@@ -321,7 +324,25 @@ def _confidence(change_ct: int, baseline_ct: int, corr: float) -> float:
         if fold >= 1.0
         else min(1.0, (1.0 / fold - 1.0) / 2.0)
     )
-    return 0.5 * corr + 0.5 * mag
+    return round(0.35 * corr + 0.35 * mag + 0.3 * proximity, 4)
+
+
+def _temporal_proximity(
+    dts: list[datetime], change_dt: datetime, half_life_days: float,
+) -> float:
+    """候选事件与变化点的时间接近度 (0~1)，指数衰减。
+
+    半衰期 = half_life_days：离变化点恰好 half_life_days 天的事件权重=0.5。
+    取所有事件的衰减权重平均值。无事件或非法参数返回 0.0。
+    """
+    if not dts or half_life_days <= 0:
+        return 0.0
+    decay = math.log(2) / half_life_days
+    total = 0.0
+    for dt in dts:
+        delta_days = abs((dt - change_dt).total_seconds()) / 86400.0
+        total += math.exp(-decay * delta_days)
+    return round(total / len(dts), 4)
 
 
 def _description(event_type: str, change_ct: int, baseline_ct: int, lookback: int) -> str:
@@ -461,11 +482,13 @@ def search_candidate_causes(
     ws, we = cdt - delta, cdt                      # 变化窗口
     bs_lo, bs_hi = cdt - 2 * delta, cdt - delta    # 基线窗口
 
-    # ── 事件频次统计 + 日期收集 ──
+    # ── 事件频次统计 + 日期收集 + 时间戳收集 ──
     action_counts: dict[str, dict[str, int]] = defaultdict(lambda: {"c": 0, "b": 0})
+    action_dts: dict[str, list[datetime]] = defaultdict(list)  # 变化窗口内的事件时间戳
     person_days_c: set[str] = set()
     person_days_b: set[str] = set()
     holiday_dates: set[str] = set()
+    half_life = lookback_days / 2.0  # 时间接近度半衰期
 
     for ev in events:
         dt = _parse_ts(ev.get("server_ts", ""))
@@ -500,6 +523,7 @@ def search_candidate_causes(
         if ct is not None:
             if in_c:
                 action_counts[act]["c"] += 1
+                action_dts[act].append(dt)
             elif in_b:
                 action_counts[act]["b"] += 1
 
@@ -513,13 +537,15 @@ def search_candidate_causes(
         if ctype is None:
             continue
         corr = _correlation(c, b)
-        conf = _confidence(c, b, corr)
+        prox = _temporal_proximity(action_dts.get(action, []), cdt, half_life)
+        conf = _confidence(c, b, corr, prox)
         candidates.append({
             "cause_type": ctype,
             "event_type": action,
             "count": c,
             "baseline_count": b,
             "correlation": round(corr, 2),
+            "temporal_proximity": round(prox, 2),
             "confidence": round(conf, 2),
             "description": _description(action, c, b, lookback_days),
         })
@@ -527,24 +553,29 @@ def search_candidate_causes(
     # ── 日程候选（基于 person 活跃日期的星期分布） ──
     for sched in ("weekday", "weekend", "holiday"):
         if sched == "weekday":
-            c = sum(1 for d in person_days_c if _is_weekday(d) and d not in holiday_dates)
+            c_dates = [d for d in person_days_c if _is_weekday(d) and d not in holiday_dates]
             b = sum(1 for d in person_days_b if _is_weekday(d) and d not in holiday_dates)
         elif sched == "weekend":
-            c = sum(1 for d in person_days_c if not _is_weekday(d) and d not in holiday_dates)
+            c_dates = [d for d in person_days_c if not _is_weekday(d) and d not in holiday_dates]
             b = sum(1 for d in person_days_b if not _is_weekday(d) and d not in holiday_dates)
         else:
-            c = sum(1 for d in person_days_c if d in holiday_dates)
+            c_dates = [d for d in person_days_c if d in holiday_dates]
             b = sum(1 for d in person_days_b if d in holiday_dates)
+        c = len(c_dates)
         if c == b:
             continue
         corr = _correlation(c, b)
-        conf = _confidence(c, b, corr)
+        # 日程候选的时间接近度：用变化窗口内该日程类型的活跃日计算
+        sched_dts = [datetime.strptime(d, "%Y-%m-%d") for d in c_dates]
+        prox = _temporal_proximity(sched_dts, cdt, half_life)
+        conf = _confidence(c, b, corr, prox)
         candidates.append({
             "cause_type": "schedule_change",
             "event_type": sched,
             "count": c,
             "baseline_count": b,
             "correlation": round(corr, 2),
+            "temporal_proximity": round(prox, 2),
             "confidence": round(conf, 2),
             "description": _description(sched, c, b, lookback_days),
         })

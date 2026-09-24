@@ -309,10 +309,10 @@ class TestSearchCandidateCauses:
     change_start_ts = 2026-09-10 → 变化窗口 [09-03, 09-10]，基线 [08-27, 09-03)。
     """
 
-    # ── 验收 9：7 键 ─────────────────────────────────────────
+    # ── 验收 9：8 键 ─────────────────────────────────────────
 
     def test_search_keys(self):
-        """每个候选含 cause_type/event_type/count/baseline_count/correlation/confidence/description 七键。"""
+        """每个候选含 cause_type/event_type/count/baseline_count/correlation/temporal_proximity/confidence/description 八键。"""
         evs = [
             _ev("2026-09-08T20:00:00", "tv_on"),
             _ev("2026-09-09T20:00:00", "tv_on"),
@@ -322,7 +322,7 @@ class TestSearchCandidateCauses:
         assert len(results) > 0
         expected = {
             "cause_type", "event_type", "count", "baseline_count",
-            "correlation", "confidence", "description",
+            "correlation", "temporal_proximity", "confidence", "description",
         }
         for r in results:
             assert set(r.keys()) == expected
@@ -425,6 +425,59 @@ class TestSearchCandidateCauses:
         results = search_candidate_causes(evs, "K", "2026-09-10T00:00:00", lookback_days=7)
         tv = [r for r in results if r["event_type"] == "tv_on"]
         assert len(tv) == 0  # count=1 == baseline_count=1，无变化
+
+    # ── 时间接近度衰减 ───────────────────────────────────────
+
+    def test_temporal_proximity_range(self):
+        """temporal_proximity 在 0~1 范围内。"""
+        evs = [
+            _ev("2026-09-08T20:00:00", "tv_on"),
+            _ev("2026-09-09T20:00:00", "tv_on"),
+            _ev("2026-09-04T20:00:00", "tv_on"),
+        ]
+        results = search_candidate_causes(evs, "K", "2026-09-10T00:00:00", lookback_days=7)
+        for r in results:
+            assert 0.0 <= r["temporal_proximity"] <= 1.0
+
+    def test_temporal_proximity_closer_higher(self):
+        """离变化点更近的事件 temporal_proximity 更高。"""
+        # A 组：事件集中在变化点前 1 天
+        evs_a = [
+            _ev("2026-09-09T10:00:00", "tv_on"),
+            _ev("2026-09-09T20:00:00", "tv_on"),
+            _ev("2026-09-01T10:00:00", "tv_on"),  # 基线
+        ]
+        # B 组：事件集中在变化点前 6 天
+        evs_b = [
+            _ev("2026-09-04T10:00:00", "door_open"),
+            _ev("2026-09-04T20:00:00", "door_open"),
+            _ev("2026-09-01T10:00:00", "door_open"),  # 基线
+        ]
+        ra = search_candidate_causes(evs_a, "K", "2026-09-10T00:00:00", lookback_days=7)
+        rb = search_candidate_causes(evs_b, "K", "2026-09-10T00:00:00", lookback_days=7)
+        tv_a = [r for r in ra if r["event_type"] == "tv_on"][0]
+        door_b = [r for r in rb if r["event_type"] == "door_open"][0]
+        assert tv_a["temporal_proximity"] > door_b["temporal_proximity"]
+
+    def test_temporal_proximity_affects_confidence(self):
+        """时间接近度影响置信度：相同频次下，更近的事件置信度更高。"""
+        # 两组事件频次相同（变化期 2 次，基线 1 次），但时间距离不同
+        evs_near = [
+            _ev("2026-09-09T10:00:00", "tv_on"),
+            _ev("2026-09-09T20:00:00", "tv_on"),
+            _ev("2026-09-01T10:00:00", "tv_on"),
+        ]
+        evs_far = [
+            _ev("2026-09-04T10:00:00", "door_open"),
+            _ev("2026-09-04T20:00:00", "door_open"),
+            _ev("2026-09-01T10:00:00", "door_open"),
+        ]
+        rn = search_candidate_causes(evs_near, "K", "2026-09-10T00:00:00", lookback_days=7)
+        rf = search_candidate_causes(evs_far, "K", "2026-09-10T00:00:00", lookback_days=7)
+        near = [r for r in rn if r["event_type"] == "tv_on"][0]
+        far = [r for r in rf if r["event_type"] == "door_open"][0]
+        # 频次相同 → correlation 和 magnitude 相同；时间接近度不同 → confidence 不同
+        assert near["confidence"] > far["confidence"]
 
 
 # ═══════════════════════════════════════════════════════════════
