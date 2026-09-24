@@ -1924,6 +1924,34 @@ def _build_server():
         }
 
     @mcp.tool()
+    async def infer_behavior_intent(
+        person: str = "", window_min: int = 10, limit: int = 3
+    ) -> dict:
+        """P4b 意图推断：从最近的行为事件推断用户意图（无 LLM 快路径）。
+
+        基于行为规则匹配（开灯+开电视=想看电视），毫秒级响应。
+        返回意图列表（按置信度排序），每个含 intent/label/confidence/evidence/suggestions。
+
+        Args:
+            person: 人名（可选，限定某人，如 "Kevin"）
+            window_min: 时间窗口（分钟，默认 10）
+            limit: 返回意图数量（默认 3，最多 5）
+        """
+        rt = get_runtime()
+        events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
+        if not events:
+            return {"ok": False, "error": "无历史行为事件数据"}
+
+        from .intent_inference import infer_intent_sequence, get_intent_suggestions
+
+        p = (person or "").strip() or None
+        intents = infer_intent_sequence(events, person=p, max_intents=max(1, min(limit, 5)))
+        for intent in intents:
+            intent["suggestions"] = get_intent_suggestions(intent)
+
+        return {"ok": True, "intents": intents, "count": len(intents)}
+
+    @mcp.tool()
     async def list_rooms_entities(only_enabled: bool = True) -> dict:
         """房间与实体清单（含友好名）。需要活跃度与最后在线请用 get_entity_catalog。"""
         rt = get_runtime()

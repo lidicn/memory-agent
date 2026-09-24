@@ -647,11 +647,47 @@ async def behaviors_predictions(request: Request):
     })
 
 
+async def behaviors_intent(request: Request):
+    """P4b 意图推断：从最近的行为事件推断用户意图。
+
+    查询参数：
+    - person: 人名（可选，限定某人）
+    - window_min: 时间窗口（分钟，默认 10）
+    - limit: 返回意图数量（默认 3）
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    person = (request.query_params.get("person") or "").strip() or None
+    try:
+        window_min = int(request.query_params.get("window_min") or 10)
+    except (TypeError, ValueError):
+        window_min = 10
+    try:
+        limit = int(request.query_params.get("limit") or 3)
+    except (TypeError, ValueError):
+        limit = 3
+
+    events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
+    if not events:
+        return ok({"intents": [], "note": "无历史行为事件数据"})
+
+    from ..intent_inference import infer_intent_sequence, get_intent_suggestions
+
+    intents = infer_intent_sequence(events, person=person, max_intents=max(1, min(limit, 5)))
+    for intent in intents:
+        intent["suggestions"] = get_intent_suggestions(intent)
+
+    return ok({"intents": intents, "count": len(intents)})
+
+
 ROUTES = [
     Route("/api/behaviors", behaviors_current, methods=["GET"]),
     Route("/api/behaviors/states", behaviors_states, methods=["GET"]),
     Route("/api/behaviors/run", behaviors_run, methods=["POST"]),
     Route("/api/behaviors/predictions", behaviors_predictions, methods=["GET"]),
+    Route("/api/behaviors/intent", behaviors_intent, methods=["GET"]),
     Route("/api/behaviors/candidate-rules", candidate_rules_list, methods=["GET"]),
     Route("/api/behaviors/candidate-rules/update", candidate_rule_update, methods=["POST"]),
     Route("/api/behaviors/candidate-rules/export", candidate_rules_export, methods=["GET"]),
