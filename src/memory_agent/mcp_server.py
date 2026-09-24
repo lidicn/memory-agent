@@ -1952,6 +1952,28 @@ def _build_server():
         return {"ok": True, "intents": intents, "count": len(intents)}
 
     @mcp.tool()
+    async def execute_intent_actions(
+        intent: str, dry_run: bool = True, person: str = ""
+    ) -> dict:
+        """P4c 意图→动作执行：推断意图后执行（或预览）建议动作。
+
+        内置 7 个意图的常识动作映射（看电视/工作/睡觉/出门/回家/吃饭/运动）。
+        默认 dry_run=true 只预览不执行；dry_run=false 时只执行 auto=true 的动作
+        （TTS 播报/告警），灯光/摄像头等需要用户确认的动作不会自动执行。
+
+        Args:
+            intent: 意图名称（如 "watch_tv"、"sleep"、"arrive_home"）
+            dry_run: True=只预览不执行（默认），False=执行自动动作
+            person: 触发意图的人（可选，用于日志）
+        """
+        rt = get_runtime()
+        from .intent_action import execute_intent_actions as _execute
+
+        p = (person or "").strip() or None
+        result = await _execute(intent, rt, dry_run=dry_run, person=p)
+        return {"ok": True, **result}
+
+    @mcp.tool()
     async def list_rooms_entities(only_enabled: bool = True) -> dict:
         """房间与实体清单（含友好名）。需要活跃度与最后在线请用 get_entity_catalog。"""
         rt = get_runtime()

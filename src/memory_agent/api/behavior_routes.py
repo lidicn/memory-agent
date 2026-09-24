@@ -682,12 +682,37 @@ async def behaviors_intent(request: Request):
     return ok({"intents": intents, "count": len(intents)})
 
 
+async def behaviors_intent_execute(request: Request):
+    """P4c 意图→动作执行：推断意图后执行（或预览）建议动作。
+
+    Body: {"intent": "watch_tv", "dry_run": true, "person": "Kevin"}
+    - dry_run=true（默认）：只预览不执行
+    - dry_run=false：执行 auto=true 的动作，auto=false 的动作需要用户确认
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    body = await json_body(request)
+    intent = (body.get("intent") or "").strip()
+    if not intent:
+        return error("intent 必填")
+    dry_run = body.get("dry_run", True)
+    person = (body.get("person") or "").strip() or None
+
+    from ..intent_action import execute_intent_actions
+
+    result = await execute_intent_actions(intent, rt, dry_run=dry_run, person=person)
+    return ok(result)
+
+
 ROUTES = [
     Route("/api/behaviors", behaviors_current, methods=["GET"]),
     Route("/api/behaviors/states", behaviors_states, methods=["GET"]),
     Route("/api/behaviors/run", behaviors_run, methods=["POST"]),
     Route("/api/behaviors/predictions", behaviors_predictions, methods=["GET"]),
     Route("/api/behaviors/intent", behaviors_intent, methods=["GET"]),
+    Route("/api/behaviors/intent/execute", behaviors_intent_execute, methods=["POST"]),
     Route("/api/behaviors/candidate-rules", candidate_rules_list, methods=["GET"]),
     Route("/api/behaviors/candidate-rules/update", candidate_rule_update, methods=["POST"]),
     Route("/api/behaviors/candidate-rules/export", candidate_rules_export, methods=["GET"]),
