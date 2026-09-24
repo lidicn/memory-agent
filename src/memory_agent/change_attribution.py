@@ -310,21 +310,23 @@ def _correlation(change_ct: int, baseline_ct: int) -> float:
 
 
 def _confidence(
-    change_ct: int, baseline_ct: int, corr: float, proximity: float = 0.0,
+    change_ct: int, baseline_ct: int, proximity: float = 0.0,
 ) -> float:
-    """综合置信度 (0~1) = 0.35·相关性 + 0.35·频率变化幅度 + 0.3·时间接近度。
+    """综合置信度 (0~1) = 0.4·lift_score + 0.3·count_score + 0.3·时间接近度。
 
-    频率变化幅度通过 Laplace 平滑的折叠变化率映射：
-    fold=1 → 0, fold=3 (或 1/3) → 封顶 1.0。
-    proximity 为时间接近度（0~1），默认 0.0（向后兼容）。
+    lift_score: 变化窗口 vs 基线窗口的倍数（Laplace 平滑），
+        lift=(c+1)/(b+1)，lift_score=max(0, min(1, (lift-1)/2))，
+        lift=1→0, lift=3→封顶 1.0。
+    count_score: 证据量饱和，min(1, count/5)，达到 5 次即满分。
+    proximity: 时间接近度（0~1），默认 0.0（向后兼容）。
+
+    设计参考 MiMo 2.6 Pro：lift 是归因最核心信号（"增加了200%"比"d=1.2"更直观），
+    count 防止单次偶发事件被高估，proximity 保证时间上的因果合理性。
     """
-    fold = (change_ct + 1) / (baseline_ct + 1)
-    mag = (
-        min(1.0, (fold - 1.0) / 2.0)
-        if fold >= 1.0
-        else min(1.0, (1.0 / fold - 1.0) / 2.0)
-    )
-    return round(0.35 * corr + 0.35 * mag + 0.3 * proximity, 4)
+    lift = (change_ct + 1.0) / (baseline_ct + 1.0)
+    lift_score = max(0.0, min(1.0, (lift - 1.0) / 2.0))
+    count_score = min(1.0, change_ct / 5.0)
+    return round(0.4 * lift_score + 0.3 * count_score + 0.3 * proximity, 4)
 
 
 def _temporal_proximity(
@@ -538,7 +540,7 @@ def search_candidate_causes(
             continue
         corr = _correlation(c, b)
         prox = _temporal_proximity(action_dts.get(action, []), cdt, half_life)
-        conf = _confidence(c, b, corr, prox)
+        conf = _confidence(c, b, prox)
         candidates.append({
             "cause_type": ctype,
             "event_type": action,
@@ -568,7 +570,7 @@ def search_candidate_causes(
         # 日程候选的时间接近度：用变化窗口内该日程类型的活跃日计算
         sched_dts = [datetime.strptime(d, "%Y-%m-%d") for d in c_dates]
         prox = _temporal_proximity(sched_dts, cdt, half_life)
-        conf = _confidence(c, b, corr, prox)
+        conf = _confidence(c, b, prox)
         candidates.append({
             "cause_type": "schedule_change",
             "event_type": sched,

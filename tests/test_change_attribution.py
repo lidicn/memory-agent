@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from memory_agent.change_attribution import (   # noqa: E402
     _cohens_d,
+    _confidence,
     _mw_p,
     attribute,
     detect_change,
@@ -478,6 +479,35 @@ class TestSearchCandidateCauses:
         far = [r for r in rf if r["event_type"] == "door_open"][0]
         # 频次相同 → correlation 和 magnitude 相同；时间接近度不同 → confidence 不同
         assert near["confidence"] > far["confidence"]
+
+    # ── 置信度公式：lift_score + count_score + proximity ────
+
+    def test_confidence_lift_score_saturation(self):
+        """lift_score 饱和：lift≥3 时 lift_score=1.0，继续增大不改变置信度。"""
+        # baseline=0 → lift=count+1
+        # count=5 → lift=6 → lift_score=1.0（饱和）, count_score=1.0
+        c5 = _confidence(5, 0, proximity=0.0)
+        # count=10 → lift=11 → lift_score 仍 1.0, count_score 仍 1.0
+        c10 = _confidence(10, 0, proximity=0.0)
+        assert c5 == c10
+        # count=1 → lift=2 → lift_score=0.5, count_score=0.2，应低于饱和值
+        c1 = _confidence(1, 0, proximity=0.0)
+        assert c1 < c5
+
+    def test_confidence_count_score_saturation(self):
+        """count_score 饱和：count≥5 时 count_score=1.0，继续增大不改变置信度。"""
+        # 固定 lift=2（lift_score=0.5），proximity=0，只变 count
+        # count=5, baseline=2 → lift=2.0, count_score=1.0（饱和）
+        c5 = _confidence(5, 2, proximity=0.0)
+        # count=10, baseline=5 → lift=1.83（lift_score≈0.42）, count_score=1.0
+        # 两者 count_score 都饱和，但 lift_score 不同 → confidence 不同
+        # 改用 baseline=0 固定 lift 饱和：
+        c5b = _confidence(5, 0, proximity=0.0)  # lift=6, count=5
+        c10b = _confidence(10, 0, proximity=0.0)  # lift=11, count=10
+        assert c5b == c10b  # lift_score 和 count_score 都饱和
+        # count=1（不饱和）vs count=5（饱和），相同 baseline=0
+        c1b = _confidence(1, 0, proximity=0.0)  # lift=2, count=1
+        assert c1b < c5b
 
 
 # ═══════════════════════════════════════════════════════════════
