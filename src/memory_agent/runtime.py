@@ -1,4 +1,4 @@
-"""应用运行时容器
+﻿"""应用运行时容器
 
 为什么需要它
 ------------
@@ -48,6 +48,8 @@ from .vision_service import VisionService
 from .alert_dispatcher import AlertDispatcher
 from .semantic_dedup import SemanticDeduplicator
 from .livingroom_ai import LivingRoomAIIngest
+from .candidate_promotion import get_promoter
+from .causal_scanner import CausalScanner
 from .announcer import Announcer
 
 
@@ -133,6 +135,10 @@ class AppRuntime:
             await asyncio.to_thread(
                 self.store.purge_old, self.config.data_retention_days
             )
+            # B-MA-05: 定期清理幂等键和 MCP 审计表，防止无限增长
+            await asyncio.to_thread(self.store.purge_idempotency)
+            await asyncio.to_thread(self.store.purge_mcp_audit, 30)
+            print("[Runtime] 数据清理完成：events/idempotency/mcp_audit")
         except Exception as exc:  # noqa: BLE001
             print(f"[Runtime] 数据保留清理失败（不影响运行）: {exc}")
 
@@ -212,6 +218,12 @@ class AppRuntime:
             alert_dispatcher=self.alert_dispatcher,
         )
         self._livingroom_ai_task = asyncio.create_task(self._periodic_livingroom_ai())
+        # Phase 2.1 视觉行为事实候选区晋升：定期扫描候选区，晋升满足条件的事件
+        self._candidate_promoter = get_promoter(self.store)
+        self._candidate_promotion_task = asyncio.create_task(self._periodic_candidate_promotion())
+        # P5e 因果归因主动告警：每日扫描成员行为变化，显著变化写入 behavior_events
+        self.causal_scanner = CausalScanner(self.store)
+        self._causal_scan_task = asyncio.create_task(self._periodic_causal_scan())
 
         # 记忆研究员（v0.8）：按 researcher_scheduler_time 每日低峰定期洞察
         self.researcher.start()
@@ -247,6 +259,51 @@ class AppRuntime:
                 ch.get("entity_id") or "", ch.get("from") or "", ch.get("to") or ""
             )
 
+    async def _periodic_candidate_promotion(self) -> None:
+        """Phase 2.1 常驻任务：定期扫描候选区，晋升满足条件的低置信度事件。
+
+        间隔默认 300 秒（5 分钟），总开关 candidate_promotion_enabled 默认开。
+        单次失败仅记录，不影响主流程。
+        """
+        interval = max(60, int(getattr(self.config, "candidate_promotion_interval_seconds", 300) or 300))
+        try:
+            await asyncio.sleep(30)  # 启动稍延
+            while True:
+                if getattr(self.config, "candidate_promotion_enabled", True):
+                    try:
+                        stats = await asyncio.to_thread(self._candidate_promoter.process_candidates)
+                        if stats["promoted"] > 0:
+                            print(f"[CandidatePromotion] 扫描 {stats['scanned']}，晋升 {stats['promoted']}，失败 {stats['failed']}")
+                    except Exception as exc:
+                        print(f"[CandidatePromotion] 周期任务异常: {exc}")
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
+
+    async def _periodic_causal_scan(self) -> None:
+        """P5e 常驻任务：每日因果归因扫描，检测成员行为显著变化并写入 behavior_events。
+
+        间隔默认 86400 秒（24 小时），总开关 causal_scan_enabled 默认开。
+        单次失败仅记录，不影响主流程。
+        """
+        interval = max(3600, int(getattr(self.config, "causal_scan_interval_seconds", 86400) or 86400))
+        try:
+            await asyncio.sleep(120)  # 启动稍延，等大库初始化和采集稳定
+            while True:
+                if getattr(self.config, "causal_scan_enabled", True):
+                    try:
+                        stats = await asyncio.to_thread(self.causal_scanner.scan)
+                        sm = stats["scanned_members"]
+                        sx = stats["scanned_metrics"]
+                        aw = stats["alerts_written"]
+                        sd = stats["skipped_dedup"]
+                        if aw > 0 or sm > 0:
+                            print(f"[CausalScan] 扫描 {sm} 人 / {sx} 指标，告警 {aw}，去重跳过 {sd}")
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[CausalScan] 周期任务异常: {exc}")
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
     async def _periodic_mqtt_presence(self) -> None:
         """常驻任务：周期推送成员在场快照，**只在内容变化时发**，避免刷屏。"""
         interval = max(
