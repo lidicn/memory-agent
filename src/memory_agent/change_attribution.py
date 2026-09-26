@@ -1,4 +1,4 @@
-﻿"""change_attribution.py - 行为变化归因（因果推理层）
+"""change_attribution.py - 行为变化归因（因果推理层）
 
 P5a（阶段1）：检测行为模式变化并自动搜索候选原因。纯统计 + 规则。
 P5b（阶段2）：条件概率建模——分组比较法，把归因从"相关性"升级到"因果性"。
@@ -62,7 +62,14 @@ def _parse_ts(ts: Any) -> datetime | None:
 
 
 def _has_person(ev: dict, person: str) -> bool:
-    return any(p.get("name") == person for p in _parse_persons(ev.get("persons_json")))
+    for p in _parse_persons(ev.get("persons_json")):
+        if isinstance(p, dict):
+            if p.get("name") == person:
+                return True
+        elif isinstance(p, str):
+            if p == person:
+                return True
+    return False
 
 
 def _classify(action: str) -> str | None:
