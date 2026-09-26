@@ -9,6 +9,7 @@ canonical 活动」，供管家 v1.7 M4 状态看板消费（需加入 butler �
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 
 from starlette.requests import Request
 from starlette.routing import Route
@@ -706,6 +707,63 @@ async def behaviors_intent_execute(request: Request):
     return ok(result)
 
 
+
+async def causal_analyze(request: Request):
+    """行为变化因果归因（P5a+P5b）：GET /api/behaviors/causal/analyze?person=X&metric=Y&days=30"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    person = (request.query_params.get("person") or "").strip()
+    metric = (request.query_params.get("metric") or "arrival_time").strip()
+    room = (request.query_params.get("room") or "").strip()
+    try:
+        days = int(request.query_params.get("days") or 30)
+        lookback = int(request.query_params.get("lookback_days") or 7)
+    except (TypeError, ValueError):
+        return error("days / lookback_days 必须是整数")
+    if not person:
+        return error("person 必填")
+    from ..mcp_server import _fetch_attribution_events
+    from ..change_attribution import attribute_with_conditional
+    events = await asyncio.to_thread(_fetch_attribution_events, rt.store, max(14, days))
+    if len(events) < 14:
+        return error(f"事件数据不足（{len(events)} 条 < 14 天最低要求）")
+    result = await asyncio.to_thread(
+        attribute_with_conditional, events, person, metric,
+        0.5, lookback, max(30, days), room or None
+    )
+    return ok({"person": person, "metric": metric, "event_count": len(events), **result})
+
+
+async def causal_counterfactual(request: Request):
+    """反事实查询（P5c）：GET /api/behaviors/causal/counterfactual?person=X&event_type=Y&metric=Z&days=30"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    person = (request.query_params.get("person") or "").strip()
+    event_type = (request.query_params.get("event_type") or "").strip()
+    metric = (request.query_params.get("metric") or "arrival_time").strip()
+    room = (request.query_params.get("room") or "").strip()
+    try:
+        days = int(request.query_params.get("days") or 30)
+    except (TypeError, ValueError):
+        return error("days 必须是整数")
+    if not person or not event_type:
+        return error("person 和 event_type 必填")
+    from ..mcp_server import _fetch_attribution_events
+    from ..change_attribution import counterfactual_query as _cfq
+    events = await asyncio.to_thread(_fetch_attribution_events, rt.store, max(14, days))
+    if len(events) < 14:
+        return error(f"事件数据不足（{len(events)} 条 < 14 天最低要求）")
+    change_ts = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+    result = await asyncio.to_thread(
+        _cfq, events, person, metric, event_type, change_ts, max(30, days), room or None
+    )
+    return ok(result)
+
+
 ROUTES = [
     Route("/api/behaviors", behaviors_current, methods=["GET"]),
     Route("/api/behaviors/states", behaviors_states, methods=["GET"]),
@@ -731,4 +789,6 @@ ROUTES = [
     Route("/api/behaviors/home-profile", behaviors_home_profile, methods=["GET"]),
     Route("/api/behaviors/rules", behaviors_rules, methods=["GET"]),
     Route("/api/alerts/stats", alerts_stats, methods=["GET"]),
+    Route("/api/behaviors/causal/analyze", causal_analyze, methods=["GET"]),
+    Route("/api/behaviors/causal/counterfactual", causal_counterfactual, methods=["GET"]),
 ]
