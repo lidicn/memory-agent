@@ -1515,6 +1515,67 @@ def _build_server():
         return await asyncio.to_thread(rt.activity.mine_drift, None, None, days,
                                        None, persist=True)
 
+
+    @mcp.tool()
+    async def analyze_behavior_change(
+        person: str, metric: str = "arrival_time",
+        days: int = 30, lookback_days: int = 7, room: str = ""
+    ) -> dict:
+        """行为变化因果归因（P5a+P5b）：检测某人的行为指标是否变化，并搜索+验证可能的原因。
+
+        P5a 检测变化点 → P5b 分组比较法验证每个候选原因的因果性（有事件天 vs 无事件天）。
+        支持 metric: arrival_time（到家时间）、activity_count（日活动量）、
+        active_duration（日活跃时长）、room_distribution（房间分布，需指定 room）。
+
+        :param person: 成员名称（如 lidicn、Kevin、Emily）
+        :param metric: 行为指标，默认 arrival_time
+        :param days: 回溯总天数，默认 30
+        :param lookback_days: 变化点前搜索候选原因的天数，默认 7
+        :param room: room_distribution 指标时指定房间
+        """
+        from memory_agent.change_attribution import attribute_with_conditional
+        rt = get_runtime()
+        events = await asyncio.to_thread(_fetch_attribution_events, rt.store, max(14, int(days)))
+        if len(events) < 14:
+            return {"ok": False, "error": f"事件数据不足（{len(events)} 条 < 14 天最低要求）",
+                    "event_count": len(events)}
+        result = await asyncio.to_thread(
+            attribute_with_conditional, events, person, metric,
+            0.5, lookback_days, max(30, int(days)), room or None
+        )
+        return {"ok": True, "person": person, "metric": metric,
+                "event_count": len(events), **result}
+
+    @mcp.tool()
+    async def counterfactual_query(
+        person: str, event_type: str, metric: str = "arrival_time",
+        days: int = 30, room: str = ""
+    ) -> dict:
+        """反事实查询（P5c）：如果没有这个事件，行为指标会怎样？
+
+        基于分组比较法，用无事件天的分布作为反事实估计。
+        返回实际值、反事实预测值、差异、95% 置信区间、因果效应量、显著性。
+
+        :param person: 成员名称
+        :param event_type: 事件类型（如 tv_on、light_on、aircon_on、door_open、face_known）
+        :param metric: 行为指标，默认 arrival_time
+        :param days: 回溯天数，默认 30
+        :param room: room_distribution 指标时指定房间
+        """
+        from memory_agent.change_attribution import counterfactual_query as _cfq
+        from datetime import timedelta
+        rt = get_runtime()
+        events = await asyncio.to_thread(_fetch_attribution_events, rt.store, max(14, int(days)))
+        if len(events) < 14:
+            return {"ok": False, "error": f"事件数据不足（{len(events)} 条 < 14 天最低要求）",
+                    "event_count": len(events)}
+        change_ts = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+        result = await asyncio.to_thread(
+            _cfq, events, person, metric, event_type, change_ts,
+            max(30, int(days)), room or None
+        )
+        return {"ok": result.get("enabled", False), **result}
+
     @mcp.tool()
     async def list_behavior_drifts(days: int = 14, kind: str = "",
                                    limit: int = 50) -> dict:
