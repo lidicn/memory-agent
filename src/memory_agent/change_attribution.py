@@ -2,6 +2,7 @@
 
 P5a（阶段1）：检测行为模式变化并自动搜索候选原因。纯统计 + 规则。
 P5b（阶段2）：条件概率建模——分组比较法，把归因从"相关性"升级到"因果性"。
+P5c（阶段3）：反事实查询——回答"如果没有这个事件，行为会怎样？"
 """
 
 from __future__ import annotations
@@ -569,3 +570,111 @@ def attribute_with_conditional(events, person, metric, split_ratio=0.5, lookback
                         0.4 * cause.get("confidence", 0.0) + 0.6 * cmap[et]["causal_strength"], 4)
     result["conditional_analysis"] = cond
     return result
+
+
+# ═══════════════════════════════════════════════════════════════
+# P5c 反事实查询
+# ═══════════════════════════════════════════════════════════════
+
+
+def _ci_95(vals):
+    """均值的 95% 置信区间（t 分布近似，n<30 用 t，否则用 z）。"""
+    n = len(vals)
+    if n == 0:
+        return (0.0, 0.0)
+    m = statistics.mean(vals)
+    if n < 2:
+        return (round(m, 4), round(m, 4))
+    se = statistics.stdev(vals) / math.sqrt(n)
+    # 常用 t 临界值近似（自由度 n-1）
+    t_table = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
+               6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
+               11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131,
+               16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
+               21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060,
+               26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045}
+    tcrit = t_table.get(min(n - 1, 29), 1.96) if n < 30 else 1.96
+    margin = tcrit * se
+    return (round(m - margin, 4), round(m + margin, 4))
+
+
+def counterfactual_query(events, person, metric, event_type, change_start_ts,
+                          lookback_days=30, room=None):
+    """P5c 反事实查询：如果没有这个事件，行为指标会怎样？
+
+    基于 P5b 分组比较法，用无事件天的分布作为反事实估计。
+    返回：实际值（有事件天均值）、反事实预测值（无事件天均值）、
+    差异、95% 置信区间、因果效应量、显著性。
+    """
+    cdt = _parse_ts(change_start_ts)
+    if cdt is None:
+        return {"enabled": False, "reason": "change_start_ts 解析失败"}
+
+    daily = _daily_values(events, person, metric, room)
+    start_date = (cdt - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    end_date = cdt.strftime("%Y-%m-%d")
+    relevant = {d: v for d, v in daily.items() if start_date <= d < end_date}
+
+    if len(relevant) < CONDITIONAL_MIN_DAYS:
+        return {"enabled": False, "reason": f"有数据天数不足（{len(relevant)} < {CONDITIONAL_MIN_DAYS}）",
+                "total_data_days": len(relevant)}
+
+    ev_d = _event_days(events, event_type)
+    ev_in = {d for d in ev_d if d in relevant}
+    no_ev_in = {d for d in relevant if d not in ev_d}
+
+    if len(ev_in) < CONDITIONAL_MIN_EVENT_DAYS or len(no_ev_in) < CONDITIONAL_MIN_EVENT_DAYS:
+        return {"enabled": False, "reason": f"事件天数不足（事件天={len(ev_in)}, 无事件天={len(no_ev_in)}）",
+                "event_days": len(ev_in), "no_event_days": len(no_ev_in)}
+
+    ev_vals = [relevant[d] for d in ev_in]
+    no_ev_vals = [relevant[d] for d in no_ev_in]
+
+    actual = statistics.mean(ev_vals)
+    counterfactual = statistics.mean(no_ev_vals)
+    diff = actual - counterfactual
+
+    es = _cohens_d(ev_vals, no_ev_vals)
+    mwp = _mw_p(ev_vals, no_ev_vals)
+    ci_actual = _ci_95(ev_vals)
+    ci_counterfactual = _ci_95(no_ev_vals)
+
+    # 反事实预测的置信区间：用无事件天的 CI
+    # 差异的标准误（独立样本）
+    n1, n2 = len(ev_vals), len(no_ev_vals)
+    s1 = statistics.stdev(ev_vals) if n1 >= 2 else 0.0
+    s2 = statistics.stdev(no_ev_vals) if n2 >= 2 else 0.0
+    se_diff = math.sqrt(s1 ** 2 / n1 + s2 ** 2 / n2) if (n1 >= 2 and n2 >= 2) else 0.0
+    tcrit = 1.96 if (n1 + n2) >= 30 else 2.0
+    ci_diff = (round(diff - tcrit * se_diff, 4), round(diff + tcrit * se_diff, 4))
+
+    name = _DISPLAY.get(event_type, event_type)
+    direction = "升高" if diff > 0 else "降低"
+    significant = mwp < 0.05 and abs(es) >= 0.5
+
+    if significant:
+        desc = (f"如果没有{name}，{metric}预计为{counterfactual:.2f}（实际{actual:.2f}），"
+                f"差异{direction}{abs(diff):.2f}（95% CI [{ci_diff[0]:.2f}, {ci_diff[1]:.2f}]，"
+                f"d={es:.2f}，MW p={mwp:.3f}）")
+    else:
+        desc = f"{name}对{metric}的因果效应不显著（MW p={mwp:.3f}，d={es:.2f}），无法给出可靠反事实预测"
+
+    return {
+        "enabled": True,
+        "event_type": event_type,
+        "person": person,
+        "metric": metric,
+        "lookback_days": lookback_days,
+        "event_days": n1,
+        "no_event_days": n2,
+        "actual_value": round(actual, 4),
+        "counterfactual_value": round(counterfactual, 4),
+        "difference": round(diff, 4),
+        "ci_actual": ci_actual,
+        "ci_counterfactual": ci_counterfactual,
+        "ci_difference": ci_diff,
+        "effect_size": es,
+        "mann_whitney_p": mwp,
+        "significant": significant,
+        "description": desc,
+    }
