@@ -586,7 +586,7 @@ BUNDLED_SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "s
 
 def _fetch_attribution_events(store, days: int = 30) -> list[dict]:
     """从 behavior_events 表获取最近 N 天事件，转换为 change_attribution 需要的格式。"""
-    from datetime import timedelta
+    from datetime import datetime, timedelta
     day_from = (datetime.now() - timedelta(days=max(1, int(days)))).strftime("%Y-%m-%d")
     conn = store.connect()
     with store._lock:
@@ -1563,7 +1563,7 @@ def _build_server():
         :param room: room_distribution 指标时指定房间
         """
         from memory_agent.change_attribution import counterfactual_query as _cfq
-        from datetime import timedelta
+        from datetime import datetime, timedelta
         rt = get_runtime()
         events = await asyncio.to_thread(_fetch_attribution_events, rt.store, max(14, int(days)))
         if len(events) < 14:
