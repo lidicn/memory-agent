@@ -1,4 +1,4 @@
-﻿"""MCP 服务器 —— 基于官方 Python SDK（MCPServer + Streamable HTTP, MCP 2.x）
+"""MCP 服务器 —— 基于官方 Python SDK（MCPServer + Streamable HTTP, MCP 2.x）
 
 定位
 ----
@@ -582,6 +582,26 @@ TOOL_NAMES = [t["name"] for t in TOOL_CATALOG]
 # 网关随包发布的内置技能目录（Dockerfile 会随 src/ 一起打进镜像）
 BUNDLED_SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills_bundle")
 
+
+
+def _fetch_attribution_events(store, days: int = 30) -> list[dict]:
+    """从 behavior_events 表获取最近 N 天事件，转换为 change_attribution 需要的格式。"""
+    from datetime import timedelta
+    day_from = (datetime.now() - timedelta(days=max(1, int(days)))).strftime("%Y-%m-%d")
+    conn = store.connect()
+    with store._lock:
+        rows = conn.execute(
+            "SELECT server_ts, action, room, scene, persons_json FROM behavior_events "
+            "WHERE day >= ? ORDER BY server_ts ASC LIMIT 50000",
+            (day_from,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if not d.get("persons_json"):
+            d["persons_json"] = "[]"
+        out.append(d)
+    return out
 
 def _read_skill_meta(path: str) -> dict:
     """从 SKILL.md 的 YAML frontmatter 解析出元数据（name/description/category/version 等）。"""
