@@ -1797,6 +1797,70 @@ def _build_server():
         return {"ok": True, "rule_id": rule_id, "status": status}
 
     @mcp.tool()
+    async def report_bug(
+        tool_name: str = "",
+        description: str = "",
+        expected: str = "",
+        actual: str = "",
+        severity: str = "minor",
+    ) -> dict:
+        """上报一条 bug（agent 用 MA 时发现功能问题记录于此）。
+
+        tool_name: 出问题的 MCP 工具名
+        description: 问题描述
+        expected: 期望行为
+        actual: 实际行为
+        severity: minor|major|critical
+        """
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        result = await asyncio.to_thread(
+            rt.store.add_bug_report,
+            tool_name, description, expected, actual, severity,
+            _tok,
+        )
+        return {"ok": True, **result}
+
+    @mcp.tool()
+    async def list_bug_reports(status: str = "open", limit: int = 50) -> dict:
+        """列出已上报的 bug。status: open|resolved|all"""
+        rt = get_runtime()
+        bugs = await asyncio.to_thread(rt.store.list_bug_reports, status, limit)
+        return {"ok": True, "count": len(bugs), "bugs": bugs}
+
+    @mcp.tool()
+    async def report_bug(
+        tool_name: str = "",
+        description: str = "",
+        expected: str = "",
+        actual: str = "",
+        severity: str = "minor",
+    ) -> dict:
+        """上报一条 bug（agent 用 MA 时发现功能问题记录于此）。
+
+        tool_name: 出问题的 MCP 工具名
+        description: 问题描述
+        expected: 期望行为
+        actual: 实际行为
+        severity: minor|major|critical
+        """
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        result = await asyncio.to_thread(
+            rt.store.add_bug_report,
+            tool_name, description, expected, actual, severity,
+            _tok,
+        )
+        return {"ok": True, **result}
+
+    @mcp.tool()
+    async def list_bug_reports(status: str = "open", limit: int = 50) -> dict:
+        """列出已上报的 bug。status: open|resolved|all"""
+        rt = get_runtime()
+        bugs = await asyncio.to_thread(rt.store.list_bug_reports, status, limit)
+        return {"ok": True, "count": len(bugs), "bugs": bugs}
+
+    @mcp.tool()
     async def list_agent_memories(state: str = "live", member_id: str = "") -> dict:
         """列出 agent 记忆（WO-MA-005 隐私面收窄）。
 

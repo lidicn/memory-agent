@@ -62,6 +62,7 @@ REGISTERED_TOOLS = frozenset({
     "list_rooms_entities",
     "list_signal_rules",
     "list_candidate_rules",
+    "list_bug_reports",
     "list_skills",
     "list_vision_cameras",
     "mine_behavior_process",
@@ -107,6 +108,8 @@ WRITE_TOOLS = frozenset({
     "trigger_incremental_collection",
     # vMA-1.2.1 候选规则确认（写操作：改 candidate_rules 状态）
     "confirm_candidate_rule",
+    # bug 上报通道
+    "report_bug",
 })
 
 _REPORTED_UNKNOWN: set[str] = set()
