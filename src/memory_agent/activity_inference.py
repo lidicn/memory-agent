@@ -1,4 +1,4 @@
-"""v0.9.5 主动感知·行为推断层：从事件流产出 canonical 行为状态。
+﻿"""v0.9.5 主动感知·行为推断层：从事件流产出 canonical 行为状态。
 
 三层分工（见 docs/主动感知分工建议书_20260912.md）：
 * 实时反应层（毫秒级规则/推送/联动）归**管家**；
@@ -676,10 +676,16 @@ class ActivityInferenceService:
         if ins is not None and hasattr(ins, "_iter_all_events"):
             try:
                 return ins._iter_all_events(start, end, max_rows=max_rows, **kw)
-            except TypeError:
+            except TypeError as _e:
+                # E-MA-01: 不要静默丢掉过滤条件，打警告
+                import logging
+                logging.getLogger(__name__).warning("_iter_all_events 不支持 exclude_domains，过滤条件已丢弃: %s", _e)
                 kw.pop("exclude_domains", None)
                 return ins._iter_all_events(start, end, max_rows=max_rows, **kw)
-        return self.store.query_events(start=start, end=end, limit=5000, **kw)
+        # E-MA-01: fallback 到 query_events 时不要静默截断，提高 limit 并打警告
+        import logging
+        logging.getLogger(__name__).warning("_iter_all_events 不可用，fallback 到 query_events 可能截断数据")
+        return self.store.query_events(start=start, end=end, limit=min(max_rows, 50000), **kw)
 
     def mine_process(self, start: str | None = None, end: str | None = None,
                      days: int = 7, rooms: list | None = None, *,

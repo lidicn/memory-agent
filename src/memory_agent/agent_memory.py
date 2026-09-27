@@ -161,8 +161,14 @@ class AgentMemoryService:
 
         ok, invalid = self._validate_source_refs(source_refs)
         if not ok:
-            return {"ok": False, "error": "source_refs 含非法引用（需 event:/insight:/activity: 前缀）",
-                    "invalid_refs": invalid, "code": 422}
+            # HI-38 修复：不整批拒写，过滤掉非法引用，只保留合法的
+            valid_refs = [r for r in source_refs if r and r.strip() and r.strip() not in invalid]
+            if not valid_refs:
+                return {"ok": False, "error": "source_refs 全部非法（需 event:/insight:/activity: 前缀）",
+                        "invalid_refs": invalid, "code": 422}
+            import logging
+            logging.getLogger(__name__).warning(f"source_refs 过滤掉 {len(invalid)} 条非法引用: {invalid}")
+            source_refs = valid_refs
 
         tk = topic_key or (tags[0] if tags else "general")
 

@@ -1,4 +1,4 @@
-"""Agent 记忆（参与式写回）端到端验收脚本。
+﻿"""Agent 记忆（参与式写回）端到端验收脚本。
 
 在容器内运行：
     docker compose exec memory-agent python -m memory_agent.scripts.verify_agent_memory
@@ -13,7 +13,7 @@ import time
 import uuid
 
 from memory_agent.config import Config
-from memory_agent.store import SQLiteStore
+from memory_agent.store import Store
 from memory_agent.agent_memory import AgentMemoryService
 
 
@@ -27,7 +27,7 @@ def run() -> int:
     if os.environ.get("CHROMA_PORT"):
         cfg.chroma_port = int(os.environ["CHROMA_PORT"])
 
-    store = SQLiteStore(cfg.db_path)
+    store = Store(cfg.db_path, cfg.tz_offset_hours)
     svc = AgentMemoryService(store, chroma_host=cfg.chroma_host, chroma_port=cfg.chroma_port, cfg=cfg)
 
     tid = "verify-" + uuid.uuid4().hex[:8]

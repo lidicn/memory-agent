@@ -244,15 +244,24 @@ class LivingRoomAIIngest:
                                 )
                     except Exception as exc:
                         logger.warning("回家时间画像检测异常: %s", exc)
-                # Phase 3 主动规则引擎：评估事件，命中 STATIC 规则则触发动作
+                # Phase 3 主动规则引擎：STATIC 快路径（不等 VLM，毫秒级）
                 try:
-                    if self.rt is not None and hasattr(self.rt, "rule_engine"):
-                        hits = self.rt.rule_engine.evaluate(ev.kind, ev.room or "")
-                        for hit in hits:
-                            if hit["action"] == "alert":
-                                logger.warning("规则告警[%s]: %s", hit["rule_id"], hit.get("description", ""))
-                            elif hit["action"] == "log":
-                                logger.info("规则记录[%s]: %s", hit["rule_id"], hit.get("description", ""))
+                    from .rule_engine import get_rule_engine
+                    engine = get_rule_engine(self.store)
+                    event = {
+                        "kind": ev.kind,
+                        "room": ev.room or "",
+                        "person": getattr(ev, "person", None),
+                        "confidence": getattr(ev, "confidence", 0.8),
+                        "server_ts": ev.server_ts or "",
+                    }
+                    triggered = engine.match_event(event, rule_type="static")
+                    for rule in triggered:
+                        engine.execute_action(rule, event)
+                        if rule["action"].get("type") == "alert":
+                            logger.warning("规则告警[%s]: %s", rule["rule_id"], rule["name"])
+                        elif rule["action"].get("type") == "log":
+                            logger.info("规则记录[%s]: %s", rule["rule_id"], rule["name"])
                 except Exception as exc:
                     logger.warning("规则引擎评估异常: %s", exc)
                 # Phase 0.4 主动播报闭环：人脸/看护类事件经 doubao_tts 播报
