@@ -2768,8 +2768,6 @@ class Store:
             members = []
             for r in rows:
                 m = dict(r)
-                m.pop("face_photo", None)
-                m.pop("embedding", None)
                 m["profile"] = self._parse_json_field(m.get("profile_json"))
                 m["rooms"] = rooms_map.get(m["id"], [])
                 m["devices"] = devices_map.get(m["id"], [])

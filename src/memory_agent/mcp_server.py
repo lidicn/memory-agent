@@ -799,14 +799,6 @@ def _idem_save(cache_key: str, tool: str, text: str) -> None:
         _mcp_stats_log.debug("幂等键落库失败（忽略）: %s", exc)
 
 
-def _mcp_tool_timeout_seconds() -> int:
-    """Runtime read tool timeout (default 120s)."""
-    try:
-        return int(getattr(get_runtime().config, "mcp_tool_timeout_seconds", 120) or 120)
-    except Exception:
-        return 120
-
-
 def _mcp_response_max_bytes() -> int:
     """运行时读取响应上限（默认 64KB）。"""
     try:
@@ -908,21 +900,7 @@ async def _tracked_call_tool(server, name, arguments, context=None):
     is_err = False
     err_text = None
     try:
-        # v0.9.1: timeout guard to prevent SSE disconnect on slow queries
-        timeout_s = _mcp_tool_timeout_seconds()
-        try:
-            result = await asyncio.wait_for(
-                MCPServer.call_tool(server, name, arguments, context),
-                timeout=timeout_s,
-            )
-        except asyncio.TimeoutError:
-            is_err = True
-            err_text = f"TIMEOUT after {timeout_s}s"
-            await _record_mcp_call(name, (time.monotonic() - t0) * 1000, True, err_text)
-            return _build_tool_result(
-                f"Tool '{name}' timed out after {timeout_s}s. Narrow the time window / reduce days / paginate.",
-                is_error=True,
-            )
+        result = await MCPServer.call_tool(server, name, arguments, context)
         # v0.9 契约完善：把工具的朴素 {"ok": false} 结果升级为 isError=True + 结构化错误码，
         # 终结「ok:false 被模型当正文」。
         result = normalize_tool_result(result, name)
@@ -1329,11 +1307,17 @@ def _build_server():
 
     @mcp.tool()
     async def list_members() -> dict:
-        """列出全部家庭成员（含 rooms/devices/tags 聚合）。"""
+        """列出全部家庭成员，返回 id/name/rooms/devices/tags 轻量字段。
+        不含头像/人脸等大字段；需要详情用 get_member_persona(member_id)。"""
         rt = get_runtime()
-        members = await asyncio.to_thread(rt.store.list_members)
-        # 安全加固（审计 P1-8）：剔除 face_feature 生物特征向量，防止随工具结果流出
-        members = [rt.store.member_public_view(m) for m in members]
+        raw = await asyncio.to_thread(rt.store.list_members)
+        # MCP 层裁剪：去掉 base64 图片/人脸向量等大字段，防止响应截断
+        _SKIP = {"face_photo", "avatar_url", "embedding", "face_feature",
+                 "profile_json", "appearance_json"}
+        members = []
+        for m in raw:
+            slim = {k: v for k, v in m.items() if k not in _SKIP}
+            members.append(slim)
         return {"ok": True, "members": members, "total": len(members)}
 
     @mcp.tool()
