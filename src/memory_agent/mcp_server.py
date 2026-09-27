@@ -1317,6 +1317,14 @@ def _build_server():
         members = []
         for m in raw:
             slim = {k: v for k, v in m.items() if k not in _SKIP}
+            # tags 只留标签名+置信度，去掉 evidence_json/evidence 长文本
+            if isinstance(slim.get("tags"), list):
+                slim["tags"] = [
+                    {"label": t.get("label") or t.get("name", ""),
+                     "category": t.get("category", ""),
+                     "confidence": t.get("confidence", 0)}
+                    for t in slim["tags"] if isinstance(t, dict)
+                ]
             members.append(slim)
         return {"ok": True, "members": members, "total": len(members)}
 
