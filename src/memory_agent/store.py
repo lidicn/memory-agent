@@ -552,6 +552,14 @@ class Store:
             except Exception as _exc:
                 if "duplicate column" not in str(_exc).lower():
                     print(f"[Store] behavior_events.client 列迁移异常: {_exc}")
+            # vMA-1.2.0 场景图：结构化场景描述 JSON（不建新表，只加一列）
+            try:
+                conn.execute(
+                    "ALTER TABLE behavior_events ADD COLUMN scene_graph_json TEXT"
+                )
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] behavior_events.scene_graph_json 列迁移异常: {_exc}")
             # v0.8-4 混合检索：FTS5 关键词索引（external content + trigger 自动同步）
             # 优先 trigram（中文子串/专名友好），不支持则回退 unicode61；均不可用则纯向量
             for _tok in ("trigram", "unicode61"):
@@ -1589,8 +1597,9 @@ class Store:
                      server_ts, device_ts, day, room, camera_src,
                      persons_json, count, action, scene, confidence,
                      appearance_json, trigger, vlm_latency_ms,
-                     snapshot_path, raw_response, status, client)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     snapshot_path, raw_response, status, client,
+                     scene_graph_json)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     ts,
                     payload.get("device_ts"),
@@ -1609,6 +1618,7 @@ class Store:
                     payload.get("raw_response"),
                     payload.get("status") or "ok",
                     payload.get("client") or "",
+                    json.dumps(payload["scene_graph_json"], ensure_ascii=False) if payload.get("scene_graph_json") else None,
                 ),
             )
             conn.commit()

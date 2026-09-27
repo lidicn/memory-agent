@@ -939,6 +939,22 @@ class VisionService:
         elif confidence is not None and confidence < 0.4:
             status = "low_confidence"
 
+        # vMA-1.2.0 场景图：结构化场景描述（开关 + 采样控制）
+        scene_graph = None
+        if getattr(self.config, "scene_graph_enabled", True):
+            scene_graph = {
+                "room": room,
+                "scene_text": scene,
+                "persons": [
+                    {"name": p.get("name", ""), "action": p.get("action", ""),
+                     "via": p.get("via", ""), "member_id": p.get("member_id")}
+                    for p in persons_out
+                ],
+                "action": action,
+                "quality": quality,
+                "trigger": trigger,
+            }
+
         event_id = self.store.insert_behavior_event({
             "room": room,
             "camera_src": stream,
@@ -954,6 +970,7 @@ class VisionService:
             "raw_response": text,
             "status": status,
             "device_ts": device_ts,
+            "scene_graph_json": scene_graph,
         })
 
         # 9) 成功收尾：清退避、记调用
