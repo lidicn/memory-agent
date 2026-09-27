@@ -1833,12 +1833,33 @@ def _build_server():
         member_id: 成员归属过滤（只召回该成员的记忆；空=全部）。
         trust_min: 最低信任分过滤（默认 -1 不限制）。
         top_k: 返回条数（默认 5，最多受配置 agent_retrieve_k 约束）。
-        返回 {ok, count, memories: [{memory_id, text, member_id, similarity, trust, final_score, topic_key}]}。
+        返回 {ok, schema, count, memories: [{memory_id, text, member_id, similarity, trust, final_score, topic_key}]}。
         """
         # WO-ADM-001 R-60：query/question 兼容（butler 旧版传 query，新版传 question）
         q = question or query
         if not q:
             return {"ok": False, "error": "question/query 不能为空", "count": 0, "memories": []}
+        # DCD裁定1: fail-close——member_id 缺失时只允许 admin 审计通道
+        if not member_id:
+            _tok, _scopes, _origin = _caller_context()
+            if "admin" not in (_scopes or []):
+                return {
+                    "ok": False,
+                    "error": "member_id 缺失：普通令牌必须指定 member_id；全量查询需 admin scope",
+                    "code": 403,
+                    "schema": "ma-recall/1",
+                    "count": 0,
+                    "memories": [],
+                }
+            try:
+                rt0 = get_runtime()
+                rt0.store.log_mcp_audit(
+                    token_name=_tok, tool="retrieve_agent_memories",
+                    scope="admin", duration_ms=0, ok=True,
+                    error="AUDIT: cross-member recall", origin=_origin,
+                )
+            except Exception:
+                pass
         rt = get_runtime()
         hits = await asyncio.to_thread(
             rt.agent_memory.retrieve,
@@ -1847,7 +1868,7 @@ def _build_server():
             top_k=max(1, int(top_k)),
             member_id=member_id,
         )
-        return {"ok": True, "count": len(hits), "memories": hits}
+        return {"ok": True, "schema": "ma-recall/1", "count": len(hits), "memories": hits}
 
     @mcp.tool()
     async def agent_memory_health() -> dict:
