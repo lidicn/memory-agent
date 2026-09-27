@@ -774,6 +774,14 @@ class Store:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_candidate_rules_status ON candidate_rules(status)"
             )
+            # vMA-1.2.1 DCD裁定7: user_confirmed 红线——自动建议的规则缺确认永不进引擎
+            try:
+                conn.execute(
+                    "ALTER TABLE candidate_rules ADD COLUMN user_confirmed INTEGER NOT NULL DEFAULT 0"
+                )
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] candidate_rules.user_confirmed 列迁移异常: {_exc}")
             # P1.1 过程挖掘：行为异常（偏离已学过程模型的 case，一次性/复核用）
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS behavior_anomalies (
@@ -1894,6 +1902,25 @@ class Store:
             )
             conn.commit()
         return rid, "added"
+
+    def update_candidate_rule_status(self, rule_id: str, status: str) -> dict | None:
+        """更新候选规则状态（vMA-1.2.1）。同时更新 user_confirmed 标记。"""
+        import time as _time
+        conn = self.connect()
+        with self._lock:
+            confirmed = 1 if status == "confirmed" else 0
+            conn.execute(
+                "UPDATE candidate_rules SET status=?, user_confirmed=?, updated_at=? WHERE rule_id=?",
+                (status, confirmed, _time.strftime("%Y-%m-%dT%H:%M:%S"), rule_id)
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM candidate_rules WHERE rule_id=?", (rule_id,)
+            ).fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in conn.execute("SELECT * FROM candidate_rules LIMIT 0").description]
+            return dict(zip(cols, row))
 
     def list_candidate_rules(self, status: str | None = None, limit: int = 200) -> list[dict]:
         """列出候选序列规则（默认全部 status），解析 steps/evidence。"""

@@ -1771,6 +1771,32 @@ def _build_server():
         return await asyncio.to_thread(rt.agent_memory.feedback_memory, memory_id, useful)
 
     @mcp.tool()
+    async def list_candidate_rules(status: str = "staging") -> dict:
+        """列出候选规则建议（vMA-1.2.1）。
+
+        status: staging(待确认) | confirmed(已确认) | rejected(已拒绝)
+        返回未确认的自动规则建议，供人工审核。
+        """
+        rt = get_runtime()
+        rules = await asyncio.to_thread(rt.store.list_candidate_rules, status=status)
+        return {"ok": True, "count": len(rules), "rules": rules}
+
+    @mcp.tool()
+    async def confirm_candidate_rule(rule_id: str, confirmed: bool = True) -> dict:
+        """确认或拒绝一条候选规则（vMA-1.2.1 DCD红线）。
+
+        confirmed=true: 标记为用户确认，可被导出到引擎。
+        confirmed=false: 标记为已拒绝，不再建议。
+        未确认的规则永不进入引擎执行（DCD 裁定7红线）。
+        """
+        rt = get_runtime()
+        status = "confirmed" if confirmed else "rejected"
+        rule = await asyncio.to_thread(rt.store.update_candidate_rule_status, rule_id, status)
+        if not rule:
+            return {"ok": False, "error": f"候选规则 {rule_id} 不存在"}
+        return {"ok": True, "rule_id": rule_id, "status": status}
+
+    @mcp.tool()
     async def list_agent_memories(state: str = "live", member_id: str = "") -> dict:
         """列出 agent 记忆（WO-MA-005 隐私面收窄）。
 
