@@ -799,6 +799,14 @@ def _idem_save(cache_key: str, tool: str, text: str) -> None:
         _mcp_stats_log.debug("幂等键落库失败（忽略）: %s", exc)
 
 
+def _mcp_tool_timeout_seconds() -> int:
+    """Runtime read tool timeout (default 120s)."""
+    try:
+        return int(getattr(get_runtime().config, "mcp_tool_timeout_seconds", 120) or 120)
+    except Exception:
+        return 120
+
+
 def _mcp_response_max_bytes() -> int:
     """运行时读取响应上限（默认 64KB）。"""
     try:
@@ -900,7 +908,21 @@ async def _tracked_call_tool(server, name, arguments, context=None):
     is_err = False
     err_text = None
     try:
-        result = await MCPServer.call_tool(server, name, arguments, context)
+        # v0.9.1: timeout guard to prevent SSE disconnect on slow queries
+        timeout_s = _mcp_tool_timeout_seconds()
+        try:
+            result = await asyncio.wait_for(
+                MCPServer.call_tool(server, name, arguments, context),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            is_err = True
+            err_text = f"TIMEOUT after {timeout_s}s"
+            await _record_mcp_call(name, (time.monotonic() - t0) * 1000, True, err_text)
+            return _build_tool_result(
+                f"Tool '{name}' timed out after {timeout_s}s. Narrow the time window / reduce days / paginate.",
+                is_error=True,
+            )
         # v0.9 契约完善：把工具的朴素 {"ok": false} 结果升级为 isError=True + 结构化错误码，
         # 终结「ok:false 被模型当正文」。
         result = normalize_tool_result(result, name)
