@@ -671,8 +671,8 @@ class InsightService:
         def is_on(state: Any) -> bool:
             return is_device_on(state, allow_on)
 
-        window_start = datetime.fromisoformat(start_iso)
-        window_end = min(datetime.fromisoformat(end_iso), now_local(self.tz))
+        window_start = datetime.fromisoformat(start_iso).replace(tzinfo=None)
+        window_end = min(datetime.fromisoformat(end_iso).replace(tzinfo=None), now_local(self.tz))
 
         segments: list[dict] = []
         cur_start: datetime | None = None
@@ -775,8 +775,8 @@ class InsightService:
         def matches(v) -> bool:
             return match_pattern(v, value, pattern)
 
-        window_start = datetime.fromisoformat(start_iso)
-        window_end = min(datetime.fromisoformat(end_iso), now_local(self.tz))
+        window_start = datetime.fromisoformat(start_iso).replace(tzinfo=None)
+        window_end = min(datetime.fromisoformat(end_iso).replace(tzinfo=None), now_local(self.tz))
 
         # 窗口起点前的属性种子：沿时间 carry-forward 最近一次取值
         cur_attr = None
