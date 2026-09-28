@@ -151,6 +151,8 @@ def infer_intent(
 
     # 提取行为标签（action + scene + room）
     behavior_labels = set()
+    # vMA-1.2.1: 场景图标签（objects/relations）——第二路信号
+    scene_graph_labels = set()
     for ev in recent_events:
         action = (ev.get("action") or "").lower()
         scene = (ev.get("scene") or "").lower()
@@ -161,6 +163,20 @@ def infer_intent(
             behavior_labels.add(scene)
         if room:
             behavior_labels.add(room)
+        # 解析 scene_graph_json，提取 objects/relations
+        sg_raw = ev.get("scene_graph_json")
+        if sg_raw:
+            try:
+                import json
+                sg = json.loads(sg_raw) if isinstance(sg_raw, str) else sg_raw
+                for obj in sg.get("objects", []):
+                    if obj:
+                        scene_graph_labels.add(str(obj).lower())
+                for rel in sg.get("relations", []):
+                    if rel:
+                        scene_graph_labels.add(str(rel).lower())
+            except Exception:
+                pass
 
     # 匹配意图规则
     best_intent = None
@@ -189,9 +205,13 @@ def infer_intent(
         # 辅助触发条件（加分）
         secondary_hits = [t for t in rule.get("secondary_triggers", []) if t.lower() in behavior_labels]
 
-        # 计算分数：基础置信度 + 辅助触发加分
+        # vMA-1.2.1: 场景图触发（加分）——objects/relations 匹配
+        sg_hits = [t for t in rule.get("scene_graph_triggers", []) if t.lower() in scene_graph_labels]
+
+        # 计算分数：基础置信度 + 辅助触发加分 + 场景图加分
         score = rule["confidence"]
         score += min(0.15, len(secondary_hits) * 0.05)
+        score += min(0.1, len(sg_hits) * 0.04)
         score = min(0.95, score)
 
         if score > best_score:
