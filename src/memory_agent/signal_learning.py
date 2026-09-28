@@ -20,6 +20,74 @@ class SignalLearningService:
         self.store = store
         self.agent_memory = agent_memory
 
+    # ── vMA-1.2.1: 负样本聚类→规则建议 ───────────────────────────────────
+    def suggest_rules_from_negative_feedback(self, min_count: int = 3) -> dict:
+        """从 feedback_down ≥ 1 的记忆里聚类重复模式，自动生成候选规则建议。
+
+        红线：自动建议的规则 user_confirmed=0，永不进引擎，必须人工确认。
+
+        Args:
+            min_count: 同一模式出现多少次才建议（默认 3 次）
+
+        Returns:
+            {"ok": True, "suggestions": [...], "total_negative": int}
+        """
+        import json as _json
+        conn = self.store.connect()
+
+        # 查所有 feedback_down ≥ 1 的记忆
+        rows = conn.execute(
+            "SELECT memory_id, text, tags_json, feedback_down, topic_key "
+            "FROM agent_memories WHERE feedback_down >= 1 AND state = 'live'"
+        ).fetchall()
+
+        if not rows:
+            return {"ok": True, "suggestions": [], "total_negative": 0}
+
+        # 简单聚类：按 topic_key + tags 前缀分组
+        clusters: dict[str, list[dict]] = {}
+        for r in rows:
+            try:
+                tags = _json.loads(r["tags_json"]) if r["tags_json"] else []
+            except Exception:
+                tags = []
+            # 聚类 key：topic_key + 第一个 tag（如果有）
+            cluster_key = r["topic_key"] or (tags[0] if tags else "unknown")
+            if cluster_key not in clusters:
+                clusters[cluster_key] = []
+            clusters[cluster_key].append({
+                "memory_id": r["memory_id"],
+                "text": r["text"],
+                "tags": tags,
+                "feedback_down": r["feedback_down"],
+            })
+
+        # 筛选出现 ≥ min_count 次的模式
+        suggestions = []
+        for key, items in clusters.items():
+            total_down = sum(i["feedback_down"] for i in items)
+            if len(items) >= min_count:
+                # 生成候选规则建议
+                sample_text = items[0]["text"][:100] if items else ""
+                suggestions.append({
+                    "pattern_key": key,
+                    "occurrence_count": len(items),
+                    "total_negative_feedback": total_down,
+                    "sample_text": sample_text,
+                    "suggestion": f"检测到「{key}」模式被负反馈 {len(items)} 次（累计 {total_down} 次 down），建议检查是否需要排除或调整",
+                    "user_confirmed": 0,  # 红线：必须人工确认
+                })
+
+        # 按出现次数排序
+        suggestions.sort(key=lambda x: x["occurrence_count"], reverse=True)
+
+        return {
+            "ok": True,
+            "suggestions": suggestions,
+            "total_negative": len(rows),
+            "cluster_count": len(clusters),
+        }
+
     # ── 写入：teach_signal 硬/软分流 ───────────────────────────────────────
     def teach_signal(
         self,
