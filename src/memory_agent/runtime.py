@@ -227,7 +227,77 @@ class AppRuntime:
 
         # 记忆研究员（v0.8）：按 researcher_scheduler_time 每日低峰定期洞察
         self.researcher.start()
+
+        # 自我日记（家庭人格化实验）：每天 23:00 自动生成
+        self._self_diary_task = asyncio.create_task(self._periodic_self_diary())
         print("[Runtime] 启动完成")
+
+    async def _periodic_self_diary(self) -> None:
+        """常驻任务：每天 23:00 自动生成自我日记。"""
+        try:
+            await asyncio.sleep(10)  # 启动稍延
+            while True:
+                now = asyncio.get_event_loop().time()
+                # 算到下一个 23:00 的秒数
+                from datetime import datetime, timedelta
+                now_dt = datetime.now()
+                next_23 = now_dt.replace(hour=23, minute=0, second=0, microsecond=0)
+                if next_23 <= now_dt:
+                    next_23 += timedelta(days=1)
+                wait_sec = (next_23 - now_dt).total_seconds()
+                await asyncio.sleep(wait_sec)
+                # 生成日记
+                try:
+                    # 读昨天日记
+                    all_mem = self.store.list_agent_memories("all", "", 500, "")
+                    diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
+                    diaries.sort(key=lambda x: x.get("created_at", ""))
+                    yesterday_text = diaries[-1]["text"][:200] if diaries else "（还没有日记）"
+
+                    # 从当天 events 提取摘要
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    events = self.store.query_events("", today, "", 100)
+                    summary_lines = []
+                    for e in events[:50]:
+                        t = e.get("ts", "")[11:16]
+                        room = e.get("room", "")
+                        state = e.get("state", "")
+                        if room and state:
+                            summary_lines.append(f"{t} {room}: {state}")
+                    summary = "\n".join(summary_lines[:30])
+
+                    prompt = f"""你是这个家庭里的一个"存在"。用第一人称写今天的日记。
+要求：
+- 开头引用昨天日记的一句话（"昨天我说…"）
+- 300-500 字
+- 只写观察到的，不下结论、不做诊断
+- 用"我"视角，不用"这个家庭"
+
+昨天日记：{yesterday_text}
+
+今天的事件摘要（脱敏后）：
+{summary}
+
+请写今天的日记："""
+
+                    resp = await self.llm.chat(
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=800,
+                        temperature=0.7,
+                    )
+                    diary_text = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+                    # 写入 staging
+                    self.store.add_agent_memory(
+                        "self_diary", diary_text, "self_diary",
+                        "[]", "[]", 365, "staging", 1,
+                    )
+                    print(f"[SelfDiary] 日记已生成 ({len(diary_text)} 字)")
+                except Exception as e:
+                    print(f"[SelfDiary] 生成失败: {e}")
+                await asyncio.sleep(60)  # 防止重复触发
+        except Exception as e:
+            print(f"[SelfDiary] 任务异常: {e}")
 
     async def _periodic_livingroom_ai(self) -> None:
         """常驻任务：轻量轮询客厅盒侧 AI 事件，落 perception_events（source=edge_ai）。
