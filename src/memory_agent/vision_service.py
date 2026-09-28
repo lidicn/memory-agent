@@ -944,7 +944,8 @@ class VisionService:
         # vMA-1.2.0 场景图：结构化场景描述（开关 + 采样控制）
         scene_graph = None
         if getattr(self.config, "scene_graph_enabled", True):
-            # vMA-1.4 灰度：情绪识别收集（只观察不告警）
+            # vMA-1.2.0: 提取 VLM 返回的场景图（objects/relations）
+            vlm_scene_graph = (data or {}).get("scene_graph") or {}
             emotion = (data or {}).get("emotion") or "neutral"
             scene_graph = {
                 "room": room,
@@ -958,6 +959,9 @@ class VisionService:
                 "action": action,
                 "quality": quality,
                 "trigger": trigger,
+                # vMA-1.2.0 新增：场景图结构化输出
+                "objects": vlm_scene_graph.get("objects", []),
+                "relations": vlm_scene_graph.get("relations", []),
             }
 
         event_id = self.store.insert_behavior_event({
