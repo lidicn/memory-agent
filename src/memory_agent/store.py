@@ -2032,7 +2032,7 @@ class Store:
         """列出候选序列规则（默认全部 status），解析 steps/evidence。"""
         sql = "SELECT * FROM candidate_rules"
         args: list = []
-        if status:
+        if status and status != "all":
             sql += " WHERE status = ?"
             args.append(status)
         sql += " ORDER BY updated_at DESC LIMIT ?"

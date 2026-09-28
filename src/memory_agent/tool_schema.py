@@ -1153,9 +1153,9 @@ def register_simple_tools(mcp, runtime_getter, names=None) -> int:
             if spec.pitfall:
                 doc += f"\nPitfall: {spec.pitfall}"
 
-            async def _impl(**kwargs):
+            async def _impl(_spec=spec, **kwargs):
                 rt = runtime_getter()
-                return await dispatch(rt, spec.name, kwargs)
+                return await dispatch(rt, _spec.name, kwargs)
 
             _impl.__signature__ = sig
             _impl.__doc__ = doc

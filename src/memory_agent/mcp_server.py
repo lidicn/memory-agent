@@ -1335,10 +1335,12 @@ def _build_server():
         avatar_bg: str = "#0EA5E9",
         note: str = "",
     ) -> dict:
-        """创建家庭成员。name 为显示名（必填）；avatar_emoji 为头像（如 🦉）。"""
+        """创建家庭成员。name 为显示名（必填，不可空）；avatar_emoji 为头像（如 🦉）。"""
+        if not name or not name.strip():
+            return {"ok": False, "error": "INVALID_PARAM: name 不能为空"}
         rt = get_runtime()
         member = await asyncio.to_thread(
-            rt.store.create_member, name, avatar_emoji, avatar_bg, note
+            rt.store.create_member, name.strip(), avatar_emoji, avatar_bg, note
         )
         return {"ok": True, "member": member}
 
@@ -1346,6 +1348,9 @@ def _build_server():
     async def assign_member_room(member_id: str, rooms: list = None) -> dict:
         """设置成员关联房间（全量覆盖）。rooms 为房间名数组，如 ['主卧','书房']。"""
         rt = get_runtime()
+        member = await asyncio.to_thread(rt.store.get_member, member_id)
+        if member is None:
+            return {"ok": False, "error": f"NOT_FOUND: 成员 {member_id} 不存在"}
         await asyncio.to_thread(rt.store.set_member_rooms, member_id, rooms or [])
         return {"ok": True, "message": "关联房间已更新"}
 
@@ -1722,6 +1727,7 @@ def _build_server():
         text: str = "",
         source_refs: list = None,
         exclusion_type: str = "exclude",
+        dry_run: bool = False,
         session_id: str = "mcp",
     ) -> dict:
         """（学习策略）教系统：把『某实体在某检测维度是/不是自动化信号』的纠正持久化。
@@ -1731,7 +1737,10 @@ def _build_server():
           看电视(watching_tv)。
         - kind='soft'：走 agent 记忆（topic_key=signal_trust，参与信任闭环，用于带条件软判）；
           此时 text 必填，source_refs 须为可解析的真实引用。
+        - dry_run=true：只校验参数，不写入。
         """
+        if dry_run:
+            return {"ok": True, "dry_run": True, "message": "dry_run：参数校验通过，未写入"}
         rt = get_runtime()
         return await asyncio.to_thread(
             rt.signal_learning.teach_signal,
