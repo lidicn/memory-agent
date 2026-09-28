@@ -1874,6 +1874,51 @@ def _build_server():
         bugs = await asyncio.to_thread(rt.store.list_bug_reports, status, limit)
         return {"ok": True, "count": len(bugs), "bugs": bugs}
 
+    # ── 自我日记（家庭人格化实验）──────────────────────────────────────
+    @mcp.tool()
+    async def write_self_diary(text: str) -> dict:
+        """写一段自我日记（第一人称视角）。写入 staging，永不自动晋升。
+        text: 日记正文（第一人称，如"今天晚上客厅很安静…"）
+        """
+        rt = get_runtime()
+        mid = await asyncio.to_thread(
+            rt.store.add_agent_memory,
+            "self_diary",           # session_id
+            text,                   # text
+            "self_diary",           # topic_key
+            "[]",                   # tags_json
+            "[]",                   # source_refs_json
+            365,                    # ttl_days
+            "staging",              # state
+            1,                      # auto_promote_blocked=1（永不自动晋升）
+        )
+        return {"ok": True, "memory_id": mid, "message": "日记已写入 staging"}
+
+    @mcp.tool()
+    async def read_self_diary(days: int = 7) -> dict:
+        """读取最近 N 天的自我日记。
+        days: 回溯天数，默认 7
+        """
+        rt = get_runtime()
+        all_mem = await asyncio.to_thread(
+            rt.store.list_agent_memories, "all", "", 500, ""
+        )
+        # 过滤 self_diary
+        diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
+        # 按日期过滤
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        diaries = [d for d in diaries if d.get("created_at", "") >= cutoff]
+        diaries.sort(key=lambda x: x.get("created_at", ""))
+        return {
+            "ok": True,
+            "count": len(diaries),
+            "diaries": [
+                {"date": d.get("created_at", "")[:10], "text": d.get("text", "")}
+                for d in diaries
+            ],
+        }
+
     @mcp.tool()
     async def report_bug(
         tool_name: str = "",
@@ -1905,6 +1950,51 @@ def _build_server():
         rt = get_runtime()
         bugs = await asyncio.to_thread(rt.store.list_bug_reports, status, limit)
         return {"ok": True, "count": len(bugs), "bugs": bugs}
+
+    # ── 自我日记（家庭人格化实验）──────────────────────────────────────
+    @mcp.tool()
+    async def write_self_diary(text: str) -> dict:
+        """写一段自我日记（第一人称视角）。写入 staging，永不自动晋升。
+        text: 日记正文（第一人称，如"今天晚上客厅很安静…"）
+        """
+        rt = get_runtime()
+        mid = await asyncio.to_thread(
+            rt.store.add_agent_memory,
+            "self_diary",           # session_id
+            text,                   # text
+            "self_diary",           # topic_key
+            "[]",                   # tags_json
+            "[]",                   # source_refs_json
+            365,                    # ttl_days
+            "staging",              # state
+            1,                      # auto_promote_blocked=1（永不自动晋升）
+        )
+        return {"ok": True, "memory_id": mid, "message": "日记已写入 staging"}
+
+    @mcp.tool()
+    async def read_self_diary(days: int = 7) -> dict:
+        """读取最近 N 天的自我日记。
+        days: 回溯天数，默认 7
+        """
+        rt = get_runtime()
+        all_mem = await asyncio.to_thread(
+            rt.store.list_agent_memories, "all", "", 500, ""
+        )
+        # 过滤 self_diary
+        diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
+        # 按日期过滤
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        diaries = [d for d in diaries if d.get("created_at", "") >= cutoff]
+        diaries.sort(key=lambda x: x.get("created_at", ""))
+        return {
+            "ok": True,
+            "count": len(diaries),
+            "diaries": [
+                {"date": d.get("created_at", "")[:10], "text": d.get("text", "")}
+                for d in diaries
+            ],
+        }
 
     @mcp.tool()
     async def list_agent_memories(state: str = "live", member_id: str = "") -> dict:
