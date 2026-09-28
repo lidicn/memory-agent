@@ -1937,30 +1937,38 @@ def _build_server():
         events = await asyncio.to_thread(
             rt.store.query_events, "", today, "", 100
         )
-        # 脱敏：只取时间+房间+活动类型
+        # 脱敏：只取时间+房间+有意义的事件（过滤掉温度/湿度/电量等传感器读数）
+        skip_patterns = ["temperature", "humidity", "power", "battery", "co2", "storage", "signal", "rssi", "voltage", "current", "energy", "pressure", "illuminance", "moisture", "conductivity"]
         summary_lines = []
-        for e in events[:50]:
+        for e in events[:100]:
             t = e.get("ts", "")[11:16]
             room = e.get("room", "")
             state = e.get("state", "")
+            entity = e.get("entity_id", "")
+            # 过滤掉无关传感器
+            if any(p in entity.lower() for p in skip_patterns):
+                continue
             if room and state:
                 summary_lines.append(f"{t} {room}: {state}")
-        summary = "\n".join(summary_lines[:30])
+        summary = "\n".join(summary_lines[:40])
 
         # 3. 调 LLM 生成日记
         prompt = f"""你是这个家庭里的一个"存在"。用第一人称写今天的日记。
-要求：
-- 开头引用昨天日记的一句话（"昨天我说…"）
-- 300-500 字
-- 只写观察到的，不下结论、不做诊断
-- 用"我"视角，不用"这个家庭"
+
+严格规则：
+1. 只能写下面事件摘要里有的内容，绝对不许编造任何摘要里没有的细节
+2. 摘要里没有提到的，就说"没注意到"或"没有记录"
+3. 开头引用昨天日记的一句话（"昨天我说…"）
+4. 200-400 字
+5. 只写观察到的，不下结论、不做诊断
+6. 用"我"视角，不用"这个家庭"
 
 昨天日记：{yesterday_text}
 
-今天的事件摘要（脱敏后）：
+今天的事件摘要（脱敏后，只有这些是事实）：
 {summary}
 
-请写今天的日记："""
+请写今天的日记（只能用上面摘要里的事实）："""
 
         try:
             resp = await rt.llm.chat(
@@ -2081,30 +2089,38 @@ def _build_server():
         events = await asyncio.to_thread(
             rt.store.query_events, "", today, "", 100
         )
-        # 脱敏：只取时间+房间+活动类型
+        # 脱敏：只取时间+房间+有意义的事件（过滤掉温度/湿度/电量等传感器读数）
+        skip_patterns = ["temperature", "humidity", "power", "battery", "co2", "storage", "signal", "rssi", "voltage", "current", "energy", "pressure", "illuminance", "moisture", "conductivity"]
         summary_lines = []
-        for e in events[:50]:
+        for e in events[:100]:
             t = e.get("ts", "")[11:16]
             room = e.get("room", "")
             state = e.get("state", "")
+            entity = e.get("entity_id", "")
+            # 过滤掉无关传感器
+            if any(p in entity.lower() for p in skip_patterns):
+                continue
             if room and state:
                 summary_lines.append(f"{t} {room}: {state}")
-        summary = "\n".join(summary_lines[:30])
+        summary = "\n".join(summary_lines[:40])
 
         # 3. 调 LLM 生成日记
         prompt = f"""你是这个家庭里的一个"存在"。用第一人称写今天的日记。
-要求：
-- 开头引用昨天日记的一句话（"昨天我说…"）
-- 300-500 字
-- 只写观察到的，不下结论、不做诊断
-- 用"我"视角，不用"这个家庭"
+
+严格规则：
+1. 只能写下面事件摘要里有的内容，绝对不许编造任何摘要里没有的细节
+2. 摘要里没有提到的，就说"没注意到"或"没有记录"
+3. 开头引用昨天日记的一句话（"昨天我说…"）
+4. 200-400 字
+5. 只写观察到的，不下结论、不做诊断
+6. 用"我"视角，不用"这个家庭"
 
 昨天日记：{yesterday_text}
 
-今天的事件摘要（脱敏后）：
+今天的事件摘要（脱敏后，只有这些是事实）：
 {summary}
 
-请写今天的日记："""
+请写今天的日记（只能用上面摘要里的事实）："""
 
         try:
             resp = await rt.llm.chat(
