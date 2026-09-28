@@ -1000,6 +1000,29 @@ TOOL_SPECS: list = [
         example="record_arena_result(arena_id='study_room', task_title='...', task_description='...', flow_dsl='...', success=True, agent_id='agent-1', used_memory_tools=['get_arena_inspiration'])",
         pitfall="仅记录，不影响快照与题目库；建议每次提交后调用以沉淀数据。",
     ),
+    ToolSpec(
+        name="query_unified_events",
+        summary="vMA-1.3 统一事件查询：跨设备/视觉/感知三源的统一时间线（只读 VIEW）。",
+        description=(
+            "查询 unified_events 视图，聚合 events（设备事件）+ behavior_events（视觉行为）"
+            "+ perception_events（感知总线）三源数据。支持按 person/room/start/end/source 过滤。"
+            "用于跨模态时间线查询、跨源统计等场景。只读，不写任何数据。"
+        ),
+        group="统一查询",
+        service="store", method="query_unified_events",
+        expose=("mcp",),
+        params=[
+            _p("person", "string", "成员名过滤，如 lidicn/Emily/Kevin"),
+            _p("room", "string", "房间名过滤，如 客厅/书房/卧室"),
+            _p("start", "string", "起始时间 ISO8601，如 2026-09-28T00:00:00"),
+            _p("end", "string", "结束时间 ISO8601"),
+            _p("source", "string", "来源过滤：device/vision/perception"),
+            _p("limit", "integer", "返回条数上限，默认100，最大500", default=100),
+            _p("order", "string", "排序：desc(默认)/asc", default="desc"),
+        ],
+        example="query_unified_events(room='客厅', days=1) → 客厅最近一天的所有设备+视觉+感知事件",
+        pitfall="这是只读工具，走 read scope。source=vision 只返回 status=ok 的视觉事件，失败行已过滤。",
+    ),
 ]
 
 SPEC_BY_NAME: dict = {s.name: s for s in TOOL_SPECS}

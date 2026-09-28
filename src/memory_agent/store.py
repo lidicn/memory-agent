@@ -285,8 +285,65 @@ CREATE TABLE IF NOT EXISTS task_records (
     created_at   TEXT NOT NULL,
     UNIQUE(task_id, period_key)
 );
-"""
 
+-- vMA-1.3 多模态统一数据模型（DCD 20260929 放行，VIEW 方案）
+-- 统一只读视图：events + behavior_events + perception_events 三表 UNION ALL
+-- 字段映射：
+--   source: device(events) | vision(behavior_events) | perception(perception_events)
+--   event_type: device=entity_id:action | vision=action | perception=kind
+--   person: events.person | vision=persons_json[0].name | perception=payload_json.person
+--   payload: device=attrs_json | vision=scene/count/camera_src JSON | perception=payload_json
+CREATE VIEW IF NOT EXISTS unified_events AS
+    SELECT
+        e.ts AS server_ts,
+        'device' AS source,
+        e.person,
+        e.room,
+        e.entity_id || ':' || e.action AS event_type,
+        COALESCE(e.attrs_json, '{}') AS payload,
+        NULL AS confidence,
+        e.day AS day
+    FROM events e
+    UNION ALL
+    SELECT
+        be.server_ts,
+        'vision' AS source,
+        COALESCE(json_extract(be.persons_json, '$[0].name'), '') AS person,
+        be.room,
+        be.action,
+        json_object(
+            'scene', COALESCE(be.scene, ''),
+            'count', COALESCE(be.count, 0),
+            'camera_src', COALESCE(be.camera_src, '')
+        ) AS payload,
+        be.confidence,
+        be.day AS day
+    FROM behavior_events be
+    WHERE be.status = 'ok'
+    UNION ALL
+    SELECT
+        pe.server_ts,
+        'perception' AS source,
+        COALESCE(json_extract(pe.payload_json, '$.person'), '') AS person,
+        COALESCE(pe.room, '') AS room,
+        pe.kind AS event_type,
+        pe.payload_json AS payload,
+        pe.confidence,
+        pe.day AS day
+    FROM perception_events pe;
+
+CREATE VIEW IF NOT EXISTS unified_events_daily AS
+SELECT
+    day,
+    source,
+    room,
+    person,
+    COUNT(*) AS event_count,
+    MIN(server_ts) AS first_event,
+    MAX(server_ts) AS last_event
+FROM unified_events
+GROUP BY day, source, room, person;
+"""
 
 # ── 时间处理 ───────────────────────────────────────────────────────────────
 
@@ -3134,6 +3191,64 @@ class Store:
                     f"SELECT COUNT(*) FROM events WHERE 1=1 {where}", args
                 ).fetchone()[0]
             )
+
+
+    def query_unified_events(
+        self,
+        person: str | None = None,
+        room: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        source: str | None = None,
+        limit: int = 100,
+        order: str = "desc",
+    ) -> dict:
+        """vMA-1.3 统一事件查询（VIEW，只读）。
+
+        查询 unified_events 视图，聚合 events + behavior_events + perception_events。
+        所有参数均可选，不传返回最近事件。
+        """
+        where_parts = []
+        args: list[Any] = []
+
+        if person:
+            where_parts.append("person = ?")
+            args.append(person)
+        if room:
+            where_parts.append("room = ?")
+            args.append(room)
+        if start:
+            where_parts.append("server_ts >= ?")
+            args.append(start)
+        if end:
+            where_parts.append("server_ts <= ?")
+            args.append(end)
+        if source:
+            where_parts.append("source = ?")
+            args.append(source)
+
+        where = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        order_dir = "DESC" if str(order).lower() == "desc" else "ASC"
+        limit = max(1, min(int(limit), 500))
+
+        conn = self.connect()
+        with self._lock:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM unified_events{where}", args
+            ).fetchone()[0]
+            cur = conn.execute(
+                f"SELECT server_ts, source, person, room, event_type, payload, confidence, day "
+                f"FROM unified_events{where} ORDER BY server_ts {order_dir} LIMIT ?",
+                [*args, limit],
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+        return {
+            "ok": True,
+            "total": total,
+            "count": len(rows),
+            "rows": rows,
+        }
 
     def entity_last_seen(self, entities: list[str] | None = None) -> dict[str, str]:
         """实体 → 最后一次出现的时间戳。设备目录用（判断「最后在线」）。"""
