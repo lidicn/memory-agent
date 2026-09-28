@@ -3783,7 +3783,22 @@ class Store:
             conn.commit()
             return cur.rowcount or 0
 
-    def record_agent_feedback(self, memory_id: str, useful: bool, trust_step: float = 0.2) -> dict | None:
+    @staticmethod
+    def _sanitize_pii(text: str) -> str:
+        """vMA-1.2.1: 简单 PII 脱敏——手机号/邮箱/身份证号打码。"""
+        import re
+        if not text:
+            return text
+        # 手机号：11 位数字，中间 4 位打码
+        text = re.sub(r"(1[3-9]\d)\d{4}(\d{4})", r"****", text)
+        # 邮箱：本地名前 2 位保留，其余打码
+        text = re.sub(r"([\w.]{2})[\w.]*@", r"***@", text)
+        # 身份证：前 6 位 + 后 4 位，中间打码
+        text = re.sub(r"(\d{6})\d{8,11}(\d{4})", r"********", text)
+        return text
+
+    def record_agent_feedback(self, memory_id: str, useful: bool, trust_step: float = 0.2,
+                               comment: str = "") -> dict | None:
         conn = self.connect()
         row = conn.execute(
             "SELECT * FROM agent_memories WHERE memory_id=?", (memory_id,)
@@ -3805,6 +3820,8 @@ class Store:
             expires_at = (now + timedelta(days=ttl)).strftime("%Y-%m-%d")
         else:
             expires_at = (now + timedelta(days=max(1, ttl // 2))).strftime("%Y-%m-%d")
+        # vMA-1.2.1: 反馈评论 PII 脱敏
+        safe_comment = self._sanitize_pii(comment or "")
         with self._lock:
             conn.execute(
                 """UPDATE agent_memories SET feedback_up=?, feedback_down=?,
@@ -3812,7 +3829,8 @@ class Store:
                 (up, down, trust, expires_at, now.isoformat(timespec="seconds"), memory_id),
             )
             conn.commit()
-        return {"feedback_up": up, "feedback_down": down, "trust": trust, "expires_at": expires_at}
+        return {"feedback_up": up, "feedback_down": down, "trust": trust,
+                "expires_at": expires_at, "comment": safe_comment}
 
     def member_insight_feedback(self, member_id: str, member_name: str = "",
                                 limit: int = 50) -> dict:
