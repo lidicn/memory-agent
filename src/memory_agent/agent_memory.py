@@ -621,6 +621,7 @@ class AgentMemoryService:
                 "topic_key": m["topic_key"],
                 "fts_hit": bool(fts),
                 "final_score": round(final, 3),
+                "schema": "ma-recall/1",  # vMA-1.2.2: 召回返回加 schema 版本字段
             })
         # v0.9 时间有效性：as_of 给定时按 valid_from/valid_to 过滤（该时刻是否成立）
         if as_of:
