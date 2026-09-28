@@ -1937,19 +1937,22 @@ def _build_server():
         events = await asyncio.to_thread(
             rt.store.query_events, "", today, "", 100
         )
-        # 脱敏：只取时间+房间+有意义的事件（过滤掉温度/湿度/电量等传感器读数）
-        skip_patterns = ["temperature", "humidity", "power", "battery", "co2", "storage", "signal", "rssi", "voltage", "current", "energy", "pressure", "illuminance", "moisture", "conductivity"]
+        # 脱敏：只取时间+房间+有意义的事件（只保留门/灯/人/设备开关）
+        keep_patterns = ["binary_sensor", "switch.", "light.", "media_player", "cover.", "lock.", "person.", "device_tracker"]
+        skip_patterns = ["temperature", "humidity", "power", "battery", "co2", "storage", "signal", "rssi", "voltage", "current", "energy", "pressure", "illuminance", "moisture", "conductivity", "daily_use", "hourly_use", "no_one_duration", "time_count", "status_p_"]
         summary_lines = []
-        for e in events[:100]:
+        for e in events[:200]:
             t = e.get("ts", "")[11:16]
             room = e.get("room", "")
-            state = e.get("state", "")
             entity = e.get("entity_id", "")
+            # 只保留有意义的实体类型
+            if not any(p in entity for p in keep_patterns):
+                continue
             # 过滤掉无关传感器
             if any(p in entity.lower() for p in skip_patterns):
                 continue
-            if room and state:
-                summary_lines.append(f"{t} {room}: {state}")
+            if room and entity:
+                summary_lines.append(f"{t} {room}: {entity}")
         summary = "\n".join(summary_lines[:40])
 
         # 3. 调 LLM 生成日记
@@ -2089,19 +2092,22 @@ def _build_server():
         events = await asyncio.to_thread(
             rt.store.query_events, "", today, "", 100
         )
-        # 脱敏：只取时间+房间+有意义的事件（过滤掉温度/湿度/电量等传感器读数）
-        skip_patterns = ["temperature", "humidity", "power", "battery", "co2", "storage", "signal", "rssi", "voltage", "current", "energy", "pressure", "illuminance", "moisture", "conductivity"]
+        # 脱敏：只取时间+房间+有意义的事件（只保留门/灯/人/设备开关）
+        keep_patterns = ["binary_sensor", "switch.", "light.", "media_player", "cover.", "lock.", "person.", "device_tracker"]
+        skip_patterns = ["temperature", "humidity", "power", "battery", "co2", "storage", "signal", "rssi", "voltage", "current", "energy", "pressure", "illuminance", "moisture", "conductivity", "daily_use", "hourly_use", "no_one_duration", "time_count", "status_p_"]
         summary_lines = []
-        for e in events[:100]:
+        for e in events[:200]:
             t = e.get("ts", "")[11:16]
             room = e.get("room", "")
-            state = e.get("state", "")
             entity = e.get("entity_id", "")
+            # 只保留有意义的实体类型
+            if not any(p in entity for p in keep_patterns):
+                continue
             # 过滤掉无关传感器
             if any(p in entity.lower() for p in skip_patterns):
                 continue
-            if room and state:
-                summary_lines.append(f"{t} {room}: {state}")
+            if room and entity:
+                summary_lines.append(f"{t} {room}: {entity}")
         summary = "\n".join(summary_lines[:40])
 
         # 3. 调 LLM 生成日记
