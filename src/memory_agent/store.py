@@ -1916,6 +1916,14 @@ class Store:
                               source: str = "inference",
                               evidence: list | None = None) -> tuple[str, str]:
         """按 name 去重写入候选规则；已存在则刷新。返回 (rule_id, action)。"""
+        # 质量闸门：自环过滤（相邻两步同一 entity_id）
+        step_entities = [s.get("entity_id", "") for s in (steps or []) if isinstance(s, dict)]
+        for i in range(len(step_entities) - 1):
+            if step_entities[i] and step_entities[i] == step_entities[i + 1]:
+                return "", "rejected_self_loop"
+        # 质量闸门：置信度下限 0.5
+        if float(confidence) < 0.5:
+            return "", "rejected_low_confidence"
         steps_json = json.dumps(steps or [], ensure_ascii=False)
         now = now_local(self.tz_offset_hours).isoformat(sep="T")
         conn = self.connect()
@@ -2035,6 +2043,7 @@ class Store:
         if status and status != "all":
             sql += " WHERE status = ?"
             args.append(status)
+        # TTL：staging 超过 14 天自动标 rejected
         sql += " ORDER BY updated_at DESC LIMIT ?"
         args.append(int(limit))
         conn = self.connect()

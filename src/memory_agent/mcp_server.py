@@ -1073,19 +1073,23 @@ def _build_server():
         定位方式二选一：传 entity_id（可逗号分隔多个），或用 query/room/category 语义定位。
         """
         rt = get_runtime()
-        return await asyncio.to_thread(
-            rt.insights.device_usage,
-            entity_id,
-            room,
-            category,
-            query,
-            days,
-            start,
-            end,
-            on_states,
-            debounce_seconds,
-            include_timeline,
-        )
+        try:
+            return await asyncio.to_thread(
+                rt.insights.device_usage,
+                entity_id,
+                room,
+                category,
+                query,
+                days,
+                start,
+                end,
+                on_states,
+                debounce_seconds,
+                include_timeline,
+            )
+        except Exception as e:
+            return {"ok": False, "error": {"code": "INTERNAL", "message": str(e),
+                    "hint": "试试用 query_device_usage 或 query_events"}}
 
     @mcp.tool()
     async def query_device_usage(
