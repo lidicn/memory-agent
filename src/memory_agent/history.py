@@ -205,7 +205,13 @@ class HistoryManager:
         try:
             ef = self._embedding_function()
             vec = ef(["健康检查探针：书房 空调 开启"])
-            dim = len(vec[0]) if vec and isinstance(vec[0], list) else 0
+            # vec 可能是 list 或 numpy ndarray
+            if vec is None or len(vec) == 0:
+                dim = 0
+            else:
+                first = vec[0]
+                # numpy ndarray 或 list 都可以取 len
+                dim = len(first) if first is not None else 0
             return {"configured": True, "base_url": base, "model": model, "dimension": dim}
         except Exception as exc:
             return {
