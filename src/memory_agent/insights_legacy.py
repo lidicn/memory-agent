@@ -2906,33 +2906,33 @@ class InsightService:
     _WATER_PURIFIER_ENTITY = "event.chunmi_cn_334432105_600f2_water_out_finish_e_7_1"
 
     def water_purifier_usage(self, start, end) -> dict:
-        """[FROZEN-LEGACY] 净水器每日饮水统计（结构化计算，供 ask_memory 的净水器分支调用）。
+        """净水器每日饮水统计。从本地 SQLite 查事件，解析出水数据属性。
 
-        解析净水器 event 实体的 out_data 属性（格式 start_ts-end_ts-volume_mL-tds_in,tds_out），
-        按日聚合饮水量与 TDS 变化，返回总量与每日明细。
+        出水数据格式：start_ts-end_ts-volume×10mL-tds_in,tds_out
+        （volume 是 ×10mL 计数，需 ×10 得 mL）。
         """
         entity = self._WATER_PURIFIER_ENTITY
         try:
             rt = self._get_rt()
-            if rt is None or getattr(rt, "ha", None) is None:
-                return {"ok": False, "error": "HA 客户端不可用"}
-            history_dict = rt.ha.get_history([entity], start)
-            records = history_dict.get(entity, []) if isinstance(history_dict, dict) else []
+            if rt is None:
+                return {"ok": False, "error": "runtime 不可用"}
+            # 从本地 SQLite 查，不依赖 HA get_history
+            from .insights import _parse_attrs
+            start_iso = start.isoformat() if hasattr(start, "isoformat") else str(start)
+            end_iso = end.isoformat() if hasattr(end, "isoformat") else str(end)
+            rows = rt.store.query_events(start_iso, end_iso, entities=[entity], limit=5000, order="asc")
+            records = [{"attributes": _parse_attrs(r.get("attrs_json")),
+                        "last_changed": r.get("ts", "")} for r in rows]
             if not records:
                 return {"ok": True, "entity": entity, "total_volume_ml": 0,
                         "total_count": 0, "days": [],
                         "no_records": True,
-                        "skipped_reason": "HA 历史中该实体在窗口内无任何记录"}
+                        "skipped_reason": "本地历史中该实体在窗口内无任何记录"}
             daily: dict = {}
             total_volume = 0
             total_count = 0
             skipped_unparsable = 0
             for record in records:
-                # v0.7 修复（双重 bug）：
-                # 1) 该 event 实体的 state 是**时间戳**（如 2026-09-09T07:17:46+00:00），
-                #    原先 `state != "on"` 会把所有记录全部跳过；
-                # 2) 属性名实际是中文「出水数据」，原先只取英文 out_data 取不到值。
-                # 改为：只要拿到出水数据就处理，并兼容两种键名。
                 attrs = record.get("attributes", {}) or {}
                 out_data = attrs.get("out_data") or attrs.get("出水数据") or ""
                 if not out_data:
@@ -2943,16 +2943,14 @@ class InsightService:
                     skipped_unparsable += 1
                     continue
                 try:
-                    volume_ml = int(parts[2]) if parts[2] else 0
+                    # volume 是 ×10mL 计数，×10 得 mL
+                    volume_ml = (int(parts[2]) if parts[2] else 0) * 10
                     tds_parts = parts[3].split(",") if parts[3] else []
                     tds_in = int(tds_parts[0]) if len(tds_parts) > 0 and tds_parts[0] else 0
                     tds_out = int(tds_parts[1]) if len(tds_parts) > 1 and tds_parts[1] else 0
                     ts_raw = record.get("last_changed") or record.get("last_updated") or ""
                     ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
                 except (ValueError, KeyError, IndexError):
-                    continue
-                # get_history 可能只按 start 截断，这里再按窗口上界过滤
-                if end and str(ts.isoformat()) > str(end):
                     continue
                 date_key = ts.strftime("%Y-%m-%d")
                 stats = daily.setdefault(date_key, {
