@@ -283,7 +283,8 @@ class VisionService:
                 '请只输出如下 JSON，不要输出其他内容：\n'
                 '{"persons":[{"identity":"<上列名字或\'未识别\'>","action":"<10-20字动作描述>",'
                 '"posture":"坐/站/躺/走","interaction":"<与谁互动或\'无\'>","confidence":0.0-1.0}],'
-                '"scene":"<一句话场景概括>","emotion":"<整体情绪：happy|calm|tired|frustrated|anxious|neutral>","snapshot_quality":"good|dim|occluded"}\n'
+                '"scene":"<一句话场景概括>","emotion":"<整体情绪：happy|calm|tired|frustrated|anxious|neutral>","snapshot_quality":"good|dim|occluded",'
+                '"scene_graph":{"objects":["<画面里的主要物体>"],"relations":["<物体之间的空间关系>"]}}\n'
                 "注意：不要猜测未列出的人的身份；画面模糊时 confidence 调低。情绪仅作观察，不做判断。"
             )
         members = self.store.list_members()
@@ -321,7 +322,8 @@ class VisionService:
             '"clothing":"<上衣/下装/配饰>","hair":"<发型>",'
             '"action":"<动作>","posture":"坐/站/躺/走","confidence":0.0-1.0,'
             '"identity":"<匹配到的成员名或\'未识别\'>","match_confidence":0.0-1.0}],'
-            '"scene":"<一句话>","emotion":"<整体情绪：happy|calm|tired|frustrated|anxious|neutral>"}\n'
+            '"scene":"<一句话>","emotion":"<整体情绪：happy|calm|tired|frustrated|anxious|neutral>",'
+            '"scene_graph":{"objects":["<画面里的主要物体>"],"relations":["<物体之间的空间关系>"]}}\n'
             "identity 仅在外观与某成员档案高度吻合时填写其名字，否则填'未识别'。情绪仅作观察，不做判断。"
         )
 
