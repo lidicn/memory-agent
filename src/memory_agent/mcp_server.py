@@ -1903,9 +1903,7 @@ def _build_server():
         all_mem = await asyncio.to_thread(
             rt.store.list_agent_memories, "all", "", 500, ""
         )
-        # 过滤 self_diary
         diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
-        # 按日期过滤
         from datetime import datetime, timedelta
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         diaries = [d for d in diaries if d.get("created_at", "") >= cutoff]
@@ -1918,6 +1916,75 @@ def _build_server():
                 for d in diaries
             ],
         }
+
+    @mcp.tool()
+    async def generate_self_diary() -> dict:
+        """自动生成今天的自我日记（第一人称视角）。
+        从当天事件提取脱敏摘要，调 LLM 生成日记，写入 staging。
+        """
+        rt = get_runtime()
+        # 1. 读昨天日记
+        all_mem = await asyncio.to_thread(
+            rt.store.list_agent_memories, "all", "", 500, ""
+        )
+        diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
+        diaries.sort(key=lambda x: x.get("created_at", ""))
+        yesterday_text = diaries[-1]["text"][:200] if diaries else "（还没有日记）"
+
+        # 2. 从当天 events 提取脱敏摘要
+        from datetime import datetime, timedelta
+        today = datetime.now().strftime("%Y-%m-%d")
+        events = await asyncio.to_thread(
+            rt.store.query_events, "", today, "", 100
+        )
+        # 脱敏：只取时间+房间+活动类型
+        summary_lines = []
+        for e in events[:50]:
+            t = e.get("ts", "")[11:16]
+            room = e.get("room", "")
+            state = e.get("state", "")
+            if room and state:
+                summary_lines.append(f"{t} {room}: {state}")
+        summary = "\n".join(summary_lines[:30])
+
+        # 3. 调 LLM 生成日记
+        prompt = f"""你是这个家庭里的一个"存在"。用第一人称写今天的日记。
+要求：
+- 开头引用昨天日记的一句话（"昨天我说…"）
+- 300-500 字
+- 只写观察到的，不下结论、不做诊断
+- 用"我"视角，不用"这个家庭"
+
+昨天日记：{yesterday_text}
+
+今天的事件摘要（脱敏后）：
+{summary}
+
+请写今天的日记："""
+
+        try:
+            resp = await rt.llm.chat(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=800,
+                temperature=0.7,
+            )
+            diary_text = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+        except Exception as e:
+            return {"ok": False, "error": f"LLM 调用失败: {e}"}
+
+        # 4. 写入 staging
+        mid = await asyncio.to_thread(
+            rt.store.add_agent_memory,
+            "self_diary",
+            diary_text,
+            "self_diary",
+            "[]",
+            "[]",
+            365,
+            "staging",
+            1,
+        )
+        return {"ok": True, "memory_id": mid, "diary": diary_text[:200]}
 
     @mcp.tool()
     async def report_bug(
@@ -1980,9 +2047,7 @@ def _build_server():
         all_mem = await asyncio.to_thread(
             rt.store.list_agent_memories, "all", "", 500, ""
         )
-        # 过滤 self_diary
         diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
-        # 按日期过滤
         from datetime import datetime, timedelta
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         diaries = [d for d in diaries if d.get("created_at", "") >= cutoff]
@@ -1995,6 +2060,75 @@ def _build_server():
                 for d in diaries
             ],
         }
+
+    @mcp.tool()
+    async def generate_self_diary() -> dict:
+        """自动生成今天的自我日记（第一人称视角）。
+        从当天事件提取脱敏摘要，调 LLM 生成日记，写入 staging。
+        """
+        rt = get_runtime()
+        # 1. 读昨天日记
+        all_mem = await asyncio.to_thread(
+            rt.store.list_agent_memories, "all", "", 500, ""
+        )
+        diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
+        diaries.sort(key=lambda x: x.get("created_at", ""))
+        yesterday_text = diaries[-1]["text"][:200] if diaries else "（还没有日记）"
+
+        # 2. 从当天 events 提取脱敏摘要
+        from datetime import datetime, timedelta
+        today = datetime.now().strftime("%Y-%m-%d")
+        events = await asyncio.to_thread(
+            rt.store.query_events, "", today, "", 100
+        )
+        # 脱敏：只取时间+房间+活动类型
+        summary_lines = []
+        for e in events[:50]:
+            t = e.get("ts", "")[11:16]
+            room = e.get("room", "")
+            state = e.get("state", "")
+            if room and state:
+                summary_lines.append(f"{t} {room}: {state}")
+        summary = "\n".join(summary_lines[:30])
+
+        # 3. 调 LLM 生成日记
+        prompt = f"""你是这个家庭里的一个"存在"。用第一人称写今天的日记。
+要求：
+- 开头引用昨天日记的一句话（"昨天我说…"）
+- 300-500 字
+- 只写观察到的，不下结论、不做诊断
+- 用"我"视角，不用"这个家庭"
+
+昨天日记：{yesterday_text}
+
+今天的事件摘要（脱敏后）：
+{summary}
+
+请写今天的日记："""
+
+        try:
+            resp = await rt.llm.chat(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=800,
+                temperature=0.7,
+            )
+            diary_text = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+        except Exception as e:
+            return {"ok": False, "error": f"LLM 调用失败: {e}"}
+
+        # 4. 写入 staging
+        mid = await asyncio.to_thread(
+            rt.store.add_agent_memory,
+            "self_diary",
+            diary_text,
+            "self_diary",
+            "[]",
+            "[]",
+            365,
+            "staging",
+            1,
+        )
+        return {"ok": True, "memory_id": mid, "diary": diary_text[:200]}
 
     @mcp.tool()
     async def list_agent_memories(state: str = "live", member_id: str = "") -> dict:
