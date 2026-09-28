@@ -74,6 +74,7 @@ REGISTERED_TOOLS = frozenset({
     "query_behavior_events",
     "query_device_usage",
     "query_events",
+    "query_unified_events",
     "retrieve_agent_memories",
     "route_question",
     "run_analysis_template",
