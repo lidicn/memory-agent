@@ -1968,7 +1968,7 @@ def _build_server():
                 max_tokens=800,
                 temperature=0.7,
             )
-            diary_text = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+            diary_text = resp.get("content", "")
         except Exception as e:
             return {"ok": False, "error": f"LLM 调用失败: {e}"}
 
@@ -2112,7 +2112,7 @@ def _build_server():
                 max_tokens=800,
                 temperature=0.7,
             )
-            diary_text = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+            diary_text = resp.get("content", "")
         except Exception as e:
             return {"ok": False, "error": f"LLM 调用失败: {e}"}
 
