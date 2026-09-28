@@ -84,12 +84,14 @@ REGISTERED_TOOLS = frozenset({
 WRITE_TOOLS = frozenset({
     # 成员与档案
     "create_member",
+    "delete_member",
     "assign_member_room",
     "assign_member_device",
     "confirm_member_tag",
     # 活动规则 / 信号学习
     "define_activity",
     "teach_signal",
+    "revoke_signal_rule",
     # P1.1 过程挖掘：刷新行为异常（落库）+ 人工复核
     "refresh_behavior_anomalies",
     "review_behavior_anomaly",

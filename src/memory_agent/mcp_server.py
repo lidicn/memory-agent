@@ -1355,6 +1355,16 @@ def _build_server():
         return {"ok": True, "message": "关联房间已更新"}
 
     @mcp.tool()
+    async def delete_member(member_id: str) -> dict:
+        """删除家庭成员（不可恢复）。member_id 为成员 UUID。"""
+        rt = get_runtime()
+        member = await asyncio.to_thread(rt.store.get_member, member_id)
+        if member is None:
+            return {"ok": False, "error": f"NOT_FOUND: 成员 {member_id} 不存在"}
+        await asyncio.to_thread(rt.store.delete_member, member_id)
+        return {"ok": True, "message": f"成员 {member.get('name', member_id)} 已删除"}
+
+    @mcp.tool()
     async def assign_member_device(member_id: str, entity_ids: list = None) -> dict:
         """设置成员专属设备（全量覆盖）。entity_ids 为 entity_id 数组。"""
         rt = get_runtime()
@@ -1747,6 +1757,15 @@ def _build_server():
             entity_id, scope, kind, reason, text, (source_refs or []),
             session_id, exclusion_type,
         )
+
+    @mcp.tool()
+    async def revoke_signal_rule(exclusion_id: str) -> dict:
+        """撤销信号硬排除（将其标记为 revoked）。exclusion_id 来自 teach_signal 的返回值。"""
+        rt = get_runtime()
+        ok = await asyncio.to_thread(rt.store.revoke_signal_exclusion, exclusion_id)
+        if not ok:
+            return {"ok": False, "error": f"NOT_FOUND: 排除规则 {exclusion_id} 不存在"}
+        return {"ok": True, "message": f"排除规则 {exclusion_id} 已撤销"}
 
     @mcp.tool()
     async def list_signal_rules(

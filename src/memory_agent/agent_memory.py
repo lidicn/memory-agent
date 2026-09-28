@@ -389,7 +389,11 @@ class AgentMemoryService:
         min_days = int(getattr(self.config, "agent_promote_min_days", 2))
         if len(days) >= min_days:
             return True, f"cross_day_observations={len(days)}"
-        return False, f"(a) 需提供高置信佐证 insight_id；(b) 或跨 ≥{min_days} 天观测"
+        # (c) researcher 自动分析产出的记忆，source_refs 含 insight:researcher:，
+        #     本身就是 LLM 多轮分析的结论，直接视为已佐证。
+        if any(r.startswith("insight:researcher:") for r in src_refs):
+            return True, "researcher_generated"
+        return False, f"(a) 需提供高置信佐证 insight_id；(b) 或跨 ≥{min_days} 天观测；(c) researcher 产出"
 
     def promote_memory(
         self,
