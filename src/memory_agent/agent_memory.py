@@ -541,9 +541,11 @@ class AgentMemoryService:
             # v0.5：按来源过滤（如只召回本服务原生记忆，或只召回管家生态记忆以隔离低置信摘要）
             if source:
                 where_conditions.append({"source": source})
-            # WO-ADM-001 R-60：按成员归属过滤（butler 传 member_id 时只召回该成员的记忆）
+            # vMA-1.2.2: member_id fail-closed —— 空 member_id 只召回公共记忆，不返回任何特定成员的记忆
             if member_id:
                 where_conditions.append({"member_id": member_id})
+            else:
+                where_conditions.append({"member_id": ""})
             where = {"$and": where_conditions} if len(where_conditions) > 1 else where_conditions[0]
             try:
                 res = col.query(query_texts=[question], where=where, n_results=k)
@@ -581,8 +583,13 @@ class AgentMemoryService:
             if trust_min is not None and float(r.get("trust", 0.0)) < trust_min:
                 continue
             # WO-ADM-001 R-60：FTS 路按成员归属过滤（SQL 层不支持，结果层过滤）
-            if member_id and (r.get("member_id") or "") != member_id:
-                continue
+            # vMA-1.2.2: member_id fail-closed —— 空 member_id 只保留公共记忆
+            if member_id:
+                if (r.get("member_id") or "") != member_id:
+                    continue
+            else:
+                if (r.get("member_id") or "") != "":
+                    continue
             if mid in merged:
                 merged[mid]["fts"] = 1.0
             else:
