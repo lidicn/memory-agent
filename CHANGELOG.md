@@ -3,6 +3,19 @@
 版本号遵循语义化（`主.次.修订`），对外里程碑以**主版本号**体现。标签规范：里程碑打
 `v<主>.<次>.<修订>`（如 `v1.0.0`）；日常修复走修订号，无需新建 tag。
 
+## [1.1.1] - 2026-09-29
+
+### 工程卫生（DCD 裁定 6）
+- **git 收口**：52 个未推送提交已推送到 origin/main；36 个 tmp_* 临时脚本清理（2 个有价值的迁入 `scripts/`）。
+- **mem0 正式收口**：mem0 探索阶段已评估完毕，结论为**放弃**——memory-agent 自有的 SQLite + FTS5 + 嵌入向量方案已覆盖需求，mem0 不引入。mem0 相关容器（mem0-postgres / mem0-redis）保留但不接入。
+- **MCP token 轮换**：旧 mcp_auth_token 已在 QA-MA-003 报告中泄露，已轮换为新 token；历史文档中的明文 token 已脱敏。
+- **MQTT 越权修正**：巡检异常推送主题从 `butler/trigger/gu_anheng_alert` 改为 `ma/insights/security_alert`（各仓只推自己域名）。
+- **DB 启动自检**：新增 `check_and_recover()` 启动时跑 `PRAGMA integrity_check`，损坏则自动从最近 .bak 恢复。
+
+### 端口现状
+- chroma：无主机端口绑定（仅容器内网）。
+- MA：`192.168.2.200:8086`（绑 LAN IP，非 0.0.0.0），MCP token 鉴权。
+
 ## [1.0.0] - 2026-09-16
 
 ### 对外与闭环（v1.0 里程碑）
