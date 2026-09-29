@@ -522,6 +522,16 @@ class Store:
         with self._lock:
             yield self.connect()
 
+    def db_query(self, sql: str, params: tuple = ()) -> list:
+        """Raw SQL query (read-only) for new insights framework compatibility.
+
+        Returns rows as list of dicts. Used by insights.StoreRepository.
+        """
+        with self._db() as conn:
+            cur = conn.execute(sql, params)
+            cols = [d[0] for d in cur.description] if cur.description else []
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+
     def check_and_recover(self) -> dict:
         """启动时自检数据库完整性；损坏则从最近备份自动恢复。"""
         import glob

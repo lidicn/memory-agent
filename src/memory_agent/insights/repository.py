@@ -1,393 +1,425 @@
-﻿"""数据访问层：SQL 查询封装 + 缓存 + 降级。
+"""Insights 框架 · 数据访问层（StoreRepository）
 
-- ``StoreRepository``：对接现有项目 Store 类（真实数据库）；
-- ``MemoryRepository``：内存实现，用于单测与数据库故障时的降级；
-- 所有查询都返回 (records, total)，由上层组装分页信封。
+严格对齐生产库真实 schema（docs/insights_schema_contract.py）：
+
+events(id, ts, day, room, entity_id, domain, action, person,
+       old_state, new_state, attrs_json)
+behavior_events(server_ts, device_ts, day, room, camera_src, persons_json, count,
+                action, scene, confidence, appearance_json, trigger,
+                vlm_latency_ms, snapshot_path, raw_response, status)
+perception_events(event_id, server_ts, day, source, kind, room, entity_id,
+                  confidence, payload_json, raw_event_json)
+
+必须遵守的生产事实：
+1. 不存在 entities / entity_catalog 表 —— 实体清单只能来自 events 表聚合；
+2. events 没有 state / attributes 列 —— 只能用 new_state / attrs_json；
+3. ts / server_ts 是 ISO8601 字符串，day 是 "YYYY-MM-DD"，比较走字符串序；
+4. 全部 SQL 经 self.store.db_query(sql, params)（qmark 占位符）执行，不碰 conn/cursor。
+
+失败语义：除 health() 外一律 fail-closed（异常上抛），由 service 层决定如何兜底。
 """
-
 from __future__ import annotations
 
 import json
 import logging
-import threading
-import time
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Sequence, Tuple
 
-from .models import EntityInfo, EventRecord, InsightConfig, fmt_ts
-from .parser.entity import category_of_domain, domain_of
-from .parser.timeframe import as_ts, parse_time
+from .models import EventRecord
 
-LOG = logging.getLogger(__name__)
+__all__ = ["StoreRepository"]
 
-__all__ = [
-    "BaseRepository", "MemoryRepository", "StoreRepository", "TTLCache",
-    "build_repository", "SQL_EVENTS", "SQL_EVENTS_COUNT", "SQL_ENTITIES",
-    "SQL_LAST_SEEN",
-]
+_LOG = logging.getLogger("insights.repository")
 
-# --------------------------------------------------------------------------
-# SQL（假设表结构：events(ts, entity_id, state, attributes)，
-#       实体元信息可选表 entities(entity_id, friendly_name, room, ...)）
-# 行解析是宽容的：列名/时间列/attributes 列都做了别名兼容。
-# --------------------------------------------------------------------------
-SQL_EVENTS = (
-    "SELECT entity_id, state, attributes, ts FROM events "
-    "WHERE ts >= ? AND ts <= ? {entity_filter} ORDER BY ts ASC LIMIT ? OFFSET ?"
-)
-SQL_EVENTS_COUNT = (
-    "SELECT COUNT(*) AS cnt FROM events "
-    "WHERE ts >= ? AND ts <= ? {entity_filter}"
-)
-SQL_ENTITIES = (
-    "SELECT entity_id, friendly_name, room, domain, category, unit, enabled "
-    "FROM entities"
-)
-SQL_RECENT = (
-    "SELECT entity_id, state, attributes, ts FROM events ORDER BY ts DESC LIMIT ?"
-)
-SQL_LAST_SEEN = "SELECT entity_id, MAX(ts) AS ts FROM events GROUP BY entity_id"
-
-_ROW_ALIASES: Dict[str, Tuple[str, ...]] = {
-    "ts": ("ts", "timestamp", "time", "created_at", "occurred_at", "when", "last_seen"),
-    "entity_id": ("entity_id", "entity", "entityId", "object_id"),
-    "state": ("state", "value", "new_state"),
-    "attributes": ("attributes", "attrs", "data", "extra"),
-    "friendly_name": ("friendly_name", "name", "title"),
-    "room": ("room", "area", "area_name", "room_name"),
-    "unit": ("unit", "unit_of_measurement"),
-    "enabled": ("enabled", "is_enabled"),
-}
+#: events 表真实列（顺序与 SELECT 一致）
+EVENT_COLUMNS = ("id", "ts", "day", "room", "entity_id", "domain",
+                 "action", "person", "old_state", "new_state", "attrs_json")
 
 
-class TTLCache:
-    """简单 TTL 缓存（时间过期 + 手动失效）。"""
-
-    def __init__(self, ttl: float = 300.0) -> None:
-        self.ttl = float(ttl)
-        self._data: Dict[str, Tuple[float, Any]] = {}
-        self._lock = threading.Lock()
-
-    def get(self, key: str) -> Optional[Any]:
-        with self._lock:
-            hit = self._data.get(key)
-            if not hit:
-                return None
-            expire_at, value = hit
-            if time.time() >= expire_at:
-                self._data.pop(key, None)
-                return None
-            return value
-
-    def set(self, key: str, value: Any, ttl: Optional[float] = None) -> Any:
-        with self._lock:
-            self._data[key] = (time.time() + (self.ttl if ttl is None else ttl), value)
-        return value
-
-    def invalidate(self, prefix: str = "") -> None:
-        """数据变更时调用：清空全部或指定前缀的缓存。"""
-        with self._lock:
-            if not prefix:
-                self._data.clear()
-                return
-            for key in [k for k in self._data if k.startswith(prefix)]:
-                self._data.pop(key, None)
-
-    def __len__(self) -> int:
-        return len(self._data)
+# --------------------------------------------------------------------- 工具
+_TZ = timezone(timedelta(hours=8))  # 生产数据统一 UTC+8（深圳本地时间）
 
 
-def _pick(row: Mapping[str, Any], kind: str, default: Any = None) -> Any:
-    for key in _ROW_ALIASES.get(kind, (kind,)):
-        if key in row and row[key] is not None:
-            return row[key]
-    return default
+def _to_epoch(value: Any) -> float:
+    """ISO8601 字符串 -> epoch float（生产数据为 UTC+8 naive 字符串）。
 
-
-def _as_attrs(raw: Any) -> Dict[str, Any]:
-    if isinstance(raw, Mapping):
-        return dict(raw)
-    if isinstance(raw, (bytes, bytearray)):
-        raw = raw.decode("utf-8", "ignore")
-    if isinstance(raw, str) and raw.strip():
+    容器跑在 UTC，naive ISO 会被当 UTC 解析导致偏 8 小时。
+    这里显式标 UTC+8 再转 epoch。解析失败 fail-open 返回 0.0。
+    """
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_TZ)
+        return dt.timestamp()
+    except (TypeError, ValueError):
         try:
-            loaded = json.loads(raw)
-            return loaded if isinstance(loaded, Mapping) else {}
-        except ValueError:
-            return {}
-    return {}
+            return float(text)
+        except (TypeError, ValueError):
+            _LOG.warning("无法解析时间戳: %r", value)
+            return 0.0
 
 
-class BaseRepository(ABC):
-    """仓储接口：所有上层只依赖这层，方便 mock 测试。"""
-
-    def __init__(self, config: Optional[InsightConfig] = None) -> None:
-        self.config = config or InsightConfig()
-
-    @abstractmethod
-    def list_entities(self) -> List[EntityInfo]:
-        """实体目录。"""
-
-    @abstractmethod
-    def fetch_events(self, start_ts: float, end_ts: float,
-                     entity_ids: Optional[Sequence[str]] = None,
-                     limit: Optional[int] = None,
-                     offset: int = 0) -> List[EventRecord]:
-        """按时间范围取事件（升序，已裁剪）。"""
-
-    @abstractmethod
-    def count_events(self, start_ts: float, end_ts: float,
-                     entity_ids: Optional[Sequence[str]] = None) -> int:
-        """统计总数（透明性：total / offset / has_more）。"""
-
-    @abstractmethod
-    def last_seen(self, entity_ids: Optional[Sequence[str]] = None) -> Dict[str, float]:
-        """每个实体最后一次出现的时间戳。"""
-
-    def query_events(self, start_ts: float, end_ts: float,
-                     entity_ids: Optional[Sequence[str]] = None,
-                     limit: int = 100, offset: int = 0
-                     ) -> Tuple[List[EventRecord], int]:
-        total = self.count_events(start_ts, end_ts, entity_ids)
-        rows = self.fetch_events(start_ts, end_ts, entity_ids,
-                                 limit=limit, offset=offset)
-        return rows, total
-
-    def invalidate(self) -> None:
-        """数据变更后调用（缓存失效策略：时间过期 + 数据变更）。"""
-
-    def health(self) -> bool:
-        return True
+def _to_iso(value: float) -> str:
+    """epoch float -> ISO8601 字符串（秒级，UTC+8，与生产数据对齐）。"""
+    return datetime.fromtimestamp(float(value), tz=_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
-class MemoryRepository(BaseRepository):
-    """内存仓储：单测与降级模式使用。"""
-
-    def __init__(self, records: Optional[Iterable[EventRecord]] = None,
-                 entities: Optional[Iterable[EntityInfo]] = None,
-                 config: Optional[InsightConfig] = None) -> None:
-        super().__init__(config)
-        self.records: List[EventRecord] = sorted(
-            list(records or []), key=lambda r: (r.ts, r.entity_id))
-        self.entities: List[EntityInfo] = list(entities or [])
-
-    def add_events(self, records: Iterable[EventRecord]) -> None:
-        self.records.extend(records)
-        self.records.sort(key=lambda r: (r.ts, r.entity_id))
-        self.invalidate()
-
-    def list_entities(self) -> List[EntityInfo]:
-        return list(self.entities)
-
-    def _filter(self, start_ts: float, end_ts: float,
-                entity_ids: Optional[Sequence[str]]) -> List[EventRecord]:
-        wanted = set(entity_ids) if entity_ids is not None else None
-        return [r for r in self.records
-                if start_ts <= r.ts <= r.end_ts if True] if False else [
-            r for r in self.records
-            if start_ts <= r.ts <= r.end_ts
-            and (wanted is None or r.entity_id in wanted)
-        ]
-
-    def fetch_events(self, start_ts: float, end_ts: float,
-                     entity_ids: Optional[Sequence[str]] = None,
-                     limit: Optional[int] = None,
-                     offset: int = 0) -> List[EventRecord]:
-        rows = self._filter(start_ts, end_ts, entity_ids)
-        if limit is None:
-            return rows[offset:]
-        return rows[offset:offset + max(0, int(limit))]
-
-    def count_events(self, start_ts: float, end_ts: float,
-                     entity_ids: Optional[Sequence[str]] = None) -> int:
-        return len(self._filter(start_ts, end_ts, entity_ids))
-
-    def last_seen(self, entity_ids: Optional[Sequence[str]] = None) -> Dict[str, float]:
-        wanted = set(entity_ids) if entity_ids is not None else None
-        out: Dict[str, float] = {}
-        for row in self.records:
-            if wanted is not None and row.entity_id not in wanted:
-                continue
-            if row.entity_id not in out or row.ts > out[row.entity_id]:
-                out[row.entity_id] = row.ts
-        return out
+def _load_attrs(raw: Any) -> Dict[str, Any]:
+    """attrs_json -> dict；NULL/空 -> {}；解析失败 fail-open 返回 {} 并留日志。"""
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        _LOG.warning("attrs_json 解析失败: %r", raw)
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
-class StoreRepository(BaseRepository):
-    """基于现有项目 ``Store`` 类的数据访问层。
+class StoreRepository:
+    """events / behavior_events / perception_events 的只读访问层。
 
-    适配策略（不修改数据库 schema）：
-    1. 依次探测 ``query`` / ``db_query`` / ``execute`` / ``conn``；
-    2. 行字段名做别名兼容，attributes 支持 JSON 文本或 dict；
-    3. 任何数据库异常都只记日志并返回空结果（降级，不抛异常）。
+    所有查询只经 _execute() -> store.db_query()。除 health() 外失败即抛（fail-closed）。
     """
 
-    def __init__(self, store: Any, config: Optional[InsightConfig] = None) -> None:
-        super().__init__(config)
+    #: load_events(behavior_only=True) 追加的过滤条件（交付说明 §一/B）
+    BEHAVIOR_ONLY_SQL = "COALESCE(action, '') != ''"
+    DEFAULT_MAX_SCAN = 30000
+
+    def __init__(self, store: Any, config: Any) -> None:
         self.store = store
-        self.cache = TTLCache(self.config.cache_ttl)
+        self.config = config
+        self.log = _LOG
 
-    # ---------------- 底层执行 ----------------
-    def _run(self, sql: str, params: Sequence[Any] = ()) -> List[Mapping[str, Any]]:
-        try:
-            rows = self._execute(sql, params)
-        except Exception as exc:  # noqa: BLE001 - 数据库错误必须降级
-            LOG.warning("SQL 执行失败，返回降级空结果: %s (%s)", sql[:80], exc)
-            return []
-        return list(rows or [])
-
-    def _execute(self, sql: str, params: Sequence[Any]) -> Any:
-        paramstyle = getattr(self.store, "paramstyle", "qmark")
-        if paramstyle == "format":
-            sql = sql.replace("?", "%s")
-        for name in ("query", "db_query", "execute", "fetchall"):
-            fn = getattr(self.store, name, None)
-            if callable(fn):
-                return fn(sql, tuple(params))
-        conn = getattr(self.store, "conn", None) or getattr(self.store, "connection", None)
-        if conn is not None:
-            cursor = conn.execute(sql, tuple(params))
-            return cursor.fetchall()
-        raise RuntimeError("Store 不支持查询接口")
-
-    @staticmethod
-    def _to_event(row: Mapping[str, Any]) -> Optional[EventRecord]:
-        entity_id = _pick(row, "entity_id", "")
-        ts = as_ts(_pick(row, "ts", None))
-        if not entity_id or ts is None:
-            return None
-        attrs = _as_attrs(_pick(row, "attributes", {}))
-        return EventRecord(
-            ts=float(ts),
-            entity_id=str(entity_id),
-            state=str(_pick(row, "state", "")),
-            attributes=attrs,
-            friendly_name=str(_pick(row, "friendly_name", "")
-                              or attrs.get("friendly_name", "")),
-            room=str(_pick(row, "room", "") or attrs.get("room", "")
-                     or attrs.get("area", "")),
-            domain=domain_of(str(entity_id)),
-            unit=str(_pick(row, "unit", "") or attrs.get("unit_of_measurement", "")),
-        )
-
-    @staticmethod
-    def _to_entity(row: Mapping[str, Any]) -> Optional[EntityInfo]:
-        entity_id = _pick(row, "entity_id", "")
-        if not entity_id:
-            return None
-        attrs = _as_attrs(_pick(row, "attributes", {}))
-        domain = str(row.get("domain") or "") or domain_of(str(entity_id))
-        category = str(row.get("category") or "") or category_of_domain(domain)
-        enabled = _pick(row, "enabled", True)
-        return EntityInfo(
-            entity_id=str(entity_id),
-            friendly_name=str(_pick(row, "friendly_name", "")
-                              or attrs.get("friendly_name", "")),
-            room=str(_pick(row, "room", "") or attrs.get("room", "")
-                     or attrs.get("area", "")),
-            domain=domain,
-            category=category,
-            unit=str(_pick(row, "unit", "") or attrs.get("unit_of_measurement", "")),
-            enabled=bool(enabled) if enabled is not None else True,
-        )
-
-    # ---------------- 接口实现 ----------------
-    def list_entities(self) -> List[EntityInfo]:
-        cached = self.cache.get("entities")
-        if cached is not None:
-            return cached
-        rows = self._run(SQL_ENTITIES)
-        infos: List[EntityInfo] = []
-        for row in rows:
-            item = self._to_entity(row)
-            if item:
-                infos.append(item)
-        if not infos:  # 没有实体表时，从最近事件推断目录
-            for row in self._run(SQL_RECENT, (self.config.max_scan,)):
-                item = self._to_entity(row)
-                if item and all(i.entity_id != item.entity_id for i in infos):
-                    infos.append(item)
-        return self.cache.set("entities", infos)
-
-    def fetch_events(self, start_ts: float, end_ts: float,
-                     entity_ids: Optional[Sequence[str]] = None,
-                     limit: Optional[int] = None,
-                     offset: int = 0) -> List[EventRecord]:
-        key = "ev:%s:%s:%s:%s:%s" % (start_ts, end_ts,
-                                     tuple(entity_ids) if entity_ids else None,
-                                     limit, offset)
-        cached = self.cache.get(key)
-        if cached is not None:
-            return cached
-        clause, params = self._entity_clause(entity_ids)
-        lim = int(limit if limit is not None else self.config.max_scan)
-        sql = SQL_EVENTS.format(entity_filter=clause)
-        rows = self._run(sql, (start_ts, end_ts) + params + (lim, int(offset)))
-        events = [e for e in (self._to_event(r) for r in rows) if e]
-        return self.cache.set(key, events)
-
-    def count_events(self, start_ts: float, end_ts: float,
-                     entity_ids: Optional[Sequence[str]] = None) -> int:
-        key = "cnt:%s:%s:%s" % (start_ts, end_ts,
-                                tuple(entity_ids) if entity_ids else None)
-        cached = self.cache.get(key)
-        if cached is not None:
-            return cached
-        clause, params = self._entity_clause(entity_ids)
-        rows = self._run(SQL_EVENTS_COUNT.format(entity_filter=clause),
-                         (start_ts, end_ts) + params)
-        count = int(_pick(rows[0], "state", 0)) if rows else 0
-        if rows and count == 0:
-            count = int(list(rows[0].values())[0] or 0)
-        return int(self.cache.set(key, count))
-
-    def last_seen(self, entity_ids: Optional[Sequence[str]] = None) -> Dict[str, float]:
-        cached = self.cache.get("last_seen")
-        if cached is not None:
-            result = dict(cached)
-        else:
-            result = {}
-            for row in self._run(SQL_LAST_SEEN):
-                entity_id = _pick(row, "entity_id", "")
-                ts = as_ts(_pick(row, "ts", None))
-                if entity_id and ts is not None:
-                    result[str(entity_id)] = float(ts)
-            self.cache.set("last_seen", result)
-        if entity_ids is not None:
-            wanted = set(entity_ids)
-            result = {k: v for k, v in result.items() if k in wanted}
-        return result
-
-    @staticmethod
-    def _entity_clause(entity_ids: Optional[Sequence[str]]
-                       ) -> Tuple[str, Tuple[Any, ...]]:
-        if not entity_ids:
-            return "", ()
-        marks = ",".join("?" for _ in entity_ids)
-        return " AND entity_id IN (%s)" % marks, tuple(entity_ids)
-
-    def invalidate(self) -> None:
-        self.cache.invalidate()
+    # ------------------------------------------------------------ 基础出口
+    def _execute(self, sql: str, params: Sequence[Any] = ()) -> List[Dict[str, Any]]:
+        """唯一 SQL 出口，强制走 store.db_query（qmark 占位符）。"""
+        rows = self.store.db_query(sql, tuple(params))
+        return list(rows) if rows else []
 
     def health(self) -> bool:
+        """SELECT 1 能跑通即 True；任何异常都 fail-closed 成 False。"""
         try:
-            self._execute("SELECT 1", ())
-            return True
-        except Exception:  # noqa: BLE001
+            rows = self._execute("SELECT 1 AS ok")
+        except Exception as exc:
+            self.log.warning("health 检查失败: %s", exc)
             return False
+        return bool(rows) and rows[0].get("ok") == 1
 
+    # ------------------------------------------------------------ 内部工具
+    @staticmethod
+    def _as_tuple(values: Any) -> Tuple[Any, ...]:
+        """None/""/[] -> ()（表示不过滤）；字符串按逗号分割；其余按元素收集。"""
+        if values is None:
+            return ()
+        if isinstance(values, str):
+            return tuple(p.strip() for p in values.split(",") if p.strip())
+        if isinstance(values, (list, tuple, set, frozenset)):
+            return tuple(v for v in values if v not in (None, ""))
+        return (values,)
 
-def build_repository(store: Any = None,
-                     config: Optional[InsightConfig] = None) -> BaseRepository:
-    """工厂：有 Store 用 SQL 仓储，否则/异常时降级为内存仓储。"""
-    if store is None:
-        return MemoryRepository(config=config)
-    try:
-        repo = StoreRepository(store, config)
-        if not repo.health():
-            LOG.warning("Store 不可用，降级为内存仓储")
-            return MemoryRepository(config=config)
-        return repo
-    except Exception as exc:  # noqa: BLE001
-        LOG.warning("初始化 StoreRepository 失败，降级: %s", exc)
-        return MemoryRepository(config=config)
+    @classmethod
+    def _add_in(cls, where: List[str], params: List[Any], column: str, values: Any) -> None:
+        vals = cls._as_tuple(values)
+        if not vals:
+            return
+        where.append(column + " IN (" + ",".join(["?"] * len(vals)) + ")")
+        params.extend(vals)
+
+    @staticmethod
+    def _bounds(tr: Any) -> Tuple[str, str, str, str]:
+        """(start_iso, end_iso, start_day, end_day)；tr 只要求 TimeRange 形状。"""
+        start_iso = getattr(tr, "start_iso", None) or ""
+        end_iso = getattr(tr, "end_iso", None) or ""
+        if not start_iso:
+            if not hasattr(tr, "start_ts"):
+                raise TypeError("tr 缺少 start_iso / start_ts")
+            start_iso = _to_iso(tr.start_ts)
+        if not end_iso:
+            if not hasattr(tr, "end_ts"):
+                raise TypeError("tr 缺少 end_iso / end_ts")
+            end_iso = _to_iso(tr.end_ts)
+        return start_iso, end_iso, start_iso[:10], end_iso[:10]
+
+    def _scan_limit(self) -> int:
+        return int(getattr(self.config, "max_scan", 0) or self.DEFAULT_MAX_SCAN)
+
+    def _top_n(self, limit: Any, default: int = 50) -> int:
+        ceiling = int(getattr(self.config, "max_limit", 0) or 5000)
+        try:
+            n = int(limit) if limit else int(default)
+        except (TypeError, ValueError):
+            n = int(default)
+        return max(1, min(n, ceiling))
+
+    def _event_where(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
+                     domains: Any = None, behavior_only: bool = False) -> Tuple[List[str], List[Any]]:
+        start_iso, end_iso, start_day, end_day = self._bounds(tr)
+        where = ["day BETWEEN ? AND ?", "ts BETWEEN ? AND ?"]
+        params: List[Any] = [start_day, end_day, start_iso, end_iso]
+        self._add_in(where, params, "entity_id", entity_ids)
+        self._add_in(where, params, "room", rooms)
+        self._add_in(where, params, "domain", domains)
+        if behavior_only:
+            where.append(self.BEHAVIOR_ONLY_SQL)
+        return where, params
+
+    def _behavior_where(self, tr: Any, rooms: Any = None) -> Tuple[List[str], List[Any]]:
+        start_iso, end_iso, start_day, end_day = self._bounds(tr)
+        where = ["day BETWEEN ? AND ?", "server_ts BETWEEN ? AND ?"]
+        params: List[Any] = [start_day, end_day, start_iso, end_iso]
+        self._add_in(where, params, "room", rooms)
+        return where, params
+
+    def _to_record(self, row: Dict[str, Any]) -> EventRecord:
+        """events 行 -> EventRecord（契约 §1 的转换规则逐条对应）。"""
+        attrs = _load_attrs(row.get("attrs_json"))
+        entity_id = row.get("entity_id") or ""
+        friendly = attrs.get("friendly_name") or entity_id
+        unit = attrs.get("unit_of_measurement") or attrs.get("unit") or ""
+        return EventRecord(
+            ts=_to_epoch(row.get("ts")),
+            entity_id=entity_id,
+            state=row.get("new_state") or "",
+            attributes=attrs,
+            friendly_name=str(friendly),
+            room=row.get("room") or "",
+            domain=row.get("domain") or "",
+            unit=str(unit),
+        )
+
+    # ------------------------------------------------------------ 事件读取
+    def load_events(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
+                    domains: Any = None, behavior_only: bool = False) -> List[EventRecord]:
+        """查 events 表，ts BETWEEN start_iso AND end_iso，返回 EventRecord 列表。
+
+        上限 config.max_scan（默认 30000），命中截断会记 warning。
+        """
+        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only)
+        limit = self._scan_limit()
+        sql = ("SELECT id, ts, day, room, entity_id, domain, action, person, old_state, new_state, attrs_json "
+               "FROM events WHERE " + " AND ".join(where) + " ORDER BY ts ASC, id ASC LIMIT ?")
+        params.append(limit)
+        rows = self._execute(sql, params)
+        if len(rows) >= limit:
+            self.log.warning("load_events 命中扫描上限 %s，结果可能被截断", limit)
+        return [self._to_record(row) for row in rows]
+
+    def count_events(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
+                     domains: Any = None, behavior_only: bool = False) -> int:
+        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only)
+        rows = self._execute("SELECT COUNT(*) AS c FROM events WHERE " + " AND ".join(where), params)
+        return int((rows[0].get("c") if rows else 0) or 0)
+
+    def day_counts(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
+                   domains: Any = None, behavior_only: bool = False) -> Dict[str, int]:
+        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only)
+        sql = "SELECT day, COUNT(*) AS c FROM events WHERE " + " AND ".join(where) + " GROUP BY day ORDER BY day"
+        return {str(r.get("day") or ""): int(r.get("c") or 0) for r in self._execute(sql, params)}
+
+    def activity_matrix(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
+                        domains: Any = None, behavior_only: bool = False) -> List[Dict[str, Any]]:
+        """(day, hour, domain) -> count；hour 由 substr(ts,12,2) 提取（0-23）。"""
+        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only)
+        sql = ("SELECT day, CAST(substr(ts, 12, 2) AS INTEGER) AS hour_value, domain, COUNT(*) AS c "
+               "FROM events WHERE " + " AND ".join(where) + " GROUP BY day, hour_value, domain")
+        out: List[Dict[str, Any]] = []
+        for r in self._execute(sql, params):
+            out.append({
+                "day": str(r.get("day") or ""),
+                "hour": int(r.get("hour_value") or 0),
+                "domain": str(r.get("domain") or ""),
+                "count": int(r.get("c") or 0),
+            })
+        return out
+
+    def entity_stats(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
+                     domains: Any = None, behavior_only: bool = False) -> List[Dict[str, Any]]:
+        """窗口内每个实体一行：count / first_ts / last_ts / active_days。
+
+        room/domain 理论上实体恒定，用 MAX() 保证「一实体一行」。
+        """
+        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only)
+        sql = ("SELECT entity_id, MAX(room) AS room, MAX(domain) AS domain, COUNT(*) AS c, "
+               "MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(DISTINCT day) AS active_days "
+               "FROM events WHERE " + " AND ".join(where) +
+               " GROUP BY entity_id ORDER BY c DESC, entity_id")
+        out: List[Dict[str, Any]] = []
+        for r in self._execute(sql, params):
+            out.append({
+                "entity_id": str(r.get("entity_id") or ""),
+                "room": str(r.get("room") or ""),
+                "domain": str(r.get("domain") or ""),
+                "count": int(r.get("c") or 0),
+                "first_ts": str(r.get("first_ts") or ""),
+                "last_ts": str(r.get("last_ts") or ""),
+                "active_days": int(r.get("active_days") or 0),
+            })
+        return out
+
+    def entity_catalog(self, rooms: Any = None, domains: Any = None,
+                       limit: Any = None) -> List[Dict[str, Any]]:
+        """全量已知实体清单（契约 §五：只能从 events 聚合，不能查 entities 表）。"""
+        where: List[str] = []
+        params: List[Any] = []
+        self._add_in(where, params, "room", rooms)
+        self._add_in(where, params, "domain", domains)
+        sql = ("SELECT entity_id, MAX(room) AS room, MAX(domain) AS domain, "
+               "MAX(ts) AS last_ts, COUNT(*) AS total FROM events")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY entity_id ORDER BY entity_id LIMIT ?"
+        params.append(self._top_n(limit, 5000))
+        out: List[Dict[str, Any]] = []
+        for r in self._execute(sql, params):
+            out.append({
+                "entity_id": str(r.get("entity_id") or ""),
+                "room": str(r.get("room") or ""),
+                "domain": str(r.get("domain") or ""),
+                "last_ts": str(r.get("last_ts") or ""),
+                "total": int(r.get("total") or 0),
+            })
+        return out
+
+    def last_seen(self, tr: Any = None, entity_ids: Any = None,
+                  rooms: Any = None) -> Dict[str, str]:
+        """entity_id -> 最后一次出现的 ISO 时间（tr=None 表示全量）。"""
+        where: List[str] = []
+        params: List[Any] = []
+        if tr is not None:
+            _s, _e, start_day, end_day = self._bounds(tr)
+            where += ["day BETWEEN ? AND ?", "ts BETWEEN ? AND ?"]
+            params += [start_day, end_day, _s, _e]
+        self._add_in(where, params, "entity_id", entity_ids)
+        self._add_in(where, params, "room", rooms)
+        sql = "SELECT entity_id, MAX(ts) AS last_ts FROM events"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " GROUP BY entity_id"
+        return {str(r.get("entity_id") or ""): str(r.get("last_ts") or "")
+                for r in self._execute(sql, params)}
+
+    def state_counts(self, tr: Any, entity_id: str = None, rooms: Any = None,
+                     domains: Any = None, limit: Any = None) -> List[Dict[str, Any]]:
+        """new_state 的分布（注意：events 没有 state 列）。"""
+        where, params = self._event_where(tr, entity_id, rooms, domains, False)
+        sql = ("SELECT COALESCE(new_state, '') AS state_value, COUNT(*) AS c FROM events WHERE "
+               + " AND ".join(where) + " GROUP BY state_value ORDER BY c DESC, state_value LIMIT ?")
+        params.append(self._top_n(limit, 50))
+        return [{"state": str(r.get("state_value") or ""), "count": int(r.get("c") or 0)}
+                for r in self._execute(sql, params)]
+
+    def action_counts(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
+                      domains: Any = None, limit: Any = None) -> List[Dict[str, Any]]:
+        where, params = self._event_where(tr, entity_ids, rooms, domains, False)
+        sql = ("SELECT COALESCE(action, '') AS action_value, COUNT(*) AS c FROM events WHERE "
+               + " AND ".join(where) + " GROUP BY action_value ORDER BY c DESC, action_value LIMIT ?")
+        params.append(self._top_n(limit, 50))
+        return [{"action": str(r.get("action_value") or ""), "count": int(r.get("c") or 0)}
+                for r in self._execute(sql, params)]
+
+    def entity_action_counts(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
+                             domains: Any = None, limit: Any = None) -> List[Dict[str, Any]]:
+        where, params = self._event_where(tr, entity_ids, rooms, domains, False)
+        sql = ("SELECT entity_id, COALESCE(action, '') AS action_value, COUNT(*) AS c FROM events WHERE "
+               + " AND ".join(where) + " GROUP BY entity_id, action_value LIMIT ?")
+        params.append(self._top_n(limit, 5000))
+        return [{"entity_id": str(r.get("entity_id") or ""),
+                 "action": str(r.get("action_value") or ""),
+                 "count": int(r.get("c") or 0)} for r in self._execute(sql, params)]
+
+    def quality_counts(self, tr: Any, rooms: Any = None) -> Dict[str, int]:
+        """字段完整性计数（一次聚合拿全）。"""
+        where, params = self._event_where(tr, None, rooms, None, False)
+        sql = ("SELECT COUNT(*) AS total, COUNT(DISTINCT day) AS active_days, "
+               "SUM(CASE WHEN room IS NULL OR room = '' THEN 1 ELSE 0 END) AS empty_room, "
+               "SUM(CASE WHEN domain IS NULL OR domain = '' THEN 1 ELSE 0 END) AS empty_domain, "
+               "SUM(CASE WHEN entity_id IS NULL OR entity_id = '' THEN 1 ELSE 0 END) AS empty_entity, "
+               "SUM(CASE WHEN new_state IS NULL OR new_state = '' THEN 1 ELSE 0 END) AS empty_state, "
+               "SUM(CASE WHEN attrs_json IS NULL OR attrs_json = '' THEN 1 ELSE 0 END) AS empty_attrs, "
+               "SUM(CASE WHEN action IS NULL OR action = '' THEN 1 ELSE 0 END) AS empty_action "
+               "FROM events WHERE " + " AND ".join(where))
+        rows = self._execute(sql, params)
+        row = rows[0] if rows else {}
+        keys = ("total", "active_days", "empty_room", "empty_domain",
+                "empty_entity", "empty_state", "empty_attrs", "empty_action")
+        return {k: int(row.get(k) or 0) for k in keys}
+
+    def sample_rows(self, tr: Any, limit: Any = 500, rooms: Any = None) -> List[Dict[str, Any]]:
+        """抽样原始行（供 attrs_json 可解析性检查）。"""
+        where, params = self._event_where(tr, None, rooms, None, False)
+        sql = ("SELECT ts, day, room, entity_id, domain, new_state, attrs_json FROM events WHERE "
+               + " AND ".join(where) + " ORDER BY ts DESC LIMIT ?")
+        params.append(self._top_n(limit, 500))
+        return self._execute(sql, params)
+
+    # ------------------------------------------------- behavior / perception
+    def behavior_summary(self, tr: Any, rooms: Any = None) -> List[Dict[str, Any]]:
+        """behavior_events 按 (room, trigger) 聚合。"""
+        where, params = self._behavior_where(tr, rooms)
+        sql = ("SELECT room, COALESCE(\"trigger\", '') AS trigger_value, COUNT(*) AS c, "
+               "SUM(COALESCE(\"count\", 0)) AS person_total, "
+               "AVG(confidence) AS avg_confidence, AVG(vlm_latency_ms) AS avg_latency, "
+               "SUM(CASE WHEN status IS NULL OR status = 'ok' THEN 0 ELSE 1 END) AS error_count "
+               "FROM behavior_events WHERE " + " AND ".join(where) +
+               " GROUP BY room, trigger_value ORDER BY c DESC")
+        out: List[Dict[str, Any]] = []
+        for r in self._execute(sql, params):
+            out.append({
+                "room": str(r.get("room") or ""),
+                "trigger": str(r.get("trigger_value") or ""),
+                "count": int(r.get("c") or 0),
+                "person_total": int(r.get("person_total") or 0),
+                "avg_confidence": float(r.get("avg_confidence") or 0.0),
+                "avg_latency": float(r.get("avg_latency") or 0.0),
+                "error_count": int(r.get("error_count") or 0),
+            })
+        return out
+
+    def behavior_actions(self, tr: Any, rooms: Any = None, limit: Any = 20) -> List[Dict[str, Any]]:
+        where, params = self._behavior_where(tr, rooms)
+        sql = ("SELECT COALESCE(action, '') AS action_value, COUNT(*) AS c FROM behavior_events WHERE "
+               + " AND ".join(where) + " GROUP BY action_value ORDER BY c DESC, action_value LIMIT ?")
+        params.append(self._top_n(limit, 20))
+        return [{"action": str(r.get("action_value") or ""), "count": int(r.get("c") or 0)}
+                for r in self._execute(sql, params)]
+
+    def behavior_hourly(self, tr: Any, rooms: Any = None) -> Dict[int, int]:
+        where, params = self._behavior_where(tr, rooms)
+        sql = ("SELECT CAST(substr(server_ts, 12, 2) AS INTEGER) AS hour_value, COUNT(*) AS c "
+               "FROM behavior_events WHERE " + " AND ".join(where) + " GROUP BY hour_value")
+        return {int(r.get("hour_value") or 0): int(r.get("c") or 0) for r in self._execute(sql, params)}
+
+    def behavior_days(self, tr: Any, rooms: Any = None) -> Dict[str, int]:
+        where, params = self._behavior_where(tr, rooms)
+        sql = "SELECT day, COUNT(*) AS c FROM behavior_events WHERE " + " AND ".join(where) + " GROUP BY day ORDER BY day"
+        return {str(r.get("day") or ""): int(r.get("c") or 0) for r in self._execute(sql, params)}
+
+    def perception_summary(self, tr: Any, rooms: Any = None, kinds: Any = None,
+                           limit: Any = 50) -> List[Dict[str, Any]]:
+        """perception_events 按 (source, kind, room) 聚合。"""
+        where, params = self._behavior_where(tr, rooms)
+        self._add_in(where, params, "kind", kinds)
+        sql = ("SELECT source, kind, COALESCE(room, '') AS room_value, COUNT(*) AS c, "
+               "AVG(confidence) AS avg_confidence FROM perception_events WHERE "
+               + " AND ".join(where) + " GROUP BY source, kind, room_value ORDER BY c DESC LIMIT ?")
+        params.append(self._top_n(limit, 50))
+        out: List[Dict[str, Any]] = []
+        for r in self._execute(sql, params):
+            out.append({
+                "source": str(r.get("source") or ""),
+                "kind": str(r.get("kind") or ""),
+                "room": str(r.get("room_value") or ""),
+                "count": int(r.get("c") or 0),
+                "avg_confidence": float(r.get("avg_confidence") or 0.0),
+            })
+        return out

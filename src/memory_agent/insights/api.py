@@ -68,7 +68,21 @@ class InsightService:
 
     def __init__(self, store: Any = None, config: Optional[InsightConfig] = None,
                  repository: Optional[BaseRepository] = None) -> None:
-        self.config = config or InsightConfig()
+        # 兼容生产 Config：非 InsightConfig 时用默认值包装，
+        # 避免 'Config' object has no attribute 'cache_ttl'/'default_days'
+        if config is None:
+            self.config = InsightConfig()
+        elif isinstance(config, InsightConfig):
+            self.config = config
+        else:
+            self.config = InsightConfig()
+            for attr in ("tz_offset_hours", "default_days", "default_limit"):
+                val = getattr(config, attr, None)
+                if val is not None:
+                    try:
+                        setattr(self.config, attr, val)
+                    except Exception:
+                        pass
         self.repo: BaseRepository = repository or build_repository(store, self.config)
         self.resolver = EntityResolver(self._safe_entities())
         self.core = BehaviorService(self.repo, self.resolver, self.config)
