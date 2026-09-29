@@ -14,9 +14,9 @@
 
 # 从旧版实现导入所有内容，保持向后兼容
 from ..insights_legacy import *  # noqa: F401,F403
-from ..insights_legacy import (  # noqa: F401
-    InsightService,
-)
+
+# Phase 4: InsightService 切换到新框架（api.py + BehaviorService + StoreRepository）
+from .api import InsightService  # noqa: F401
 
 # Phase 2: 工具函数从新版 utils.py 导入
 # 旧版函数名保持向后兼容（别名指向新版函数）
