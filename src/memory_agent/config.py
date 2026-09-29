@@ -269,7 +269,7 @@ class Config:
     # 巡检异常 MQTT 推送（交接单 顾安恒 Phase 2，默认关）：发现陌生人等异常时，
     # 向管家约定主题推送 {room, alert_type, message, snapshot_url}。
     vision_alert_mqtt_enabled: bool = False
-    vision_alert_mqtt_topic: str = "butler/trigger/gu_anheng_alert"
+    vision_alert_mqtt_topic: str = "ma/insights/security_alert"  # DCD: 各仓只推自己域名，越权 butler/trigger 已修正
 
     # ── 人脸识别节点池（ArcFace 可插拔，face_node_pool_plan）────────────────
     # memory-agent 持有节点注册表与统一识别路由；节点按权重选路，失败降级 VLM。

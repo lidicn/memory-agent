@@ -1,4 +1,4 @@
-"""SQLite 数据访问层 —— 行为事件主存储 / 采集日历 / 采集任务
+﻿"""SQLite 数据访问层 —— 行为事件主存储 / 采集日历 / 采集任务
 
 设计要点
 --------
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -520,6 +521,56 @@ class Store:
         """P1-3: Acquire lock and yield connection, protecting execute/commit."""
         with self._lock:
             yield self.connect()
+
+    def check_and_recover(self) -> dict:
+        """启动时自检数据库完整性；损坏则从最近备份自动恢复。"""
+        import glob
+        import logging as _logging
+        logger = _logging.getLogger("memory_agent.store")
+        result = {"checked": True, "recovered": False, "backup_used": None, "error": None}
+
+        conn = self.connect()
+        try:
+            r = conn.execute("PRAGMA integrity_check").fetchone()
+            if r and r[0] == "ok":
+                logger.info("DB integrity check: OK")
+                return result
+            result["error"] = f"integrity_check failed: {r[0] if r else 'unknown'}"
+            logger.error(result["error"])
+        except Exception as e:
+            result["error"] = f"integrity_check exception: {e}"
+            logger.error(result["error"])
+
+        bak_glob = self.db_path + ".bak*"
+        backups = sorted(glob.glob(bak_glob), key=os.path.getmtime, reverse=True)
+        if not backups:
+            logger.error("No backup found for recovery")
+            return result
+
+        latest_bak = backups[0]
+        logger.warning(f"Recovering from backup: {latest_bak}")
+
+        conn.close()
+        self._conn = None
+        import shutil
+        shutil.copy2(latest_bak, self.db_path)
+
+        try:
+            new_conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
+            r = new_conn.execute("PRAGMA integrity_check").fetchone()
+            new_conn.close()
+            if r and r[0] == "ok":
+                result["recovered"] = True
+                result["backup_used"] = os.path.basename(latest_bak)
+                logger.info(f"DB recovered from {os.path.basename(latest_bak)}")
+            else:
+                result["error"] += f"; recovery failed: {r[0] if r else 'unknown'}"
+                logger.error(result["error"])
+        except Exception as e:
+            result["error"] += f"; recovery exception: {e}"
+            logger.error(result["error"])
+
+        return result
 
     def init_schema(self) -> None:
         conn = self.connect()

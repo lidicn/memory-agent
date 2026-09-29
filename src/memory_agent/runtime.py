@@ -146,6 +146,11 @@ class AppRuntime:
         if self._started:
             return
         print("[Runtime] 启动中…")
+        rec = await asyncio.to_thread(self.store.check_and_recover)
+        if rec.get('recovered'):
+            print(f"[Runtime] DB recovered: {rec['backup_used']}")
+        elif rec.get('error'):
+            print(f"[Runtime] DB warning: {rec['error']}")
         await asyncio.to_thread(self.store.init_schema)
 
         stale = await asyncio.to_thread(self.store.mark_stale_jobs)
