@@ -3976,7 +3976,7 @@ class Store:
     def list_dirty_agent_mirrors(self) -> list:
         with self._db() as conn:
             rows = conn.execute(
-                "SELECT * FROM agent_memories WHERE mirror_dirty=1"
+                "SELECT * FROM agent_memories WHERE mirror_dirty=1 AND memory_id IS NOT NULL AND memory_id != ''"
             ).fetchall()
         return [dict(r) for r in rows]
 

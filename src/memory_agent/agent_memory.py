@@ -1,4 +1,4 @@
-"""Agent 记忆服务：参与式写回向量库的安全封装。
+﻿"""Agent 记忆服务：参与式写回向量库的安全封装。
 
 四道保险
 --------
@@ -64,9 +64,15 @@ class AgentMemoryService:
 
     def _upsert_mirror(self, mem: dict) -> None:
         """把一条记忆同步进 chroma 镜像；失败置 mirror_dirty（不抛，v2 #9）。"""
+        mid = mem.get("memory_id")
+        if not mid:
+            # 防御：空 memory_id 无法 upsert 到 Chroma，跳过（不应发生，多为垃圾数据）
+            self.logger.warning("镜像同步跳过：memory_id 为空 (state=%s, text=%.40s)",
+                                mem.get("state"), mem.get("text", ""))
+            return
         col = self._col
         if col is None:
-            self.store.mark_mirror_dirty(mem["memory_id"], 1)
+            self.store.mark_mirror_dirty(mid, 1)
             return
         try:
             col.upsert(
@@ -74,11 +80,11 @@ class AgentMemoryService:
                 documents=[mem["text"]],
                 metadatas=[self._to_metadata(mem)],
             )
-            self.store.mark_mirror_dirty(mem["memory_id"], 0)
+            self.store.mark_mirror_dirty(mid, 0)
         except Exception as exc:  # pragma: no cover - 网络/序列化异常
             # WO-MA-016: 静默失败改可观测
-            self.logger.warning("镜像同步失败 %s: %s", mem.get("memory_id"), exc)
-            self.store.mark_mirror_dirty(mem["memory_id"], 1)
+            self.logger.warning("镜像同步失败 %s: %s", mid, exc)
+            self.store.mark_mirror_dirty(mid, 1)
 
     # ── 溯源校验（v2 #5 真溯源，非空即过 → 必须可解析）──────────────────
     def _validate_source_refs(self, source_refs: List[str]) -> Tuple[bool, List[str]]:
