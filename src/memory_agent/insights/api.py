@@ -91,6 +91,17 @@ class InsightService:
     # ------------------------------------------------------------------
     # 内部工具
     # ------------------------------------------------------------------
+
+    def _days_to_range(self, days: int, start: str, end: str):
+        """days 兼容：days>0 且 start/end 为空时计算时间范围。"""
+        if days and not start and not end:
+            from datetime import datetime, timedelta
+            _end = datetime.now()
+            _start = _end - timedelta(days=days)
+            start = _start.isoformat(timespec="seconds")
+            end = _end.isoformat(timespec="seconds")
+        return start, end
+
     def _safe_entities(self) -> List[Any]:
         try:
             return self.repo.list_entities()
@@ -110,7 +121,7 @@ class InsightService:
     # 5.1 实体目录与语义解析
     # ------------------------------------------------------------------
     @_degrade(lambda: Page.build([]).to_dict("entities"))
-    def entity_catalog(self, room: str = "", category: str = "", query: str = "",
+    def entity_catalog(self, days: int = 0, room: str = "", category: str = "", query: str = "", limit: int = 100,
                        only_enabled: bool = True) -> Dict[str, Any]:
         """获取实体目录（room + category + query 语义定位）。"""
         items = self.resolver.resolve(room=room, category=category, query=query,
@@ -148,10 +159,11 @@ class InsightService:
     # 5.2 事件搜索与查询
     # ------------------------------------------------------------------
     @_degrade(lambda: Page.build([]).to_dict("events"))
-    def search_events(self, start: str = "", end: str = "", entity_id: str = "",
+    def search_events(self, days: int = 0, start: str = "", end: str = "", entity_id: str = "",
                       room: str = "", category: str = "", query: str = "",
                       limit: int = 100, offset: int = 0) -> Dict[str, Any]:
         """搜索事件（含遥测，原始检索）。"""
+        start, end = self._days_to_range(days, start, end)
         return self._search(start, end, entity_id, room, category, query,
                             limit, offset, behavior_only=False)
 
@@ -167,8 +179,7 @@ class InsightService:
                 query: str, limit: int, offset: int, behavior_only: bool) -> Dict[str, Any]:
         tr = self._tr(start, end)
         ids = [entity_id] if entity_id else None
-        events = self.core.load_events(tr, entity_ids=ids, room=room,
-                                       category=category, query=query,
+        events = self.repo.load_events(tr, entity_ids=ids, rooms=[room] if room else None,
                                        behavior_only=behavior_only)
         events.sort(key=lambda e: e.ts)
         return Page.build(events, offset=offset,
@@ -200,13 +211,13 @@ class InsightService:
     # 5.3 设备使用统计
     # ------------------------------------------------------------------
     @_degrade(lambda: Page.build([]).to_dict("items"))
-    def device_usage(self, start: str = "", end: str = "", room: str = "",
+    def device_usage(self, days: int = 0, start: str = "", end: str = "", room: str = "",
                      category: str = "", query: str = "",
                      group_by: str = "entity") -> Dict[str, Any]:
         """设备使用统计（时长、开关次数均在服务端算好）。"""
         tr = self._tr(start, end)
-        return self.core.usage(tr, room=room, category=category, query=query,
-                               group_by=group_by)
+        start, end = self._days_to_range(days, start, end)
+        return self.core.usage(tr, room=room, category=category)
 
     @_degrade(lambda: Page.build([]).to_dict("sessions"))
     def climate_sessions(self, query: str = "", room: str = "", days: int = 7,
@@ -224,11 +235,12 @@ class InsightService:
     # 5.4 行为洞察
     # ------------------------------------------------------------------
     @_degrade(lambda: Page.build([]).to_dict("insights"))
-    def behavior_insights(self, start: str = "", end: str = "", room: str = "",
+    def behavior_insights(self, days: int = 0, start: str = "", end: str = "", room: str = "",
                           category: str = "", query: str = "") -> Dict[str, Any]:
         """行为洞察（单窗口）。"""
         tr = self._tr(start, end)
-        return self.core.behavior_insights(tr, room=room, category=category, query=query)
+        start, end = self._days_to_range(days, start, end)
+        return self.core.behavior_insights(tr, room=room, category=category)
 
     @_degrade(lambda: Page.build([]).to_dict("insights"))
     def get_behavior_insights(self, compare_days: int = 7) -> Dict[str, Any]:
@@ -240,7 +252,7 @@ class InsightService:
                          end: str = "", activities: Any = None) -> Dict[str, Any]:
         """活动推断（洗澡/学习/看电视/睡眠/烹饪 + 自定义）。"""
         tr = self._tr(start, end, days=days or 7)
-        return self.core.infer_activities(tr, rooms=rooms, activities=activities)
+        return self.core.infer_activities(tr, rooms=rooms)
 
     @_degrade(lambda: {"ok": False, "error": "invalid rule", "activity": {}})
     def define_activity(self, name: str, rule: Any, tags: Any = None,
@@ -253,18 +265,20 @@ class InsightService:
     # 5.5 异常检测
     # ------------------------------------------------------------------
     @_degrade(lambda: Page.build([]).to_dict("anomalies"))
-    def anomaly_report(self, start: str = "", end: str = "", room: str = "",
+    def anomaly_report(self, days: int = 0, start: str = "", end: str = "", room: str = "",
                        category: str = "", query: str = "") -> Dict[str, Any]:
         """异常报告（设备异常 + 数据质量 + 噪声源）。"""
         tr = self._tr(start, end)
-        return self.core.anomaly_report(tr, room=room, category=category, query=query)
+        start, end = self._days_to_range(days, start, end)
+        return self.core.anomaly_report(tr, room=room, category=category)
 
     @_degrade(lambda: Page.build([]).to_dict("devices"))
-    def device_health(self, start: str = "", end: str = "", room: str = "",
+    def device_health(self, days: int = 0, start: str = "", end: str = "", room: str = "",
                       category: str = "", query: str = "") -> Dict[str, Any]:
         """设备健康检查。"""
         tr = self._tr(start, end)
-        return self.core.device_health(tr, room=room, category=category, query=query)
+        start, end = self._days_to_range(days, start, end)
+        return self.core.device_health(tr, room=room, category=category)
 
     @_degrade(lambda: Page.build([]).to_dict("issues"))
     def data_quality_issues(self, start: str = "", end: str = "",
@@ -315,6 +329,37 @@ class InsightService:
     # 5.8 数据质量
     # ------------------------------------------------------------------
     @_degrade(lambda: Page.build([]).to_dict("days"))
+
+    def get_events(self, days: int = 7, start: str = "", end: str = "",
+                   entity_id: str = "", room: str = "", limit: int = 50,
+                   offset: int = 0) -> Dict[str, Any]:
+        """获取事件列表（兼容 legacy）。"""
+        start, end = self._days_to_range(days, start, end)
+        tr = self._tr(start, end, days=days)
+        events = self.repo.load_events(tr, entity_ids=[entity_id] if entity_id else None,
+                                        rooms=[room] if room else None)
+        events = events[offset:offset+limit]
+        return {"events": events, "total": len(events), "offset": offset,
+                "limit": limit, "has_more": len(events) >= limit}
+
+    def compare_insights(self, compare_days: int = 7, base_days: int = 7) -> Dict[str, Any]:
+        """对比洞察（兼容 legacy）。"""
+        try:
+            return self.core.compare_insights(compare_days=compare_days)
+        except Exception as exc:
+            LOG.exception("compare_insights 失败")
+            return {"periods": [], "changes": [], "error": str(exc)}
+
+    def insights_report(self, days: int = 7, fmt: str = "json") -> Any:
+        """洞察报告（兼容 legacy）。"""
+        insights = self.behavior_insights(days=days)
+        try:
+            from .report import ReportBuilder
+            return ReportBuilder().insights_report(insights, fmt)
+        except Exception as exc:
+            LOG.exception("insights_report 失败")
+            return {"error": str(exc)}
+
     def data_coverage(self, days: int = 7, start: str = "",
                       end: str = "") -> Dict[str, Any]:
         """数据覆盖率。"""

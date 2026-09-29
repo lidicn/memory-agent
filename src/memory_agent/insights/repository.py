@@ -1,4 +1,4 @@
-"""Insights 框架 · 数据访问层（StoreRepository）
+﻿"""Insights 框架 · 数据访问层（StoreRepository）
 
 严格对齐生产库真实 schema（docs/insights_schema_contract.py）：
 
@@ -423,3 +423,40 @@ class StoreRepository:
                 "avg_confidence": float(r.get("avg_confidence") or 0.0),
             })
         return out
+    # ------------------------------------------------------------------
+    # api.py 兼容接口
+    # ------------------------------------------------------------------
+    def list_entities(self) -> List[Any]:
+        """api.py 用此方法构建 EntityResolver。返回 EntityInfo 对象列表。"""
+        from .models import EntityInfo
+        out = []
+        for d in self.entity_catalog(limit=5000):
+            try:
+                out.append(EntityInfo(
+                    entity_id=str(d.get("entity_id") or ""),
+                    friendly_name=str(d.get("friendly_name") or ""),
+                    room=str(d.get("room") or ""),
+                    domain=str(d.get("domain") or ""),
+                    category=str(d.get("category") or ""),
+                    unit=str(d.get("unit") or ""),
+                ))
+            except Exception:
+                continue
+        return out
+
+    def invalidate(self) -> None:
+        """api.py 调用此方法使缓存失效。StoreRepository 无缓存，空操作。"""
+        pass
+
+
+# ----------------------------------------------------------------------
+# 工厂与基类（api.py 兼容）
+# ----------------------------------------------------------------------
+class BaseRepository:
+    """仓储基类（api.py 类型标注用）。"""
+    pass
+
+
+def build_repository(store: Any, config: Any) -> StoreRepository:
+    """从生产 Store 构建 StoreRepository（api.py 工厂函数）。"""
+    return StoreRepository(store, config)
