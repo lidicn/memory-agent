@@ -1,4 +1,4 @@
-﻿"""Insights 框架 · 数据访问层（StoreRepository）
+"""Insights 框架 · 数据访问层（StoreRepository）
 
 严格对齐生产库真实 schema（docs/insights_schema_contract.py）：
 
@@ -427,18 +427,34 @@ class StoreRepository:
     # api.py 兼容接口
     # ------------------------------------------------------------------
     def list_entities(self) -> List[Any]:
-        """api.py 用此方法构建 EntityResolver。返回 EntityInfo 对象列表。"""
+        """api.py 用此方法构建 EntityResolver。
+
+        P2：之前直接复用 entity_catalog()，但它返回的字段只有
+        entity_id/room/domain/last_ts/total，根本没有 friendly_name/category/unit，
+        导致 resolver 里所有实体的友好名和单位全是空串。
+        改为取每个实体最新一条事件的 attrs_json 解析 friendly_name / unit。
+        """
         from .models import EntityInfo
+        sql = ("SELECT e.entity_id, e.room, e.domain, e.attrs_json, "
+               "(SELECT COUNT(*) FROM events WHERE entity_id = e.entity_id) AS total "
+               "FROM events e "
+               "WHERE e.rowid = (SELECT MAX(rowid) FROM events WHERE entity_id = e.entity_id) "
+               "ORDER BY e.entity_id LIMIT ?")
+        rows = self._execute(sql, (self._top_n(None, 5000),))
         out = []
-        for d in self.entity_catalog(limit=5000):
+        for r in rows:
+            attrs = _load_attrs(r.get("attrs_json"))
+            entity_id = str(r.get("entity_id") or "")
+            friendly = attrs.get("friendly_name") or entity_id
+            unit = attrs.get("unit_of_measurement") or attrs.get("unit") or ""
             try:
                 out.append(EntityInfo(
-                    entity_id=str(d.get("entity_id") or ""),
-                    friendly_name=str(d.get("friendly_name") or ""),
-                    room=str(d.get("room") or ""),
-                    domain=str(d.get("domain") or ""),
-                    category=str(d.get("category") or ""),
-                    unit=str(d.get("unit") or ""),
+                    entity_id=entity_id,
+                    friendly_name=str(friendly),
+                    room=str(r.get("room") or ""),
+                    domain=str(r.get("domain") or ""),
+                    category="",  # category 由 resolver.resolve 按 domain 推，不在此落库
+                    unit=str(unit),
                 ))
             except Exception:
                 continue

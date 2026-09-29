@@ -1,4 +1,4 @@
-﻿"""实体语义解析：关键词 -> domain，房间/类别/关键词 -> 实体列表。
+"""实体语义解析：关键词 -> domain，房间/类别/关键词 -> 实体列表。
 
 核心目标（人类可读性第一）：
 调用方写「客厅 + 空调」，不需要背
@@ -138,6 +138,18 @@ def domains_for(category: str = "", domain: str = "", query: str = "") -> List[s
 def normalize_state(state: Any) -> str:
     """状态归一化 -> 'on' / 'off' / 'other'。"""
     text = str(state if state is not None else "").strip().lower()
+    # unavailable / unknown 表示实体失联或状态未知，不是"关"
+    # （P2：之前归 off 会把离线期当成"关着"，flapping/时长统计失真）
+    if text in ("unavailable", "unknown"):
+        return StateKind.OTHER.value
+    # 纯数值（遥测值如 0°C / 1 lux）不是开关状态；
+    # 否则 sensor 的 state="0"/"1" 会被 CN_OFF/ON_STATES 误判为 off/on
+    if text:
+        try:
+            float(text)
+            return StateKind.OTHER.value
+        except (TypeError, ValueError):
+            pass
     if text in OFF_STATES or str(state).strip() in CN_OFF_STATES:
         return StateKind.OFF.value
     if text in EXTRA_ON_STATES or str(state).strip() in CN_ON_STATES:
@@ -227,7 +239,9 @@ class EntityResolver:
     def _strip_room(text: str, room: str) -> str:
         out = str(text or "")
         tokens = {room} | {a for a, c in ROOM_ALIASES.items() if c == room}
-        for token in sorted(t for t in tokens if t):
+        # P2：必须按长度降序替换，否则短别名（如"卫"）会先把长别名
+        # （"卫生间"）里的字符拆碎，导致长别名再也匹配不上
+        for token in sorted((t for t in tokens if t), key=len, reverse=True):
             out = out.replace(token, " ")
         return " ".join(out.split())
 

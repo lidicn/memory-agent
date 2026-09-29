@@ -35,7 +35,8 @@ class AnomalyDetector:
         for info in entities:
             evs = per_entity.get(info.entity_id, [])
             last_ts = max([e.ts for e in evs] + [last_seen_map.get(info.entity_id, 0.0)])
-            days_silent = round((tr.end_ts - last_ts) / 86400.0, 2) if last_ts else None
+            # P2：last_ts 可能来自窗口外更晚的事件，截断为非负，避免 days_silent 出现负数
+            days_silent = max(0.0, round((tr.end_ts - last_ts) / 86400.0, 2)) if last_ts else None
             changes = sum(1 for i in range(1, len(evs))
                           if normalize_state(evs[i].state) != normalize_state(evs[i - 1].state))
             flap = len(self._flapping_windows(evs))
@@ -209,10 +210,10 @@ class AnomalyDetector:
             return self.resolver.all()
         return list(seen.values())
 
-    @staticmethod
-    def _active_minutes(events: Sequence[EventRecord], tr: TimeRange) -> float:
+    def _active_minutes(self, events: Sequence[EventRecord], tr: TimeRange) -> float:
+        # P2：与 report() 口径一致，必须传 min_session_seconds，否则短会话被计入活跃分钟
         from .service import compute_sessions
-        sessions = compute_sessions(events, tr)
+        sessions = compute_sessions(events, tr, self.config.min_session_seconds)
         return round(sum(s.minutes for sess in sessions.values() for s in sess), 1)
 
     def _flapping_windows(self, events: Sequence[EventRecord]) -> List[Dict[str, Any]]:
@@ -227,8 +228,15 @@ class AnomalyDetector:
                 head += 1
             count = tail - head + 1
             if count >= self.config.flapping_count:
-                out.append({"ts": changes[head], "count": count,
-                            "window": self.config.flapping_window})
+                ts = changes[head]
+                # P2：时间上重叠的窗口合并为一个（取最大切换次数），
+                # 否则同一轮反复会被按 tail 逐次重复计数，flapping_count 虚高
+                if out and ts - out[-1]["ts"] < self.config.flapping_window:
+                    if count > out[-1]["count"]:
+                        out[-1]["count"] = count
+                else:
+                    out.append({"ts": ts, "count": count,
+                                "window": self.config.flapping_window})
         return out
 
     def _missing_data(self, per_entity: Dict[str, List[EventRecord]]) -> List[Anomaly]:
@@ -243,18 +251,22 @@ class AnomalyDetector:
                 continue
             threshold = max(base * self.config.missing_gap_factor,
                             self.config.missing_gap_min)
+            # P2：之前遇到第一个超阈空洞就 break，报的是"最早"而非"最严重"；
+            # 改为遍历全部空洞，只报最长的那一次
+            worst_idx, worst_gap = -1, 0.0
             for index, gap in enumerate(gaps, start=1):
-                if gap > threshold:
-                    info = self.resolver.meta(entity_id)
-                    out.append(Anomaly(
-                        type=AnomalyType.MISSING_DATA.value,
-                        title="数据缺失：%s" % info.label,
-                        detail="%s 起空洞 %.1f 小时（正常间隔 %.1f 分钟）" % (
-                            fmt_ts(evs[index - 1].ts), gap / 3600.0, base / 60.0),
-                        entity_id=entity_id, friendly_name=info.label, room=info.room,
-                        severity=Severity.MEDIUM.value, value=round(gap / 3600.0, 2),
-                        expected=round(base / 60.0, 2), ts=evs[index].ts))
-                    break  # 每个实体只报最严重的一次
+                if gap > threshold and gap > worst_gap:
+                    worst_idx, worst_gap = index, gap
+            if worst_idx > 0:
+                info = self.resolver.meta(entity_id)
+                out.append(Anomaly(
+                    type=AnomalyType.MISSING_DATA.value,
+                    title="数据缺失：%s" % info.label,
+                    detail="%s 起空洞 %.1f 小时（正常间隔 %.1f 分钟）" % (
+                        fmt_ts(evs[worst_idx - 1].ts), worst_gap / 3600.0, base / 60.0),
+                    entity_id=entity_id, friendly_name=info.label, room=info.room,
+                    severity=Severity.MEDIUM.value, value=round(worst_gap / 3600.0, 2),
+                    expected=round(base / 60.0, 2), ts=evs[worst_idx].ts))
         return out
 
     def _unit_conflict(self, per_entity: Dict[str, List[EventRecord]]) -> List[Anomaly]:

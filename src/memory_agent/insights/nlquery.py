@@ -18,7 +18,8 @@ _INTENT_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (Intent.ACTIVITY.value, r"洗澡|活动|做了什么|干了什么|activity|看电视|做饭|学习"),
     (Intent.PERSONA.value, r"画像|习惯|我是谁|总结|persona|character"),
     (Intent.BEHAVIOR.value, r"待了多久|停留|待过|在[^，。？！]{0,8}(待|停)|presence|待的时间"),
-    (Intent.DEVICE_USAGE.value, r"用了多久|使用时长|用了|用过|开过多久|开过|usage|多久|时长"),
+    # P2：收紧泛词——去掉单独的"多久/时长"，否则"我几点睡觉多久"这类问题被误判为设备使用
+    (Intent.DEVICE_USAGE.value, r"用了多久|使用时长|用了|用过|开过多久|开了多久|开过|usage"),
 )
 
 _ROUTE_HINTS: Dict[str, List[str]] = {
@@ -61,7 +62,9 @@ class NLQueryEngine:
         tf = parse_timeframe(text, default_days=days) or resolve_range(
             days=days, default_days=self.config.default_days)
         query = strip_time_text(rest)
-        for token in ("多久", "多少", "什么", "哪些", "怎么", "怎么样", "吗", "了"):
+        # P2：停用词按长度降序替换，否则"怎么"会先把"怎么样"拆成"样"，后者永远匹配不到
+        for token in sorted(("多久", "多少", "什么", "哪些", "怎么", "怎么样", "吗", "了"),
+                            key=len, reverse=True):
             query = query.replace(token, " ")
         query = " ".join(query.split())
         entity_ids = self.resolver.resolve_ids(room=room, query=query)
@@ -125,7 +128,11 @@ class NLQueryEngine:
             return ("%s 推断到 %d 次活动：%s。" % (
                 data.get("summary", ""), data["total"], "、".join(names) or "无"), data)
         if route == Intent.PERSONA.value:
-            data = self.service.user_persona(days=max(plan.days, 14))
+            # P2：尊重用户明确指定的时间窗（如"昨天/上周"），不再强制 max(days,14)；
+            # 仅当窗口不足 1 天时回退到默认 14 天画像
+            span_days = int(round((tr.end_ts - tr.start_ts) / 86400.0))
+            persona_days = span_days if span_days >= 1 else max(plan.days, 14)
+            data = self.service.user_persona(days=persona_days)
             return (data.get("persona", {}).get("summary", "暂无画像。"), data)
         hints = "；".join(plan.hints[:2])
         return ("我还不确定你想问什么。%s" % hints, {"hints": plan.hints})

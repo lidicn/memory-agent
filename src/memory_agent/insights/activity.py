@@ -12,6 +12,21 @@ from .parser.timeframe import split_days
 __all__ = ["Signal", "ActivityRule", "BUILTIN_ACTIVITIES", "ActivityEngine", "analyze_rhythm"]
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """P2：脏数据（"abc"/None）不再炸，回退默认值。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int = 1) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class Signal:
     """活动信号：某个房间 / 类别 / 关键词在窗口内的活跃程度。"""
@@ -32,8 +47,8 @@ class Signal:
         return cls(
             room=str(data.get("room", "")), query=str(data.get("query", "")),
             category=str(data.get("category", "")), domain=str(data.get("domain", "")),
-            min_minutes=float(data.get("min_minutes", 0.0) or 0.0),
-            min_count=int(data.get("min_count", 1) or 1),
+            min_minutes=_safe_float(data.get("min_minutes", 0.0)),
+            min_count=_safe_int(data.get("min_count", 1)),
             optional=bool(data.get("optional", False)))
 
     @classmethod
@@ -42,7 +57,7 @@ class Signal:
         parts = [p.strip() for p in str(token).split("|")]
         room = parts[0] if len(parts) > 0 else ""
         query = parts[1] if len(parts) > 1 else ""
-        minutes = float(parts[2]) if len(parts) > 2 and parts[2] else 0.0
+        minutes = _safe_float(parts[2]) if len(parts) > 2 and parts[2] else 0.0
         if not query and room and not any(c >= "\u4e00" and c <= "\u9fff" for c in room):
             query, room = room, ""
         return cls(room=room, query=query, min_minutes=minutes)
@@ -87,10 +102,14 @@ class ActivityRule:
             for item in data.get("signals", []):   # signals 兼容写法 -> requires
                 requires.append(Signal.from_dict(item))
         window = tuple(data.get("window", (0, 24)))
+        try:
+            window_tuple = (_safe_int(window[0], 0), _safe_int(window[1], 24))
+        except (IndexError, TypeError):
+            window_tuple = (0, 24)
         return cls(key=key, name=name, room=room or str(data.get("room", "")),
                    tags=list(tags or data.get("tags", [])),
-                   window=(int(window[0]), int(window[1])),
-                   min_minutes=float(data.get("min_minutes", 5.0)),
+                   window=window_tuple,
+                   min_minutes=_safe_float(data.get("min_minutes", 5.0), 5.0),
                    requires=requires, any_of=any_of, source=source)
 
 
@@ -209,7 +228,8 @@ class ActivityEngine:
         """活动推断：按天 + 时间窗匹配信号，输出带置信度的活动片段。"""
         matches: List[ActivityMatch] = []
         by_entity: Dict[str, List[EventRecord]] = {}
-        for ev in events:
+        # P2：入口先排序，保证后续 session 切分/时序判定稳定（调用方可能传入乱序事件）
+        for ev in sorted(events, key=lambda e: e.ts):
             by_entity.setdefault(ev.entity_id, []).append(ev)
         for rule in self.select(activities, rooms):
             signals = rule.requires + rule.any_of
@@ -300,12 +320,16 @@ def _ts_dt(ts: float):
     return datetime.fromtimestamp(ts)
 
 
-def analyze_rhythm(buckets: List[int], coverage: float = 0.8) -> Dict[str, Any]:
+def analyze_rhythm(buckets: List[int], coverage: float = 0.8,
+                    night_start: int = 21, night_end: int = 11) -> Dict[str, Any]:
     """从 24 小时直方图里推断作息。
 
     ``active_window`` 取「覆盖 ``coverage`` 比例事件的最窄环形时段」——
     用「大于均值」这类阈值法在稀疏数据上会退化成 00:00-24:00，等于没说。
     环形窗口能正确表达「22:00-次日 02:00」这种跨零点的作息。
+
+    ``night_start`` / ``night_end`` 为夜间窗（跨天），默认对齐 InsightConfig
+    的 21:00-次日 11:00；P2 之前硬编码 0-6 点与配置口径不一致。
 
     从旧版 InsightService._rhythm 迁移而来，行为完全一致。
     """
@@ -339,6 +363,14 @@ def analyze_rhythm(buckets: List[int], coverage: float = 0.8) -> Dict[str, Any]:
         window = f"{start:02d}:00-{(start + length) % 24:02d}:00"
 
     nonzero = [h for h, v in enumerate(buckets) if v > 0]
+    # P2：跨夜窗口求和（如 21:00-次日 11:00 = buckets[21:24] + buckets[0:11]）
+    night_buckets: List[int] = []
+    h = night_start % 24
+    while h != night_end % 24:
+        night_buckets.append(h)
+        h = (h + 1) % 24
+    night_buckets.append(night_end % 24)
+    night_sum = sum(buckets[h] for h in night_buckets)
     return {
         "active_window": window,
         "active_hours": active_hours,
@@ -346,5 +378,5 @@ def analyze_rhythm(buckets: List[int], coverage: float = 0.8) -> Dict[str, Any]:
         "quiet_hours": [h for h, v in enumerate(buckets) if v == 0],
         "first_activity_hour": min(nonzero) if nonzero else None,
         "last_activity_hour": max(nonzero) if nonzero else None,
-        "night_ratio_percent": round(sum(buckets[0:6]) / total * 100, 1),
+        "night_ratio_percent": round(night_sum / total * 100, 1),
     }

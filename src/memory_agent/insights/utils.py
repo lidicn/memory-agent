@@ -126,7 +126,7 @@ def parse_time_range(tr: str) -> Optional[Tuple[int, int, bool]]:
         a, b = tr.split("-", 1)
         sh, sm = (int(x) for x in a.split(":"))
         eh, em = (int(x) for x in b.split(":"))
-    except Exception:
+    except (ValueError, TypeError, IndexError):
         return None
     if not (0 <= sh < 24 and 0 <= sm < 60 and 0 <= eh < 24 and 0 <= em < 60):
         return None
@@ -289,19 +289,24 @@ def finalize_climate_session(sess: Dict[str, Any], still_on: bool = False) -> Di
     """
     from datetime import datetime
     from ..store import parse_ts
+    notes = []
+    if still_on:
+        notes.append("窗口结束时仍未收到 off，会话未闭合，duration 为「至今」时长")
+    dur = 0
+    parse_failed = False
     try:
         s = parse_ts(sess["start"]) or datetime.strptime(sess["start"][:19], "%Y-%m-%dT%H:%M:%S")
         e = parse_ts(sess["end"]) or datetime.strptime(sess["end"][:19], "%Y-%m-%dT%H:%M:%S")
         dur = int((e - s).total_seconds() // 60) if s and e else 0
-    except Exception:
-        dur = 0
+    except (TypeError, ValueError, KeyError):
+        # P2：之前裸 except Exception 把解析失败静默归零，脏数据看起来像"正常 0 分钟会话"
+        parse_failed = True
+    if parse_failed:
+        notes.append("start/end 时间戳解析失败，duration 置 0（请检查事件时间字段）")
+    elif dur == 0:
+        notes.append("会话仅含单条事件（on/off 同秒或采集间隔内完成），时长按 0 计")
     sp = sess["setpoints"]
     rt = sess["room_temps"]
-    notes = []
-    if still_on:
-        notes.append("窗口结束时仍未收到 off，会话未闭合，duration 为「至今」时长")
-    if dur == 0:
-        notes.append("会话仅含单条事件（on/off 同秒或采集间隔内完成），时长按 0 计")
     if not sp and not rt:
         notes.append("该会话事件未携带温度属性，setpoint/room_temp 为 null")
     return {
@@ -724,12 +729,9 @@ def compare_windows(compare_days: int, tz_offset_hours: float = 8.0) -> tuple[st
 # NOISE_RATIO_CAP = 0.6  # 已存在，跳过
 
 #: 关状态集合（设备关闭/待机/离线等）。
-OFF_STATES: frozenset[str] = frozenset(
-    {
-        "off", "unavailable", "unknown", "none", "", "idle",
-        "standby", "power off", "poweroff", "down",
-    }
-)
+# P2：此处原定义缺 closed/not_home、多 power off/down，与 parser.entity 口径分裂；
+# 统一委托 parser.entity（本文件顶部已 import），后续勿在此另起炉灶。
+OFF_STATES = _ENTITY_OFF_STATES
 
 #: 房间聚合词（表示"所有房间/全屋"的关键词）。
 ROOM_AGGREGATE_WORDS: tuple[str, ...] = (

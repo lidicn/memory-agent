@@ -120,8 +120,12 @@ class PersonaBuilder:
         """解释洞察：给出结论、口径与证据链。"""
         insight = index.get(str(insight_id or ""))
         if not insight:
-            return {"insight_id": insight_id, "found": False,
-                    "title": "", "explanation": "未找到该洞察，请先调用 behavior_insights。",
+            # P2：未命中时也补齐与命中分支一致的字段（type/detail/room 等），
+            # 避免前端按 found 分支写两套取值逻辑
+            return {"insight_id": insight_id, "found": False, "type": "",
+                    "title": "", "detail": "", "room": "", "entity_id": "",
+                    "friendly_name": "", "score": 0.0,
+                    "explanation": "未找到该洞察，请先调用 behavior_insights。",
                     "evidence": [], "data": {},
                     "total": 0, "offset": 0, "has_more": False}
         evidence = [{"key": k, "value": v} for k, v in sorted(insight.data.items())

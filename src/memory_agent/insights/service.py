@@ -21,9 +21,59 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .repository import _to_epoch, _to_iso
 
-__all__ = ["BehaviorService", "CATEGORY_DOMAINS", "WEEKDAY_NAMES"]
+__all__ = ["BehaviorService", "CATEGORY_DOMAINS", "WEEKDAY_NAMES", "compute_sessions"]
 
 _LOG = logging.getLogger("insights.service")
+
+
+def compute_sessions(events: Any, tr: Any = None,
+                     min_session_seconds: float = 1.0) -> Dict[str, list]:
+    """把事件流切成 on→off 使用会话，返回 {entity_id: [Session, ...]}。
+
+    - 用 parser.entity.normalize_state 判定开关口径（与新框架一致）；
+    - 窗口结束仍处于 on 的会话 open=True，end 取 tr.end_ts；
+    - 短于 min_session_seconds 的会话丢弃（去抖）；
+    - anomaly.py / activity.py 共用此函数（之前 import 缺失，调用即 ImportError）。
+    """
+    from .models import Session
+    from .parser.entity import normalize_state
+
+    grouped: Dict[str, list] = {}
+    for ev in events or []:
+        grouped.setdefault(ev.entity_id, []).append(ev)
+
+    out: Dict[str, list] = {}
+    threshold = float(min_session_seconds or 0.0)
+    for eid, evs in grouped.items():
+        evs = sorted(evs, key=lambda e: e.ts)
+        sessions: List[Session] = []
+        open_start: Optional[float] = None
+        open_info: Any = None
+        for ev in evs:
+            kind = normalize_state(ev.state)
+            if kind == "on" and open_start is None:
+                open_start = ev.ts
+                open_info = ev
+            elif kind == "off" and open_start is not None:
+                dur = ev.ts - open_start
+                if dur >= threshold:
+                    sessions.append(Session(
+                        entity_id=eid, start=open_start, end=ev.ts,
+                        friendly_name=ev.friendly_name, room=ev.room,
+                        domain=ev.domain, open=False))
+                open_start = None
+                open_info = None
+        if open_start is not None:
+            end_ts = tr.end_ts if (tr is not None and hasattr(tr, "end_ts")) else evs[-1].ts
+            if end_ts - open_start >= threshold:
+                sessions.append(Session(
+                    entity_id=eid, start=open_start, end=end_ts,
+                    friendly_name=open_info.friendly_name if open_info else "",
+                    room=open_info.room if open_info else "",
+                    domain=open_info.domain if open_info else "", open=True))
+        if sessions:
+            out[eid] = sessions
+    return out
 
 WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
