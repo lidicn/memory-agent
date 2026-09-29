@@ -998,6 +998,50 @@ class Store:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON idempotency_keys(expires_at)"
             )
+            # vMA-1.3 多模态统一：三源只读 VIEW（events + behavior_events + perception_events）
+            # VIEW 只读，不动写入路径；event_type 语义：device=entity:action, vision=action, perception=kind
+            conn.execute("""
+                CREATE VIEW IF NOT EXISTS unified_events AS
+                SELECT
+                    id AS event_id,
+                    ts AS server_ts,
+                    day,
+                    room,
+                    'device' AS source,
+                    entity_id || ':' || action AS event_type,
+                    person,
+                    entity_id,
+                    CAST(NULL AS REAL) AS confidence,
+                    attrs_json AS raw_json
+                FROM events
+                UNION ALL
+                SELECT
+                    CAST(id AS TEXT) AS event_id,
+                    server_ts,
+                    day,
+                    room,
+                    'vision' AS source,
+                    COALESCE(action, '') AS event_type,
+                    COALESCE(json_extract(persons_json, '$[0].name'), '') AS person,
+                    COALESCE(camera_src, '') AS entity_id,
+                    confidence,
+                    persons_json AS raw_json
+                FROM behavior_events
+                WHERE status = 'ok'
+                UNION ALL
+                SELECT
+                    COALESCE(event_id, CAST(id AS TEXT)) AS event_id,
+                    server_ts,
+                    day,
+                    COALESCE(room, '') AS room,
+                    'perception' AS source,
+                    kind AS event_type,
+                    COALESCE(json_extract(payload_json, '$.person'), '') AS person,
+                    COALESCE(entity_id, '') AS entity_id,
+                    confidence,
+                    payload_json AS raw_json
+                FROM perception_events
+            """)
             conn.commit()
         print(f"[Store] SQLite 就绪: {self.db_path} (schema v{SCHEMA_VERSION})")
         self.ensure_default_insight_jobs()

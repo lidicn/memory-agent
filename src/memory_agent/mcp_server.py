@@ -224,6 +224,23 @@ TOOL_CATALOG: list[dict] = [
         "pitfall": "返回里的 total/has_more/next_offset 能告诉你有没有取全",
     },
     {
+        "name": "query_unified_events",
+        "group": "洞察",
+        "summary": "vMA-1.3 多模态统一查询：跨设备事件/视觉行为/感知事件三源统一只读查询（VIEW）",
+        "params": {
+            "person": "人名过滤（可选）",
+            "room": "房间名过滤（可选）",
+            "start": "起始时间 ISO（可选）",
+            "end": "结束时间 ISO（可选）",
+            "days": "窗口天数，默认 7（start/end 未指定时生效）",
+            "source": "来源过滤：device|vision|perception（可选）",
+            "limit": "返回条数，默认 200，上限 2000",
+            "offset": "分页偏移",
+        },
+        "example": "query_unified_events(room='客厅', days=7)",
+        "pitfall": "只读工具，read scope；event_type 语义：device=entity:action, vision=action, perception=kind",
+    },
+    {
         "name": "get_device_health",
         "group": "洞察",
         "summary": "设备健康探测：揪出失联/没电/长期静默的设备（has_data/last_seen/stale_days）",
@@ -1200,6 +1217,76 @@ def _build_server():
             summarize=summarize,
         )
 
+
+    @mcp.tool()
+    async def query_unified_events(
+        person: str = "",
+        room: str = "",
+        start: str = "",
+        end: str = "",
+        days: int = 7,
+        source: str = "",
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict:
+        """vMA-1.3 多模态统一查询：跨设备事件/视觉行为/感知事件三源统一只读查询。
+
+        基于 unified_events VIEW（三源 UNION ALL，只读）。
+        event_type 语义：device=entity:action, vision=action, perception=kind。
+        只读工具，read scope。
+        """
+        from datetime import datetime, timedelta, timezone
+
+        rt = get_runtime()
+        now = datetime.now(timezone.utc)
+        if not start and not end:
+            end_dt = now
+            start_dt = end_dt - timedelta(days=days)
+            start = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            end = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+        def _query():
+            conn = rt.store.connect()
+            try:
+                sql = "SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence FROM unified_events WHERE 1=1"
+                params = []
+                if person:
+                    sql += " AND person LIKE ?"
+                    params.append(f"%{person}%")
+                if room:
+                    sql += " AND room LIKE ?"
+                    params.append(f"%{room}%")
+                if source:
+                    sql += " AND source = ?"
+                    params.append(source)
+                if start:
+                    sql += " AND server_ts >= ?"
+                    params.append(start)
+                if end:
+                    sql += " AND server_ts <= ?"
+                    params.append(end)
+                # count
+                count_sql = sql.replace("SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence", "SELECT COUNT(*)")
+                total = conn.execute(count_sql, params).fetchone()[0]
+                # rows
+                limit = min(max(limit, 1), 2000)
+                sql += " ORDER BY server_ts DESC LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+                rows = conn.execute(sql, params).fetchall()
+                events = [dict(r) for r in rows]
+                return {
+                    "total": total,
+                    "count": len(events),
+                    "offset": offset,
+                    "limit": limit,
+                    "has_more": (offset + len(events)) < total,
+                    "next_offset": offset + len(events) if (offset + len(events)) < total else None,
+                    "events": events,
+                }
+            finally:
+                conn.close()
+
+        return await asyncio.to_thread(_query)
     @mcp.tool()
     async def get_device_health(
         room: str = "",
