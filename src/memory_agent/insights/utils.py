@@ -10,20 +10,27 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+# 统一委托 parser.entity 的状态判定，避免新旧两套常量口径不一致（U-1）
+from .parser.entity import (
+    OFF_STATES as _ENTITY_OFF_STATES,
+    CN_OFF_STATES as _ENTITY_CN_OFF_STATES,
+    CN_ON_STATES as _ENTITY_CN_ON_STATES,
+    is_off as _entity_is_off,
+    is_on as _entity_is_on,
+    category_of_domain as _entity_category_of_domain,
+)
+
 #: 抖动阈值：短于该秒数的开启片段视为误触，不计入时长统计。
 DEFAULT_DEBOUNCE_SECONDS: int = 5
 
-#: 关闭状态集合（英文）
-OFF_STATES = frozenset({
-    "off", "closed", "not_home", "unavailable", "unknown",
-    "standby", "idle", "paused", "stopped",
-})
+#: 关闭状态集合（英文）—— 统一委托 parser.entity，避免口径分裂
+OFF_STATES = _ENTITY_OFF_STATES
 
-#: 关闭状态集合（中文）
-CN_OFF_STATES = frozenset({"关", "关闭", "门关", "闭合", "断开", "无", "否", "0"})
+#: 关闭状态集合（中文）—— 统一委托 parser.entity
+CN_OFF_STATES = _ENTITY_CN_OFF_STATES
 
-#: 开启状态集合（中文）
-CN_ON_STATES = frozenset({"开", "打开", "开启", "有", "是", "1", "on"})
+#: 开启状态集合（中文+英文）—— 统一委托 parser.entity
+CN_ON_STATES = _ENTITY_CN_ON_STATES
 
 
 def normalize_text(text: Any) -> str:
@@ -37,15 +44,13 @@ def tokenize(text: str) -> List[str]:
 
 
 def state_is_off(state: Any) -> bool:
-    """判断状态是否为关闭。"""
-    s = normalize_text(state)
-    return s in OFF_STATES or s in CN_OFF_STATES
+    """判断状态是否为关闭。统一委托 parser.entity.is_off。"""
+    return _entity_is_off(state)
 
 
 def state_is_on(state: Any) -> bool:
-    """判断状态是否为开启。"""
-    s = normalize_text(state)
-    return s in CN_ON_STATES
+    """判断状态是否为开启。统一委托 parser.entity.is_on。"""
+    return _entity_is_on(state)
 
 
 def fmt_duration(total_seconds: float) -> str:
@@ -199,15 +204,29 @@ def summarize_events(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             },
         )
         slot["changes"] += 1
-        st = str(r.get("new_state", ""))
+        # 兼容 new_state（旧）和 state（新 EventRecord.to_dict）两种键
+        st = str(r.get("new_state", r.get("state", "")))
         slot["states"][st] = slot["states"].get(st, 0) + 1
         ts = r.get("ts", "")
         if ts:
-            slot["first_ts"] = min(slot["first_ts"] or ts, ts)
-            slot["last_ts"] = max(slot["last_ts"] or ts, ts)
+            # 归一化 ts：float 时间戳或 ISO 字符串都能处理
+            # 之前 ts[11:13] 对 float 抛 TypeError，且 except 只捕获 ValueError/IndexError
             try:
-                by_hour[int(ts[11:13])] += 1
-            except (ValueError, IndexError):
+                if isinstance(ts, (int, float)):
+                    ts_val = float(ts)
+                    hour = datetime.fromtimestamp(ts_val).hour
+                elif isinstance(ts, str) and len(ts) >= 13:
+                    hour = int(ts[11:13])
+                    ts_val = datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").timestamp()
+                else:
+                    ts_val = None
+                    hour = None
+                if ts_val is not None:
+                    slot["first_ts"] = ts_val if slot["first_ts"] in (None, "") else min(float(slot["first_ts"]), ts_val)
+                    slot["last_ts"] = ts_val if slot["last_ts"] in (None, "") else max(float(slot["last_ts"]), ts_val)
+                if hour is not None:
+                    by_hour[hour] += 1
+            except (ValueError, IndexError, TypeError, OSError):
                 pass
     entities = sorted(by_entity.values(), key=lambda e: -e["changes"])
     return {
@@ -259,16 +278,8 @@ CATEGORY_DOMAINS: Dict[str, Tuple[str, ...]] = {
 
 
 def category_of(domain: str) -> str:
-    """根据 domain 返回 category。
-
-    从旧版 InsightService.category_of 迁移而来，行为完全一致。
-    """
-    d = normalize_text(domain)
-    for cat, domains in CATEGORY_DOMAINS.items():
-        if d in domains:
-            return cat
-    return "other"
-
+    """设备类别。统一委托 parser.entity.category_of_domain。"""
+    return _entity_category_of_domain(domain)
 
 
 def finalize_climate_session(sess: Dict[str, Any], still_on: bool = False) -> Dict[str, Any]:

@@ -69,6 +69,13 @@ def _num(text: str) -> float:
         return 10 + float(_CN_NUM.get(text[1], 0))
     if len(text) == 2 and text[1] == "十":
         return float(_CN_NUM.get(text[0], 0)) * 10
+    # 补全 "X十Y" 型（如"二十五"→25.0），之前恒返回 1.0
+    if "十" in text and len(text) == 3:
+        head, _, tail = text.partition("十")
+        if head in _CN_NUM or head == "":
+            tens = 10.0 if head in ("", "一") else float(_CN_NUM.get(head, 0)) * 10
+            ones = float(_CN_NUM.get(tail, 0)) if tail else 0.0
+            return tens + ones
     return 1.0
 
 
@@ -91,7 +98,11 @@ def parse_time(value: Any) -> Optional[datetime]:
         except ValueError:
             continue
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        # 带时区的输入先转本地时区再去 tzinfo，之前直接丢弃偏移导致窗口偏移
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        return dt.replace(tzinfo=None, microsecond=0)
     except ValueError:
         return None
 

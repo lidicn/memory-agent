@@ -267,11 +267,14 @@ class ActivityEngine:
             return (met["minutes"] >= sig.min_minutes
                     and met["count"] >= (sig.min_count if sig.min_count > 0 else 0))
 
-        req_idx = [i for i, s in enumerate(signals) if not s.optional][:len(rule.requires)]
-        opt_idx = [i for i, s in enumerate(signals) if s.optional or i >= len(rule.requires)]
-        if not all(ok(i) for i in req_idx):
+        # 按位置切分：前 len(requires) 个是必要信号，之后是 any_of 可选信号
+        # 之前用 optional 标志切分 + 切片，导致必要信号被漏检、可选被强制要求
+        n_req = len(rule.requires)
+        required = [i for i in range(n_req) if not signals[i].optional]
+        optional = list(range(n_req, len(signals))) +                    [i for i in range(n_req) if signals[i].optional]
+        if required and not all(ok(i) for i in required):
             return None
-        if opt_idx and not any(ok(i) for i in opt_idx):
+        if optional and not any(ok(i) for i in optional):
             return None
         hit = [i for i in range(len(signals)) if ok(i)]
         minutes = max((metrics[i]["minutes"] for i in hit), default=0.0)
