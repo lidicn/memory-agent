@@ -188,6 +188,7 @@ def test_online_anomaly_detects_spike_and_drift():
 
 
 def test_online_anomaly_handles_empty():
+    pytest.importorskip("river")
     res = ak.OnlineAnomalyDetector().score_stream([])
     assert res["ok"] is True and res["n"] == 0
 

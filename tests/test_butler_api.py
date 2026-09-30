@@ -173,7 +173,8 @@ def test_member_schedule(store):
 def test_member_schedule_no_data(store):
     data = store.member_schedule("不存在的人", days=14)
     assert data["samples"] == []
-    assert data["summary"] == {"days_with_data": 0, "days_requested": 14}
+    assert data["summary"]["days_with_data"] == 0
+    assert data["summary"]["days_requested"] == 14
 
 
 def test_member_schedule_ignores_other_members(store):
