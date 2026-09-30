@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import timedelta
 
 import secrets
@@ -342,67 +341,53 @@ async def vision_latest(request: Request):
 
 
 async def scene_graph_query(request: Request):
-    """GET /api/vision/scene_graph?room=&latest= — 查询场景图历史
+    """GET /api/vision/scene_graph?room=&latest=&person=&minutes= —— vMA-1.2.0 场景图查询
 
     room: 房间名（可选，空=全部）
     latest: 返回最近 N 条（默认 20）
-    person: 按人名过滤（可选）
-    minutes: 最近 N 分钟内（可选）
+    person: 按场景图内成员名/member_id 过滤（可选）
+    minutes: 只看最近 N 分钟内（可选，0=不限）
     """
     _, err = require_user(request)
     if err:
         return err
-    room = (request.query_params.get("room") or "").strip() or None
-    person = (request.query_params.get("person") or "").strip() or None
+    params = request.query_params
+    room = (params.get("room") or "").strip() or None
+    person = (params.get("person") or "").strip() or None
     try:
-        latest = int(request.query_params.get("latest", 20))
-    except ValueError:
+        latest = int(params.get("latest") or 20)
+    except (TypeError, ValueError):
         latest = 20
+    latest = max(1, min(latest, 200))
     try:
-        minutes = int(request.query_params.get("minutes", 0))
-    except ValueError:
+        minutes = int(params.get("minutes") or 0)
+    except (TypeError, ValueError):
+        return error("minutes 必须是数字")
+    if minutes < 0:
         minutes = 0
 
     rt = runtime(request)
-    # Build time filter if minutes specified
-    day_from = day_to = None
-    if minutes > 0:
-        from datetime import datetime, timedelta
-        end = now_local(rt.config.tz_offset_hours)
-        start = end - timedelta(minutes=minutes)
-        day_from = start.strftime("%Y-%m-%d")
-        day_to = end.strftime("%Y-%m-%d")
-
-    events = await asyncio.to_thread(
-        rt.store.list_behavior_events, room, person, day_from, day_to, latest * 3
+    rows = await asyncio.to_thread(
+        rt.store.list_scene_graphs,
+        room=room, person=person, minutes=minutes or None, limit=latest,
     )
-
-    # Filter events that have scene_graph_json and parse it
-    results = []
-    for e in events:
-        sg_raw = e.get("scene_graph_json")
-        if not sg_raw:
-            continue
-        try:
-            sg = json.loads(sg_raw) if isinstance(sg_raw, str) else sg_raw
-        except Exception:
-            continue
-        # Filter by person if specified
-        if person:
-            names = [p.get("name", "") for p in sg.get("persons", [])]
-            if not any(person in n for n in names):
-                continue
-        results.append({
-            "event_id": e.get("id"),
-            "ts": e.get("server_ts"),
-            "room": e.get("room"),
-            "scene_graph": sg,
-            "status": e.get("status"),
-        })
-        if len(results) >= latest:
-            break
-
-    return ok({"count": len(results), "scenes": results})
+    return ok({
+        "count": len(rows),
+        "room": room or "",
+        "person": person or "",
+        "minutes": minutes,
+        "scenes": [
+            {
+                "event_id": r.get("id"),
+                "ts": r.get("server_ts"),
+                "room": r.get("room"),
+                "trigger": r.get("trigger"),
+                "status": r.get("status"),
+                "scene_graph": r.get("scene_graph"),
+            }
+            for r in rows
+        ],
+    })
 
 
 ROUTES = [
