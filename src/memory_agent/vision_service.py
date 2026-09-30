@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import time
+import uuid
 import urllib.parse
 from typing import Any
 
@@ -26,6 +27,7 @@ import httpx
 
 from .face_node_registry import FaceNodeRegistry
 from .store import now_local
+from .task_registry import task_registry
 from datetime import timedelta
 
 _logger = logging.getLogger(__name__)
@@ -88,7 +90,6 @@ class VisionService:
         self._last_result: dict[str, dict] = {}       # room -> 最近一次结果摘要
         self._last_cleanup_day: str = ""
         self._patrol_task: asyncio.Task | None = None
-        self._analyze_tasks: set[asyncio.Task] = set()  # 稳定性审计第二轮：跟踪 analyze_room task
 
     # ── 配置便捷访问 ──────────────────────────────────────────────────────
 
@@ -1031,14 +1032,19 @@ class VisionService:
             if not result["send"]:
                 print(f"[Vision] 告警单飞抑制: {room}陌生人（{result['reason']}，已合并 {result['merged_count']} 次）")
                 return
-        topic = getattr(self.config, "vision_alert_mqtt_topic", "") or "butler/trigger/gu_anheng_alert"
+        # DCD 裁定 2026-09-29：MA 不得直推 DB 内部主题；告警统一投 ma/insights，
+        # 不 retained，QoS1（publish_raw 内部已统一 QoS=1）
+        topic = getattr(self.config, "vision_alert_mqtt_topic", "") or "ma/insights"
         try:
             mqtt.publish_raw(topic, {
+                "type": "alert",
+                "source": "ma",
+                "trace_id": uuid.uuid4().hex,
                 "room": room,
                 "alert_type": "stranger",
                 "message": action or f"{room} 出现未识别人员",
                 "snapshot_url": snapshot_url,
-            })
+            }, retain=False)
         except Exception as exc:  # noqa: BLE001
             print(f"[Vision] 异常 MQTT 推送失败（已忽略）: {exc}")
 
@@ -1076,15 +1082,14 @@ class VisionService:
         """TV 端人脸事件（spec §5.1）。空 persons = 「房间没人了」，直接入库不调 VLM。"""
         if persons:
             # 有身份变化 → 触发一次识别（同步等 VLM 结果意义不大，走异步任务）
-            _t = asyncio.get_running_loop().create_task(
+            task_registry.create(
                 asyncio.to_thread(
                     self.analyze_room, room,
                     trigger=trigger or "identity_change",
                     persons=persons, device_ts=device_ts, client=client,
-                )
+                ),
+                name=f"vision.analyze_room.{room}",
             )
-            self._analyze_tasks.add(_t)
-            _t.add_done_callback(self._analyze_tasks.discard)
             return {"accepted": True, "deduped": False, "vlm_dispatched": True}
         self.store.insert_behavior_event({
             "room": room, "camera_src": camera or (self.camera_for_room(room) or {}).get("stream", ""),
@@ -1137,7 +1142,9 @@ class VisionService:
 
     def start(self) -> None:
         if self._patrol_task is None or self._patrol_task.done():
-            self._patrol_task = asyncio.create_task(self.patrol_loop())
+            self._patrol_task = task_registry.create(
+                self.patrol_loop(), name="vision.patrol"
+            )
 
     async def stop(self) -> None:
         task = self._patrol_task

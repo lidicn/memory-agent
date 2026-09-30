@@ -266,10 +266,10 @@ class Config:
     vision_no_tv_interval_s: int = 300       # 无 TV 房间巡检周期
     vision_light_gate: bool = True           # 光线门槛全局总闸：房间开灯才轮询
     vision_snapshot_retention_days: int = 7
-    # 巡检异常 MQTT 推送（交接单 顾安恒 Phase 2，默认关）：发现陌生人等异常时，
-    # 向管家约定主题推送 {room, alert_type, message, snapshot_url}。
+    # 巡检异常 MQTT 推送（Phase 2，默认关）：发现陌生人等异常时，向 MA 域名告警
+    # 主题推送 {type, source, trace_id, room, alert_type, message, snapshot_url}。
     vision_alert_mqtt_enabled: bool = False
-    vision_alert_mqtt_topic: str = "ma/insights/security_alert"  # DCD: 各仓只推自己域名，越权 butler/trigger 已修正
+    vision_alert_mqtt_topic: str = "ma/insights"  # DCD: 各仓只推自己域名，历史越权主题已收口至 ma/insights
 
     # ── 人脸识别节点池（ArcFace 可插拔，face_node_pool_plan）────────────────
     # memory-agent 持有节点注册表与统一识别路由；节点按权重选路，失败降级 VLM。

@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from typing import Any, Iterable
 
 from .store import Store, make_event_id, now_local, parse_ts
+from .task_registry import task_registry
 
 # 这些状态不代表真实行为，计入会污染统计
 SKIP_STATES = {"unknown", "unavailable", "none", ""}
@@ -82,7 +83,9 @@ class CollectService:
     async def start(self) -> None:
         if self._scheduler_task and not self._scheduler_task.done():
             return
-        self._scheduler_task = asyncio.create_task(self._scheduler_loop())
+        self._scheduler_task = task_registry.create(
+            self._scheduler_loop(), name="collector.scheduler"
+        )
         print(
             f"[Collect] 调度器已启动 "
             f"(enabled={self.config.polling_enabled}, mode={self.config.polling_mode})"
@@ -187,8 +190,9 @@ class CollectService:
                 self.store.create_job, "realtime", {"source": source}
             )
             self._cancel_flag = False
-            self._job_task = asyncio.create_task(
-                self._run_realtime(job_id, source, since_minutes=since_minutes)
+            self._job_task = task_registry.create(
+                self._run_realtime(job_id, source, since_minutes=since_minutes),
+                name=f"collector.realtime.{job_id}",
             )
             return {"ok": True, "job_id": job_id}
 
@@ -217,8 +221,9 @@ class CollectService:
             params = {"start_day": start_day, "end_day": end_day, "rooms": rooms or []}
             job_id = await asyncio.to_thread(self.store.create_job, "backfill", params)
             self._cancel_flag = False
-            self._job_task = asyncio.create_task(
-                self._run_backfill(job_id, start_dt, end_dt, rooms)
+            self._job_task = task_registry.create(
+                self._run_backfill(job_id, start_dt, end_dt, rooms),
+                name=f"collector.backfill.{job_id}",
             )
             return {"ok": True, "job_id": job_id}
 

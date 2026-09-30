@@ -22,6 +22,7 @@ from datetime import timedelta
 from typing import Any
 
 from .store import now_local
+from .task_registry import task_registry
 
 # 方向类别（有限枚举，不开放 LLM 自由探索）
 DIRECTIONS: dict[str, str] = {
@@ -375,7 +376,9 @@ class ResearcherService:
     def start(self) -> None:
         if self.gates.enabled and self._task is None:
             try:
-                self._task = asyncio.create_task(self._periodic())
+                self._task = task_registry.create(
+                    self._periodic(), name="researcher.periodic"
+                )
             except RuntimeError:
                 # 不在运行中的事件循环内（如测试），跳过自动调度
                 pass
