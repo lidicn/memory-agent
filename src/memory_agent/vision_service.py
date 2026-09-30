@@ -88,6 +88,7 @@ class VisionService:
         self._last_result: dict[str, dict] = {}       # room -> 最近一次结果摘要
         self._last_cleanup_day: str = ""
         self._patrol_task: asyncio.Task | None = None
+        self._analyze_tasks: set[asyncio.Task] = set()  # 稳定性审计第二轮：跟踪 analyze_room task
 
     # ── 配置便捷访问 ──────────────────────────────────────────────────────
 
@@ -1075,13 +1076,15 @@ class VisionService:
         """TV 端人脸事件（spec §5.1）。空 persons = 「房间没人了」，直接入库不调 VLM。"""
         if persons:
             # 有身份变化 → 触发一次识别（同步等 VLM 结果意义不大，走异步任务）
-            asyncio.get_running_loop().create_task(
+            _t = asyncio.get_running_loop().create_task(
                 asyncio.to_thread(
                     self.analyze_room, room,
                     trigger=trigger or "identity_change",
                     persons=persons, device_ts=device_ts, client=client,
                 )
             )
+            self._analyze_tasks.add(_t)
+            _t.add_done_callback(self._analyze_tasks.discard)
             return {"accepted": True, "deduped": False, "vlm_dispatched": True}
         self.store.insert_behavior_event({
             "room": room, "camera_src": camera or (self.camera_for_room(room) or {}).get("stream", ""),

@@ -682,6 +682,7 @@ MCP_STATS_LOCK = threading.Lock()
 MCP_SLOW_MS = float(os.getenv("MCP_SLOW_MS", "5000"))
 MCP_HEAVY_MS = float(os.getenv("MCP_HEAVY_MS", "30000"))
 _mcp_stats_log = logging.getLogger("mcp.stats")
+_log = logging.getLogger(__name__)  # 稳定性审计第二轮：_log 未定义导致错误路径崩溃
 # 审计 M1：MCP 调用统计上限，防止进程级无限增长（内存泄漏）
 MCP_MAX_STATS_ENTRIES = int(os.getenv("MCP_MAX_STATS_ENTRIES", "500"))
 

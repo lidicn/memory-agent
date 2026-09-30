@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from typing import AsyncIterator
@@ -11,6 +12,8 @@ from typing import AsyncIterator
 from starlette.requests import Request
 from starlette.routing import Route
 from starlette.responses import JSONResponse
+
+_log = logging.getLogger(__name__)
 
 from ..llm_client import normalize_chat_url
 from ..store import now_local
@@ -175,7 +178,7 @@ async def llm_chat(request: Request):
                 )
             except Exception as exc:
                 # 工具调用阶段异常时回退到普通流式生成，由 LLM 直接回答或道歉
-                _logger.warning("Tool-call chat failed: %s", exc)
+                _log.warning("Tool-call chat failed: %s", exc)
                 final_response = None
                 break
 

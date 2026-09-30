@@ -22,6 +22,9 @@ from ..store import now_local
 from ..presence_fusion import fuse_presence
 from .deps import error, json_body, ok, require_user, runtime
 
+# 稳定性审计第二轮：跟踪 vision analyze task，防止被 GC
+_VISION_TASKS: set[asyncio.Task] = set()
+
 
 def _check_device_token(request: Request) -> bool:
     token = (runtime(request).config.vision_device_token or "").strip()
@@ -151,9 +154,11 @@ async def vision_analyze(request: Request):
             return error(result.get("error") or result.get("reason", "识别失败"),
                          extra=result)
         return ok({"message": result.get("action") or "识别完成", **result})
-    asyncio.get_running_loop().create_task(
+    _t = asyncio.get_running_loop().create_task(
         asyncio.to_thread(rt.vision.analyze_room, room, force=force, trigger="manual")
     )
+    _VISION_TASKS.add(_t)
+    _t.add_done_callback(_VISION_TASKS.discard)
     cam = rt.vision.camera_for_room(room) or {}
     return ok({
         "message": "已加入识别队列",

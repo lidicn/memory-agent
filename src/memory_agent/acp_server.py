@@ -122,6 +122,9 @@ class SessionStore:
 
 _STORE = SessionStore()
 
+# 稳定性审计第二轮：跟踪 _execute_run task，防止被 GC / 异常不可观测
+_ACP_RUN_TASKS: set[asyncio.Task] = set()
+
 
 # ── 工具目录 ───────────────────────────────────────────────────────────
 # 竞技场专用工具（仅对 arena_ 令牌开放），与 builtin/delegate 隔离
@@ -439,13 +442,15 @@ async def acp_handle(
         )
         _register(run)
         _STORE.bind(session_id, run.run_id, owner_token=_owner)
-        asyncio.create_task(
+        _t = asyncio.create_task(
             _execute_run(
                 rt, run,
                 tools=build_acp_llm_tools(_acp_kind(rt, scope)),  # P1-21: LLM 需要 OpenAI 格式
                 run_tool=_make_arena_run_tool(rt, _acp_kind(rt, scope)),
             )
         )
+        _ACP_RUN_TASKS.add(_t)
+        _t.add_done_callback(_ACP_RUN_TASKS.discard)
 
         async def gen() -> AsyncIterator[str]:
             # 订阅范式与 debug_stream 对齐：先追加队列、回放历史、再消费实时，

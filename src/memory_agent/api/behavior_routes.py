@@ -9,6 +9,7 @@ canonical 活动」，供管家 v1.7 M4 状态看板消费（需加入 butler �
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timedelta
 
 from starlette.requests import Request
@@ -84,6 +85,7 @@ async def candidate_rule_update(request: Request):
     _, err = require_user(request)
     if err:
         return err
+    rt = runtime(request)
     body = await json_body(request)
     rule_id = (body.get("rule_id") or "").strip()
     status = (body.get("status") or "").strip()

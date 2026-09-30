@@ -52,6 +52,7 @@ _CONV: dict[str, list] = {}  # conversation_id -> 完整 messages 上下文
 _MAX_RUNS = 200
 _MAX_CONV = 200  # 稳定性审计缺陷2：_CONV 上限，防止单调增长到 OOM
 _CONV_ORDER: list[str] = []  # FIFO 淘汰顺序
+_DEBUG_RUN_TASKS: set[asyncio.Task] = set()  # 稳定性审计第二轮：跟踪 _execute_run task
 
 _TERMINAL = object()  # 内部哨兵：标记流结束（不进 history）
 
@@ -340,7 +341,9 @@ async def debug_run(request: Request):
         temperature=temperature,
     )
     _register(run)
-    asyncio.create_task(_execute_run(rt, run))
+    _t = asyncio.create_task(_execute_run(rt, run))
+    _DEBUG_RUN_TASKS.add(_t)
+    _t.add_done_callback(_DEBUG_RUN_TASKS.discard)
     return JSONResponse(
         {
             "run_id": run_id,
