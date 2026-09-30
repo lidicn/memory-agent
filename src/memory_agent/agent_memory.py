@@ -1,4 +1,4 @@
-﻿"""Agent 记忆服务：参与式写回向量库的安全封装。
+"""Agent 记忆服务：参与式写回向量库的安全封装。
 
 四道保险
 --------
@@ -489,7 +489,10 @@ class AgentMemoryService:
 
     def list_agent_memories(self, state: str = "all", source: str = "",
                              member_id: str = "") -> dict:
-        rows = self.store.list_agent_memories(state, source, member_id=member_id)
+        # vMA-1.2.2: fail-closed —— 空 member_id 只返回公共记忆（member_id=''），
+        # 不返回任何特定成员的记忆，与 retrieve 路口径一致
+        rows = self.store.list_agent_memories(state, source, member_id=member_id or "",
+                                              exact_member=True)
         return {
             "ok": True,
             "state": state,

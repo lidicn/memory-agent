@@ -1,4 +1,4 @@
-﻿"""SQLite 数据访问层 —— 行为事件主存储 / 采集日历 / 采集任务
+"""SQLite 数据访问层 —— 行为事件主存储 / 采集日历 / 采集任务
 
 设计要点
 --------
@@ -3922,9 +3922,11 @@ class Store:
             conn.commit()
 
     def list_agent_memories(self, state: str = "all", source: str = "", limit: int = 500,
-                            member_id: str = "") -> list:
+                            member_id: str = "", *, exact_member: bool = False) -> list:
         conn = self.connect()
         # WO-MA-005: 成员归属过滤。member_id 非空时只返回该成员的记忆。
+        # vMA-1.2.2: exact_member=True 时空字符串也精确匹配 member_id=''（公共记忆），
+        # 用于对外 API 的 fail-closed；内部 sweep 不传此参数以保持"看全部"语义。
         where_parts = []
         params: list = []
         if state != "all":
@@ -3933,7 +3935,10 @@ class Store:
         if source:
             where_parts.append("source=?")
             params.append(source)
-        if member_id:
+        if exact_member:
+            where_parts.append("member_id=?")
+            params.append(member_id)
+        elif member_id:
             where_parts.append("member_id=?")
             params.append(member_id)
         if where_parts:
