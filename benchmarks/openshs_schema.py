@@ -97,3 +97,69 @@ def get_activity_map(name: str = "fine") -> dict[str, str]:
     """返回评估用的标签映射。'fine' = ACTIVITY_MAP（样本/细粒度数据集），
     'coarse' = COARSE_ACTIVITY_MAP（真实粗粒度 7 分类数据集）。"""
     return COARSE_ACTIVITY_MAP if name == "coarse" else ACTIVITY_MAP
+
+
+# ── 方案A 适配：旧活动名 → 时段启发式标签（benchmark 侧，不动生产代码）──────────
+# ``infer_activities``（insights/service.py ``_label_activity`` /
+# ``_infer_activities``）已从「规则识别具体活动」重构为「按连续活跃时段打
+# 时段启发式标签」。生产侧可能输出的**全部标签**枚举如下（改动生产标签时须
+# 同步本表，否则基准口径断裂）：
+#   * 夜间活动           —— 时段整体结束于 05 时（end_hour < 6）
+#   * 晨间活动           —— 时段起始 < 09 时
+#   * 日间活动           —— 时段起始 < 18 时
+#   * 晚间娱乐           —— 起始 ≥ 18 时且主导 domain 为 media_player
+#   * 晚间照明/开关调整   —— 起始 ≥ 18 时且主导 domain 为 light / switch
+#   * 晚间活动           —— 起始 ≥ 18 时的其余情况
+#   * 可能离家           —— 09:00-18:00 内出现 ≥3 小时连续无事件静默
+PERIOD_LABELS: tuple[str, ...] = (
+    "夜间活动", "晨间活动", "日间活动",
+    "晚间娱乐", "晚间照明/开关调整", "晚间活动",
+    "可能离家",
+)
+
+# 旧 MA 活动名 → 该活动在家庭作息下**可能**落入的时段标签集合（确定性多对多
+# 映射；以生产侧时段桶语义为准，不臆造标签）。未列出的活动回退为「标签名自
+# 身」口径（legacy 规则匹配输出与预测同名时仍可直接命中）。
+#   sleeping    睡眠跨 00-05（夜间）与晨起 06-08（晨间）；
+#   cooking     早/午/晚三餐 → 晨间、日间、晚间（厨房开关/灯主导 →
+#               晚间照明/开关调整 或 其余主导 → 晚间活动）；
+#   watching_tv 电视以晚间为主（media 主导 → 晚间娱乐；binary 主导 → 晚间活动），
+#               日间观看 → 日间活动；
+#   working     工作以日间为主，加班/晚间书房 → 晚间活动；
+#   bathing     晨浴/午浴/晚浴皆可能；
+#   away        「可能离家」即静默判离家，直接对应 leaveHouse。
+LEGACY_TO_PERIOD: dict[str, frozenset[str]] = {
+    "sleeping":    frozenset({"夜间活动", "晨间活动"}),
+    "cooking":     frozenset({"晨间活动", "日间活动", "晚间活动",
+                              "晚间照明/开关调整"}),
+    "watching_tv": frozenset({"日间活动", "晚间娱乐", "晚间活动"}),
+    "working":     frozenset({"日间活动", "晚间活动"}),
+    "bathing":     frozenset({"晨间活动", "日间活动", "晚间活动",
+                              "晚间照明/开关调整"}),
+    "away":        frozenset({"可能离家"}),
+}
+
+
+def legacy_activity_hit(act: str, pred_labels) -> bool:
+    """判定口径（GT 侧旧活动名 vs 预测侧时段标签）：
+
+    当天预测出的时段标签集合与 ``LEGACY_TO_PERIOD[act]`` 有交集，即视为
+    「该活动被预测到」。ground truth 与预测两侧经此函数统一口径。
+    """
+    return bool(set(pred_labels or ())
+                & LEGACY_TO_PERIOD.get(act, frozenset({act})))
+
+
+def period_to_legacy(labels) -> set[str]:
+    """时段标签 → 可能对应的旧活动名（LEGACY_TO_PERIOD 的逆向展开）。
+
+    多对一坍缩是方案A 语义的固有代价：一个「日间活动」记录同时兼容
+    cooking/working/bathing/watching_tv。仅供 day/slot/segment 级评估
+    保持口径一致；结论应理解为「时段覆盖度」而非子活动判别。
+    """
+    out: set[str] = set()
+    for lb in (labels or ()):
+        for act, periods in LEGACY_TO_PERIOD.items():
+            if lb in periods:
+                out.add(act)
+    return out
