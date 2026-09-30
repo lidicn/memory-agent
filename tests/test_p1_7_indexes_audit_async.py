@@ -12,9 +12,9 @@ import sys
 import tempfile
 import unittest
 
-# 容器内源码路径
-SRC_DIR = "/app/src"
-sys.path.insert(0, SRC_DIR)
+# 源码路径：优先用环境变量，其次相对项目根目录（兼容本地与 CI）
+SRC_DIR = os.environ.get("MA_SRC_DIR", os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.abspath(SRC_DIR))
 
 
 class TestP17BehaviorEventsIndexes(unittest.TestCase):

@@ -27,7 +27,10 @@ pytestmark = pytest.mark.skipif(
 
 
 def _report():
-    from homesdk.gates import GateConfig, scan_repo
+    try:
+        from homesdk.gates import GateConfig, scan_repo
+    except ImportError:
+        pytest.skip("homesdk 未安装（门禁工具，非项目运行时依赖）")
 
     config = GateConfig.load(REPO_ROOT)
     return scan_repo(

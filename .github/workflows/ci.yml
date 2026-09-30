@@ -38,3 +38,5 @@ jobs:
           python -m pytest tests/ -q --ignore=tests/test_mqtt_bridge.py --ignore=tests/test_ha_assist.py -x
         env:
           PYTHONPATH: src
+          JWT_SECRET: ci-test-secret-do-not-use-in-production
+          MA_ENV: test

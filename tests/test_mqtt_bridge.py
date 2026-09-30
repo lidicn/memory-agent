@@ -26,6 +26,10 @@ class _FakeClient:
         self.published = []
         self.loop_started = False
         self.disconnected = False
+        self._connected = True
+
+    def is_connected(self):
+        return self._connected
 
     def publish(self, topic, payload, qos=0, retain=False):
         self.published.append(
