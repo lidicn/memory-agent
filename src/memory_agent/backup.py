@@ -62,7 +62,9 @@ class BackupManager:
                 # 校验作双保险。
                 if "'" in dest or "\x00" in dest:
                     raise ValueError("备份目标路径含非法字符（引号/NUL）")
-                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                # NEW-P1-2：不用 mode=ro 只读连接（WAL 模式下可能看不到最新提交），
+                # 改用普通连接 + VACUUM INTO 产生一致性快照。VACUUM INTO 不修改源库。
+                conn = sqlite3.connect(db_path, timeout=30.0)
                 try:
                     conn.execute("VACUUM INTO ?", (dest,))
                 finally:

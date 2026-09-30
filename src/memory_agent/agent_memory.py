@@ -17,7 +17,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from .store import now_local
+from .store import now_local, safe_json_loads
 
 AGENT_COLLECTION = "agent_memory"
 AGENT_STATES = ("staging", "live", "revoked", "pending_review")
@@ -367,7 +367,7 @@ class AgentMemoryService:
 
     # ── 晋升条件评估（v2 #1 / #6；修复：前缀归一化 + 误导性报错）────────────
     def _evaluate_promotion(self, mem: dict, corroborating_insight_id: str = "") -> Tuple[bool, str]:
-        src_refs = json.loads(mem.get("source_refs_json") or "[]")
+        src_refs = safe_json_loads(mem.get("source_refs_json"), [])
         # 归一化：裸 id 与 insight:<id> 两种传法都接受（缺陷 1：旧代码双重前缀化）
         cid = (corroborating_insight_id or "").strip()
         if cid.startswith("insight:"):
@@ -509,8 +509,8 @@ class AgentMemoryService:
                     "source": r.get("source", "ma"),
                     "member_id": r.get("member_id", ""),
                     "topic_key": r["topic_key"],
-                    "tags": json.loads(r["tags_json"] or "[]"),
-                    "source_refs": json.loads(r["source_refs_json"] or "[]"),
+                    "tags": safe_json_loads(r["tags_json"], []),
+                    "source_refs": safe_json_loads(r["source_refs_json"], []),
                     "prev_id": r.get("prev_id", ""),
                     "valid_from": r.get("valid_from", ""),
                     "valid_to": r.get("valid_to", ""),

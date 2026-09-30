@@ -9,6 +9,16 @@ from typing import Optional, List, Dict, Any
 import chromadb
 
 
+def _safe_json_loads(raw, default=None):
+    """NEW-P1-1：安全解析 JSON，失败返回默认值。"""
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def _clean_metadata(source: Dict[str, Any]) -> Dict[str, Any]:
     """把 get_pattern() 的返回值收敛为 Chroma 可接受的扁平 metadata。
 
@@ -109,8 +119,8 @@ class PatternManager:
                     "person": metadata.get('person', ''),
                     "category": metadata.get('category', ''),
                     "description": metadata.get('description', ''),
-                    "condition": json.loads(metadata.get('condition', '{}')),
-                    "action": json.loads(metadata.get('action', '{}')),
+                    "condition": _safe_json_loads(metadata.get('condition', '{}'), {}),
+                    "action": _safe_json_loads(metadata.get('action', '{}'), {}),
                     "status": metadata.get('status', ''),
                     "confidence": float(metadata.get('confidence', 0)),
                     "sample_count": int(metadata.get('sample_count', 0)),

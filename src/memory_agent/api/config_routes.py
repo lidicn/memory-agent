@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from starlette.requests import Request
 from starlette.routing import Route
@@ -10,6 +11,8 @@ from starlette.routing import Route
 from ..llm_client import LLMProvider, normalize_chat_url
 from ..config import get_config
 from .deps import error, json_body, mask_secret, ok, require_admin, require_user, runtime
+
+_log = logging.getLogger(__name__)
 
 # 允许通过 API 更新的字段白名单。
 # 缺字段会导致前端提交被静默丢弃（重构前 llm_provider 就是这么丢的），
@@ -391,8 +394,12 @@ async def test_connection(request: Request):
                 return error("未配置 HA 数据库（请填写 host/user/password）")
             result = await asyncio.to_thread(ha_db.ping)
             if result.get("ok"):
-                return ok({"message": f"HA MariaDB 连接成功（schema={result.get('mode')}）"})
-            return error("HA MariaDB 连接失败：" + str(result.get("error", "未知错误")))
+                _mode = result.get("mode")
+                return ok({"message": f"HA MariaDB 连接成功（schema={_mode}）"})
+            # NEW-P2-4：对外返回统一错误码，底层细节仅进日志，不外泄内部结构
+            _detail = str(result.get("error", "未知错误"))
+            _log.warning("HA MariaDB 连接测试失败: %s", _detail)
+            return error("HA MariaDB 连接失败，请检查配置（host/port/user/password）")
 
         if conn_type == "db":
             stats = await asyncio.to_thread(rt.store.stats)

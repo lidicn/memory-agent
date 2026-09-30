@@ -23,6 +23,8 @@ import hashlib
 import json
 import re
 from collections import Counter
+
+from .store import safe_json_loads
 from datetime import datetime
 from typing import Any
 
@@ -128,7 +130,7 @@ class ArenaService:
                 "ok": True, "arena_id": arena_id, "count": 0, "items": [],
                 "hint": "该竞技场分区尚无快照，请先调用 POST /api/arena/snapshot 创建",
             }
-        data = json.loads(snap["snapshot_json"])
+        data = safe_json_loads(snap["snapshot_json"], {})
         entities = data.get("entities", [])
         items = []
         idx = 0

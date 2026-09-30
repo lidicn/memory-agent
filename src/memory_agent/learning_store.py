@@ -11,6 +11,16 @@ from typing import Iterable, Sequence
 from learning_models import FeedbackKind, FeedbackSignal, ReasonCode, SubjectType
 from learning_optimizer import ParamAdjustment
 
+
+def _safe_json_loads(raw, default=None):
+    """NEW-P1-1：安全解析 JSON，失败返回默认值。"""
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS learning_feedback (
     feedback_id     TEXT PRIMARY KEY,
@@ -64,7 +74,9 @@ class LearningStore:
     """薄仓储层；核心逻辑保持纯函数，I/O 全部收敛在这里。"""
 
     def __init__(self, db_path: str = "memoryagent.db") -> None:
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        # NEW-P0-1：加 timeout + busy_timeout，与主库 store.py 对齐，防并发写 database is locked
+        self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
+        self._conn.execute("PRAGMA busy_timeout=30000")
         self._conn.executescript(SCHEMA_SQL)
         self._conn.commit()
 
@@ -108,7 +120,7 @@ class LearningStore:
                     room=room,
                     reason=ReasonCode(reason),
                     repeat_count=repeat_count,
-                    context=json.loads(context_json),
+                    context=_safe_json_loads(context_json, {}),
                     context_dropped=bool(dropped),
                     created_at=_parse_dt(created_at),
                 )
@@ -140,7 +152,7 @@ class LearningStore:
             out.append(
                 ParamAdjustment(
                     adjustment_id=aid, param=param, old_value=old_v, new_value=new_v,
-                    reason=reason, evidence=tuple(json.loads(evidence_json)), mode=mode,
+                    reason=reason, evidence=tuple(_safe_json_loads(evidence_json, [])), mode=mode,
                     created_at=_parse_dt(created_at), verdict=verdict,
                     rolled_back=bool(rolled_back),
                 )

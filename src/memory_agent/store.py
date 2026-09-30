@@ -1771,7 +1771,7 @@ class Store:
             if conn.execute("SELECT COUNT(*) FROM voice_answer_cache").fetchone()[0] > _VOICE_CACHE_MAX:
                 conn.execute(
                     "DELETE FROM voice_answer_cache WHERE cache_key IN ("
-                    "SELECT cache_key FROM voice_answer_cache ORDER BY created_at ASC LIMIT ?)",
+                    "SELECT cache_key FROM voice_answer_cache ORDER BY created_at ASC, rowid ASC LIMIT ?)",
                     (max(1, _VOICE_CACHE_MAX // 10),),
                 )
                 conn.commit()
@@ -3386,6 +3386,30 @@ class Store:
             cur = conn.execute(sql, args)
             return {r["entity_id"]: (r["last_ts"] or "") for r in cur.fetchall()}
 
+    def list_excluded_entities(self, limit: int = 500) -> list[dict]:
+        """NEW-P2-2：审计视图——因 domain 属于 TELEMETRY_DOMAINS 而被行为聚合排除的实体。
+        运维可核对是否有设备被 HA 误配 domain（如插座报为 sensor）导致静默漏数。
+        """
+        placeholders = ",".join("?" * len(TELEMETRY_DOMAINS))
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                f"SELECT entity_id, domain, COUNT(*) AS event_count, MAX(ts) AS last_seen "
+                f"FROM events WHERE domain IN ({placeholders}) "
+                f"GROUP BY entity_id, domain ORDER BY event_count DESC LIMIT ?",
+                (*TELEMETRY_DOMAINS, max(1, min(int(limit), 5000))),
+            )
+            return [
+                {
+                    "entity_id": r["entity_id"],
+                    "domain": r["domain"],
+                    "event_count": r["event_count"],
+                    "last_seen": r["last_seen"] or "",
+                    "excluded_reason": f"domain={r['domain']} 属于遥测域，行为聚合默认排除",
+                }
+                for r in cur.fetchall()
+            ]
+
     def entity_event_counts(
         self, start: str | None = None, end: str | None = None
     ) -> dict[str, int]:
@@ -4359,3 +4383,17 @@ class Store:
             "revoked": bool(r["revoked"]),
             "revoked_at": r["revoked_at"],
         }
+
+
+# ── 模块级工具 ──────────────────────────────────────────────────────────
+
+def safe_json_loads(raw: Any, default: Any = None) -> Any:
+    """NEW-P1-1：安全解析 JSON，失败记 WARNING 并返回默认值，让坏数据可见但不断链。"""
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError) as _e:
+        import logging
+        logging.getLogger(__name__).warning("safe_json_loads 解析失败: %s (前80字符: %r)", _e, str(raw)[:80])
+        return default
