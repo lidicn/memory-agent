@@ -669,7 +669,7 @@ class AppRuntime:
         except Exception as exc:
             print(f"[Runtime] 停止采集服务异常: {exc}")
         try:
-            await self.llm.close()
+            self.llm.close()
         except Exception as exc:
             print(f"[Runtime] 关闭 LLM 客户端异常: {exc}")
         ha_db = getattr(self, "ha_db", None)
