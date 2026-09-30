@@ -53,12 +53,12 @@ def run_benchmark(csv_path: str, map_name: str = "fine", slot_seconds: int = 300
     store.insert_events(events)
 
     cfg = types.SimpleNamespace(tz_offset_hours=0.0, insight_cache_ttl=0, rooms={})
-    svc = InsightService(cfg, store)
+    svc = InsightService(store, cfg)
     res = svc.infer_activities(start=mn, end=mx)
 
     pred_days: dict[str, set] = defaultdict(set)
     for a in res.get("activities", []):
-        pred_days[a.get("day", "")].add(a["activity"])
+        pred_days[a.get("day", "")].add(a.get("name", ""))
 
     gt = ground_truth(csv_path, activity_map=activity_map)
     gt_days = gt["days"]

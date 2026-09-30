@@ -229,7 +229,7 @@ def test_identity_resolves_unknown_by_elimination():
     """客厅陌生人 + 名册消除法等式成立 → 裁决为缺席成员。"""
     roster = [
         {"id": "m1", "name": "lidicn"},
-        {"id": "m2", "name": "凯文"},
+        {"id": "m2", "name": "凯文", "rooms": ["客厅"]},
         {"id": "m3", "name": "Emily"},
     ]
     # 客厅 count=1，无已识别 → unknown=1；其他房间无事件

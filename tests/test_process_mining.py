@@ -17,7 +17,7 @@ if _SRC not in sys.path:
 
 from memory_agent import algo_kernel as ak  # noqa: E402
 from memory_agent.activity_inference import ActivityInferenceService  # noqa: E402
-from memory_agent.insights import InsightService  # noqa: E402
+from memory_agent.insights.utils import tags_of  # noqa: E402
 from memory_agent.store import Store  # noqa: E402
 
 
@@ -295,7 +295,7 @@ def test_anomaly_list_filters_and_purge_keeps_confirmed(store):
 
 class _FakeInsights:
     def _tags_of(self, eid, name):
-        return InsightService._tags_of(eid, name)
+        return tags_of(eid, name)
 
 
 def _runtime(store):
