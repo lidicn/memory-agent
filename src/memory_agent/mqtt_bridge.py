@@ -166,7 +166,7 @@ class MqttBridge:
             return False
 
     def publish_raw(self, topic: str, payload: Any, retain: bool = False) -> bool:
-        """按完整 topic 发布（不加前缀）。用于跨服务约定主题（如 butler/trigger/*）。"""
+        """按完整 topic 发布（不加前缀）。仅用于 MA 自有域名下的跨服务约定主题。"""
         if not self.enabled or self._closed:
             return False
         topic = (topic or "").strip()

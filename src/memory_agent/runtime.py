@@ -42,6 +42,7 @@ from .backup import BackupManager
 from .template_validate import validate_all
 from .poller import CollectService
 from .store import Store, now_local
+from .task_registry import task_registry
 from .templates import TemplateManager
 from .tv_service import TVService
 from .vision_service import VisionService
@@ -172,14 +173,16 @@ class AppRuntime:
         # 数据清理移到后台异步执行，不阻塞启动
         # events 表 100 万行时 DELETE 可能需数分钟，同步执行会卡死 startup
         if self.config.data_retention_days > 0:
-            self._retention_task = asyncio.create_task(
-                self._run_retention_cleanup()
+            self._retention_task = task_registry.create(
+                self._run_retention_cleanup(), name="runtime.retention_cleanup"
             )
 
         await self.collector.start()
         self.vision.start()
         self._started = True
-        self._sweep_task = asyncio.create_task(self._periodic_agent_memory_sweep())
+        self._sweep_task = task_registry.create(
+            self._periodic_agent_memory_sweep(), name="runtime.agent_memory_sweep"
+        )
         # 身份层：启动即跑一次对账，让模板/查询尽快拿到逻辑映射；失败不影响启动
         try:
             res = await asyncio.to_thread(self.identity_reconciler.reconcile)
@@ -191,20 +194,30 @@ class AppRuntime:
         except Exception as exc:  # noqa: BLE001 - 对账失败不应阻断启动
             print(f"[Identity] 首次对账失败（不影响启动）: {exc}")
         self._publish_health_changes(res if isinstance(res, dict) else {})
-        self._identity_task = asyncio.create_task(self._periodic_identity_reconcile())
+        self._identity_task = task_registry.create(
+            self._periodic_identity_reconcile(), name="runtime.identity_reconcile"
+        )
         if self.mqtt.enabled:
-            self._mqtt_task = asyncio.create_task(self._periodic_mqtt_presence())
+            self._mqtt_task = task_registry.create(
+                self._periodic_mqtt_presence(), name="runtime.mqtt_presence"
+            )
             print(
                 f"[MQTT] 实时推送已启用 → {self.config.tv_mqtt_host}:"
                 f"{self.config.tv_mqtt_port} 主题前缀 {self.config.ma_mqtt_topic_prefix}"
             )
         if getattr(self.config, "backup_enabled", False):
-            self._backup_task = asyncio.create_task(self._periodic_backup())
+            self._backup_task = task_registry.create(
+                self._periodic_backup(), name="runtime.backup"
+            )
             print(f"[Backup] 周期备份已启用 → {self.config.backup_dir}")
         # 模板校验：后台异步、首跑延时，结果落缓存供列表读取（不阻塞启动）
-        self._tpl_validate_task = asyncio.create_task(self._periodic_template_validate())
+        self._tpl_validate_task = task_registry.create(
+            self._periodic_template_validate(), name="runtime.template_validate"
+        )
         # 主动感知（v0.9.5）：周期行为推断（低频批处理，非实时流）
-        self._activity_task = asyncio.create_task(self._periodic_activity_inference())
+        self._activity_task = task_registry.create(
+            self._periodic_activity_inference(), name="runtime.activity_inference"
+        )
         # 主动感知 v2.0 · Phase 0.1 + 0.4：客厅盒侧 AI 事件轻量轮询 + 主动播报闭环
         announcer = Announcer(
             self.ha, self.store,
@@ -222,19 +235,27 @@ class AppRuntime:
             agent_memory=self.agent_memory,
             alert_dispatcher=self.alert_dispatcher,
         )
-        self._livingroom_ai_task = asyncio.create_task(self._periodic_livingroom_ai())
+        self._livingroom_ai_task = task_registry.create(
+            self._periodic_livingroom_ai(), name="runtime.livingroom_ai"
+        )
         # Phase 2.1 视觉行为事实候选区晋升：定期扫描候选区，晋升满足条件的事件
         self._candidate_promoter = get_promoter(self.store)
-        self._candidate_promotion_task = asyncio.create_task(self._periodic_candidate_promotion())
+        self._candidate_promotion_task = task_registry.create(
+            self._periodic_candidate_promotion(), name="runtime.candidate_promotion"
+        )
         # P5e 因果归因主动告警：每日扫描成员行为变化，显著变化写入 behavior_events
         self.causal_scanner = CausalScanner(self.store)
-        self._causal_scan_task = asyncio.create_task(self._periodic_causal_scan())
+        self._causal_scan_task = task_registry.create(
+            self._periodic_causal_scan(), name="runtime.causal_scan"
+        )
 
         # 记忆研究员（v0.8）：按 researcher_scheduler_time 每日低峰定期洞察
         self.researcher.start()
 
         # 自我日记（家庭人格化实验）：每天 23:00 自动生成
-        self._self_diary_task = asyncio.create_task(self._periodic_self_diary())
+        self._self_diary_task = task_registry.create(
+            self._periodic_self_diary(), name="runtime.self_diary"
+        )
         print("[Runtime] 启动完成")
 
     async def _periodic_self_diary(self) -> None:
@@ -628,34 +649,13 @@ class AppRuntime:
 
     async def shutdown(self) -> None:
         print("[Runtime] 关闭中…")
-        task = getattr(self, "_sweep_task", None)
-        if task is not None:
-            task.cancel()
-        identity_task = getattr(self, "_identity_task", None)
-        if identity_task is not None:
-            identity_task.cancel()
-        mqtt_task = getattr(self, "_mqtt_task", None)
-        if mqtt_task is not None:
-            mqtt_task.cancel()
-        backup_task = getattr(self, "_backup_task", None)
-        if backup_task is not None:
-            backup_task.cancel()
-        tpl_task = getattr(self, "_tpl_validate_task", None)
-        if tpl_task is not None:
-            tpl_task.cancel()
-        activity_task = getattr(self, "_activity_task", None)
-        if activity_task is not None:
-            activity_task.cancel()
-        # 主动感知 v2.0：客厅盒侧 AI 事件轮询任务
-        lrai_task = getattr(self, "_livingroom_ai_task", None)
-        if lrai_task is not None:
-            lrai_task.cancel()
-        # 稳定性审计缺陷1：补齐 4 个遗漏的常驻任务 cancel
-        for _name in ("_retention_task", "_candidate_promotion_task",
-                      "_causal_scan_task", "_self_diary_task"):
-            _t = getattr(self, _name, None)
-            if _t is not None:
-                _t.cancel()
+        # 路线图 3.2：全部后台任务经 TaskRegistry 收口，统一取消并等待退出
+        try:
+            cancelled = await task_registry.cancel_all()
+            if cancelled:
+                print(f"[Runtime] 已取消 {cancelled} 个后台任务")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Runtime] 取消后台任务异常: {exc}")
         try:
             self.mqtt.close()
         except Exception as exc:  # noqa: BLE001

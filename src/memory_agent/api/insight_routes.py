@@ -13,9 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-# 稳定性审计缺陷7：跟踪后台 researcher task，防止被 GC / 异常不可观测
-_RESEARCHER_TASKS: set[asyncio.Task] = set()
-
+from ..task_registry import task_registry
 from ..template_validate import (
     apply_fix,
     check_executable,
@@ -385,16 +383,12 @@ async def researcher_run_now(request: Request):
         job = rt.store.get_insight_job(job_id)
         if not job:
             return error("任务不存在")
-        _t = asyncio.create_task(rt.researcher.run_job(job, {
+        task_registry.create(rt.researcher.run_job(job, {
             "budget_left": rt.researcher.gates.daily_token_budget - rt.store.researcher_daily_token_used(today),
             "date": today,
-        }))
-        _RESEARCHER_TASKS.add(_t)
-        _t.add_done_callback(_RESEARCHER_TASKS.discard)
+        }), name=f"insight.researcher_job.{job_id}")
     else:
-        _t = asyncio.create_task(rt.researcher.run_all(force=True))
-        _RESEARCHER_TASKS.add(_t)
-        _t.add_done_callback(_RESEARCHER_TASKS.discard)
+        task_registry.create(rt.researcher.run_all(force=True), name="insight.researcher_all")
     return ok({"triggered": True})
 
 

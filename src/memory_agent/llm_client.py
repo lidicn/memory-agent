@@ -22,6 +22,11 @@ try:
 except ImportError:
     Config = None
 
+try:
+    from .task_registry import task_registry
+except ImportError:
+    from task_registry import task_registry
+
 HTTPX_AVAILABLE = True
 
 DEFAULT_TIMEOUT = 120
@@ -99,7 +104,6 @@ class LLMProvider:
             _num(getattr(cfg, "llm_max_tokens", None), 4096),
         )
         self._client: Optional[httpx.AsyncClient] = None
-        self._close_tasks: set = set()  # 稳定性审计缺陷6：跟踪 aclose task，防止被 GC
 
     @property
     def endpoint(self) -> str:
@@ -122,10 +126,10 @@ class LLMProvider:
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
-                    # 稳定性审计缺陷6：保存引用 + 异常回调，防止 task 被 GC / 异常不可观测
-                    _t = loop.create_task(self._client.aclose())
-                    self._close_tasks.add(_t)
-                    _t.add_done_callback(self._close_tasks.discard)
+                    # 稳定性审计缺陷6：TaskRegistry 统一持强引用 + 异常记录
+                    task_registry.create(
+                        self._client.aclose(), name=f"llm.close.{self.name}"
+                    )
                 else:
                     loop.run_until_complete(self._client.aclose())
             except Exception:

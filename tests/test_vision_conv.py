@@ -29,7 +29,7 @@ def _cfg(**kw):
         vlm_conversation_id="",
         vlm_keep_conversation=True,
         vision_alert_mqtt_enabled=False,
-        vision_alert_mqtt_topic="butler/trigger/gu_anheng_alert",
+        vision_alert_mqtt_topic="ma/insights",
         tz_offset_hours=8.0,
     )
     base.update(kw)
@@ -93,9 +93,13 @@ def test_maybe_publish_alert():
     svc._maybe_publish_alert("起居室", [{"name": "陌生人"}], "http://x/f.jpg", "陌生人在客厅")
     assert len(svc.mqtt.sent) == 1
     topic, payload = svc.mqtt.sent[0]
-    assert topic == "butler/trigger/gu_anheng_alert"
+    assert topic == "ma/insights"
     assert payload["alert_type"] == "stranger"
     assert payload["snapshot_url"] == "http://x/f.jpg"
+    # DCD：MA 自有域名 + 告警类型标识 + 链路追踪
+    assert payload["type"] == "alert"
+    assert payload["source"] == "ma"
+    assert payload["trace_id"]
 
     # 已知成员 → 不推送
     svc._maybe_publish_alert("起居室", [{"name": "lidicn"}], "u", "a")

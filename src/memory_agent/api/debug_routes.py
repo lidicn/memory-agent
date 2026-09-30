@@ -34,6 +34,7 @@ from starlette.routing import Route
 from starlette.responses import JSONResponse
 
 from ..skills import skill_prompt_for
+from ..task_registry import task_registry
 from .deps import (
     error,
     json_body,
@@ -52,7 +53,6 @@ _CONV: dict[str, list] = {}  # conversation_id -> 完整 messages 上下文
 _MAX_RUNS = 200
 _MAX_CONV = 200  # 稳定性审计缺陷2：_CONV 上限，防止单调增长到 OOM
 _CONV_ORDER: list[str] = []  # FIFO 淘汰顺序
-_DEBUG_RUN_TASKS: set[asyncio.Task] = set()  # 稳定性审计第二轮：跟踪 _execute_run task
 
 _TERMINAL = object()  # 内部哨兵：标记流结束（不进 history）
 
@@ -341,9 +341,7 @@ async def debug_run(request: Request):
         temperature=temperature,
     )
     _register(run)
-    _t = asyncio.create_task(_execute_run(rt, run))
-    _DEBUG_RUN_TASKS.add(_t)
-    _t.add_done_callback(_DEBUG_RUN_TASKS.discard)
+    task_registry.create(_execute_run(rt, run), name=f"debug.run.{run_id}")
     return JSONResponse(
         {
             "run_id": run_id,
@@ -492,6 +490,14 @@ async def debug_revoke_token(request: Request):
     return ok({"message": f"已撤销调试令牌: {name}"})
 
 
+async def debug_tasks(request: Request):
+    """后台任务快照（路线图 3.2：TaskRegistry 统一收口后可观测 pending 任务）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    return ok(task_registry.status())
+
+
 ROUTES = [
     # 调试令牌（管理员）
     Route("/api/debug/tokens", debug_list_tokens, methods=["GET"]),
@@ -502,4 +508,6 @@ ROUTES = [
     Route("/api/debug/llm/run/{run_id}", debug_status, methods=["GET"]),
     Route("/api/debug/llm/run/{run_id}/stream", debug_stream, methods=["GET"]),
     Route("/api/debug/llm/run/{run_id}/abort", debug_abort, methods=["POST"]),
+    # 后台任务观测
+    Route("/api/debug/tasks", debug_tasks, methods=["GET"]),
 ]
