@@ -29,7 +29,7 @@ def butler_config(monkeypatch):
     return cfg
 
 
-async def _probe(path: str, headers: dict) -> tuple[bool, int]:
+async def _probe(path: str, headers: dict, method: str = "GET") -> tuple[bool, int]:
     """返回 (是否放行到下游, 响应状态码)。"""
     reached: list = []
     statuses: list = []
@@ -46,6 +46,7 @@ async def _probe(path: str, headers: dict) -> tuple[bool, int]:
 
     scope = {
         "type": "http",
+        "method": method,
         "path": path,
         "headers": [(k.encode(), v.encode()) for k, v in headers.items()],
     }
@@ -59,17 +60,23 @@ def _bearer(token: str = TOKEN) -> dict:
 
 @pytest.mark.asyncio
 async def test_butler_token_allowed_on_whitelist(butler_config):
+    # GET 路径
     for path in ("/api/members", "/api/members/abc123",
                  "/api/vision/presence", "/api/insights/member-schedule",
-                 "/api/tv/state", "/api/tv/screenshot", "/api/tv/analyze"):
+                 "/api/tv/state", "/api/tv/screenshot", "/api/behaviors"):
         reached, status = await _probe(path, _bearer())
         assert reached, f"{path} 应放行"
+        assert status == 200
+    # POST 路径
+    for path in ("/api/tv/analyze", "/api/events", "/api/metrics/ingest"):
+        reached, status = await _probe(path, _bearer(), method="POST")
+        assert reached, f"{path} 应放行(POST)"
         assert status == 200
 
 
 @pytest.mark.asyncio
 async def test_butler_token_rejected_outside_whitelist(butler_config):
-    for path in ("/api/config", "/api/behaviors", "/api/vision/status"):
+    for path in ("/api/config", "/api/vision/status"):
         reached, status = await _probe(path, _bearer())
         assert not reached, f"{path} 不应放行"
         assert status == 403

@@ -103,7 +103,7 @@ class _FakeInsights:
     def _fallback_name(self, eid):
         return eid
 
-    def _usage_one(self, entity_id, start_iso, end_iso, on_set, debounce, include_timeline):
+    def _usage_one(self, entity_id, start_iso, end_iso, on_set, debounce, include_timeline, time_range=""):
         return {
             "entity_id": entity_id,
             "total_seconds": 3600,
@@ -113,7 +113,7 @@ class _FakeInsights:
         }
 
     def _usage_by_attr(self, entity_id, attribute, value, pattern, start_iso, end_iso,
-                       debounce=60, include_timeline=True):
+                       debounce=60, include_timeline=True, time_range=""):
         return {
             "entity_id": entity_id,
             "attribute": attribute,

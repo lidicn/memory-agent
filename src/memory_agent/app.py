@@ -306,11 +306,7 @@ class AuthMiddleware:
             user = auth_manager.verify_token(token)
             if user:
                 return user
-            # 调试令牌（dbg_）回退校验：经运行时 Token 库识别 kind=debug 后授权
-            # 访问 /api 调试接口。mcp_ 令牌仅用于 /mcp，不在此放行（保持隔离）。
-            # 安全加固（审计 P0-2）：仅 debug_mode=True 且来源为 loopback/内网段时才放行。
-            if not config.debug_mode or not _is_trusted_source(client_ip):
-                return None
+            # 竞技场令牌（kind=arena）：外部服务 AutoFlow 的窄接口令牌，不受 debug_mode 限制
             try:
                 store = getattr(get_runtime(), "tokens", None)
             except Exception:  # noqa: BLE001
@@ -319,6 +315,13 @@ class AuthMiddleware:
                 name = store.verify(token)
                 if name and store.kind(name) == "arena":
                     return {"username": name, "is_admin": False, "arena": True}
+            # 调试令牌（dbg_）回退校验：经运行时 Token 库识别 kind=debug 后授权
+            # 访问 /api 调试接口。mcp_ 令牌仅用于 /mcp，不在此放行（保持隔离）。
+            # 安全加固（审计 P0-2）：仅 debug_mode=True 且来源为 loopback/内网段时才放行。
+            if not config.debug_mode or not _is_trusted_source(client_ip):
+                return None
+            if store is not None:
+                name = store.verify(token)
                 if name and store.kind(name) == "debug":
                     return {"username": name, "is_admin": False, "debug": True}
             return None

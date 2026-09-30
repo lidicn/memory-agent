@@ -16,15 +16,15 @@ from memory_agent.activity_inference import (  # noqa: E402
     ActivityInferenceService,
     _in_time_window,
 )
-from memory_agent.insights import InsightService  # noqa: E402
+from memory_agent.insights.utils import tags_of  # noqa: E402
 from memory_agent.store import Store  # noqa: E402
 
 
 class _FakeInsights:
-    """复用真实 InsightService 的标签推断（classmethod，无需实例状态）。"""
+    """复用真实 tags_of 标签推断。"""
 
     def _tags_of(self, eid, name):
-        return InsightService._tags_of(eid, name)
+        return tags_of(eid, name)
 
 
 def make_runtime(store, **cfg_kw):

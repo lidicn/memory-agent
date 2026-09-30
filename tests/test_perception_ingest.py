@@ -1,7 +1,14 @@
 import pytest
+from datetime import datetime, timedelta
 
 from memory_agent import perception_ingest as pi
 from memory_agent.store import Store
+
+
+def _recent_days(n: int) -> list[str]:
+    """返回最近 n 天的日期字符串（含今天），避免固定日期随时间过期。"""
+    today = datetime.now().date()
+    return [(today - timedelta(days=i)).isoformat() for i in range(n - 1, -1, -1)]
 
 
 def _store() -> Store:
@@ -294,8 +301,8 @@ def test_identity_skips_when_no_room():
 def test_count_room_action_days():
     """同房间+同 action 跨天统计。"""
     s = _store()
-    # 写 3 天不同天的「客厅/熟人出现」
-    for day in ("2026-09-16", "2026-09-17", "2026-09-18"):
+    # 写 3 天不同天的「客厅/熟人出现」（用最近日期避免窗口过期）
+    for day in _recent_days(3):
         s.insert_behavior_event({
             "server_ts": f"{day}T10:00:00",
             "room": "客厅",
@@ -311,9 +318,10 @@ def test_count_room_action_days():
 def test_count_room_action_days_same_day():
     """同一天多条只算 1 天。"""
     s = _store()
+    today = datetime.now().date().isoformat()
     for h in (10, 11, 12):
         s.insert_behavior_event({
-            "server_ts": f"2026-09-18T{h:02d}:00:00",
+            "server_ts": f"{today}T{h:02d}:00:00",
             "room": "客厅",
             "action": "陌生人出现",
             "persons": [{"name": "陌生人"}],

@@ -53,12 +53,25 @@ class _StoreFake:
         self.last_touch = job_id
 
 
+class _AgentMemoryFake:
+    def __init__(self):
+        self.calls = []
+
+    def merge_semantic_memory(self, **kw):
+        self.calls.append(kw)
+        return {"ok": True, "action": "added", "memory_id": "m1"}
+
+    def _upsert_mirror(self, m):
+        return None
+
+
 def make_runtime(config=None, store=None):
     from types import SimpleNamespace
 
     config = config or make_config()
     store = store or _StoreFake()
-    return SimpleNamespace(
+    agent_memory = _AgentMemoryFake()
+    rt = SimpleNamespace(
         config=config,
         store=store,
         insights=SimpleNamespace(
@@ -75,9 +88,11 @@ def make_runtime(config=None, store=None):
                 },
             )
         ),
-        agent_memory=SimpleNamespace(_upsert_mirror=lambda m: None),
+        agent_memory=agent_memory,
         history=SimpleNamespace(agent_collection=None),
     )
+    rt._agent_memory_fake = agent_memory
+    return rt
 
 
 def test_expand_units_single():
@@ -123,19 +138,20 @@ def test_parse_llm_degraded():
 
 def test_directions_enum():
     assert set(DIRECTIONS.keys()) == {
-        "rhythm", "anomaly", "habit", "member_diff", "linkage", "energy"
+        "rhythm", "anomaly", "habit", "member_diff", "linkage", "energy", "sequence"
     }
 
 
 async def test_run_job_writes_staging():
     store = _StoreFake()
-    rs = ResearcherService(make_runtime(store=store))
+    rt = make_runtime(store=store)
+    rs = ResearcherService(rt)
     job = {"job_id": "j1", "direction": "rhythm", "area": "主卧", "member": "lidicn", "window_days": 7}
     stats = await rs.run_job(job, {"budget_left": 10000, "date": "2026-09-11"})
     assert stats["units_processed"] == 1
     assert stats["hits"] == 1
-    assert len(store.calls) == 1
-    assert store.calls[0]["topic_key"].startswith("researcher:rhythm:主卧:lidicn")
+    assert len(rt._agent_memory_fake.calls) == 1
+    assert rt._agent_memory_fake.calls[0]["topic_key"].startswith("researcher:rhythm:主卧:lidicn")
 
 
 async def test_run_job_budget_stop():

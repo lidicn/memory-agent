@@ -42,7 +42,7 @@ class _FakeInsights:
     def _fallback_name(self, eid):
         return eid
 
-    def _usage_one(self, entity_id, start_iso, end_iso, allow_on, debounce, include_timeline):
+    def _usage_one(self, entity_id, start_iso, end_iso, allow_on, debounce, include_timeline, time_range=""):
         return {
             "entity_id": entity_id,
             "total_on_human": "1小时",
@@ -52,7 +52,7 @@ class _FakeInsights:
             "timeline": [{"ts": start_iso}] if include_timeline else [],
         }
 
-    def _usage_by_attr(self, entity_id, attribute, value, pattern, start_iso, end_iso, debounce=60, include_timeline=True):
+    def _usage_by_attr(self, entity_id, attribute, value, pattern, start_iso, end_iso, debounce=60, include_timeline=True, time_range=""):
         return {
             "entity_id": entity_id,
             "attribute": attribute,
@@ -221,4 +221,10 @@ skip_mcp = pytest.mark.skipif(
 
 @skip_mcp
 def test_run_analysis_template_function_registered():
-    assert hasattr(mcp_server_mod, "run_analysis_template")
+    # run_analysis_template 是 _build_server() 内的 @mcp.tool() 嵌套函数，
+    # 不在模块级；验证源码中有定义且 spec 已登记即可。
+    import inspect
+    src = inspect.getsource(mcp_server_mod)
+    assert "def run_analysis_template(" in src
+    from memory_agent.tool_schema import SPEC_BY_NAME
+    assert "run_analysis_template" in SPEC_BY_NAME

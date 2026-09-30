@@ -43,12 +43,12 @@ class _FakeInsights:
     def _fallback_name(self, eid):
         return eid
 
-    def _usage_one(self, entity_id, start_iso, end_iso, on_set, debounce, include_timeline):
+    def _usage_one(self, entity_id, start_iso, end_iso, on_set, debounce, include_timeline, time_range=""):
         return {"entity_id": entity_id, "total_seconds": 3600, "sessions": 2,
                 "total_on_human": "1小时", "daily_average_human": "0.5小时"}
 
     def _usage_by_attr(self, entity_id, attribute, value, pattern, start_iso, end_iso,
-                       debounce=60, include_timeline=True):
+                       debounce=60, include_timeline=True, time_range=""):
         return {"entity_id": entity_id, "attribute": attribute, "total_seconds": 1800,
                 "sessions": 1, "total_on_human": "30分钟", "daily_average_human": "30分钟"}
 
@@ -95,6 +95,7 @@ class _FakeRT:
         self.templates = _FakeTemplates(templates)
         self.insights = _FakeInsights()
         self.identity = identity
+        self.config = types.SimpleNamespace(data_dir="/tmp")
 
 
 def _request(body, rt, user=None, path="/api/insights/query", query_string=b""):
@@ -134,28 +135,39 @@ def _json(resp):
 # ── app_token 白名单隔离 ────────────────────────────────────────────────────
 
 def test_app_endpoints_whitelist():
-    assert app_mod.APP_ENDPOINTS == ("/api/insights/query",)
+    # v0.6 后 APP_ENDPOINTS 扩展为 3 个（insights/query + agent/memories 写 + recall 读）
+    assert app_mod.APP_ENDPOINTS == (
+        "/api/insights/query",
+        "/api/agent/memories",
+        "/api/agent/memories/recall",
+    )
     assert app_mod.AuthMiddleware._app_allowed("/api/insights/query") is True
+    assert app_mod.AuthMiddleware._app_allowed("/api/agent/memories") is True
+    assert app_mod.AuthMiddleware._app_allowed("/api/agent/memories/recall") is True
     # 越权路径一律拒绝：一个应用层令牌拿不到 WebUI 其他接口
     for path in ("/api/members", "/api/vision/presence", "/api/identity/devices", "/api/config"):
         assert app_mod.AuthMiddleware._app_allowed(path) is False, path
 
 
-def test_app_token_disabled_when_unset(monkeypatch):
+def test_app_token_disabled_when_unset():
     """未配置 app_token 时通道关闭，避免空令牌放行。"""
+    from memory_agent.app_tokens import AppTokenStore
     cfg = Config()
     cfg.app_token = ""
-    monkeypatch.setattr(app_mod, "get_config", lambda: cfg)
-    assert app_mod.AuthMiddleware._app_matches("") is False
-    assert app_mod.AuthMiddleware._app_matches("anything") is False
+    cfg.app_tokens = {}
+    store = AppTokenStore(cfg)
+    assert store.verify("") is None
+    assert store.verify("anything") is None
 
 
-def test_app_token_matches_when_configured(monkeypatch):
+def test_app_token_matches_when_configured():
+    from memory_agent.app_tokens import AppTokenStore
     cfg = Config()
     cfg.app_token = "tv-secret-token"
-    monkeypatch.setattr(app_mod, "get_config", lambda: cfg)
-    assert app_mod.AuthMiddleware._app_matches("tv-secret-token") is True
-    assert app_mod.AuthMiddleware._app_matches("wrong-token") is False
+    cfg.app_tokens = {}
+    store = AppTokenStore(cfg)
+    assert store.verify("tv-secret-token") is not None
+    assert store.verify("wrong-token") is None
 
 
 def test_config_exposes_app_token_field():

@@ -16,7 +16,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
 from memory_agent.activity_inference import ActivityInferenceService  # noqa: E402
-from memory_agent.insights import InsightService  # noqa: E402
+from memory_agent.insights.utils import tags_of  # noqa: E402
 from memory_agent.store import Store  # noqa: E402
 
 DOOR = "binary_sensor.study_door_contact"
@@ -27,7 +27,7 @@ PC = "switch.study_pc"
 
 class _FakeInsights:
     def _tags_of(self, eid, name):
-        return InsightService._tags_of(eid, name)
+        return tags_of(eid, name)
 
 
 def _runtime(store):
