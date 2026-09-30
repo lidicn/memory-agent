@@ -305,13 +305,14 @@ class ActivityInferenceService:
                                "member": st["member"], "confidence": st["confidence"],
                                "ts": st["ts"], "kind": "state"})
             else:
-                self.store.upsert_candidate_rule(
+                rid, action = self.store.upsert_candidate_rule(
                     name=f"{st['room']}/{st['rule']}", steps=st["evidence"],
                     time_window="", infer=st["activity"], confidence=st["confidence"],
                     source="inference",
                     evidence=[{"ts": st["ts"], "room": st["room"], "member": st["member"]}],
                 )
-                candidates += 1
+                if not action.startswith("rejected"):
+                    candidates += 1
                 detail.append({"activity": st["activity"], "room": st["room"],
                                "member": st["member"], "confidence": st["confidence"],
                                "ts": st["ts"], "kind": "candidate"})

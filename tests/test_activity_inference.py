@@ -142,10 +142,12 @@ def test_mine_sequences(store):
 
 def test_infer_habits(store):
     """任务 D：重复活动（3 天）→ 沉淀为成员习惯写 agent_memories。"""
+    today = datetime.now().date()
     for d in range(3):
+        day = (today - timedelta(days=2 - d)).isoformat()
         store.add_behavior_state(
             member="lidicn", room="主卧室", activity="user_asleep",
-            confidence=0.8, ts=f"2026-09-{13 + d:02d}T22:30:00")
+            confidence=0.8, ts=f"{day}T22:30:00")
     captured: dict = {}
 
     class _FakeMem:

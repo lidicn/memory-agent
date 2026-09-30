@@ -2101,8 +2101,8 @@ class Store:
         for i in range(len(step_entities) - 1):
             if step_entities[i] and step_entities[i] == step_entities[i + 1]:
                 return "", "rejected_self_loop"
-        # 质量闸门：置信度下限 0.5
-        if float(confidence) < 0.5:
+        # 质量闸门：置信度下限 0.3（transit 等单证据规则 0.4 可进候选）
+        if float(confidence) < 0.3:
             return "", "rejected_low_confidence"
         steps_json = json.dumps(steps or [], ensure_ascii=False)
         now = now_local(self.tz_offset_hours).isoformat(sep="T")
