@@ -3,6 +3,32 @@
 版本号遵循语义化（`主.次.修订`），对外里程碑以**主版本号**体现。标签规范：里程碑打
 `v<主>.<次>.<修订>`（如 `v1.0.0`）；日常修复走修订号，无需新建 tag。
 
+## [1.1.2] - 2026-09-30
+
+### insights P2 批次修复（mimo pro2.6 审查剩余项）
+- **anomaly**：缺失数据报最严重 gap（原报最早）；`days_silent` 下限 0（原可为负）；
+  flapping 重叠窗口合并去重（原逐 tail 重复计数）；`_active_minutes` 口径对齐
+  `min_session_seconds`。
+- **activity**：Signal/Rule 脏数据 float·int 容错；`infer` 入口事件排序；
+  `night_ratio_percent` 改用配置跨夜窗（21:00-次日 11:00）替代硬编码 0-6 点。
+- **nlquery**：停用词长词优先替换（"怎么样"先于"怎么"，原"怎么"拆碎"怎么样"）；
+  PERSONA 分支尊重用户时间窗（原强制 max(days,14)）；DEVICE_USAGE 正则收紧泛词。
+- **parser.entity**：房间别名按长度降序替换（原短别名先把长别名拆碎）；
+  纯数值遥测值不再误判为开关 on/off；`unavailable`/`unknown` 归 other 不再算 off。
+- **persona**：`explain` 未命中时补齐与命中分支一致的字段结构。
+- **utils**：`parse_time_range` 异常收窄；`finalize_climate_session` 解析失败加 note
+  不再静默归零；清理与 parser.entity 口径分裂的旧 OFF_STATES 常量。
+- **service**：补 `compute_sessions` 函数（原 anomaly/activity import 缺失，一调即
+  ImportError）。
+- **repository**：`list_entities` 从最新事件 attrs_json 解析 friendly_name/unit
+ （原读不存在的字段导致全空串）。
+
+### vMA-1.2.2 召回加固收口
+- **list_agent_memories fail-closed**：对外空 member_id 只返回公共记忆（`member_id=''`），
+  与 retrieve 路口径对齐（原 list 路空 member_id 返回全家记忆，是隐私缺口）。
+  store 层新增 `exact_member` 参数，内部 sweep 不受影响。
+- 生产容器召回基线跑通：成员隔离 20/20、schema 字段 20/20（`ma-recall/1`）。
+
 ## [1.1.1] - 2026-09-29
 
 ### 工程卫生（DCD 裁定 6）

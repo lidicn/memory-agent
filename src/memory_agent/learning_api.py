@@ -1,4 +1,4 @@
-﻿"""学习闭环 · HTTP 接口与闭环编排。
+"""学习闭环 · HTTP 接口与闭环编排。
 
 部署：app.include_router(build_router(store, config))
 缓存：weak-spots 属于重计算，可选 Redis 缓存（未配置则跳过，不影响正确性）。

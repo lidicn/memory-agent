@@ -1,4 +1,4 @@
-﻿"""Agent 记忆（参与式写回）端到端验收脚本。
+"""Agent 记忆（参与式写回）端到端验收脚本。
 
 在容器内运行：
     docker compose exec memory-agent python -m memory_agent.scripts.verify_agent_memory
