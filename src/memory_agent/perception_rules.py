@@ -49,7 +49,10 @@ class RuleEngine:
         cooldown = float(rule.get("cooldown_seconds", 0))
         if cooldown <= 0:
             return False
-        last = self._last_triggered.get(rid, 0.0)
+        # P1-1：None 哨兵而非 0.0，避免 cooldown > uptime 时首次触发被吞
+        last = self._last_triggered.get(rid)
+        if last is None:
+            return False
         return (time.monotonic() - last) < cooldown
 
     def _match(self, event_kind: str, room: str) -> list[dict]:

@@ -884,6 +884,15 @@ async def _tracked_call_tool(server, name, arguments, context=None):
     # 判定放在这里而不是 ASGI 中间件——中间件读 body 会破坏 /mcp 的 Mount 转发。
     _tok, _scopes, _origin = _caller_context()
     note_unknown(name)
+    # P0-3：未登记工具（scope==UNKNOWN）走 NOT_FOUND，不再被误判为"无 write 权限"
+    # （审计实测：令牌明明有 read,write 却报"无 write 权限"，逻辑自相矛盾）
+    if scope_of(name) == "unknown":
+        _mcp_stats_log.warning("MCP 工具未登记: token=%s tool=%s", _tok, name)
+        result = _build_tool_result(
+            f"NOT_FOUND: 工具 '{name}' 未登记到 MCP 工具表，可能已下线或名称错误。",
+            is_error=True)
+        await _record_mcp_call(name, 0.0, True, f"NOT_FOUND: {name}")
+        return result
     if not requires(name, _scopes):
         _mcp_stats_log.warning(
             "MCP 权限拒绝: token=%s tool=%s need=write granted=%s", _tok, name, _scopes
@@ -2085,161 +2094,6 @@ def _build_server():
         return {"ok": True, "memory_id": mid, "diary": diary_text[:200]}
 
     @mcp.tool()
-    async def report_bug(
-        tool_name: str = "",
-        description: str = "",
-        expected: str = "",
-        actual: str = "",
-        severity: str = "minor",
-    ) -> dict:
-        """上报一条 bug（agent 用 MA 时发现功能问题记录于此）。
-
-        tool_name: 出问题的 MCP 工具名
-        description: 问题描述
-        expected: 期望行为
-        actual: 实际行为
-        severity: minor|major|critical
-        """
-        rt = get_runtime()
-        _tok, _scopes, _origin = _caller_context()
-        result = await asyncio.to_thread(
-            rt.store.add_bug_report,
-            tool_name, description, expected, actual, severity,
-            _tok,
-        )
-        return {"ok": True, **result}
-
-    @mcp.tool()
-    async def list_bug_reports(status: str = "open", limit: int = 50) -> dict:
-        """列出已上报的 bug。status: open|resolved|all"""
-        rt = get_runtime()
-        bugs = await asyncio.to_thread(rt.store.list_bug_reports, status, limit)
-        return {"ok": True, "count": len(bugs), "bugs": bugs}
-
-    # ── 自我日记（家庭人格化实验）──────────────────────────────────────
-    @mcp.tool()
-    async def write_self_diary(text: str) -> dict:
-        """写一段自我日记（第一人称视角）。写入 staging，永不自动晋升。
-        text: 日记正文（第一人称，如"今天晚上客厅很安静…"）
-        """
-        rt = get_runtime()
-        mid = await asyncio.to_thread(
-            rt.store.add_agent_memory,
-            "self_diary",           # session_id
-            text,                   # text
-            "self_diary",           # topic_key
-            "[]",                   # tags_json
-            "[]",                   # source_refs_json
-            365,                    # ttl_days
-            "staging",              # state
-            1,                      # auto_promote_blocked=1（永不自动晋升）
-        )
-        return {"ok": True, "memory_id": mid, "message": "日记已写入 staging"}
-
-    @mcp.tool()
-    async def read_self_diary(days: int = 7) -> dict:
-        """读取最近 N 天的自我日记。
-        days: 回溯天数，默认 7
-        """
-        rt = get_runtime()
-        all_mem = await asyncio.to_thread(
-            rt.store.list_agent_memories, "all", "", 500, ""
-        )
-        diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
-        from datetime import datetime, timedelta
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
-        diaries = [d for d in diaries if d.get("created_at", "") >= cutoff]
-        diaries.sort(key=lambda x: x.get("created_at", ""))
-        return {
-            "ok": True,
-            "count": len(diaries),
-            "diaries": [
-                {"date": d.get("created_at", "")[:10], "text": d.get("text", "")}
-                for d in diaries
-            ],
-        }
-
-    @mcp.tool()
-    async def generate_self_diary() -> dict:
-        """自动生成今天的自我日记（第一人称视角）。
-        从当天事件提取脱敏摘要，调 LLM 生成日记，写入 staging。
-        """
-        rt = get_runtime()
-        # 1. 读昨天日记
-        all_mem = await asyncio.to_thread(
-            rt.store.list_agent_memories, "all", "", 500, ""
-        )
-        diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
-        diaries.sort(key=lambda x: x.get("created_at", ""))
-        yesterday_text = diaries[-1]["text"][:200] if diaries else "（还没有日记）"
-
-        # 2. 从当天 events 提取脱敏摘要
-        from datetime import datetime, timedelta
-        today = datetime.now().strftime("%Y-%m-%d")
-        events = await asyncio.to_thread(
-            rt.store.query_events, "", today, "", 100
-        )
-        # 脱敏：只取时间+房间+有意义的事件（只保留门/灯/人/设备开关）
-        keep_patterns = ["binary_sensor", "switch.", "light.", "media_player", "cover.", "lock.", "person.", "device_tracker"]
-        skip_patterns = ["temperature", "humidity", "power", "battery", "co2", "storage", "signal", "rssi", "voltage", "current", "energy", "pressure", "illuminance", "moisture", "conductivity", "daily_use", "hourly_use", "no_one_duration", "time_count", "status_p_"]
-        summary_lines = []
-        for e in events[:200]:
-            t = e.get("ts", "")[11:16]
-            room = e.get("room", "")
-            entity = e.get("entity_id", "")
-            # 只保留有意义的实体类型
-            if not any(p in entity for p in keep_patterns):
-                continue
-            # 过滤掉无关传感器
-            if any(p in entity.lower() for p in skip_patterns):
-                continue
-            if room and entity:
-                summary_lines.append(f"{t} {room}: {entity}")
-        summary = "\n".join(summary_lines[:40])
-
-        # 3. 调 LLM 生成日记
-        prompt = f"""你是这个家庭里的一个"存在"。用第一人称写今天的日记。
-
-严格规则：
-1. 只能写下面事件摘要里有的内容，绝对不许编造任何摘要里没有的细节
-2. 摘要里没有提到的，就说"没注意到"或"没有记录"
-3. 开头引用昨天日记的一句话（"昨天我说…"）
-4. 200-400 字
-5. 只写观察到的，不下结论、不做诊断
-6. 用"我"视角，不用"这个家庭"
-
-昨天日记：{yesterday_text}
-
-今天的事件摘要（脱敏后，只有这些是事实）：
-{summary}
-
-请写今天的日记（只能用上面摘要里的事实）："""
-
-        try:
-            resp = await rt.llm.chat(
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=800,
-                temperature=0.7,
-            )
-            diary_text = resp.get("content", "")
-        except Exception as e:
-            return {"ok": False, "error": f"LLM 调用失败: {e}"}
-
-        # 4. 写入 staging
-        mid = await asyncio.to_thread(
-            rt.store.add_agent_memory,
-            "self_diary",
-            diary_text,
-            "self_diary",
-            "[]",
-            "[]",
-            365,
-            "staging",
-            1,
-        )
-        return {"ok": True, "memory_id": mid, "diary": diary_text[:200]}
-
-    @mcp.tool()
     async def list_agent_memories(state: str = "live", member_id: str = "") -> dict:
         """列出 agent 记忆（WO-MA-005 隐私面收窄）。
 
@@ -3040,7 +2894,7 @@ if mcp_server is not None:
     try:
         register_simple_tools(
             mcp_server, get_runtime,
-            names=["route_question", "list_vision_cameras", "get_vision_status", "analyze_camera"],
+            names=["route_question", "list_vision_cameras", "get_vision_status", "analyze_camera", "query_behavior_events"],
         )
     except Exception as _exc:  # pragma: no cover
         logging.getLogger(__name__).warning("注册 schema 工具失败：%s", _exc)

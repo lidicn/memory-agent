@@ -134,7 +134,8 @@ _ARENA_TOOL_NAMES = {
 
 def _acp_kind(rt, scope) -> str:
     """从 ACP middleware 写入的 token 名推导令牌种类（arena/acp/...）。"""
-    name = (scope.get("state") or {}).get("acp_token_name")
+    # P1-2：scope 可能为 None（ACP 初始化阶段），缺守卫会 AttributeError 崩掉入口
+    name = ((scope or {}).get("state") or {}).get("acp_token_name")
     if name:
         try:
             k = rt.tokens.kind(name)

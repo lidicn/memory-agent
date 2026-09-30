@@ -63,7 +63,10 @@ class Announcer:
         if not msg:
             return False
         now = time.monotonic()
-        if now - self._last.get(ev.kind, 0.0) < self.cooldown_sec:
+        # P1-1：用 None 哨兵而非 0.0——monotonic() 返回系统启动至今秒数，
+        # 0.0 会让 cooldown > uptime 的规则在重启后首次触发被静默吞掉
+        last = self._last.get(ev.kind)
+        if last is not None and now - last < self.cooldown_sec:
             return False
         self._last[ev.kind] = now
         try:

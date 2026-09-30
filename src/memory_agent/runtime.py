@@ -66,7 +66,7 @@ class AppRuntime:
         self.templates = TemplateManager(self.config.data_dir)
         self.tokens = MCPTokenStore(self.config)
         self.llm = LLMRouter(self.config)
-        self.insights = InsightService(self.config, self.store)
+        self.insights = InsightService(self.store, self.config)
         self.analysis = AnalysisService(self.config, self.store, self.llm)
         self.collector = CollectService(
             self.config, self.ha, self.history, self.store, self.ha_db

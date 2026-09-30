@@ -105,8 +105,10 @@ class InsightService:
     def _safe_entities(self) -> List[Any]:
         try:
             return self.repo.list_entities()
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("加载实体目录失败: %s", exc)
+        except Exception:  # noqa: BLE001
+            # P0-1 教训：之前只 LOG.warning 一行消息，参数顺序错位这种致命 bug
+            # 被静默降级成"实体目录为空"，用户完全无感。改 LOG.exception 留完整 traceback。
+            LOG.exception("加载实体目录失败，InsightService 将以空实体表运行")
             return []
 
     def refresh(self) -> None:
