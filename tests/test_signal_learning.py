@@ -6,10 +6,10 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.memory_agent.store import Store
-from src.memory_agent.agent_memory import AgentMemoryService, make_activity_id
-from src.memory_agent.signal_learning import SignalLearningService
-from src.memory_agent.insights import InsightService
+from memory_agent.store import Store
+from memory_agent.agent_memory import AgentMemoryService, make_activity_id
+from memory_agent.signal_learning import SignalLearningService
+from memory_agent.insights import InsightService
 
 
 class FakeConfig:

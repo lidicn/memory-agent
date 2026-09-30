@@ -94,21 +94,24 @@ def test_handle_initialize():
 
 
 def test_handle_session_lifecycle():
+    # P0-9 owner check fail-close：直接调 acp_handle 必须传 scope 模拟鉴权后状态，
+    # 否则 _owner="" 被拒绝，返回 ERR_INVALID_PARAMS 而非期望的业务错误码。
+    _scope = {"state": {"acp_token_name": "test-token"}}
     async def _run():
-        _, _ = await acp.acp_handle(None, {"id": 1, "method": "session.new", "params": {}})
+        _, _ = await acp.acp_handle(None, {"id": 1, "method": "session.new", "params": {}}, _scope)
         # session.new 返回了 sessionId；这里直接用返回的 resp
-        r, _ = await acp.acp_handle(None, {"id": 2, "method": "session.new", "params": {}})
+        r, _ = await acp.acp_handle(None, {"id": 2, "method": "session.new", "params": {}}, _scope)
         sid = r["result"]["sessionId"]
-        lst, _ = await acp.acp_handle(None, {"id": 3, "method": "session.list", "params": {}})
+        lst, _ = await acp.acp_handle(None, {"id": 3, "method": "session.list", "params": {}}, _scope)
         assert any(s["sessionId"] == sid for s in lst["result"]["sessions"])
         # 取消不存在的 run 应报会话无任务（而不是崩溃）
         err, _ = await acp.acp_handle(
-            None, {"id": 4, "method": "cancel", "params": {"sessionId": sid}}
+            None, {"id": 4, "method": "cancel", "params": {"sessionId": sid}}, _scope
         )
         assert err["error"]["code"] == -32001
         # 删除
         d, _ = await acp.acp_handle(
-            None, {"id": 5, "method": "session.delete", "params": {"sessionId": sid}}
+            None, {"id": 5, "method": "session.delete", "params": {"sessionId": sid}}, _scope
         )
         assert d["result"]["deleted"] is True
 

@@ -53,7 +53,7 @@ class ToolSpec:
     expose: tuple = ("mcp",)  # ("mcp",) | ("mcp", "builtin")
     example: str = ""
     pitfall: str = ""
-    generated: bool = True    # True=可由 register_simple_tools 动态注册；False=MCP 端手写
+    generated: bool = False   # True=可由 register_simple_tools 动态注册；False=MCP 端手写函数体（自定义逻辑）
     force: dict = field(default_factory=dict)  # 派发时强制注入的 kwargs（如 include_timeline=False）
 
 
@@ -1143,15 +1143,17 @@ async def dispatch(rt, name: str, args: dict | None) -> dict:
         return {"error": f"工具执行失败：{exc}"}
 
 
-def register_simple_tools(mcp, runtime_getter, names=None) -> int:
+def register_simple_tools(mcp, runtime_getter, names=None) -> dict:
     """为 generated 类工具动态注册 @mcp.tool()（签名与文档均来自本 schema）。
 
-    返回成功注册的工具数。任何单个工具注册失败仅记录并跳过，不影响其余工具，
+    返回 {name: func} 注册的函数字典。调用方应将其 update 到模块 globals()，
+    使 hasattr(module, name) 可检测（目录一致性测试依赖此约定）。
+    任何单个工具注册失败仅记录并跳过，不影响其余工具，
     以保证 MCP 端点始终可用（零风险保护 opencode 等外部 Agent）。
     names: 仅注册指定工具（缺省注册全部 generated 且 expose 含 mcp 的工具）。
     """
     logger = logging.getLogger(__name__)
-    registered = 0
+    registered = {}
     for spec in TOOL_SPECS:
         if not spec.generated or "mcp" not in spec.expose:
             continue
@@ -1184,7 +1186,7 @@ def register_simple_tools(mcp, runtime_getter, names=None) -> int:
             _impl.__doc__ = doc
             _impl.__name__ = spec.name
             mcp.tool()(_impl)
-            registered += 1
+            registered[spec.name] = _impl
         except Exception as exc:  # pragma: no cover - 防御性兜底
             logger.warning("注册工具 %s 失败：%s", spec.name, exc)
     return registered

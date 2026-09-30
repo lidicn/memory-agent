@@ -883,6 +883,16 @@ async def _tracked_call_tool(server, name, arguments, context=None):
     # v0.7.5-1 工具级 scope：写工具需令牌持 write。
     # 判定放在这里而不是 ASGI 中间件——中间件读 body 会破坏 /mcp 的 Mount 转发。
     _tok, _scopes, _origin = _caller_context()
+
+    # v0.9 任务3 故障注入矩阵：注入的故障优先于一切正常逻辑（含未登记检查、权限检查、
+    # 幂等缓存），用于契约验证 / 混沌演练。测试用未登记工具名注入故障时也必须生效。
+    fault_code = _FAULT_INJECT.get(name) or _FAULT_INJECT.get("*")
+    if fault_code:
+        _mcp_stats_log.warning("MCP 故障注入: tool=%s code=%s", name, fault_code)
+        result = _fault_result(name, fault_code)
+        await _record_mcp_call(name, 0.0, True, f"FAULT-INJECT:{fault_code}")
+        return result
+
     note_unknown(name)
     # P0-3：未登记工具（scope==UNKNOWN）走 NOT_FOUND，不再被误判为"无 write 权限"
     # （审计实测：令牌明明有 read,write 却报"无 write 权限"，逻辑自相矛盾）
@@ -899,14 +909,6 @@ async def _tracked_call_tool(server, name, arguments, context=None):
         )
         result = _denied_result(name, _tok, _scopes)
         await _record_mcp_call(name, 0.0, True, f"DENIED scope: {name}")
-        return result
-
-    # v0.9 任务3 故障注入矩阵：注入的故障优先于真实执行（含幂等缓存），用于契约验证 / 混沌演练。
-    fault_code = _FAULT_INJECT.get(name) or _FAULT_INJECT.get("*")
-    if fault_code:
-        _mcp_stats_log.warning("MCP 故障注入: tool=%s code=%s", name, fault_code)
-        result = _fault_result(name, fault_code)
-        await _record_mcp_call(name, 0.0, True, f"FAULT-INJECT:{fault_code}")
         return result
 
     # v0.9 幂等键：写工具可传 idempotency_key 防重复执行（分发层消费，工具签名无需改）
@@ -2892,10 +2894,12 @@ mcp_sse_app = (
 # 这里显式列出需要 schema 自动注册的工具，避免与手写工具重名冲突。
 if mcp_server is not None:
     try:
-        register_simple_tools(
+        _registered = register_simple_tools(
             mcp_server, get_runtime,
             names=["route_question", "list_vision_cameras", "get_vision_status", "analyze_camera", "query_behavior_events"],
         )
+        # 目录一致性测试依赖 hasattr(mcp_server, name)，需把动态函数提升为模块级属性
+        globals().update(_registered)
     except Exception as _exc:  # pragma: no cover
         logging.getLogger(__name__).warning("注册 schema 工具失败：%s", _exc)
 

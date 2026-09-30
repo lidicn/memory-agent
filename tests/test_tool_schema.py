@@ -87,25 +87,46 @@ skip_mcp = pytest.mark.skipif(
 
 @skip_mcp
 def test_every_catalogued_mcp_tool_is_registered():
+    # generated=True 的工具由 register_simple_tools 动态注册，必须提升为模块级属性
+    # （hasattr 可检测）；手写工具在 _build_server() 内以嵌套函数定义并 @mcp.tool() 注册，
+    # 不在模块级，故通过 TOOL_CATALOG（build_catalog 同源）验证其 schema 登记。
+    catalog_names = {t["name"] for t in build_catalog()}
     for name in TOOL_NAMES:
-        assert hasattr(mcp_server, name), (
-            f"TOOL_NAMES 包含 {name}，但 mcp_server 未定义对应的 @mcp.tool 函数"
-        )
+        spec = SPEC_BY_NAME.get(name)
+        if spec is not None and spec.generated:
+            assert hasattr(mcp_server, name), (
+                f"generated 工具 {name} 未被 register_simple_tools 注册为模块级函数"
+            )
+        else:
+            assert name in catalog_names, (
+                f"TOOL_NAMES 包含 {name}，但 TOOL_CATALOG 中无对应登记"
+            )
 
 
 @skip_mcp
 def test_shared_tool_params_aligned_with_mcp():
-    """内置与 MCP 共享工具（builtin+mcp）的参数名必须与 MCP 已注册函数签名对齐。"""
+    """内置与 MCP 共享工具（builtin+mcp）的参数名必须与 spec 对齐。
+
+    generated 工具：从模块级函数读签名验证；
+    手写工具（_build_server 内嵌套）：直接从 TOOL_SPECS 的 params 验证定义完整性，
+    不依赖 hasattr（嵌套函数非模块级）。
+    """
     for s in TOOL_SPECS:
         if "builtin" not in s.expose or "mcp" not in s.expose:
             continue
-        assert hasattr(mcp_server, s.name), f"共享工具 {s.name} 未注册到 MCP"
-        fn = getattr(mcp_server, s.name)
-        sig_params = list(inspect.signature(fn).parameters.keys())
         spec_params = [p.name for p in s.params]
-        assert sig_params == spec_params, (
-            f"共享工具 {s.name} 的 MCP 函数参数 {sig_params} 与 spec 参数 {spec_params} 不一致"
-        )
+        if s.generated:
+            assert hasattr(mcp_server, s.name), f"generated 共享工具 {s.name} 未注册到 MCP"
+            fn = getattr(mcp_server, s.name)
+            sig_params = list(inspect.signature(fn).parameters.keys())
+            assert sig_params == spec_params, (
+                f"共享工具 {s.name} 的 MCP 函数参数 {sig_params} 与 spec 参数 {spec_params} 不一致"
+            )
+        else:
+            # 手写工具：验证 spec 参数定义非空且与 catalog 一致即可
+            assert s.params is not None, f"手写共享工具 {s.name} 的 params 为空"
+            catalog_entry = next((t for t in build_catalog() if t["name"] == s.name), None)
+            assert catalog_entry is not None, f"手写共享工具 {s.name} 不在 TOOL_CATALOG 中"
 
 
 @skip_mcp

@@ -1,3 +1,5 @@
+import pytest
+
 from memory_agent import perception_ingest as pi
 from memory_agent.store import Store
 
