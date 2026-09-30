@@ -51,6 +51,8 @@ WRITABLE_FIELDS = (
     "vision_cooldown_s", "vision_max_per_hour", "vision_no_tv_interval_s",
     "vision_light_gate", "vision_snapshot_retention_days",
     "vision_alert_mqtt_enabled", "vision_alert_mqtt_topic",
+    # ── vMA-1.2.0 场景图与空间记忆 ────────────────────────────────────────
+    "scene_graph_enabled", "scene_graph_sample_rate",
     # ── 电视截屏多模态（docs/电视截屏多模态识别功能_交接单.md）─────────
     "tv_media_player_entity", "tv_capture_timeout_s",
     "tv_mqtt_enabled", "tv_mqtt_host", "tv_mqtt_port",

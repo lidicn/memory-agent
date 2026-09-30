@@ -271,6 +271,13 @@ class Config:
     vision_alert_mqtt_enabled: bool = False
     vision_alert_mqtt_topic: str = "ma/insights/security_alert"  # DCD: 各仓只推自己域名，越权 butler/trigger 已修正
 
+    # ── vMA-1.2.0 场景图与空间记忆 ────────────────────────────────────────
+    # VLM 在行为识别之外结构化输出 objects/relations，落 behavior_events.scene_graph_json。
+    # 开关关闭则完全不解析；开启时只对通过运动 gate 的帧按 sample_rate 抽样解析
+    # （force 帧不计），每次解析记一条 token 用量日志。
+    scene_graph_enabled: bool = True
+    scene_graph_sample_rate: float = 1.0
+
     # ── 人脸识别节点池（ArcFace 可插拔，face_node_pool_plan）────────────────
     # memory-agent 持有节点注册表与统一识别路由；节点按权重选路，失败降级 VLM。
     face_node_timeout_s: float = 3.0          # 转发到 Arcface 节点的调用超时（秒）

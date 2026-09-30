@@ -25,12 +25,15 @@ from typing import Any
 
 # ── 内置意图规则（无 LLM 快路径）──────────────────────────────────────────
 # 每条规则：触发条件（行为标签列表）+ 意图 + 置信度 + 建议动作
+# vMA-1.2.1：scene_graph_triggers 是第二路（场景图 objects/relations）的触发词，
+# 与原路径（时间 + 设备状态）并行打分，两路各算各的分，最终取置信度高的一路。
 INTENT_RULES: list[dict] = [
     {
         "intent": "watch_tv",
         "label": "想看电视",
         "triggers": ["tv_on", "tv_power_on", "电视打开", "客厅电视打开"],
         "secondary_triggers": ["light_on", "客厅灯打开", "couch", "沙发"],
+        "scene_graph_triggers": ["电视", "沙发", "投影", "遥控器", "tv"],
         "confidence": 0.8,
         "suggestion": "可询问是否需要切换到常用频道或调节音量",
         "room": "客厅",
@@ -40,6 +43,7 @@ INTENT_RULES: list[dict] = [
         "label": "想工作/学习",
         "triggers": ["computer_on", "电脑打开", "书房电脑打开", "desk_on"],
         "secondary_triggers": ["light_on", "书房灯打开", "climate_on", "书房空调打开"],
+        "scene_graph_triggers": ["电脑", "笔记本", "书桌", "键盘", "显示器"],
         "confidence": 0.85,
         "suggestion": "可保持书房环境安静，空调设为常用温度",
         "room": "书房",
@@ -49,6 +53,7 @@ INTENT_RULES: list[dict] = [
         "label": "想睡觉",
         "triggers": ["bedroom_light_off", "卧室灯关闭", "主卧室灯关闭"],
         "secondary_triggers": ["climate_on", "卧室空调打开", "bed", "上床"],
+        "scene_graph_triggers": ["床", "枕头", "被子", "睡衣"],
         "confidence": 0.75,
         "suggestion": "可关闭其他房间灯光，空调设为睡眠模式",
         "room": "主卧室",
@@ -59,6 +64,7 @@ INTENT_RULES: list[dict] = [
         "label": "要出门",
         "triggers": ["door_open", "门打开", "大门打开", "front_door_open"],
         "secondary_triggers": ["shoes", "换鞋", "key", "拿钥匙"],
+        "scene_graph_triggers": ["钥匙", "背包", "外套", "鞋"],
         "confidence": 0.7,
         "suggestion": "可检查是否有关灯/关空调需求，启动离家安防模式",
         "room": "玄关",
@@ -68,6 +74,7 @@ INTENT_RULES: list[dict] = [
         "label": "刚回家",
         "triggers": ["face_known", "人脸识别", "door_open"],
         "secondary_triggers": ["light_on", "灯打开", "shoes_off", "脱鞋"],
+        "scene_graph_triggers": ["背包", "购物袋", "伞", "拖鞋"],
         "confidence": 0.8,
         "suggestion": "可开启欢迎模式（灯光/空调/音乐），询问今天过得怎么样",
         "room": "玄关",
@@ -77,6 +84,7 @@ INTENT_RULES: list[dict] = [
         "label": "想吃饭",
         "triggers": ["dining_light_on", "餐厅灯打开", "kitchen_on", "厨房灯打开"],
         "secondary_triggers": ["fridge_open", "冰箱打开", "cook", "做饭"],
+        "scene_graph_triggers": ["餐桌", "碗", "锅", "冰箱", "餐具"],
         "confidence": 0.65,
         "suggestion": "可询问是否需要播放背景音乐或推荐菜谱",
         "room": "餐厅/厨房",
@@ -86,6 +94,7 @@ INTENT_RULES: list[dict] = [
         "label": "想运动",
         "triggers": ["livingroom_clear", "客厅清空", "mat", "瑜伽垫"],
         "secondary_triggers": ["music_on", "音乐打开", "tv_on", "电视打开"],
+        "scene_graph_triggers": ["瑜伽垫", "哑铃", "跳绳", "运动服"],
         "confidence": 0.5,
         "suggestion": "可播放运动音乐或健身视频",
         "room": "客厅",
@@ -93,16 +102,120 @@ INTENT_RULES: list[dict] = [
 ]
 
 
+# 场景图是「画面里有什么」的间接证据，弱于设备状态直证，基准分打折
+_SG_PATH_FACTOR = 0.85
+_SG_HIT_BONUS = 0.05
+_SG_MAX_HITS = 3
+_CONFIDENCE_CAP = 0.95
+
+
+def _match_time_window(rule: dict, ref: datetime) -> bool:
+    """规则声明了 time_window 时，判断 ref 时刻是否落在窗口内（支持跨午夜）。"""
+    tw = rule.get("time_window")
+    if not tw:
+        return True
+    try:
+        start_h, end_h = tw.split("-")
+        start_h, end_h = int(start_h.split(":")[0]), int(end_h.split(":")[0])
+    except (ValueError, AttributeError):
+        return True
+    current_h = ref.hour
+    if start_h <= end_h:
+        return start_h <= current_h < end_h
+    return current_h >= start_h or current_h < end_h
+
+
+def _score_device_path(rule: dict, behavior_labels: set) -> tuple[float, list] | None:
+    """原路径：时间（由调用方保证）+ 设备状态/行为文本。主触发必须命中。"""
+    primary_hits = [t for t in rule["triggers"] if t.lower() in behavior_labels]
+    if not primary_hits:
+        return None
+    secondary_hits = [
+        t for t in rule.get("secondary_triggers", []) if t.lower() in behavior_labels
+    ]
+    score = float(rule.get("confidence") or 0.0)
+    score += min(0.15, len(secondary_hits) * 0.05)
+    return round(min(_CONFIDENCE_CAP, score), 2), primary_hits + secondary_hits
+
+
+def _score_scene_graph_path(rule: dict, sg_labels: set) -> tuple[float, list] | None:
+    """第二路：只吃场景图 objects/relations 特征，命中场景图触发词才计分。
+
+    场景图缺失/为空时 sg_labels 为空集 → 返回 None，调用方自动降级原路径。
+    """
+    sg_triggers = rule.get("scene_graph_triggers") or []
+    if not sg_triggers:
+        return None
+    hits = [t for t in sg_triggers if t.lower() in sg_labels]
+    if not hits:
+        return None
+    score = float(rule.get("confidence") or 0.0) * _SG_PATH_FACTOR
+    score += min(0.1, (min(len(hits), _SG_MAX_HITS) - 1) * _SG_HIT_BONUS)
+    return round(min(_CONFIDENCE_CAP, score), 2), hits
+
+
+def _extract_event_labels(events: list[dict]) -> tuple[set, set]:
+    """从事件抽取两路特征：behavior_labels（action/scene/room）与 scene_graph_labels。
+
+    场景图 objects 取 name、relations 取三元组，兼容历史的纯字符串写法；
+    任何一条事件的场景图解析失败都只影响该条，不抛错（自动降级）。
+    """
+    behavior_labels: set = set()
+    sg_labels: set = set()
+    for ev in events:
+        for key in ("action", "scene", "room"):
+            val = (ev.get(key) or "").lower()
+            if val:
+                behavior_labels.add(val)
+        sg_raw = ev.get("scene_graph_json")
+        if not sg_raw:
+            continue
+        try:
+            import json
+            sg = json.loads(sg_raw) if isinstance(sg_raw, str) else sg_raw
+        except Exception:
+            continue
+        if not isinstance(sg, dict):
+            continue
+        for obj in sg.get("objects") or []:
+            if isinstance(obj, dict):
+                name = str(obj.get("name") or "").strip().lower()
+                if name:
+                    sg_labels.add(name)
+            elif isinstance(obj, str) and obj.strip():
+                sg_labels.add(obj.strip().lower())
+        for rel in sg.get("relations") or []:
+            if isinstance(rel, dict):
+                for part in ("subject", "predicate", "object"):
+                    val = str(rel.get(part) or "").strip().lower()
+                    if val:
+                        sg_labels.add(val)
+            elif isinstance(rel, str) and rel.strip():
+                sg_labels.add(rel.strip().lower())
+        # 场景图里的 scene_text 也归入设备/行为路（它是同一帧的场景描述文本）
+        text = str(sg.get("scene_text") or "").strip().lower()
+        if text:
+            behavior_labels.add(text)
+    return behavior_labels, sg_labels
+
+
 def infer_intent(
     events: list[dict],
     window_min: int = 10,
     person: str | None = None,
 ) -> dict | None:
-    """从最近的行为事件推断用户意图。
+    """从最近的行为事件推断用户意图（vMA-1.2.1 双路径）。
 
-    events: 行为事件列表，每项含 server_ts、action、scene、room、persons_json。
+    events: 行为事件列表，每项含 server_ts、action、scene、room、persons_json、
+            以及可选的 scene_graph_json（场景图第二路特征）。
     window_min: 时间窗口（分钟），只看最近 N 分钟的事件。
     person: 限定某个人（可选）。
+
+    两路并行打分：
+    - 原路径：时间窗口 + 设备状态/行为文本（triggers / secondary_triggers）
+    - 场景图路径：scene_graph_json 的 objects / relations（scene_graph_triggers）
+    取置信度更高的一路；两路都命中时在 evidence 里标 "both"。
+    场景图缺失或为空自动降级原路径，不报错。
 
     返回 {"intent": str, "label": str, "confidence": float, "evidence": list, "suggestion": str}
     或 None（无足够证据）。
@@ -136,93 +249,65 @@ def infer_intent(
         if ev_dt >= window_start:
             # 如果限定了 person，只看该人的事件
             if person:
-                persons_raw = ev.get("persons_json") or "[]"
+                persons_raw = ev.get("persons_json")
+                if persons_raw is None:
+                    # list_behavior_events 已把 persons_json 反序列化成 persons
+                    persons_raw = ev.get("persons") or "[]"
                 try:
                     import json
                     persons = json.loads(persons_raw) if isinstance(persons_raw, str) else persons_raw
-                except (json.JSONDecodeError, TypeError):
+                except (ValueError, TypeError):
                     persons = []
-                if not any(p.get("name") == person for p in persons):
+                if not any(
+                    p.get("name") == person or p.get("member_id") == person
+                    for p in persons if isinstance(p, dict)
+                ):
                     continue
             recent_events.append(ev)
 
     if not recent_events:
         return None
 
-    # 提取行为标签（action + scene + room）
-    behavior_labels = set()
-    # vMA-1.2.1: 场景图标签（objects/relations）——第二路信号
-    scene_graph_labels = set()
-    for ev in recent_events:
-        action = (ev.get("action") or "").lower()
-        scene = (ev.get("scene") or "").lower()
-        room = (ev.get("room") or "").lower()
-        if action:
-            behavior_labels.add(action)
-        if scene:
-            behavior_labels.add(scene)
-        if room:
-            behavior_labels.add(room)
-        # 解析 scene_graph_json，提取 objects/relations
-        sg_raw = ev.get("scene_graph_json")
-        if sg_raw:
-            try:
-                import json
-                sg = json.loads(sg_raw) if isinstance(sg_raw, str) else sg_raw
-                for obj in sg.get("objects", []):
-                    if obj:
-                        scene_graph_labels.add(str(obj).lower())
-                for rel in sg.get("relations", []):
-                    if rel:
-                        scene_graph_labels.add(str(rel).lower())
-            except Exception:
-                pass
+    behavior_labels, scene_graph_labels = _extract_event_labels(recent_events)
 
-    # 匹配意图规则
     best_intent = None
     best_score = 0.0
 
     for rule in INTENT_RULES:
         # 检查时间窗口限制
-        if "time_window" in rule:
-            tw = rule["time_window"]
-            start_h, end_h = tw.split("-")
-            start_h = int(start_h.split(":")[0])
-            end_h = int(end_h.split(":")[0])
-            current_h = latest_ts.hour
-            if start_h <= end_h:
-                if not (start_h <= current_h < end_h):
-                    continue
-            else:  # 跨午夜
-                if not (current_h >= start_h or current_h < end_h):
-                    continue
-
-        # 主触发条件
-        primary_hits = [t for t in rule["triggers"] if t.lower() in behavior_labels]
-        if not primary_hits:
+        if not _match_time_window(rule, latest_ts):
             continue
 
-        # 辅助触发条件（加分）
-        secondary_hits = [t for t in rule.get("secondary_triggers", []) if t.lower() in behavior_labels]
+        device = _score_device_path(rule, behavior_labels)
+        scene = _score_scene_graph_path(rule, scene_graph_labels)
 
-        # vMA-1.2.1: 场景图触发（加分）——objects/relations 匹配
-        sg_hits = [t for t in rule.get("scene_graph_triggers", []) if t.lower() in scene_graph_labels]
+        if device and scene:
+            path = "both"
+            chosen = device if device[0] >= scene[0] else scene
+            evidence = list(dict.fromkeys(device[1] + scene[1]))
+        elif device:
+            path = "device_state"
+            chosen = device
+            evidence = list(device[1])
+        elif scene:
+            path = "scene_graph"
+            chosen = scene
+            evidence = list(scene[1])
+        else:
+            continue
 
-        # 计算分数：基础置信度 + 辅助触发加分 + 场景图加分
-        score = rule["confidence"]
-        score += min(0.15, len(secondary_hits) * 0.05)
-        score += min(0.1, len(sg_hits) * 0.04)
-        score = min(0.95, score)
-
+        score = chosen[0]
         if score > best_score:
             best_score = score
             best_intent = {
                 "intent": rule["intent"],
                 "label": rule["label"],
                 "confidence": round(score, 2),
-                "evidence": primary_hits + secondary_hits,
+                "evidence": evidence,
                 "suggestion": rule["suggestion"],
                 "room": rule.get("room", ""),
+                "path": path,
+                "scene_graph_used": bool(scene),
                 "events_in_window": len(recent_events),
             }
 

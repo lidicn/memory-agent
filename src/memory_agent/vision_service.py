@@ -17,6 +17,7 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 import time
 import urllib.parse
@@ -86,6 +87,7 @@ class VisionService:
         self._light_cache: dict[str, tuple] = {}      # entity_id -> (monotonic, on|None)
         self._skip_counts: dict[str, dict] = {}       # room -> {reason: n}
         self._last_result: dict[str, dict] = {}       # room -> 最近一次结果摘要
+        self._last_vlm_usage: dict | None = None      # 最近一次 VLM 响应的 usage（可能无）
         self._last_cleanup_day: str = ""
         self._patrol_task: asyncio.Task | None = None
         self._analyze_tasks: set[asyncio.Task] = set()  # 稳定性审计第二轮：跟踪 analyze_room task
@@ -285,7 +287,8 @@ class VisionService:
                 '{"persons":[{"identity":"<上列名字或\'未识别\'>","action":"<10-20字动作描述>",'
                 '"posture":"坐/站/躺/走","interaction":"<与谁互动或\'无\'>","confidence":0.0-1.0}],'
                 '"scene":"<一句话场景概括>","emotion":"<整体情绪：happy|calm|tired|frustrated|anxious|neutral>","snapshot_quality":"good|dim|occluded",'
-                '"scene_graph":{"objects":["<画面里的主要物体>"],"relations":["<物体之间的空间关系>"]}}\n'
+                '"scene_graph":{"objects":[{"name":"<主要物体>","position":"<画面位置：左/中/右+前景/背景"}],'
+                '"relations":[{"subject":"<物体A>","predicate":"<空间关系：在…上/旁/前/后>","object":"<物体B>"}]}}\n'
                 "注意：不要猜测未列出的人的身份；画面模糊时 confidence 调低。情绪仅作观察，不做判断。"
             )
         members = self.store.list_members()
@@ -324,7 +327,8 @@ class VisionService:
             '"action":"<动作>","posture":"坐/站/躺/走","confidence":0.0-1.0,'
             '"identity":"<匹配到的成员名或\'未识别\'>","match_confidence":0.0-1.0}],'
             '"scene":"<一句话>","emotion":"<整体情绪：happy|calm|tired|frustrated|anxious|neutral>",'
-            '"scene_graph":{"objects":["<画面里的主要物体>"],"relations":["<物体之间的空间关系>"]}}\n'
+            '"scene_graph":{"objects":[{"name":"<主要物体>","position":"<画面位置：左/中/右+前景/背景"}],'
+            '"relations":[{"subject":"<物体A>","predicate":"<空间关系：在…上/旁/前/后>","object":"<物体B>"}]}}\n'
             "identity 仅在外观与某成员档案高度吻合时填写其名字，否则填'未识别'。情绪仅作观察，不做判断。"
         )
 
@@ -341,6 +345,50 @@ class VisionService:
             return data if isinstance(data, dict) else None
         except Exception:
             return None
+
+    @staticmethod
+    def _normalize_scene_graph(raw: Any) -> dict:
+        """vMA-1.2.0：把 VLM 的 scene_graph 归一为 objects/relations 结构化列表。
+
+        容错优先：任何非法输入都降级为空结构，绝不因场景图解析失败阻断事件入库。
+        - objects: ``[{"name","position"}]``；也兼容 VLM 偷懒输出的字符串项。
+        - relations: ``[{"subject","predicate","object"}]``；兼容 "A 在 B 旁" 字符串，
+          按空格拆成三段，拆不出就整串落 subject（不丢信息）。
+        """
+        if not isinstance(raw, dict):
+            return {"objects": [], "relations": []}
+        objects: list[dict] = []
+        raw_objects = raw.get("objects")
+        for item in raw_objects if isinstance(raw_objects, (list, tuple)) else []:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                objects.append({"name": name, "position": str(item.get("position") or "").strip()})
+            elif isinstance(item, str) and item.strip():
+                objects.append({"name": item.strip(), "position": ""})
+        relations: list[dict] = []
+        raw_relations = raw.get("relations")
+        for item in raw_relations if isinstance(raw_relations, (list, tuple)) else []:
+            if isinstance(item, dict):
+                rel = {
+                    "subject": str(item.get("subject") or "").strip(),
+                    "predicate": str(item.get("predicate") or "").strip(),
+                    "object": str(item.get("object") or "").strip(),
+                }
+                if any(rel.values()):
+                    relations.append(rel)
+            elif isinstance(item, str) and item.strip():
+                parts = item.split()
+                if len(parts) >= 3:
+                    relations.append({
+                        "subject": parts[0],
+                        "predicate": " ".join(parts[1:-1]),
+                        "object": parts[-1],
+                    })
+                else:
+                    relations.append({"subject": item.strip(), "predicate": "", "object": ""})
+        return {"objects": objects, "relations": relations}
 
     def vlm_analyze(
         self, frame: bytes, prompt: str, *,
@@ -403,6 +451,9 @@ class VisionService:
                 text = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
                 if not text.strip():
                     raise RuntimeError("VLM 返回空内容（会话可能失效）")
+                # vMA-1.2.0：留最后一次响应的 usage，供场景图 token 用量日志（无则 None）
+                usage = data.get("usage")
+                self._last_vlm_usage = usage if isinstance(usage, dict) else None
                 return text, int((time.monotonic() - t0) * 1000)
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
@@ -671,6 +722,28 @@ class VisionService:
         return persons_out
 
     # ── 主流程：单房间识别 ────────────────────────────────────────────────
+
+    def _scene_graph_should_sample(self, trigger: str) -> bool:
+        """vMA-1.2.0 场景图采样：开关关闭不解析；开启时按 sample_rate 抽样。
+
+        只有已通过光线/运动 gate、真实调用 VLM 的帧会走到这里；手动/强制帧
+        （trigger 以 manual 开头）是运维调试用，不做场景图采样。
+        """
+        cfg = self.config
+        if not getattr(cfg, "scene_graph_enabled", True):
+            return False
+        if str(trigger or "").startswith("manual"):
+            return False
+        rate = getattr(cfg, "scene_graph_sample_rate", 1.0)
+        try:
+            rate = float(rate)
+        except (TypeError, ValueError):
+            rate = 1.0
+        if rate >= 1.0:
+            return True
+        if rate <= 0.0:
+            return False
+        return random.random() < rate
 
     def _vlm_gate_skip(self, room: str) -> tuple[bool, str]:
         """VLM 取帧 Gate（Phase 0.3）：决定能否跳过本次 VLM 识别。
@@ -942,11 +1015,13 @@ class VisionService:
         elif confidence is not None and confidence < 0.4:
             status = "low_confidence"
 
-        # vMA-1.2.0 场景图：结构化场景描述（开关 + 采样控制）
+        # vMA-1.2.0 场景图：结构化场景描述（开关 + 运动 gate 帧采样）
+        # 关闭开关则完全不解析；开启时只对通过光线/运动 gate 到达此处的真实帧，
+        # 按 scene_graph_sample_rate 抽样解析（0=不抽样，1=每帧都抽），省 token 成本。
         scene_graph = None
-        if getattr(self.config, "scene_graph_enabled", True):
-            # vMA-1.2.0: 提取 VLM 返回的场景图（objects/relations）
-            vlm_scene_graph = (data or {}).get("scene_graph") or {}
+        if self._scene_graph_should_sample(trigger):
+            # 提取 VLM 返回的场景图（objects/relations），非法结构降级为空
+            vlm_scene_graph = self._normalize_scene_graph((data or {}).get("scene_graph"))
             emotion = (data or {}).get("emotion") or "neutral"
             scene_graph = {
                 "room": room,
@@ -960,10 +1035,18 @@ class VisionService:
                 "action": action,
                 "quality": quality,
                 "trigger": trigger,
-                # vMA-1.2.0 新增：场景图结构化输出
-                "objects": vlm_scene_graph.get("objects", []),
-                "relations": vlm_scene_graph.get("relations", []),
+                # vMA-1.2.0：场景图结构化输出（objects=[{name,position}], relations=[{subject,predicate,object}]）
+                **vlm_scene_graph,
             }
+            # 每次解析记一条 token 用量日志：响应带 usage 用真实值，否则按字符数近似
+            usage = getattr(self, "_last_vlm_usage", None) or {}
+            total_tokens = usage.get("total_tokens")
+            if not isinstance(total_tokens, (int, float)):
+                total_tokens = f"~{max(1, len(text) // 4)}(char/4)"
+            _logger.info(
+                "[Vision] scene_graph parsed room=%s trigger=%s tokens=%s",
+                room, trigger, total_tokens,
+            )
 
         event_id = self.store.insert_behavior_event({
             "room": room,

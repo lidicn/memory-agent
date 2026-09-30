@@ -675,10 +675,17 @@ class Store:
                 if "duplicate column" not in str(_exc).lower():
                     print(f"[Store] behavior_events.client 列迁移异常: {_exc}")
             # vMA-1.2.0 场景图：结构化场景描述 JSON（不建新表，只加一列）
+            # PRAGMA 先检后加：生产库迁移会跑两遍，重复 ALTER 必须无副作用。
             try:
-                conn.execute(
-                    "ALTER TABLE behavior_events ADD COLUMN scene_graph_json TEXT"
-                )
+                _cols = {
+                    r[1] for r in conn.execute(
+                        "PRAGMA table_info(behavior_events)"
+                    ).fetchall()
+                }
+                if "scene_graph_json" not in _cols:
+                    conn.execute(
+                        "ALTER TABLE behavior_events ADD COLUMN scene_graph_json TEXT DEFAULT ''"
+                    )
             except Exception as _exc:
                 if "duplicate column" not in str(_exc).lower():
                     print(f"[Store] behavior_events.scene_graph_json 列迁移异常: {_exc}")
@@ -1899,6 +1906,61 @@ class Store:
                 d for d in out
                 if any(p.get("name") == member for p in d.get("persons") or [])
             ]
+        return out
+
+    def list_scene_graphs(
+        self, room: str | None = None, person: str | None = None,
+        minutes: int | None = None, limit: int = 20,
+    ) -> list[dict]:
+        """vMA-1.2.0 场景图查询：只返回 scene_graph_json 非空的行为事件。
+
+        room/时间窗走 SQL 过滤；person 场景图里有 persons 但没有独立列，
+        故在解析后的 JSON 上按姓名/member_id 过滤（数据量受 limit 约束）。
+        返回 ``[{event_id, server_ts, day, room, trigger, status, confidence, scene_graph}]``。
+        """
+        limit = max(1, int(limit or 20))
+        sql = (
+            "SELECT id, server_ts, day, room, trigger, status, confidence, scene_graph_json "
+            "FROM behavior_events "
+            "WHERE scene_graph_json IS NOT NULL AND scene_graph_json != ''"
+        )
+        args: list = []
+        if room:
+            sql += " AND room = ?"
+            args.append(room)
+        if minutes and int(minutes) > 0:
+            since = (now_local(self.tz_offset_hours)
+                     - timedelta(minutes=int(minutes))).isoformat(sep="T")
+            sql += " AND server_ts >= ?"
+            args.append(since)
+        # person 过滤在 Python 侧，SQL 侧多取一些再截断，避免过滤后不足 limit
+        sql += " ORDER BY server_ts DESC LIMIT ?"
+        args.append(limit * 5 if person else limit)
+        conn = self.connect()
+        with self._lock:
+            rows = conn.execute(sql, args).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            raw = d.pop("scene_graph_json", None)
+            try:
+                sg = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                sg = None
+            if not isinstance(sg, dict):
+                continue
+            if person:
+                persons = sg.get("persons") or []
+                hit = any(
+                    p.get("name") == person or p.get("member_id") == person
+                    for p in persons if isinstance(p, dict)
+                )
+                if not hit:
+                    continue
+            d["scene_graph"] = sg
+            out.append(d)
+            if len(out) >= limit:
+                break
         return out
 
     def count_room_action_days(self, room: str, action: str, days: int = 7) -> int:
@@ -3851,6 +3913,8 @@ class Store:
         now = now_local(self.tz_offset_hours)
         created_at = created_at or now.isoformat(timespec="seconds")
         expires_at = (now + timedelta(days=ttl_days)).strftime("%Y-%m-%d")
+        # vMA-1.2.1: 记忆文本入库前统一脱敏（成员姓名→成员N，长数字串→***）
+        text = self.sanitize_feedback_text(text)
         memory_id = memory_id or hashlib.sha1(
             f"{session_id}|{text}|{created_at}|{uuid.uuid4().hex}".encode("utf-8")
         ).hexdigest()[:16]
@@ -3906,6 +3970,8 @@ class Store:
         """
         now = now_local(self.tz_offset_hours)
         updated_at = now.isoformat(timespec="seconds")
+        # vMA-1.2.1: 合并更新同样过脱敏，避免合并路径绕过入库脱敏
+        text = self.sanitize_feedback_text(text)
         conn = self.connect()
         with self._lock:
             if ttl_days is not None:
@@ -4051,18 +4117,45 @@ class Store:
             return cur.rowcount or 0
 
     @staticmethod
-    def _sanitize_pii(text: str) -> str:
-        """vMA-1.2.1: 简单 PII 脱敏——手机号/邮箱/身份证号打码。"""
+    def _sanitize_pii(text: str, member_names: list | None = None) -> str:
+        """vMA-1.2.1 反馈/记忆入库前的 PII 脱敏。
+
+        规则（顺序即优先级）：
+        1. 成员姓名 → ``成员N``（N 为该成员在名册中的序号，来自 members 表）；
+        2. 手机号 / 邮箱 / 身份证按位打码；
+        3. 兜底：任意 **连续 ≥7 位数字** 整体替换为 ``***``（订单号/卡号/固话等）。
+
+        只做替换不做删除，避免脱敏后语义断裂。
+        """
         import re
         if not text:
             return text
+        for idx, name in enumerate(member_names or [], start=1):
+            name = str(name or "").strip()
+            if len(name) >= 2:
+                text = text.replace(name, f"成员{idx}")
         # 手机号：11 位数字，中间 4 位打码
-        text = re.sub(r"(1[3-9]\d)\d{4}(\d{4})", r"****", text)
+        text = re.sub(r"(1[3-9]\d)\d{4}(\d{4})", r"****", text)
         # 邮箱：本地名前 2 位保留，其余打码
-        text = re.sub(r"([\w.]{2})[\w.]*@", r"***@", text)
+        text = re.sub(r"([\w.]{2})[\w.]*@", r"***@", text)
         # 身份证：前 6 位 + 后 4 位，中间打码
-        text = re.sub(r"(\d{6})\d{8,11}(\d{4})", r"********", text)
+        text = re.sub(r"(\d{6})\d{8}(\d{4})", r"********", text)
+        # 兜底：连续 7 位及以上数字一律打码
+        text = re.sub(r"\d{7,}", "***", text)
         return text
+
+    def _pii_member_names(self) -> list:
+        """脱敏用的成员名册（顺序稳定=序号稳定）。失败返回空表，不阻断写入。"""
+        try:
+            return [m.get("name") or "" for m in self.list_members()]
+        except Exception:
+            return []
+
+    def sanitize_feedback_text(self, text: str) -> str:
+        """对外暴露的入库前脱敏入口（反馈/记忆文本统一走这里）。"""
+        if not isinstance(text, str) or not text:
+            return text or ""
+        return self._sanitize_pii(text, self._pii_member_names())
 
     def record_agent_feedback(self, memory_id: str, useful: bool, trust_step: float = 0.2,
                                comment: str = "") -> dict | None:
@@ -4087,8 +4180,8 @@ class Store:
             expires_at = (now + timedelta(days=ttl)).strftime("%Y-%m-%d")
         else:
             expires_at = (now + timedelta(days=max(1, ttl // 2))).strftime("%Y-%m-%d")
-        # vMA-1.2.1: 反馈评论 PII 脱敏
-        safe_comment = self._sanitize_pii(comment or "")
+        # vMA-1.2.1: 反馈评论 PII 脱敏（含成员姓名 → 成员N）
+        safe_comment = self.sanitize_feedback_text(comment or "")
         with self._lock:
             conn.execute(
                 """UPDATE agent_memories SET feedback_up=?, feedback_down=?,
