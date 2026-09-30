@@ -77,6 +77,8 @@ class HADBClient:
         self.tz_offset_hours = float(tz_offset_hours)
         self._conn: Optional[pymysql.connections.Connection] = None
         self._schema_mode: Optional[str] = None
+        import threading
+        self._lock = threading.Lock()  # 稳定性审计缺陷3：_get_conn 并发首调防连接泄漏
 
     # ── 连接管理 ─────────────────────────────────────────────────────────
 
@@ -95,9 +97,10 @@ class HADBClient:
         )
 
     def _get_conn(self) -> pymysql.connections.Connection:
-        if self._conn is None or not self._conn.open:
-            self._conn = self._connect()
-        return self._conn
+        with self._lock:
+            if self._conn is None or not self._conn.open:
+                self._conn = self._connect()
+            return self._conn
 
     def close(self) -> None:
         if self._conn is not None:

@@ -529,8 +529,9 @@ class AppRuntime:
                                     ).strftime("%Y-%m-%d")
                                     await asyncio.to_thread(
                                         self.store.purge_behavior_anomalies, before)
-                                except Exception:  # noqa: BLE001
-                                    pass
+                                except Exception as _exc:  # noqa: BLE001
+                                    # 稳定性审计缺陷4：purge 失败不再静默，打日志可观测
+                                    print(f"[Runtime] purge_behavior_anomalies 失败: {_exc}")
                                 pres = await asyncio.to_thread(
                                     self.activity.mine_process,
                                     None, None,
@@ -553,8 +554,9 @@ class AppRuntime:
                                     ).strftime("%Y-%m-%d")
                                     await asyncio.to_thread(
                                         self.store.purge_behavior_drifts, bd)
-                                except Exception:  # noqa: BLE001
-                                    pass
+                                except Exception as _exc:  # noqa: BLE001
+                                    # 稳定性审计缺陷4：purge 失败不再静默，打日志可观测
+                                    print(f"[Runtime] purge_behavior_drifts 失败: {_exc}")
                                 dres = await asyncio.to_thread(
                                     self.activity.mine_drift, None, None,
                                     int(getattr(self.config, "drift_days", 14) or 14),
@@ -648,6 +650,12 @@ class AppRuntime:
         lrai_task = getattr(self, "_livingroom_ai_task", None)
         if lrai_task is not None:
             lrai_task.cancel()
+        # 稳定性审计缺陷1：补齐 4 个遗漏的常驻任务 cancel
+        for _name in ("_retention_task", "_candidate_promotion_task",
+                      "_causal_scan_task", "_self_diary_task"):
+            _t = getattr(self, _name, None)
+            if _t is not None:
+                _t.cancel()
         try:
             self.mqtt.close()
         except Exception as exc:  # noqa: BLE001
@@ -706,6 +714,13 @@ class AppRuntime:
         self.auth.config = self.config
         self.auth.users_file = self.config.users_file
         self.ha = HAClient(self.config)
+        # 稳定性审计缺陷5：覆盖 ha_db 前关闭旧连接，避免僵尸 pymysql 连接
+        _old_ha_db = getattr(self, "ha_db", None)
+        if _old_ha_db is not None:
+            try:
+                _old_ha_db.close()
+            except Exception as _exc:
+                print(f"[Runtime] 关闭旧 HA MariaDB 客户端异常: {_exc}")
         self.ha_db = self._build_ha_db(self.config)
         self.history.config = self.config
         # chroma 地址（host/port）变化时，重置连接缓存，让下次访问用新地址重连，

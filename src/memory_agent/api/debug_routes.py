@@ -50,6 +50,8 @@ from .llm_routes import MEMORY_TOOLS, MAX_TOOL_RESULT_CHARS, _run_memory_tool
 _RUNS: dict[str, "DebugRun"] = {}
 _CONV: dict[str, list] = {}  # conversation_id -> 完整 messages 上下文
 _MAX_RUNS = 200
+_MAX_CONV = 200  # 稳定性审计缺陷2：_CONV 上限，防止单调增长到 OOM
+_CONV_ORDER: list[str] = []  # FIFO 淘汰顺序
 
 _TERMINAL = object()  # 内部哨兵：标记流结束（不进 history）
 
@@ -128,6 +130,11 @@ def _register(run: DebugRun) -> None:
         )
         for r in finished[: len(_RUNS) - _MAX_RUNS]:
             _RUNS.pop(r.run_id, None)
+            # 稳定性审计缺陷2：级联清理 _CONV
+            if r.conversation_id:
+                _CONV.pop(r.conversation_id, None)
+                if r.conversation_id in _CONV_ORDER:
+                    _CONV_ORDER.remove(r.conversation_id)
 
 
 async def _execute_run(rt, run: DebugRun, tools=None, run_tool=None) -> None:
@@ -270,6 +277,12 @@ async def _execute_run(rt, run: DebugRun, tools=None, run_tool=None) -> None:
 
         if run.conversation_id:
             _CONV[run.conversation_id] = messages
+            if run.conversation_id not in _CONV_ORDER:
+                _CONV_ORDER.append(run.conversation_id)
+            # 稳定性审计缺陷2：超上限时淘汰最旧 conversation
+            while len(_CONV) > _MAX_CONV and _CONV_ORDER:
+                oldest = _CONV_ORDER.pop(0)
+                _CONV.pop(oldest, None)
 
         run.finish()
 
