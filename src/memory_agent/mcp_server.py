@@ -609,7 +609,7 @@ def _fetch_attribution_events(store, days: int = 30) -> list[dict]:
     with store._lock:
         rows = conn.execute(
             "SELECT server_ts, action, room, scene, persons_json FROM behavior_events "
-            "WHERE day >= ? ORDER BY server_ts ASC LIMIT 50000",
+            "WHERE day >= ? AND action != 'behavior_change_alert' ORDER BY server_ts ASC LIMIT 50000",
             (day_from,),
         ).fetchall()
     out = []
