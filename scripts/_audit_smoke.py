@@ -72,9 +72,9 @@ else:
 
 # ── P1-1: perception_rules None 哨兵 ───────────────────────────────────────
 print("\n[P1-1] perception_rules cooldown 哨兵")
-from memory_agent.perception_rules import PerceptionRuleEngine
+from memory_agent.perception_rules import RuleEngine
 
-eng = PerceptionRuleEngine.__new__(PerceptionRuleEngine)
+eng = RuleEngine.__new__(RuleEngine)
 eng._last_triggered = {}
 eng.rules = []
 

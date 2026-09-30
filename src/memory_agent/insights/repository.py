@@ -433,12 +433,16 @@ class StoreRepository:
         entity_id/room/domain/last_ts/total，根本没有 friendly_name/category/unit，
         导致 resolver 里所有实体的友好名和单位全是空串。
         改为取每个实体最新一条事件的 attrs_json 解析 friendly_name / unit。
+
+        性能修复：原写法用相关子查询（每行两次全表扫描），events 表达百万行时
+        启动需几十分钟。改为 JOIN + GROUP BY，一次扫描完成分组聚合。
         """
         from .models import EntityInfo
-        sql = ("SELECT e.entity_id, e.room, e.domain, e.attrs_json, "
-               "(SELECT COUNT(*) FROM events WHERE entity_id = e.entity_id) AS total "
+        sql = ("SELECT e.entity_id, e.room, e.domain, e.attrs_json, c.total "
                "FROM events e "
-               "WHERE e.rowid = (SELECT MAX(rowid) FROM events WHERE entity_id = e.entity_id) "
+               "JOIN (SELECT entity_id, MAX(rowid) AS max_rowid, COUNT(*) AS total "
+               "      FROM events GROUP BY entity_id) c "
+               "ON e.rowid = c.max_rowid "
                "ORDER BY e.entity_id LIMIT ?")
         rows = self._execute(sql, (self._top_n(None, 5000),))
         out = []
