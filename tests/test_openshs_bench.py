@@ -73,12 +73,28 @@ def test_ground_truth_maps_expected_activities():
 
 
 def test_run_benchmark_end_to_end():
-    # 在精心构造的样本上，转换器 + 检测器应对齐到完美基线。
+    # 方案A 适配后口径：infer_activities 输出时段启发式标签
+    # （夜间/晨间/日间/晚间*/可能离家），真值旧活动名经
+    # openshs_schema.LEGACY_TO_PERIOD 映射统一判定。
+    # 时段粒度粗 + 跨午夜归属差异使「完美 F1=1.0」不再可达，
+    # 这里断言各室内活动均能被兼容时段命中、总体 F1 显著为正；
+    # 不用放宽判定集合等手段凑数字（away 见下方注释，如实为 0）。
     r = run_benchmark(SAMPLE)
     assert r["n_events"] > 0
     for act in EVALUATED_ACTIVITIES:
+        v = r["per_activity"][act]
+        if act == "away":
+            # 「可能离家」= 日间 ≥3h 静默；OpenSHS 的 leaveHouse 段自带门磁边沿
+            # 事件不构成静默，且样本窗口收尾在次晨 06:31，静默判离家落在次日
+            # → 天级口径下 tp=0。属新旧语义真实差异，不凑数字。
+            assert v["f1"] == 0.0, v
+            continue
+        assert v["f1"] > 0.0, (act, v)
+    assert r["micro"]["f1"] > 0.5, r["micro"]
+    assert r["macro_f1"] > 0.5, r["macro_f1"]
+    # 时段无歧义的室内活动（工作→日间、看电视→晚间系）在本样本应满命中。
+    for act in ("working", "watching_tv"):
         assert r["per_activity"][act]["f1"] == 1.0, (act, r["per_activity"][act])
-    assert r["macro_f1"] == 1.0
 
 
 def test_activity_map_only_known_labels():

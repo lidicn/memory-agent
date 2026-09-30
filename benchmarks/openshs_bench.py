@@ -3,6 +3,15 @@
 把 OpenSHS 公开标注数据集（宽表 CSV）转换为 MA 事件流，跑 ``infer_activities``，
 再与标注真值对比，按「天 × 活动」做二分类，输出 precision / recall / F1。
 
+口径说明（方案A 适配）
+---------------------
+``infer_activities`` 已重构为「时段启发式」：不再输出 sleep/cook 等具体活动名，
+而是 夜间活动/晨间活动/日间活动/晚间*/可能离家 等时段标签。本基准在
+**benchmark 侧**经 ``openshs_schema.LEGACY_TO_PERIOD`` 把旧活动名映射到时段标签
+集合后统一判定（预测标签 ∩ 活动映射集合非空 → 视为命中），不改生产代码。
+新口径含义是「活动发生时段与预测时段兼容」的覆盖度，时段粒度较粗、标签间存在
+多对一坍缩（如日间活动同时兼容 cooking/working），F1 数值不可与旧口径直接比较。
+
 用法
 ----
     # 默认用自带样本（benchmarks/data/openshs_sample.csv）
@@ -34,10 +43,36 @@ from memory_agent.store import Store
 
 from .openshs_convert import ground_truth, start_end, wide_to_events
 from .openshs_eval import BASELINE_KEYS, day_level, segment_level, slot_level
-from .openshs_schema import get_activity_map
+from .openshs_schema import (
+    LEGACY_TO_PERIOD,
+    get_activity_map,
+    legacy_activity_hit,
+    period_to_legacy,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CSV = os.path.join(HERE, "data", "openshs_sample.csv")
+
+
+def _ma_records_with_intervals(records: list[dict]) -> list[dict]:
+    """把时段启发式记录（day + start_hour/end_hour）还原为带绝对时间区间的
+    legacy 口径记录，供 slot/segment 级评估使用。
+
+    一条时段记录按 ``period_to_legacy`` 展开为多个可能的旧活动（多对一坍缩的
+    逆向代价，见 openshs_schema 注释）；无法展开的记录保留原标签名。
+    """
+    out: list[dict] = []
+    for a in records:
+        day = a.get("day") or ""
+        sh, eh = a.get("start_hour"), a.get("end_hour")
+        acts = period_to_legacy([a.get("name", "")])
+        if not day or sh is None or eh is None:
+            continue
+        for act in (acts or {a.get("name", "")}):
+            out.append({**a, "activity": act,
+                        "start_ts": f"{day}T{int(sh):02d}:00:00",
+                        "end_ts": f"{day}T{int(eh):02d}:59:59"})
+    return out
 
 
 def run_benchmark(csv_path: str, map_name: str = "fine", slot_seconds: int = 300) -> dict:
@@ -56,6 +91,7 @@ def run_benchmark(csv_path: str, map_name: str = "fine", slot_seconds: int = 300
     svc = InsightService(store, cfg)
     res = svc.infer_activities(start=mn, end=mx)
 
+    # 预测侧：新 infer_activities 输出「时段标签」，按天聚合标签集合。
     pred_days: dict[str, set] = defaultdict(set)
     for a in res.get("activities", []):
         pred_days[a.get("day", "")].add(a.get("name", ""))
@@ -64,13 +100,14 @@ def run_benchmark(csv_path: str, map_name: str = "fine", slot_seconds: int = 300
     gt_days = gt["days"]
 
     # 评估：每个 (activity, day) 视为一个二分类样本。
+    # 判定经 LEGACY_TO_PERIOD 映射层统一两侧口径（见模块 docstring 方案A 说明）。
     tp = defaultdict(int)
     fp = defaultdict(int)
     fn = defaultdict(int)
     days = set(pred_days) | set(gt_days)
     for act in evaluated:
         for day in days:
-            p = act in pred_days.get(day, set())
+            p = legacy_activity_hit(act, pred_days.get(day, set()))
             g = act in gt_days.get(day, set())
             if p and g:
                 tp[act] += 1
@@ -103,11 +140,17 @@ def run_benchmark(csv_path: str, map_name: str = "fine", slot_seconds: int = 300
 
     ma_records = res.get("activities", [])
     days_sorted = sorted(days)
+    # Level 1（day）：预测标签集合先经 period_to_legacy 逆展开回旧活动名口径，
+    # 与 gt_days（旧活动名）保持同口径；Level 2（slot/segment）：用 day+小时
+    # 还原绝对时间区间后参与时间定位评估。
+    pred_days_legacy = {d: period_to_legacy(labels)
+                        for d, labels in pred_days.items()}
+    ma_records_typed = _ma_records_with_intervals(ma_records)
     levels = {
-        "day": day_level(gt_days, pred_days, days_sorted, evaluated),
-        "slot": slot_level(gt["segments"], ma_records, evaluated, mn, mx,
+        "day": day_level(gt_days, pred_days_legacy, days_sorted, evaluated),
+        "slot": slot_level(gt["segments"], ma_records_typed, evaluated, mn, mx,
                            slot_seconds=slot_seconds),
-        "segment": segment_level(gt["segments"], ma_records, evaluated),
+        "segment": segment_level(gt["segments"], ma_records_typed, evaluated),
     }
 
     return {
@@ -197,9 +240,12 @@ def print_report(r: dict, map_name: str = "fine") -> None:
           f"{r['micro']['precision']:>8}{r['micro']['recall']:>8}{r['micro']['f1']:>8}")
     print(f"MACRO-F1 (avg over activities): {r['macro_f1']}")
     print("-" * 64)
-    print("预测（按天）:", r["pred_days"])
-    print("真值（按天）:", r["gt_days"])
+    print("预测（按天·时段标签）:", r["pred_days"])
+    print("真值（按天·旧活动名）:", r["gt_days"])
     print("=" * 64)
+    print("口径说明（方案A）：infer_activities 现为时段启发式（夜间/晨间/日间/晚间*/可能离家），")
+    print("真值旧活动名经 LEGACY_TO_PERIOD 时段集合映射后与预测统一判定；评分含义为")
+    print("「活动与预测时段的兼容性/覆盖度」，时段多对一坍缩会使 F1 相对旧口径偏乐观，不可直接对比。")
     if map_name == "coarse":
         print("标签映射说明（coarse）：真实 OpenSHS 公开数据集为粗粒度 7 分类"
               "(sleep/eat/work/leisure/personal/other/anomaly)，")
@@ -208,12 +254,13 @@ def print_report(r: dict, map_name: str = "fine") -> None:
         print("other/anomaly 无 MA 对应物，未计入评分。leisure/personal 为近似代理"
               "（居家休闲/个人护理），故 watching_tv/bathing 的")
         print("精度/召回应理解为『对休闲/护理时段的覆盖度』，而非严格子活动判别。")
-    print("说明：OpenSHS 睡眠段通常只有 presence/light 信号（+mainDoorLock 常亮），")
-    print("没有门磁开合的『括号事件』，而 MA 的睡眠检测基于『无家电/门/电脑操作的")
-    print("静默间隔』，故 sleep→sleeping 召回偏低属预期基线局限，非适配器缺陷。"
-          if map_name != "coarse" else
-          "MA 对 working/bathing 在粗粒度集上呈现明显过预测（每日触发），"
-          "反映其基于『办公室/卫生间在场』即判定，未区分具体子活动。")
+    print("说明（方案A 时段启发式口径）：现 infer_activities 输出的是「时段标签」")
+    print("（夜间/晨间/日间/晚间*/可能离家，见 openshs_schema.PERIOD_LABELS），")
+    print("真值经 LEGACY_TO_PERIOD 映射后判定，含义是『活动可能发生的时段是否被")
+    print("预测覆盖』，粒度粗于旧活动名判别，时段标签间存在多对一坍缩（如日间活动")
+    print("同时兼容 cooking/working），F1 不可与旧『规则匹配』口径直接比较；")
+    print("跨午夜的睡眠段真值记在起始日、起床锚点预测记在次日，天级口径下会产生")
+    print("结构性 FP/FN（如样本末 04-02 的『可能离家』实为窗口收尾后的静默）。")
 
     levels = r.get("levels") or {}
     if levels:
