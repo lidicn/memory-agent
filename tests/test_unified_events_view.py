@@ -33,23 +33,25 @@ def _make_db():
     """)
     conn.execute("""
         CREATE VIEW unified_events AS
-            SELECT e.ts AS server_ts, 'device' AS source, e.person, e.room,
-                   e.entity_id || ':' || e.action AS event_type,
-                   COALESCE(e.attrs_json, '{}') AS payload, NULL AS confidence, e.day
+            SELECT e.id AS event_id, e.ts AS server_ts, e.day, e.room, 'device' AS source,
+                   e.entity_id || ':' || e.action AS event_type, e.person, e.entity_id,
+                   CAST(NULL AS REAL) AS confidence,
+                   COALESCE(e.attrs_json, '{}') AS payload
             FROM events e
             UNION ALL
-            SELECT be.server_ts, 'vision',
+            SELECT CAST(be.id AS TEXT), be.server_ts, be.day, be.room, 'vision',
+                   COALESCE(be.action, ''),
                    COALESCE(json_extract(be.persons_json, '$[0].name'), ''),
-                   be.room, be.action,
+                   COALESCE(be.camera_src, ''), be.confidence,
                    json_object('scene', COALESCE(be.scene, ''),
                                'count', COALESCE(be.count, 0),
-                               'camera_src', COALESCE(be.camera_src, '')),
-                   be.confidence, be.day
+                               'camera_src', COALESCE(be.camera_src, ''))
             FROM behavior_events be WHERE be.status = 'ok'
             UNION ALL
-            SELECT pe.server_ts, 'perception',
+            SELECT COALESCE(pe.event_id, CAST(pe.id AS TEXT)), pe.server_ts, pe.day,
+                   COALESCE(pe.room, ''), 'perception', pe.kind,
                    COALESCE(json_extract(pe.payload_json, '$.person'), ''),
-                   COALESCE(pe.room, ''), pe.kind, pe.payload_json, pe.confidence, pe.day
+                   COALESCE(pe.entity_id, ''), pe.confidence, pe.payload_json
             FROM perception_events pe
     """)
     return conn

@@ -18,6 +18,14 @@ def conn():
     if not os.path.exists(DB_PATH):
         pytest.skip(f"DB not found: {DB_PATH}")
     c = sqlite3.connect(DB_PATH)
+    # 该测试面向真实部署库（MA_TEST_DB）：若文件不是 memory-agent 库
+    # （缺源表 events，例如本地碰巧存在的空/无关 sqlite 文件），跳过而非误报。
+    src_tables = {r[0] for r in c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('events','behavior_events','perception_events')"
+    ).fetchall()}
+    if not {"events", "behavior_events", "perception_events"} <= src_tables:
+        c.close()
+        pytest.skip(f"{DB_PATH} is not a memory-agent store DB (missing source tables)")
     yield c
     c.close()
 
