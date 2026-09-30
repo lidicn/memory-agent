@@ -1164,6 +1164,68 @@ def _build_server():
         )
 
     @mcp.tool()
+    async def get_device_usage_summary(
+        entity_id: str = "",
+        start: str = "",
+        end: str = "",
+        days: int = 7,
+        debounce_seconds: int = 5,
+    ) -> dict:
+        """设备用量精简汇总：总开启时长 / 开关次数 / 平均单次时长（分钟）。
+
+        比 get_device_usage 更省 token：只要三个汇总数、不要时间线与每日分布时用本工具。
+        时长口径：events 状态变化序列积分（开→关为一个片段；窗口前已开启从左沿起算，
+        窗口末未闭合截断到右沿，返回值带 window_open_session 标记）；短于
+        debounce_seconds 的抖动不计。entity_id 可逗号分隔多个（汇总为并集）。
+        窗口内无任何事件时三个指标为 null（no_data=true）。
+        """
+        from .summary_queries import device_usage_summary
+
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            device_usage_summary, rt.store, entity_id, start, end, days, debounce_seconds
+        )
+
+    @mcp.tool()
+    async def get_room_behavior_summary(
+        room: str = "",
+        start: str = "",
+        end: str = "",
+        days: int = 7,
+    ) -> dict:
+        """房间行为汇总：活动标签分布 + 每时段（24 小时）活跃度。
+
+        活动分布 = behavior_states 推断活动 + behavior_events 视觉动作（仅 status=ok）
+        按标签计数；小时直方图取设备事件并默认剔除遥测域（功率/温湿度），
+        与其余行为工具 behavior_only 口径一致。问「某房间这段时间都在干嘛」用它。
+        """
+        from .summary_queries import room_behavior_summary
+
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            room_behavior_summary, rt.store, room, start, end, days
+        )
+
+    @mcp.tool()
+    async def get_member_daily_pattern(
+        member_id: str = "",
+        date: str = "",
+    ) -> dict:
+        """成员当日行为序列：推断活动状态 + 视觉动作 + 具名设备事件，按时间升序合并。
+
+        member_id 必填（成员隔离 fail-closed：日序列只按成员维度开放，无全量视图），
+        成员不存在返回 NOT_FOUND。date 为 YYYY-MM-DD，留空取今天。
+        注意：人员归属按成员**姓名**匹配 behavior_states.member / behavior_events.persons，
+        events.person 字段通常为空。
+        """
+        from .summary_queries import member_daily_pattern
+
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            member_daily_pattern, rt.store, member_id, date
+        )
+
+    @mcp.tool()
     async def list_device_health(state: str = "") -> dict:
         """实体健康 / 失效清单（A3）。
 

@@ -169,6 +169,67 @@ TOOL_SPECS: list = [
         example="书房电脑昨天开了多久 / 主卧空调运行时长",
         pitfall="不确定设备名时先用 get_entity_catalog 找到 entity_id/友好名。用水/净水器类出水量问题应优先用 ask_memory（净水器分支）。",
     ),
+    ToolSpec(
+        name="get_device_usage_summary",
+        summary="设备用量精简汇总：总开启时长/开关次数/平均单次时长（分钟），无时间线。",
+        description=(
+            "设备用量精简汇总（路线图 3.5 只读工具）：只要三个汇总数、不要逐次会话时间线与每日分布时用它，"
+            "比 get_device_usage 省 token。时长口径：events 状态变化序列积分（开→关为一个片段；"
+            "窗口前已开启从窗口左沿起算，窗口末未闭合截断到右沿并标记 window_open_session）；"
+            "短于 debounce_seconds 的抖动不计。窗口内无任何事件时三个指标为 null（no_data=true）。"
+        ),
+        group="定量",
+        service="store", method="",
+        expose=("mcp",),
+        params=[
+            _p("entity_id", "string", "精确 entity_id，逗号分隔可传多个（汇总为并集）", required=True),
+            _p("start", "string", "本地 ISO 开始时间或日期 YYYY-MM-DD（可选）"),
+            _p("end", "string", "本地 ISO 结束时间或日期 YYYY-MM-DD（可选）"),
+            _p("days", "integer", "start/end 均为空时的兜底天数，默认 7", default=7),
+            _p("debounce_seconds", "integer", "去抖秒数，短于该时长的片段丢弃，默认 5", default=5),
+        ],
+        example="get_device_usage_summary(entity_id='light.desk_lamp', start='2026-09-01', end='2026-09-07')",
+        pitfall="要时间线/每日分布用 get_device_usage；不确定 entity_id 先用 get_entity_catalog。",
+    ),
+    ToolSpec(
+        name="get_room_behavior_summary",
+        summary="房间行为汇总：活动标签分布（推断活动+视觉动作计数）+ 24 小时活跃度直方图。",
+        description=(
+            "房间行为汇总（路线图 3.5 只读工具）：回答「某房间这段时间都在干嘛」。"
+            "活动分布来自 behavior_states（canonical 推断活动）与 behavior_events（视觉动作，仅 status=ok）"
+            "按标签计数；小时直方图取设备事件并默认剔除遥测域（功率/温湿度），与其余行为工具 behavior_only 口径一致。"
+        ),
+        group="定量",
+        service="store", method="",
+        expose=("mcp",),
+        params=[
+            _p("room", "string", "区域(area)名，原样使用真实区域名", required=True),
+            _p("start", "string", "本地 ISO 开始时间或日期 YYYY-MM-DD（可选）"),
+            _p("end", "string", "本地 ISO 结束时间或日期 YYYY-MM-DD（可选）"),
+            _p("days", "integer", "start/end 均为空时的兜底天数，默认 7", default=7),
+        ],
+        example="get_room_behavior_summary(room='客厅', start='2026-09-20', end='2026-09-20')",
+        pitfall="活动标签口径=推断活动+视觉动作，不是设备事件本身；房间名要用配置里的真实区域名。",
+    ),
+    ToolSpec(
+        name="get_member_daily_pattern",
+        summary="成员当日行为序列：推断活动状态+视觉动作+具名设备事件按时间升序合并。",
+        description=(
+            "成员日行为序列（路线图 3.5 只读工具）：回答「TA 今天做了什么、几点在哪」。"
+            "合并 behavior_states（member=成员姓名口径）、behavior_events（persons 含姓名）"
+            "与 events（person 字段，通常为空）。成员隔离 fail-closed：member_id 必填，"
+            "不存在全成员视图。"
+        ),
+        group="定量",
+        service="store", method="",
+        expose=("mcp",),
+        params=[
+            _p("member_id", "string", "成员 UUID（list_members 可查）", required=True),
+            _p("date", "string", "日期 YYYY-MM-DD，留空取今天"),
+        ],
+        example="get_member_daily_pattern(member_id='abc123', date='2026-09-20')",
+        pitfall="人员归属按成员姓名匹配，姓名改动会断链；events.person 通常为空，别指望设备事件人人归位。",
+    ),
     # 注：v0.3 新增的 MCP 语义工具 query_device_usage / list_device_health 是
     # mcp_server 内手写的 @mcp.tool()（嵌套在 _build_server 中），**不在本 schema
     # 登记**——register_simple_tools 只按显式 names 注册，且 TOOL_NAMES 会被
