@@ -618,30 +618,34 @@ class Store:
                 conn.execute(
                     "ALTER TABLE agent_memories ADD COLUMN source TEXT NOT NULL DEFAULT 'ma'"
                 )
-            except Exception:
-                pass  # 列已存在
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] agent_memories.source 列迁移异常: {_exc}")
             # v0.8-2 记忆演变链：prev_id 指向被合并/失效的上一个版本
             try:
                 conn.execute(
                     "ALTER TABLE agent_memories ADD COLUMN prev_id TEXT NOT NULL DEFAULT ''"
                 )
-            except Exception:
-                pass  # 列已存在
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] agent_memories.prev_id 列迁移异常: {_exc}")
             # v0.9 时间有效性（Graphiti 时间模型）：事实有效区间 + 观测时间
             for _col in ("valid_from", "valid_to", "observed_at"):
                 try:
                     conn.execute(
                         f"ALTER TABLE agent_memories ADD COLUMN {_col} TEXT NOT NULL DEFAULT ''"
                     )
-                except Exception:
-                    pass  # 列已存在
+                except Exception as _exc:
+                    if "duplicate column" not in str(_exc).lower():
+                        print(f"[Store] agent_memories.{_col} 列迁移异常: {_exc}")
             # WO-MA-005: 成员归属维度（隐私面），默认空=未归属
             try:
                 conn.execute(
                     "ALTER TABLE agent_memories ADD COLUMN member_id TEXT NOT NULL DEFAULT ''"
                 )
-            except Exception:
-                pass  # 列已存在
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] agent_memories.member_id 列迁移异常: {_exc}")
             # 主动感知 v2.0：perception_events 幂等键（event_id）
             # 旧表可能无 event_id 列，补齐后保证重复事件被 IGNORE
             # 修复（审计 P1-1）：SQLite 不支持在 ADD COLUMN 上加 UNIQUE 约束，
@@ -712,8 +716,17 @@ class Store:
                         END;
                         """
                     )
-                    # 触发器已保证增量同步；不再每次启动全量 rebuild
-                    # （418M 库全量重建需数分钟，会阻塞启动事件）
+                    # 增量审计 20260930 修复：external-content FTS5 的 DROP+CREATE 后索引为空，
+                    # 触发器只同步此后的新写入，不会回填历史行。必须 rebuild 才能检索历史记忆。
+                    # 条件式执行：仅当 FTS 表为空且主表非空时 rebuild（首次建表为空操作，大库避免重复）。
+                    _fts_count = conn.execute("SELECT COUNT(*) FROM agent_memories_fts").fetchone()[0]
+                    _main_count = conn.execute("SELECT COUNT(*) FROM agent_memories").fetchone()[0]
+                    if _fts_count == 0 and _main_count > 0:
+                        print(f"[Store] FTS5 索引为空（主表 {_main_count} 行），执行 rebuild 回填…")
+                        conn.execute("INSERT INTO agent_memories_fts(agent_memories_fts) VALUES('rebuild')")
+                        conn.commit()
+                        _fts_after = conn.execute("SELECT COUNT(*) FROM agent_memories_fts").fetchone()[0]
+                        print(f"[Store] FTS5 rebuild 完成：索引 {_fts_after} 行")
                     print(f"[Store] FTS5 关键词索引就绪（tokenize={_tok}）")
                     break
                 except Exception as exc:
@@ -723,28 +736,33 @@ class Store:
                     conn.execute(
                         f"ALTER TABLE detected_activities ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'"
                     )
-                except Exception:
-                    pass  # 列已存在
+                except Exception as _exc:
+                    if "duplicate column" not in str(_exc).lower():
+                        print(f"[Store] detected_activities.{col} 列迁移异常: {_exc}")
             # members 表 avatar_url 列迁移
             try:
                 conn.execute("ALTER TABLE members ADD COLUMN avatar_url TEXT DEFAULT ''")
-            except Exception:
-                pass  # 列已存在
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] members.avatar_url 列迁移异常: {_exc}")
             # members 表 appearance_json 列迁移
             try:
                 conn.execute("ALTER TABLE members ADD COLUMN appearance_json TEXT DEFAULT ''")
-            except Exception:
-                pass  # 列已存在
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] members.appearance_json 列迁移异常: {_exc}")
             # 人脸库中央集权：成员 ArcSoft 特征（可移植性见交接单风险项）
             try:
                 conn.execute("ALTER TABLE members ADD COLUMN face_feature TEXT DEFAULT ''")
-            except Exception:
-                pass  # 列已存在
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] members.face_feature 列迁移异常: {_exc}")
             # 成员档案（豆包管家对接：作息/兴趣/课程，本服务不解释内容）
             try:
                 conn.execute("ALTER TABLE members ADD COLUMN profile_json TEXT DEFAULT ''")
-            except Exception:
-                pass  # 列已存在
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] members.profile_json 列迁移异常: {_exc}")
             # 竞技场快照（AutoFlow 竞技场对接：脱敏后的版本化固定数据集）
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS arena_snapshots (
