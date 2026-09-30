@@ -293,44 +293,53 @@ CREATE TABLE IF NOT EXISTS task_records (
 --   source: device(events) | vision(behavior_events) | perception(perception_events)
 --   event_type: device=entity_id:action | vision=action | perception=kind
 --   person: events.person | vision=persons_json[0].name | perception=payload_json.person
+--   entity_id: device=events.entity_id | vision=camera_src | perception=pe.entity_id
 --   payload: device=attrs_json | vision=scene/count/camera_src JSON | perception=payload_json
+-- 过滤：vision 源仅 status='ok' 行（失败/低置信行不入视图）
+-- 注意：本定义与 init_schema() 迁移块中的 canonical 定义必须逐列一致
 CREATE VIEW IF NOT EXISTS unified_events AS
     SELECT
+        e.id AS event_id,
         e.ts AS server_ts,
-        'device' AS source,
-        e.person,
+        e.day AS day,
         e.room,
+        'device' AS source,
         e.entity_id || ':' || e.action AS event_type,
-        COALESCE(e.attrs_json, '{}') AS payload,
-        NULL AS confidence,
-        e.day AS day
+        e.person,
+        e.entity_id,
+        CAST(NULL AS REAL) AS confidence,
+        COALESCE(e.attrs_json, '{}') AS payload
     FROM events e
     UNION ALL
     SELECT
+        CAST(be.id AS TEXT) AS event_id,
         be.server_ts,
-        'vision' AS source,
-        COALESCE(json_extract(be.persons_json, '$[0].name'), '') AS person,
+        be.day AS day,
         be.room,
-        be.action,
+        'vision' AS source,
+        COALESCE(be.action, '') AS event_type,
+        COALESCE(json_extract(be.persons_json, '$[0].name'), '') AS person,
+        COALESCE(be.camera_src, '') AS entity_id,
+        be.confidence,
         json_object(
             'scene', COALESCE(be.scene, ''),
             'count', COALESCE(be.count, 0),
             'camera_src', COALESCE(be.camera_src, '')
-        ) AS payload,
-        be.confidence,
-        be.day AS day
+        ) AS payload
     FROM behavior_events be
     WHERE be.status = 'ok'
     UNION ALL
     SELECT
+        COALESCE(pe.event_id, CAST(pe.id AS TEXT)) AS event_id,
         pe.server_ts,
-        'perception' AS source,
-        COALESCE(json_extract(pe.payload_json, '$.person'), '') AS person,
+        pe.day AS day,
         COALESCE(pe.room, '') AS room,
+        'perception' AS source,
         pe.kind AS event_type,
-        pe.payload_json AS payload,
+        COALESCE(json_extract(pe.payload_json, '$.person'), '') AS person,
+        COALESCE(pe.entity_id, '') AS entity_id,
         pe.confidence,
-        pe.day AS day
+        pe.payload_json AS payload
     FROM perception_events pe;
 
 CREATE VIEW IF NOT EXISTS unified_events_daily AS
@@ -1028,48 +1037,62 @@ class Store:
             )
             # vMA-1.3 多模态统一：三源只读 VIEW（events + behavior_events + perception_events）
             # VIEW 只读，不动写入路径；event_type 语义：device=entity:action, vision=action, perception=kind
-            conn.execute("""
-                CREATE VIEW IF NOT EXISTS unified_events AS
-                SELECT
-                    id AS event_id,
-                    ts AS server_ts,
-                    day,
-                    room,
-                    'device' AS source,
-                    entity_id || ':' || action AS event_type,
-                    person,
-                    entity_id,
-                    CAST(NULL AS REAL) AS confidence,
-                    attrs_json AS raw_json
-                FROM events
-                UNION ALL
-                SELECT
-                    CAST(id AS TEXT) AS event_id,
-                    server_ts,
-                    day,
-                    room,
-                    'vision' AS source,
-                    COALESCE(action, '') AS event_type,
-                    COALESCE(json_extract(persons_json, '$[0].name'), '') AS person,
-                    COALESCE(camera_src, '') AS entity_id,
-                    confidence,
-                    persons_json AS raw_json
-                FROM behavior_events
-                WHERE status = 'ok'
-                UNION ALL
-                SELECT
-                    COALESCE(event_id, CAST(id AS TEXT)) AS event_id,
-                    server_ts,
-                    day,
-                    COALESCE(room, '') AS room,
-                    'perception' AS source,
-                    kind AS event_type,
-                    COALESCE(json_extract(payload_json, '$.person'), '') AS person,
-                    COALESCE(entity_id, '') AS entity_id,
-                    confidence,
-                    payload_json AS raw_json
-                FROM perception_events
-            """)
+            # 历史缺陷修复：本定义曾与 _SCHEMA_SQL 中的定义列不一致
+            # （一版有 payload 无 event_id/entity_id，另一版有 raw_json），
+            # CREATE VIEW IF NOT EXISTS 首建者胜，导致 mcp 工具查询报 no such column。
+            # 现两处统一为同一 canonical 列集；旧库若视图列集不符（缺 event_id/entity_id/payload）
+            # 则 DROP 后按 canonical 重建（仅视图定义，不触碰任何源表数据）。
+            _ue_cols = [r[1] for r in conn.execute("PRAGMA table_info(unified_events)")]
+            if _ue_cols and not {"event_id", "entity_id", "payload"}.issubset(set(_ue_cols)):
+                conn.execute("DROP VIEW unified_events")
+                _ue_cols = []
+            if not _ue_cols:
+                conn.execute("""
+                    CREATE VIEW unified_events AS
+                    SELECT
+                        e.id AS event_id,
+                        e.ts AS server_ts,
+                        e.day AS day,
+                        e.room,
+                        'device' AS source,
+                        e.entity_id || ':' || e.action AS event_type,
+                        e.person,
+                        e.entity_id,
+                        CAST(NULL AS REAL) AS confidence,
+                        COALESCE(e.attrs_json, '{}') AS payload
+                    FROM events e
+                    UNION ALL
+                    SELECT
+                        CAST(be.id AS TEXT) AS event_id,
+                        be.server_ts,
+                        be.day AS day,
+                        be.room,
+                        'vision' AS source,
+                        COALESCE(be.action, '') AS event_type,
+                        COALESCE(json_extract(be.persons_json, '$[0].name'), '') AS person,
+                        COALESCE(be.camera_src, '') AS entity_id,
+                        be.confidence,
+                        json_object(
+                            'scene', COALESCE(be.scene, ''),
+                            'count', COALESCE(be.count, 0),
+                            'camera_src', COALESCE(be.camera_src, '')
+                        ) AS payload
+                    FROM behavior_events be
+                    WHERE be.status = 'ok'
+                    UNION ALL
+                    SELECT
+                        COALESCE(pe.event_id, CAST(pe.id AS TEXT)) AS event_id,
+                        pe.server_ts,
+                        pe.day AS day,
+                        COALESCE(pe.room, '') AS room,
+                        'perception' AS source,
+                        pe.kind AS event_type,
+                        COALESCE(json_extract(pe.payload_json, '$.person'), '') AS person,
+                        COALESCE(pe.entity_id, '') AS entity_id,
+                        pe.confidence,
+                        pe.payload_json AS payload
+                    FROM perception_events pe
+                """)
             conn.commit()
         print(f"[Store] SQLite 就绪: {self.db_path} (schema v{SCHEMA_VERSION})")
         self.ensure_default_insight_jobs()
@@ -3360,7 +3383,8 @@ class Store:
                 f"SELECT COUNT(*) FROM unified_events{where}", args
             ).fetchone()[0]
             cur = conn.execute(
-                f"SELECT server_ts, source, person, room, event_type, payload, confidence, day "
+                f"SELECT event_id, server_ts, day, room, source, event_type, person, "
+                f"entity_id, confidence, payload "
                 f"FROM unified_events{where} ORDER BY server_ts {order_dir} LIMIT ?",
                 [*args, limit],
             )

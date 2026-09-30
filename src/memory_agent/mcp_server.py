@@ -1260,7 +1260,7 @@ def _build_server():
         def _query():
             conn = rt.store.connect()
             try:
-                sql = "SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence FROM unified_events WHERE 1=1"
+                sql = "SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence, payload FROM unified_events WHERE 1=1"
                 params = []
                 if person:
                     sql += " AND person LIKE ?"
@@ -1278,19 +1278,19 @@ def _build_server():
                     sql += " AND server_ts <= ?"
                     params.append(end)
                 # count
-                count_sql = sql.replace("SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence", "SELECT COUNT(*)")
+                count_sql = sql.replace("SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence, payload", "SELECT COUNT(*)")
                 total = conn.execute(count_sql, params).fetchone()[0]
                 # rows
-                limit = min(max(limit, 1), 2000)
+                rows_limit = max(1, min(int(limit), 2000))
                 sql += " ORDER BY server_ts DESC LIMIT ? OFFSET ?"
-                params.extend([limit, offset])
+                params.extend([rows_limit, offset])
                 rows = conn.execute(sql, params).fetchall()
                 events = [dict(r) for r in rows]
                 return {
                     "total": total,
                     "count": len(events),
                     "offset": offset,
-                    "limit": limit,
+                    "limit": rows_limit,
                     "has_more": (offset + len(events)) < total,
                     "next_offset": offset + len(events) if (offset + len(events)) < total else None,
                     "events": events,
