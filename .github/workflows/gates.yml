@@ -41,6 +41,15 @@ jobs:
       - name: AST gates (no smoke)
         run: homesdk-gates . --no-smoke
 
+      # pyflakes 门禁：基线只准减少（.gates/pyflakes-baseline.txt 为欠账台账）。
+      # 本地等价命令：bash scripts/pyflakes_gate.sh（pyflakes 装在容器 /tmp/pylibs，
+      # 即 docker exec -e PYTHONPATH=/tmp/pylibs memory-agent ...，见交接单 §2.4）。
+      - name: Install pyflakes
+        run: pip install pyflakes
+
+      - name: pyflakes gate (baseline ratchet)
+        run: bash scripts/pyflakes_gate.sh
+
       # 基线只准减少：这里再跑一次全量口径，把净变化打进日志，方便评审直接引用。
       - name: Full tally (informational)
         if: always()

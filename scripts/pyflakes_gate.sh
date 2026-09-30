@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# pyflakes 质量门禁：基线只准减少，不准新增。
+# 用法：
+#   bash scripts/pyflakes_gate.sh                # 扫描 src/memory_agent，与 .gates/pyflakes-baseline.txt 比较
+#   bash scripts/pyflakes_gate.sh --bless        # 把当前扫描结果写为新基线（清理欠账后收编台账）
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BLESS=0
+TARGET_DIR="$REPO_ROOT/src/memory_agent"
+for arg in "$@"; do
+    case "$arg" in
+        --bless) BLESS=1 ;;
+        *) TARGET_DIR="$arg" ;;
+    esac
+done
+
+BASELINE="$REPO_ROOT/.gates/pyflakes-baseline.txt"
+TMP_SCAN="$(mktemp)"
+TMP_NORM="$(mktemp)"
+trap 'rm -f "$TMP_SCAN" "$TMP_NORM"' EXIT
+
+PY="${PYTHON:-python}"
+"$PY" -m pyflakes "$TARGET_DIR" > "$TMP_SCAN" 2>&1 || true
+
+# 归一化：去掉容器/绝对路径前缀与 CR，统一为 memory_agent/... 相对形式
+sed -E 's#^/app/src/##; s#^'"$REPO_ROOT"'/src/##; s#^src/##' "$TMP_SCAN" | tr -d '\r' > "$TMP_NORM"
+
+if [ "$BLESS" = "1" ] || [ ! -f "$BASELINE" ]; then
+    cp "$TMP_NORM" "$BASELINE"
+    echo "[gates] 基线已写入：$BASELINE（$(wc -l < "$BASELINE") 条）"
+    exit 0
+fi
+
+NEW_COUNT=$(comm -13 <(sort "$BASELINE") <(sort "$TMP_NORM") | wc -l)
+FIXED_COUNT=$(comm -23 <(sort "$BASELINE") <(sort "$TMP_NORM") | wc -l)
+CUR_COUNT=$(wc -l < "$TMP_NORM")
+
+echo "[gates] pyflakes: 当前 $CUR_COUNT 条，基线 $(wc -l < "$BASELINE") 条，新增 $NEW_COUNT，已修 $FIXED_COUNT"
+if [ "$NEW_COUNT" -gt 0 ]; then
+    echo "[gates] ❌ 新增 pyflakes 问题（必须为零）："
+    comm -13 <(sort "$BASELINE") <(sort "$TMP_NORM")
+    exit 1
+fi
+echo "[gates] ✅ pyflakes 门禁通过（无新增）"
