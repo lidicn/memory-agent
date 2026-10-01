@@ -52,7 +52,7 @@ from .mcp_errors import (  # noqa: F401
     normalize_tool_result,
 )
 from .mcp_scopes import note_unknown, requires, scope_of
-from .runtime import get_runtime
+from .runtime import AppRuntime, get_runtime
 from .store import now_local
 from .tool_schema import build_catalog, TOOL_NAMES as TOOL_NAMES_FROM_SPEC, register_simple_tools  # noqa: F401
 
@@ -646,7 +646,7 @@ def _read_skill_meta(path: str) -> dict:
         return {}
 
 
-def seed_builtin_skills(rt: "Runtime") -> int:
+def seed_builtin_skills(rt: "AppRuntime") -> int:
     """启动种子化：把包内内置技能（skills_bundle）首次写入网关 skills_dir。
 
     仅当目标技能不存在时才写入（不覆盖 Agent 已迭代出的更高版本），返回新写入的数量。

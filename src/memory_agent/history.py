@@ -16,10 +16,13 @@
 对外方法签名保持不变（MCP 工具与 API 均依赖），返回结构亦不变。
 """
 
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .store import TELEMETRY_DOMAINS, Store, make_event_id, now_local, parse_ts
+
+if TYPE_CHECKING:
+    import numpy as np  # 仅用于 __call__ 的字符串注解；运行时按需在函数内导入
 
 
 class _OpenAICompatEmbeddingFunction:
