@@ -53,7 +53,7 @@ from .mcp_errors import (  # noqa: F401
 )
 from .mcp_scopes import note_unknown, requires, scope_of
 from .runtime import AppRuntime, get_runtime
-from .store import now_local
+from .store import CANDIDATE_ACCEPTED, now_local
 from .tool_schema import build_catalog, TOOL_NAMES as TOOL_NAMES_FROM_SPEC, register_simple_tools  # noqa: F401
 
 SERVER_NAME = "memory-agent"
@@ -1992,12 +1992,13 @@ def _build_server():
     async def confirm_candidate_rule(rule_id: str, confirmed: bool = True) -> dict:
         """确认或拒绝一条候选规则（vMA-1.2.1 DCD红线）。
 
-        confirmed=true: 标记为用户确认，可被导出到引擎。
-        confirmed=false: 标记为已拒绝，不再建议。
-        未确认的规则永不进入引擎执行（DCD 裁定7红线）。
+        confirmed=true: 落 status='accepted' 且 user_confirmed=1（与 WebUI 同一状态字）。
+        confirmed=false: 落 status='rejected'，不再出现在建议列表。
+        本工具只改候选区状态，不写入规则引擎：引擎只读 active_rules 表，
+        候选区到引擎之间没有自动通道（DCD 裁定7红线）。
         """
         rt = get_runtime()
-        status = "confirmed" if confirmed else "rejected"
+        status = CANDIDATE_ACCEPTED if confirmed else "rejected"
         rule = await asyncio.to_thread(rt.store.update_candidate_rule_status, rule_id, status)
         if not rule:
             return {"ok": False, "error": f"候选规则 {rule_id} 不存在"}

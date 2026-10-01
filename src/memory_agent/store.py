@@ -27,6 +27,10 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 
+# candidate_rules 的"人已确认"状态字（DCD 裁定 7 红线位 user_confirmed 由它推导）。
+# HTTP 与 MCP 两条入口必须写同一个字面量，否则确认结果互不可见。
+CANDIDATE_ACCEPTED = "accepted"
+
 # 审计 S8：语音问答缓存软上限，超过则按创建时间淘汰最旧 10% 防止无限增长
 _VOICE_CACHE_MAX = int(os.getenv("MA_VOICE_CACHE_MAX", "2000"))
 
@@ -2219,23 +2223,17 @@ class Store:
         return rid, "added"
 
     def update_candidate_rule_status(self, rule_id: str, status: str) -> dict | None:
-        """更新候选规则状态（vMA-1.2.1）。同时更新 user_confirmed 标记。"""
-        import time as _time
+        """同 set_candidate_rule_status，额外返回更新后的整行（MCP 工具需要）。"""
+        if not self.set_candidate_rule_status(rule_id, status):
+            return None
         conn = self.connect()
-        with self._lock:
-            confirmed = 1 if status == "confirmed" else 0
-            conn.execute(
-                "UPDATE candidate_rules SET status=?, user_confirmed=?, updated_at=? WHERE rule_id=?",
-                (status, confirmed, _time.strftime("%Y-%m-%dT%H:%M:%S"), rule_id)
-            )
-            conn.commit()
-            row = conn.execute(
-                "SELECT * FROM candidate_rules WHERE rule_id=?", (rule_id,)
-            ).fetchone()
-            if not row:
-                return None
-            cols = [d[0] for d in conn.execute("SELECT * FROM candidate_rules LIMIT 0").description]
-            return dict(zip(cols, row))
+        row = conn.execute(
+            "SELECT * FROM candidate_rules WHERE rule_id=?", (rule_id,)
+        ).fetchone()
+        if not row:
+            return None
+        cols = [d[0] for d in conn.execute("SELECT * FROM candidate_rules LIMIT 0").description]
+        return dict(zip(cols, row))
 
     def add_bug_report(self, tool_name: str, description: str,
                        expected: str = "", actual: str = "",
@@ -2331,12 +2329,17 @@ class Store:
         return out
 
     def set_candidate_rule_status(self, rule_id: str, status: str) -> bool:
-        """更新候选规则状态（staging | accepted | rejected）。"""
+        """更新候选规则状态（staging | accepted | rejected），并同步 user_confirmed 红线位。
+
+        词表只有一套：HTTP 与 MCP 都写 ``accepted`` 表示"人已确认"。历史上 MCP
+        写过 ``confirmed``，导致该状态既不进 WebUI 的 accepted 列表、又不被任何读方识别。
+        """
         conn = self.connect()
         with self._lock:
             cur = conn.execute(
-                "UPDATE candidate_rules SET status=?, updated_at=? WHERE rule_id=?",
-                (status, now_local(self.tz_offset_hours).isoformat(sep="T"), rule_id),
+                "UPDATE candidate_rules SET status=?, user_confirmed=?, updated_at=? WHERE rule_id=?",
+                (status, 1 if status == CANDIDATE_ACCEPTED else 0,
+                 now_local(self.tz_offset_hours).isoformat(sep="T"), rule_id),
             )
             conn.commit()
             return bool(cur.rowcount)

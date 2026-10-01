@@ -424,5 +424,44 @@ def test_negative_samples_endpoint_manual_trigger():
         os.remove(st.db_path)
 
 
+def test_candidate_rule_status_vocabulary_is_single_sourced():
+    """§5.1.4 配套：HTTP 与 MCP 两条入口必须写同一个"已确认"状态字。
+
+    曾经 MCP 写 'confirmed'、WebUI 写 'accepted'，而 WebUI 的 set_* 路径不动
+    user_confirmed —— 结果是 MCP 确认的规则不进 accepted 列表，WebUI 接受的规则
+    user_confirmed 恒为 0，红线位与实际审批状态脱钩。
+    """
+    from memory_agent.store import CANDIDATE_ACCEPTED
+
+    st = make_store()
+    try:
+        rid, _ = st.upsert_candidate_rule(
+            name="词表一致规则", steps=[{"entity_id": "media.tv"}],
+            time_window="19:00-22:00", infer="看电视", confidence=0.6)
+        assert st.list_candidate_rules(status="staging")[0]["rule_id"] == rid
+
+        # HTTP 入口（WebUI 白名单用 "accepted"）
+        assert st.set_candidate_rule_status(rid, "accepted") is True
+        row = st.update_candidate_rule_status(rid, CANDIDATE_ACCEPTED)
+        assert row["status"] == CANDIDATE_ACCEPTED
+        assert row["user_confirmed"] == 1, "已确认状态必须同步红线位"
+        assert [r["rule_id"] for r in st.list_candidate_rules(status="accepted")] == [rid]
+
+        # 退回 staging 时红线位一并归零，不留"状态是 staging、标记却仍是已确认"
+        st.set_candidate_rule_status(rid, "staging")
+        assert st.list_candidate_rules(status="staging")[0]["user_confirmed"] == 0
+
+        # 不存在的 rule_id：两条入口都不得凭空造行
+        assert st.set_candidate_rule_status("no_such_rule", "accepted") is False
+        assert st.update_candidate_rule_status("no_such_rule", "accepted") is None
+        assert st.list_candidate_rules(status="accepted") == []
+
+        # 两个方法必须落到同一张表同一列集（否则又会长出第二套词表）
+        assert CANDIDATE_ACCEPTED == "accepted"
+    finally:
+        st.close()
+        os.remove(st.db_path)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
