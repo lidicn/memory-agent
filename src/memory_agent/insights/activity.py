@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .models import ActivityMatch, EventRecord, InsightConfig, TimeRange, day_key
+from .models import (ActivityMatch, EventRecord, InsightConfig, TimeRange, day_key,
+                      house_dt)
 from .parser.entity import EntityResolver
 from .parser.timeframe import split_days
 
@@ -317,7 +318,7 @@ class ActivityEngine:
 
 def _ts_dt(ts: float):
     from datetime import datetime
-    return datetime.fromtimestamp(ts)
+    return house_dt(ts)
 
 
 def analyze_rhythm(buckets: List[int], coverage: float = 0.8,

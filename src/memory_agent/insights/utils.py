@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 # 统一委托 parser.entity 的状态判定，避免新旧两套常量口径不一致（U-1）
+from .models import house_dt, house_ts
 from .parser.entity import (
     OFF_STATES as _ENTITY_OFF_STATES,
     CN_OFF_STATES as _ENTITY_CN_OFF_STATES,
@@ -214,10 +215,10 @@ def summarize_events(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             try:
                 if isinstance(ts, (int, float)):
                     ts_val = float(ts)
-                    hour = datetime.fromtimestamp(ts_val).hour
+                    hour = house_dt(ts_val).hour
                 elif isinstance(ts, str) and len(ts) >= 13:
                     hour = int(ts[11:13])
-                    ts_val = datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").timestamp()
+                    ts_val = house_ts(datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
                 else:
                     ts_val = None
                     hour = None
@@ -728,11 +729,6 @@ def compare_windows(compare_days: int, tz_offset_hours: float = 8.0) -> tuple[st
 #: 噪声判定阈值：某实体事件数 > 房间事件数 * NOISE_RATIO_CAP 即视为垄断型噪声。
 # NOISE_RATIO_CAP = 0.6  # 已存在，跳过
 
-#: 关状态集合（设备关闭/待机/离线等）。
-# P2：此处原定义缺 closed/not_home、多 power off/down，与 parser.entity 口径分裂；
-# 统一委托 parser.entity（本文件顶部已 import），后续勿在此另起炉灶。
-OFF_STATES = _ENTITY_OFF_STATES
-
 #: 房间聚合词（表示"所有房间/全屋"的关键词）。
 ROOM_AGGREGATE_WORDS: tuple[str, ...] = (
     "全屋", "所有房间", "全部房间", "每个房间", "整体", "家里", "家中",
@@ -1081,16 +1077,8 @@ def is_on_state(state) -> bool:
 
 
 
-#: 中文关闭状态集合
-CN_OFF_STATES: frozenset[str] = frozenset({"关", "关闭", "门关", "闭合", "断开", "无", "否", "0"})
-
-#: 中文开启状态集合
-CN_ON_STATES: frozenset[str] = frozenset({"开", "打开", "门开", "开启", "接通", "有", "是", "1"})
-
-
-
-#: 抖动阈值：短于该秒数的开启片段视为误触，不计入时长统计
-DEFAULT_DEBOUNCE_SECONDS = 5
+#: CN_OFF_STATES / CN_ON_STATES / DEFAULT_DEBOUNCE_SECONDS 统一委托文件顶部
+#: （parser.entity 为唯一口径来源），此处不再另起炉灶。
 
 
 
@@ -1102,13 +1090,6 @@ ROOM_AGGREGATE_WORDS: tuple[str, ...] = (
 
 #: 既是日常通用名词、又可能被用户拿来当 area 名的词
 GENERIC_ROOM_WORDS: frozenset[str] = frozenset({"房间", "卧室", "屋子", "房子", "家里"})
-
-
-
-#: 关闭状态集合（英文）
-OFF_STATES: frozenset[str] = frozenset(
-    {"off", "closed", "not_home", "unavailable", "unknown", "idle", "standby", "none", ""}
-)
 
 
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, Generic, Iterable, List, Optional, Tuple, TypeVar
 
@@ -23,6 +23,7 @@ T = TypeVar("T")
 __all__ = [
     "PAGE_DEFAULT_LIMIT", "SECONDS_PER_DAY", "MINUTES_PER_DAY",
     "now_ts", "fmt_ts", "day_key", "hour_of", "new_id", "serialize",
+    "HOUSE_TZ", "house_ts", "house_now", "house_dt",
     "DeviceCategory", "AnomalyType", "Severity", "StateKind", "Intent",
     "EntityInfo", "EventRecord", "Session", "TimeRange", "Page",
     "Insight", "Anomaly", "ActivityMatch", "UsageStat", "QuestionPlan",
@@ -37,31 +38,55 @@ MINUTES_PER_DAY = 1440
 # --------------------------------------------------------------------------
 # 基础工具
 # --------------------------------------------------------------------------
+#: 生产数据是「深圳墙钟」的 naive ISO 字符串（与 repository._TZ 同一口径）。
+#: 容器常跑在 UTC，若用机器本地时区做 epoch<->墙钟换算，窗口会整体平移数小时。
+HOUSE_TZ = timezone(timedelta(hours=8))
+
+
+def house_ts(dt: Any) -> float:
+    """naive 墙钟 -> epoch（按 HOUSE_TZ 解释，不依赖机器时区）。"""
+    if isinstance(dt, (int, float)):
+        return float(dt)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=HOUSE_TZ).timestamp()
+    return dt.timestamp()
+
+
+def house_now() -> datetime:
+    """当前家庭墙钟时间（naive，HOUSE_TZ 口径）。"""
+    return datetime.now(HOUSE_TZ).replace(tzinfo=None, microsecond=0)
+
+
+def house_dt(ts: float) -> datetime:
+    """epoch -> 家庭墙钟 naive datetime。"""
+    return datetime.fromtimestamp(float(ts), tz=HOUSE_TZ).replace(tzinfo=None)
+
+
 def now_ts() -> float:
     """当前时间戳（秒）。"""
     return time.time()
 
 
 def fmt_ts(ts: Optional[float]) -> str:
-    """时间戳 -> 'YYYY-MM-DD HH:MM:SS'，空值返回空串。"""
+    """时间戳 -> 'YYYY-MM-DD HH:MM:SS'（家庭墙钟），空值返回空串。"""
     if ts is None:
         return ""
     try:
-        return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
+        return house_dt(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
     except (OverflowError, OSError, ValueError):
         return ""
 
 
 def day_key(ts: Optional[float]) -> str:
-    """时间戳 -> 'YYYY-MM-DD'。"""
+    """时间戳 -> 'YYYY-MM-DD'（家庭墙钟）。"""
     if ts is None:
         return ""
-    return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
+    return house_dt(float(ts)).strftime("%Y-%m-%d")
 
 
 def hour_of(ts: float) -> int:
-    """时间戳 -> 小时（0-23）。"""
-    return datetime.fromtimestamp(float(ts)).hour
+    """时间戳 -> 小时（0-23，家庭墙钟）。"""
+    return house_dt(float(ts)).hour
 
 
 def new_id(prefix: str = "ins") -> str:
@@ -275,11 +300,11 @@ class TimeRange:
 
     @property
     def start_ts(self) -> float:
-        return self.start.timestamp()
+        return house_ts(self.start)
 
     @property
     def end_ts(self) -> float:
-        return self.end.timestamp()
+        return house_ts(self.end)
 
     @property
     def days(self) -> float:

@@ -24,7 +24,7 @@ _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
-from memory_agent.store import Store  # noqa: E402
+from memory_agent.store import Store, now_local  # noqa: E402
 from memory_agent import vision_service as vs_mod  # noqa: E402
 from memory_agent.vision_service import VisionService  # noqa: E402
 from memory_agent.api import vision_routes  # noqa: E402
@@ -242,8 +242,10 @@ def _request(query_pairs, user=None):
 @pytest.fixture
 def api_store():
     st = make_store()
-    now = datetime.now().isoformat(timespec="seconds")
-    old = (datetime.now() - timedelta(days=5)).isoformat(timespec="seconds")
+    # server_ts 必须与 store 的写入口径一致（now_local，默认 +8），
+    # 用机器本地时间在 UTC 容器里会让 minutes 窗口整体错位 8 小时。
+    now = now_local().isoformat(timespec="seconds")
+    old = (now_local() - timedelta(days=5)).isoformat(timespec="seconds")
     st.insert_behavior_event({
         "server_ts": now, "room": "客厅", "action": "看电视",
         "persons": [{"name": "Kevin"}], "count": 1, "status": "ok",

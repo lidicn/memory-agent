@@ -6,7 +6,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, List, Optional, Tuple
 
-from ..models import SECONDS_PER_DAY, TimeRange
+from ..models import (HOUSE_TZ, SECONDS_PER_DAY, TimeRange, house_dt, house_now,
+                      house_ts)
 
 __all__ = [
     "parse_time", "as_ts", "parse_timeframe", "resolve_range",
@@ -54,7 +55,7 @@ _TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
 
 
 def _now(now: Optional[datetime] = None) -> datetime:
-    return (now or datetime.now()).replace(microsecond=0)
+    return (now or house_now()).replace(microsecond=0)
 
 
 def _num(text: str) -> float:
@@ -84,14 +85,16 @@ def parse_time(value: Any) -> Optional[datetime]:
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(HOUSE_TZ).replace(tzinfo=None, microsecond=0)
         return value.replace(microsecond=0)
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value)).replace(microsecond=0)
+        return house_dt(float(value)).replace(microsecond=0)
     text = str(value).strip()
     if not text:
         return None
     if re.fullmatch(r"\d{10}(\.\d+)?", text):
-        return datetime.fromtimestamp(float(text)).replace(microsecond=0)
+        return house_dt(float(text)).replace(microsecond=0)
     for fmt in _TIME_FORMATS:
         try:
             return datetime.strptime(text, fmt)
@@ -99,9 +102,9 @@ def parse_time(value: Any) -> Optional[datetime]:
             continue
     try:
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        # 带时区的输入先转本地时区再去 tzinfo，之前直接丢弃偏移导致窗口偏移
+        # 带时区的输入先转家庭时区再去 tzinfo，之前直接丢弃偏移导致窗口偏移
         if dt.tzinfo is not None:
-            dt = dt.astimezone()
+            dt = dt.astimezone(HOUSE_TZ)
         return dt.replace(tzinfo=None, microsecond=0)
     except ValueError:
         return None
@@ -110,7 +113,7 @@ def parse_time(value: Any) -> Optional[datetime]:
 def as_ts(value: Any) -> Optional[float]:
     """任意时间表示 -> 时间戳。"""
     dt = parse_time(value)
-    return dt.timestamp() if dt else None
+    return house_ts(dt) if dt else None
 
 
 def _day_start(dt: datetime) -> datetime:
@@ -240,10 +243,10 @@ def split_days(tr: TimeRange) -> List[Tuple[str, float, float]]:
 def split_hours(tr: TimeRange) -> List[Tuple[str, float, float]]:
     """按小时切分：[( 'YYYY-MM-DD HH', start_ts, end_ts ), ...]"""
     out: List[Tuple[str, float, float]] = []
-    cur = datetime.fromtimestamp(tr.start_ts).replace(minute=0, second=0, microsecond=0)
-    while cur.timestamp() < tr.end_ts:
+    cur = house_dt(tr.start_ts).replace(minute=0, second=0, microsecond=0)
+    while house_ts(cur) < tr.end_ts:
         nxt = cur + timedelta(hours=1)
-        s, e = tr.clip(cur.timestamp(), nxt.timestamp())
+        s, e = tr.clip(house_ts(cur), house_ts(nxt))
         if e > s:
             out.append((cur.strftime("%Y-%m-%d %H"), s, e))
         cur = nxt

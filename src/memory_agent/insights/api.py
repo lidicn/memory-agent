@@ -91,8 +91,9 @@ class InsightService:
     def _days_to_range(self, days: int, start: str, end: str):
         """days 兼容：days>0 且 start/end 为空时计算时间范围。"""
         if days and not start and not end:
-            from datetime import datetime, timedelta
-            _end = datetime.now()
+            from datetime import timedelta
+            from .models import house_now
+            _end = house_now()
             _start = _end - timedelta(days=days)
             start = _start.isoformat(timespec="seconds")
             end = _end.isoformat(timespec="seconds")

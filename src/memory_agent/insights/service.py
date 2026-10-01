@@ -20,6 +20,7 @@ from statistics import median
 from typing import Any, Dict, List, Optional, Tuple
 
 from .repository import _to_epoch, _to_iso
+from .models import house_ts
 
 __all__ = ["BehaviorService", "CATEGORY_DOMAINS", "WEEKDAY_NAMES", "compute_sessions"]
 
@@ -177,8 +178,8 @@ class _Window:
         for day in _iter_days(self.start_iso[:10], self.end_iso[:10]):
             day_start = datetime.strptime(day, "%Y-%m-%d")
             day_end = day_start + timedelta(days=1)
-            yield (day, max(day_start.timestamp(), self.start_ts),
-                   min(day_end.timestamp(), self.end_ts))
+            yield (day, max(house_ts(day_start), self.start_ts),
+                   min(house_ts(day_end), self.end_ts))
 
 
 class _ResolverAdapter:
