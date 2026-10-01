@@ -33,7 +33,9 @@ class FakeHistory:
 def _store():
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
+    os.remove(path)          # Store.init_schema 用 CREATE TABLE IF NOT EXISTS，空文件也要先建表
     st = Store(path)
+    st.init_schema()
     conn = st.connect()
     conn.execute(
         "INSERT INTO members(id,name,created_at,updated_at) VALUES('m-k','张三',?,?)",
