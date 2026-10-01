@@ -774,8 +774,11 @@ TOOL_SPECS: list = [
         params=[
             _p("memory_id", "string", "记忆 ID", required=True),
             _p("useful", "boolean", "是否有用，默认 True", default=True),
+            _p("question", "string", "当初用户问的原话（👎 时必填才能进 vMA-2.0 badcase 取料）",
+               default=""),
+            _p("comment", "string", "补充说明", default=""),
         ],
-        example="feedback_memory(memory_id='mem_xxx', useful=True)",
+        example="feedback_memory(memory_id='mem_xxx', useful=False, question='昨晚谁在客厅开会')",
         pitfall="useful=False 会逐渐降低该记忆信任。",
     ),
     ToolSpec(

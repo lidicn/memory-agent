@@ -479,13 +479,20 @@ class AgentMemoryService:
                 affected += 1
         return {"ok": True, "affected": affected, "session_id": session_id}
 
-    def feedback_memory(self, memory_id: str, useful: bool) -> dict:
+    def feedback_memory(self, memory_id: str, useful: bool, comment: str = "",
+                        question: str = "") -> dict:
         res = self.store.record_agent_feedback(
-            memory_id, useful, float(getattr(self.config, "agent_trust_step", 0.2))
+            memory_id, useful, float(getattr(self.config, "agent_trust_step", 0.2)),
+            comment=comment, question=question,
         )
         if res is None:
             return {"ok": False, "error": "memory_id 不存在"}
         return {"ok": True, **res}
+
+    def list_negative_feedback(self, limit: int = 50) -> dict:
+        """vMA-2.0 门取料：带问题文本的 👎 明细（已入库脱敏，姓名→成员N）。"""
+        rows = self.store.list_negative_feedback(limit)
+        return {"ok": True, "count": len(rows), "items": rows}
 
     def list_agent_memories(self, state: str = "all", source: str = "",
                              member_id: str = "") -> dict:

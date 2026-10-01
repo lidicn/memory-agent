@@ -141,11 +141,28 @@ async def feedback(request: Request):
     if not memory_id:
         return error("缺少 memory_id")
     useful = bool(body.get("useful", True))
+    # DCD 2026-10-01 R1：👎 必须能还原"当初问了什么"，否则 vMA-2.0 的 badcase 门永远攒不出料。
+    question = str(body.get("question") or "")
+    comment = str(body.get("comment") or "")
     rt = runtime(request)
-    result = rt.agent_memory.feedback_memory(memory_id, useful)
+    result = rt.agent_memory.feedback_memory(
+        memory_id, useful, comment=comment, question=question
+    )
     if not result.get("ok"):
         return error(result.get("error", "反馈失败"))
     return ok(result)
+
+
+async def negative_feedback(request: Request):
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    try:
+        limit = max(1, min(200, int(request.query_params.get("limit", "50"))))
+    except ValueError:
+        limit = 50
+    return ok(rt.agent_memory.list_negative_feedback(limit))
 
 
 async def sweep(request: Request):
@@ -187,6 +204,7 @@ ROUTES = [
     Route("/api/agent/memories/revoke", revoke, methods=["POST"]),
     Route("/api/agent/memories/rollback", rollback, methods=["POST"]),
     Route("/api/agent/memories/feedback", feedback, methods=["POST"]),
+    Route("/api/agent/memories/negative_feedback", negative_feedback, methods=["GET"]),
     Route("/api/agent/memories/sweep", sweep, methods=["POST"]),
     Route("/api/agent/memories/retrieve", retrieve, methods=["POST"]),
 ]

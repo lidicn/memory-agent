@@ -465,8 +465,10 @@ TOOL_CATALOG: list[dict] = [
         "name": "feedback_memory",
         "group": "Agent记忆",
         "summary": "对记忆反馈有用/无用，驱动 trust 与 TTL（外部信号鉴定置信度）",
-        "params": {"memory_id": "记忆 id", "useful": "默认 True"},
-        "example": "feedback_memory(memory_id='...', useful=True)",
+        "params": {"memory_id": "记忆 id", "useful": "默认 True",
+                   "question": "当初用户问的原话（vMA-2.0 badcase 取料口径）",
+                   "comment": "补充说明"},
+        "example": "feedback_memory(memory_id='...', useful=False, question='昨晚谁在客厅开会')",
     },
     {
         "name": "list_agent_memories",
@@ -1972,10 +1974,19 @@ def _build_server():
         return await asyncio.to_thread(rt.agent_memory.rollback_agent_memory, session_id)
 
     @mcp.tool()
-    async def feedback_memory(memory_id: str, useful: bool = True) -> dict:
-        """对一条记忆反馈有用/无用，驱动 trust 与 TTL（外部信号鉴定置信度）。"""
+    async def feedback_memory(memory_id: str, useful: bool = True,
+                              question: str = "", comment: str = "") -> dict:
+        """对一条记忆反馈有用/无用，驱动 trust 与 TTL（外部信号鉴定置信度）。
+
+        question 传"当初用户问的那句话"：DCD 2026-10-01 R1 裁定 vMA-2.0 的
+        badcase 门以 👎 + 问题文本 为取料口径，不带 question 的 👎 事后无法
+        还原成可判负的 badcase，只会让门永远攒不出料。入库前统一 PII 脱敏。
+        """
         rt = get_runtime()
-        return await asyncio.to_thread(rt.agent_memory.feedback_memory, memory_id, useful)
+        return await asyncio.to_thread(
+            rt.agent_memory.feedback_memory, memory_id, useful,
+            comment=comment, question=question,
+        )
 
     @mcp.tool()
     async def list_candidate_rules(status: str = "staging") -> dict:

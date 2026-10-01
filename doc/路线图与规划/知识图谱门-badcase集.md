@@ -57,3 +57,22 @@
 ## 收集方式
 
 日常使用 MA 时，如果遇到"问了一个问题、MA 答不上来或答错了、但你觉得这信息库里应该有"的情况，记录到上面。不需要刻意制造，真实使用中自然积累。
+
+## 2026-10-01 DCD R1 裁定后新增的取料口
+
+DCD 裁定 A：**门照旧（≥10 条），等待期不计入交付缺口**，但明确要求先补"问题文本"入口——
+原 `/api/agent/memories/feedback` 只接 `memory_id + useful`，一条 👎 事后无法还原"当初问了什么"，
+就算有人点也不会变成可判负的 badcase。已补：
+
+- `feedback_memory(memory_id, useful, comment="", question="")`：HTTP `/api/agent/memories/feedback`
+  与 MCP 工具 `feedback_memory` 两条入口都可带 `question`（当初那句原话）。
+- 入库前与记忆正文同一套 `_sanitize_pii`（成员姓名→成员N、手机/邮箱/身份证），长度截断
+  `MA_FEEDBACK_TEXT_MAX`（默认 500）。顺带结掉审计债 D1：`comment` 过去脱敏完没有列可写，纯空转。
+- 取料口：`GET /api/agent/memories/negative_feedback?limit=N`（默认只返回"👎 且带问题文本"的行；
+  没写问题文本的 👎 进分母只会稀释判据）。
+- 调用方义务：👎 时必须带 `question`。不带就是"这条记忆有问题"，等于什么都没记。
+
+因此本门的计数从此可以按真实反馈走：`negative_feedback` 返回的行数即当前可判负样本数，
+逐条人工核"是否需要多跳推理"后誊到上面的 Badcase 列表。**仍然不 fabrication**——
+门是"攒够 10 条真实案例才启动 vMA-2.0"，不是"有了接口就算过了"。
+

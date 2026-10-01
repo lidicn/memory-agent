@@ -34,6 +34,9 @@ CANDIDATE_ACCEPTED = "accepted"
 # 审计 S8：语音问答缓存软上限，超过则按创建时间淘汰最旧 10% 防止无限增长
 _VOICE_CACHE_MAX = int(os.getenv("MA_VOICE_CACHE_MAX", "2000"))
 
+# DCD R1：反馈携带的问题/评论文本入库前截断上限（防止用户粘贴整段对话撑爆元数据行）
+_FEEDBACK_TEXT_MAX = int(os.getenv("MA_FEEDBACK_TEXT_MAX", "500"))
+
 # 纯遥测域：这些域的实体按固定周期上报（功率、温湿度、电量……），
 # 混进「行为分布」会把小时热力图污染成均匀的「电表节拍」，
 # 因此所有行为类聚合默认排除它们（behavior_only=True）。
@@ -87,6 +90,8 @@ CREATE TABLE IF NOT EXISTS agent_memories (
     mirror_dirty         INTEGER NOT NULL DEFAULT 0,
     feedback_up          INTEGER NOT NULL DEFAULT 0,
     feedback_down        INTEGER NOT NULL DEFAULT 0,
+    feedback_question    TEXT NOT NULL DEFAULT '',
+    feedback_comment     TEXT NOT NULL DEFAULT '',
     created_at           TEXT NOT NULL,
     updated_at           TEXT NOT NULL,
     expires_at           TEXT NOT NULL,
@@ -659,6 +664,17 @@ class Store:
             except Exception as _exc:
                 if "duplicate column" not in str(_exc).lower():
                     print(f"[Store] agent_memories.member_id 列迁移异常: {_exc}")
+            # DCD 2026-10-01 R1：👎 必须能还原"当初问了什么"，否则 badcase 门永远攒不出来。
+            # 同窗补上 comment 的落点列——此前 record_agent_feedback 脱敏完 comment 却没有
+            # 对应列可写（审计债 D1），脱敏纯属空转。
+            for _col in ("feedback_question", "feedback_comment"):
+                try:
+                    conn.execute(
+                        f"ALTER TABLE agent_memories ADD COLUMN {_col} TEXT NOT NULL DEFAULT ''"
+                    )
+                except Exception as _exc:
+                    if "duplicate column" not in str(_exc).lower():
+                        print(f"[Store] agent_memories.{_col} 列迁移异常: {_exc}")
             # 主动感知 v2.0：perception_events 幂等键（event_id）
             # 旧表可能无 event_id 列，补齐后保证重复事件被 IGNORE
             # 修复（审计 P1-1）：SQLite 不支持在 ADD COLUMN 上加 UNIQUE 约束，
@@ -4185,7 +4201,7 @@ class Store:
         return self._sanitize_pii(text, self._pii_member_names())
 
     def record_agent_feedback(self, memory_id: str, useful: bool, trust_step: float = 0.2,
-                               comment: str = "") -> dict | None:
+                               comment: str = "", question: str = "") -> dict | None:
         conn = self.connect()
         row = conn.execute(
             "SELECT * FROM agent_memories WHERE memory_id=?", (memory_id,)
@@ -4207,17 +4223,44 @@ class Store:
             expires_at = (now + timedelta(days=ttl)).strftime("%Y-%m-%d")
         else:
             expires_at = (now + timedelta(days=max(1, ttl // 2))).strftime("%Y-%m-%d")
-        # vMA-1.2.1: 反馈评论 PII 脱敏（含成员姓名 → 成员N）
-        safe_comment = self.sanitize_feedback_text(comment or "")
+        # vMA-1.2.1 / DCD R1：反馈评论与"当初的问题文本"入库前脱敏（成员姓名 → 成员N）
+        safe_comment = self.sanitize_feedback_text((comment or "")[:_FEEDBACK_TEXT_MAX])
+        safe_question = self.sanitize_feedback_text((question or "")[:_FEEDBACK_TEXT_MAX])
         with self._lock:
             conn.execute(
                 """UPDATE agent_memories SET feedback_up=?, feedback_down=?,
-                   trust=?, expires_at=?, updated_at=?, mirror_dirty=1 WHERE memory_id=?""",
-                (up, down, trust, expires_at, now.isoformat(timespec="seconds"), memory_id),
+                   trust=?, expires_at=?, updated_at=?, mirror_dirty=1,
+                   feedback_question=?, feedback_comment=? WHERE memory_id=?""",
+                (up, down, trust, expires_at, now.isoformat(timespec="seconds"),
+                 safe_question, safe_comment, memory_id),
             )
             conn.commit()
         return {"feedback_up": up, "feedback_down": down, "trust": trust,
-                "expires_at": expires_at, "comment": safe_comment}
+                "expires_at": expires_at, "comment": safe_comment,
+                "question": safe_question}
+
+    def list_negative_feedback(self, limit: int = 50, with_question_only: bool = True) -> list:
+        """vMA-2.0 知识图谱门的取料口：被点 👎 的记忆 + 当初的问题文本。
+
+        DCD 2026-10-01 R1 裁定 A 的前提是"门可测"：默认只返回带问题文本的行，
+        因为没写下当初问了什么的 👎 事后无法还原成 badcase，放进分母只会稀释判据。
+        """
+        conn = self.connect()
+        where = "WHERE feedback_down > 0"
+        if with_question_only:
+            where += " AND feedback_question <> ''"
+        rows = conn.execute(
+            f"""SELECT memory_id, text, topic_key, state, trust,
+                        feedback_up, feedback_down, feedback_question,
+                        feedback_comment, updated_at
+                 FROM agent_memories {where}
+                 ORDER BY updated_at DESC LIMIT ?""",
+            (int(limit),),
+        ).fetchall()
+        return [dict(zip(
+            ["memory_id", "text", "topic_key", "state", "trust", "feedback_up",
+             "feedback_down", "feedback_question", "feedback_comment", "updated_at"], r
+        )) for r in rows]
 
     def member_insight_feedback(self, member_id: str, member_name: str = "",
                                 limit: int = 50) -> dict:
