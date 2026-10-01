@@ -224,3 +224,37 @@ class TestScopeRegistration:
         spec = next((s for s in TOOL_SPECS if s.name == "query_unified_events"), None)
         assert spec is not None
         assert "mcp" in spec.expose
+
+
+class TestViewSqlMirror:
+    """sql/vMA-1.3_unified_events_view.sql 是人读镜像，必须与 _SCHEMA_SQL 逐列一致。"""
+
+    SEG = "CREATE VIEW IF NOT EXISTS unified_events AS"
+
+    def _norm(self, text: str) -> str:
+        import re
+        return " ".join(re.sub(r"--[^\n]*", "", text).split())
+
+    def _canonical(self) -> str:
+        from memory_agent.store import _SCHEMA_SQL
+        start = _SCHEMA_SQL.index(self.SEG)
+        end = _SCHEMA_SQL.index("GROUP BY day, source, room, person;", start) + len(
+            "GROUP BY day, source, room, person;")
+        return _SCHEMA_SQL[start:end]
+
+    def _mirror(self) -> str:
+        import os
+        path = os.path.join(os.path.dirname(__file__), "..", "src", "memory_agent",
+                            "sql", "vMA-1.3_unified_events_view.sql")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        return text[text.index(self.SEG):]
+
+    def test_mirror_equals_canonical_view_ddl(self):
+        assert self._norm(self._mirror()) == self._norm(self._canonical())
+
+    def test_mirror_has_all_ten_columns(self):
+        # DCD 放行函 §3.3：字段语义必须文档化；列集漂移要能被断言抓到
+        for col in ("event_id", "server_ts", "day", "room", "source",
+                    "event_type", "person", "entity_id", "confidence", "payload"):
+            assert " AS " + col in self._mirror() or col + "," in self._mirror(), col

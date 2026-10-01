@@ -4,6 +4,7 @@
 #   bash scripts/deploy_nas.sh                # 自动 diff HEAD 与基线（默认 a879dd3）
 #   bash scripts/deploy_nas.sh <ref>          # 指定基线 ref
 #   bash scripts/deploy_nas.sh --no-restart   # 只 scp 不重启
+#   bash scripts/deploy_nas.sh --full         # 全量同步 HEAD（git archive 一次推平，不依赖 diff 基线）
 # 注意：按目录分组推送并保留相对路径（嵌套子目录不会被平铺到仓库根）。
 set -euo pipefail
 
@@ -18,15 +19,32 @@ NAS_SRC="/vol1/1000/docker/memory-agent"
 
 BASE="a879dd3"
 RESTART=1
+FULL=0
 for arg in "$@"; do
     case "$arg" in
         --no-restart) RESTART=0 ;;
+        --full) FULL=1 ;;
         *) BASE="$arg" ;;
     esac
 done
 
 SSH_OPTS=(-i "$KEY" -o StrictHostKeyChecking=no)
 SCP_OPTS=(-i "$KEY" -o StrictHostKeyChecking=no -q)
+
+if [ "$FULL" = "1" ]; then
+    # 全量：git archive 的包内路径就是 src/ tests/ benchmarks/ .gates/，
+    # 直接解到 NAS_SRC 根，路径天然对齐，不需要 basename 猜测。
+    TAR="$(mktemp)"
+    trap 'rm -f "$TAR"' EXIT
+    git archive --format=tar HEAD src tests benchmarks .gates > "$TAR"
+    "$SCP" "${SCP_OPTS[@]}" "$TAR" "$NAS:/tmp/ma_full.tar"
+    "$SSH" "${SSH_OPTS[@]}" "$NAS" "cd '$NAS_SRC' && tar -xf /tmp/ma_full.tar && rm -f /tmp/ma_full.tar && find src -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null; echo '[deploy] 全量同步完成'"
+    if [ "$RESTART" = "1" ]; then
+        "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker restart memory-agent"
+        echo "[deploy] 容器已重启；chroma 冷启动约需 12 分钟后再做健康检查"
+    fi
+    exit 0
+fi
 
 # 收集变更/新增文件（仅可部署目录）
 mapfile -t FILES < <(git diff --name-only "$BASE"...HEAD -- src/ tests/ benchmarks/ .gates/ | grep -E '\.(py|txt|sh|toml|sql|json|js|css|html)$' || true)

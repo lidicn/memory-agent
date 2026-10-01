@@ -1,106 +1,74 @@
 -- =============================================================================
--- vMA-1.3 多模态统一数据模型 —— VIEW 方案
--- 裁定：DCD 20260928-MA多模态统一-打回.md
--- 原则：零双写、零存储、永远实时一致
--- 三张表 UNION ALL 成统一视图，查询时自动从原表实时计算
+-- vMA-1.3 多模态统一数据模型 —— unified_events VIEW（人读镜像）
+-- 权威定义在 store.py 的 _SCHEMA_SQL 中（init_schema 每次启动幂等执行）；
+-- 本文件为 DCD 20260929 放行函「VIEW 字段语义要写进 doc」提供可独立阅读的副本。
+-- 逐列一致性由 tests/test_vma13_unified_events_contract.py 的镜像断言兜底：
+-- 改了 _SCHEMA_SQL 的视图列集而没同步这里，测试会判红。
 -- =============================================================================
 
--- 统一事件视图：把 events / behavior_events / perception_events 拼成一张表
--- 统一字段：
---   server_ts   事件时间（ISO8601）
---   source      来源：device | vision | perception
---   person      人员（空串=未识别）
---   room        房间
---   event_type  事件类型
---   payload     JSON 扩展数据
---   confidence  置信度（设备事件为 NULL）
--- =============================================================================
-
+-- vMA-1.3 多模态统一数据模型（DCD 20260929 放行，VIEW 方案）
+-- 统一只读视图：events + behavior_events + perception_events 三表 UNION ALL
+-- 字段映射：
+--   source: device(events) | vision(behavior_events) | perception(perception_events)
+--   event_type: device=entity_id:action | vision=action | perception=kind
+--   person: events.person | vision=persons_json[0].name | perception=payload_json.person
+--   entity_id: device=events.entity_id | vision=camera_src | perception=pe.entity_id
+--   payload: device=attrs_json | vision=scene/count/camera_src JSON | perception=payload_json
+-- 过滤：vision 源仅 status='ok' 行（失败/低置信行不入视图）
+-- 注意：本定义与 init_schema() 迁移块中的 canonical 定义必须逐列一致
 CREATE VIEW IF NOT EXISTS unified_events AS
-
-  -- 来源 1：设备事件（HA 采集）
-  SELECT
-    e.ts AS server_ts,
-    'device' AS source,
-    e.person,
-    e.room,
-    e.entity_id || ':' || e.action AS event_type,
-    COALESCE(e.attrs_json, '{}') AS payload,
-    NULL AS confidence,
-    e.day AS day
-  FROM events e
-
-  UNION ALL
-
-  -- 来源 2：视觉行为事件（TV端 ArcFace + VLM）
-  SELECT
-    be.server_ts,
-    'vision' AS source,
-    -- persons_json 是 JSON 数组，取第一个元素的 name 作为 person
-    COALESCE(
-      json_extract(be.persons_json, '$[0].name'),
-      ''
-    ) AS person,
-    be.room,
-    be.action AS event_type,
-    -- 把 scene/count/camera_src 拼成 JSON
-    json_object(
-      'scene', COALESCE(be.scene, ''),
-      'count', COALESCE(be.count, 0),
-      'camera_src', COALESCE(be.camera_src, '')
-    ) AS payload,
-    be.confidence,
-    be.day AS day
-  FROM behavior_events be
-  WHERE be.status = 'ok'
-
-  UNION ALL
-
-  -- 来源 3：统一感知总线（边缘 AI / VLM / sensor）
-  SELECT
-    pe.server_ts,
-    'perception' AS source,
-    -- perception_events 没有 person 字段，从 payload_json 里取
-    COALESCE(
-      json_extract(pe.payload_json, '$.person'),
-      ''
-    ) AS person,
-    COALESCE(pe.room, '') AS room,
-    pe.kind AS event_type,
-    pe.payload_json AS payload,
-    pe.confidence,
-    pe.day AS day
-  FROM perception_events pe;
-
--- =============================================================================
--- 统一事件统计视图（按天聚合，方便查询"今天干了啥"）
--- =============================================================================
+    SELECT
+        e.id AS event_id,
+        e.ts AS server_ts,
+        e.day AS day,
+        e.room,
+        'device' AS source,
+        e.entity_id || ':' || e.action AS event_type,
+        e.person,
+        e.entity_id,
+        CAST(NULL AS REAL) AS confidence,
+        COALESCE(e.attrs_json, '{}') AS payload
+    FROM events e
+    UNION ALL
+    SELECT
+        CAST(be.id AS TEXT) AS event_id,
+        be.server_ts,
+        be.day AS day,
+        be.room,
+        'vision' AS source,
+        COALESCE(be.action, '') AS event_type,
+        COALESCE(json_extract(be.persons_json, '$[0].name'), '') AS person,
+        COALESCE(be.camera_src, '') AS entity_id,
+        be.confidence,
+        json_object(
+            'scene', COALESCE(be.scene, ''),
+            'count', COALESCE(be.count, 0),
+            'camera_src', COALESCE(be.camera_src, '')
+        ) AS payload
+    FROM behavior_events be
+    WHERE be.status = 'ok'
+    UNION ALL
+    SELECT
+        COALESCE(pe.event_id, CAST(pe.id AS TEXT)) AS event_id,
+        pe.server_ts,
+        pe.day AS day,
+        COALESCE(pe.room, '') AS room,
+        'perception' AS source,
+        pe.kind AS event_type,
+        COALESCE(json_extract(pe.payload_json, '$.person'), '') AS person,
+        COALESCE(pe.entity_id, '') AS entity_id,
+        pe.confidence,
+        pe.payload_json AS payload
+    FROM perception_events pe;
 
 CREATE VIEW IF NOT EXISTS unified_events_daily AS
 SELECT
-  day,
-  source,
-  room,
-  person,
-  COUNT(*) AS event_count,
-  MIN(server_ts) AS first_event,
-  MAX(server_ts) AS last_event
+    day,
+    source,
+    room,
+    person,
+    COUNT(*) AS event_count,
+    MIN(server_ts) AS first_event,
+    MAX(server_ts) AS last_event
 FROM unified_events
 GROUP BY day, source, room, person;
-
--- =============================================================================
--- 验证查询（PoC 用）
--- =============================================================================
--- 1. 查最近 7 天每天各来源的事件数
--- SELECT day, source, event_count FROM unified_events_daily
--- WHERE day >= date('now', '-7 days') ORDER BY day DESC, source;
-
--- 2. 查 lidicn 最近 24 小时的所有事件
--- SELECT server_ts, source, room, event_type FROM unified_events
--- WHERE person = 'lidicn' AND server_ts >= datetime('now', '-1 day')
--- ORDER BY server_ts DESC LIMIT 50;
-
--- 3. 查客厅最近 1 小时的事件
--- SELECT server_ts, source, person, event_type FROM unified_events
--- WHERE room = '客厅' AND server_ts >= datetime('now', '-1 hour')
--- ORDER BY server_ts DESC LIMIT 100;
