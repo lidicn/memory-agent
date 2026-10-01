@@ -169,7 +169,8 @@ def _run_analyze(vlm_text, **cfg_kw):
         return vlm_text, 5
 
     svc.vlm_analyze = fake_vlm
-    res = svc.analyze_room("客厅", force=True)
+    # force 只绕门槛；trigger 必须是非 manual 值，否则命中"手动帧不采样场景图"规则
+    res = svc.analyze_room("客厅", force=True, trigger="motion")
     return cap, res, calls["n"]
 
 
@@ -183,8 +184,8 @@ def test_scene_graph_parse_valid_json():
     cap, res, _ = _run_analyze(text)
     assert res["ok"] is True
     sg = cap.inserted[0]["scene_graph_json"]
-    assert sg["objects"] == ["沙发", "书"]
-    assert sg["relations"] == ["人 坐在 沙发"]
+    assert sg["objects"] == [{"name": "沙发", "position": ""}, {"name": "书", "position": ""}]
+    assert sg["relations"] == [{"subject": "人", "predicate": "坐在", "object": "沙发"}]
     assert sg["room"] == "客厅"
 
 

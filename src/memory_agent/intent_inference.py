@@ -107,6 +107,8 @@ _SG_PATH_FACTOR = 0.85
 _SG_HIT_BONUS = 0.05
 _SG_MAX_HITS = 3
 _CONFIDENCE_CAP = 0.95
+# 两路（设备/行为 + 场景图）命中**同一条规则**时，互为佐证加分
+_SG_CORROBORATION_BONUS = 0.04
 
 
 def _match_time_window(rule: dict, ref: datetime) -> bool:
@@ -283,7 +285,8 @@ def infer_intent(
 
         if device and scene:
             path = "both"
-            chosen = device if device[0] >= scene[0] else scene
+            fused = max(device[0], scene[0]) + _SG_CORROBORATION_BONUS
+            chosen = (round(min(_CONFIDENCE_CAP, fused), 2), device[1] + scene[1])
             evidence = list(dict.fromkeys(device[1] + scene[1]))
         elif device:
             path = "device_state"

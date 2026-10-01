@@ -103,8 +103,8 @@ def test_intent_scene_graph_dict_form(monkeypatch):
     assert out["confidence"] > 0.5
 
 
-def test_intent_default_rules_untouched_with_scene_graph():
-    """内置规则（无 scene_graph_triggers）：带场景图不改变原结果、不报错。"""
+def test_intent_default_rules_corroborate_with_scene_graph():
+    """内置规则（watch_tv 自带 scene_graph_triggers）：场景图命中同一规则 → 互证加分，意图不变。"""
     now = datetime.now().isoformat(timespec="seconds")
     ev = [{"server_ts": now, "action": "电视打开", "scene": "", "room": "客厅",
            "persons_json": "[]",
@@ -115,7 +115,8 @@ def test_intent_default_rules_untouched_with_scene_graph():
     with_sg = infer_intent(ev, window_min=10)
     assert base and with_sg
     assert with_sg["intent"] == base["intent"] == "watch_tv"
-    assert with_sg["confidence"] == base["confidence"]
+    assert with_sg["confidence"] > base["confidence"]
+    assert with_sg["path"] == "both"
 
 
 # ── 2. PII 脱敏 ────────────────────────────────────────────────────────────
