@@ -18,9 +18,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any
 
 
 # ── 内置意图规则（无 LLM 快路径）──────────────────────────────────────────

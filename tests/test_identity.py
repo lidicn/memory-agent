@@ -23,8 +23,8 @@ if _SRC not in sys.path:
 from memory_agent.identity import (  # noqa: E402
     IdentityReconciler,
     IdentityService,
-    similarity,
 )
+from memory_agent.entity_resolution import similarity  # noqa: E402
 from memory_agent.store import Store  # noqa: E402
 from memory_agent.templates import (  # noqa: E402
     BehaviorInsight,

@@ -4,6 +4,10 @@
 - 旧版实现：insights_legacy.py（3900+ 行屎山代码，保持向后兼容）
 - 新版模块化实现：insights/ 包（MiMo 生成，逐步迁移中）
 
+本门面的导出面由下方 ``__all__`` 显式列出；旧版 insights_legacy 的名字不再整体
+转出（star import 会让 pyflakes 无法判定未定义名，且没人知道自己依赖了它）。
+需要旧版实现的调用方请直接 ``from memory_agent import insights_legacy``。
+
 迁移阶段：
 - Phase 0（已完成）：备份旧版，引入新框架，保持向后兼容
 - Phase 1（已完成）：模型层 + 解析器层可通过子模块访问
@@ -12,15 +16,12 @@
 - Phase 4（计划中）：完全替换旧版
 """
 
-# 从旧版实现导入所有内容，保持向后兼容
-from ..insights_legacy import *  # noqa: F401,F403
-
 # Phase 4: InsightService 切换到新框架（api.py + BehaviorService + StoreRepository）
-from .api import InsightService  # noqa: F401
+from .api import InsightService
 
 # Phase 2: 工具函数从新版 utils.py 导入
 # 旧版函数名保持向后兼容（别名指向新版函数）
-from .utils import (  # noqa: F401
+from .utils import (
     DEFAULT_DEBOUNCE_SECONDS,
     fmt_duration,
     parse_attrs,
@@ -51,16 +52,16 @@ from .utils import (  # noqa: F401
 )
 
 # 旧版函数名别名（保持向后兼容）
-_parse_attrs = parse_attrs  # noqa: F401
-_as_float = as_float  # noqa: F401
-_norm = normalize_text  # noqa: F401
-_tokens = tokenize  # noqa: F401
-_state_is_off = state_is_off  # noqa: F401
-_state_is_on = state_is_on  # noqa: F401
+_parse_attrs = parse_attrs
+_as_float = as_float
+_norm = normalize_text
+_tokens = tokenize
+_state_is_off = state_is_off
+_state_is_on = state_is_on
 
 # Phase 3: Service 层业务逻辑迁移
 # 从新版 activity.py 导入 analyze_rhythm（作息节律分析）
-from .activity import analyze_rhythm  # noqa: F401
+from .activity import analyze_rhythm
 
 # Phase 1: 新版模块化代码可通过子模块访问
 # 注意：不直接覆盖旧版的同名类，避免兼容性问题
@@ -73,6 +74,23 @@ from . import report  # noqa: F401
 from . import utils  # noqa: F401
 from . import activity  # noqa: F401
 
+__all__ = [
+    # 服务入口
+    "InsightService",
+    # 新版工具函数
+    "DEFAULT_DEBOUNCE_SECONDS", "fmt_duration", "parse_attrs", "as_float",
+    "normalize_text", "tokenize", "state_is_off", "state_is_on", "num_stale",
+    "parse_time_range", "split_by_day", "clip_to_time_range", "summarize_events",
+    "fallback_name", "make_activity", "CATEGORY_DOMAINS", "category_of",
+    "finalize_climate_session", "resolve_nl_window", "synthesize_persona",
+    "synthesize_compare", "CAPABILITY_KEYWORDS", "CAPABILITY_ALIASES", "TAG_RULES",
+    "capability_of", "tags_of", "get_runtime", "analyze_rhythm",
+    # 旧版函数名别名
+    "_parse_attrs", "_as_float", "_norm", "_tokens", "_state_is_off", "_state_is_on",
+    # 子模块
+    "models", "parser", "anomaly", "report", "utils", "activity",
+]
+
 # 新版模块化代码的版本号
 __version__ = "2.0.0-phase3"
 
@@ -83,7 +101,7 @@ MIGRATION_STATUS = {
     "completed": [
         "Phase 0: 备份旧版 insights.py 为 insights_legacy.py",
         "Phase 0: 引入新版模块化框架（13个文件）",
-        "Phase 0: 保持向后兼容，所有公开接口从 insights_legacy 导入",
+        "Phase 0: 保持向后兼容，公开接口由本包 __all__ 显式导出",
         "Phase 1: 新版 models/parser/anomaly/report 模块可通过子模块访问",
         "Phase 2: 创建 utils.py 模块，迁移通用工具函数",
         "Phase 2: 工具函数从新版导入，旧版函数名保持兼容（别名）",

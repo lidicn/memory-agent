@@ -22,7 +22,6 @@ MA 不做实时流（批量采集 + 人脸推送）；本模块由 runtime 周�
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta
 from typing import Any, Optional
 

@@ -263,7 +263,6 @@ class AppRuntime:
         try:
             await asyncio.sleep(10)  # 启动稍延
             while True:
-                now = asyncio.get_event_loop().time()
                 # 算到下一个 23:00 的秒数
                 from datetime import datetime, timedelta
                 now_dt = datetime.now()
@@ -885,7 +884,6 @@ async def start_runtime() -> AppRuntime:
 
 
 async def stop_runtime() -> None:
-    global _runtime
     async with _lock:
         if _runtime is not None:
             await _runtime.shutdown()

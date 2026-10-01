@@ -758,7 +758,6 @@ class InsightService:
         此处保留为兼容包装，行为完全一致。
         """
         from .insights.utils import match_pattern, extract_attr_value
-        attr_key = attribute.split(".", 1)[1] if attribute.startswith("attributes.") else attribute
 
         def get_attr(row):
             return extract_attr_value(row, attribute)
@@ -2250,7 +2249,6 @@ class InsightService:
         for r in rows:
             eid = str(r.get("entity_id", ""))
             disp = str((names.get(eid, {}) or {}).get("friendly_name") or "")
-            blob = (eid + disp).lower()
             val = _as_float(r.get("new_state"))
             if not val or val <= 0:
                 continue

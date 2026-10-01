@@ -2377,38 +2377,6 @@ class Store:
         cols = [d[0] for d in conn.execute("SELECT * FROM bug_reports LIMIT 0").description]
         return [dict(zip(cols, row)) for row in rows]
 
-    def add_bug_report(self, tool_name: str, description: str,
-                       expected: str = "", actual: str = "",
-                       severity: str = "minor", reporter: str = "") -> dict:
-        """记录一条 bug 上报。"""
-        import time as _time, uuid as _uuid
-        conn = self.connect()
-        with self._lock:
-            bug_id = f"bug_{_uuid.uuid4().hex[:10]}"
-            now = _time.strftime("%Y-%m-%dT%H:%M:%S")
-            conn.execute(
-                """INSERT INTO bug_reports
-                   (bug_id, tool_name, description, expected, actual, severity, status, reporter, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)""",
-                (bug_id, tool_name, description, expected, actual, severity, reporter, now)
-            )
-            conn.commit()
-            return {"bug_id": bug_id, "status": "open", "created_at": now}
-
-    def list_bug_reports(self, status: str = "open", limit: int = 50) -> list[dict]:
-        """列出 bug 上报。status: open|resolved|all"""
-        conn = self.connect()
-        sql = "SELECT * FROM bug_reports"
-        params = []
-        if status and status != "all":
-            sql += " WHERE status = ?"
-            params.append(status)
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-        rows = conn.execute(sql, params).fetchall()
-        cols = [d[0] for d in conn.execute("SELECT * FROM bug_reports LIMIT 0").description]
-        return [dict(zip(cols, row)) for row in rows]
-
     def list_candidate_rules(self, status: str | None = None, limit: int = 200) -> list[dict]:
         """列出候选序列规则（默认全部 status），解析 steps/evidence。"""
         sql = "SELECT * FROM candidate_rules"
@@ -4784,6 +4752,5 @@ def safe_json_loads(raw: Any, default: Any = None) -> Any:
     try:
         return json.loads(raw)
     except (TypeError, ValueError) as _e:
-        import logging
         logging.getLogger(__name__).warning("safe_json_loads 解析失败: %s (前80字符: %r)", _e, str(raw)[:80])
         return default

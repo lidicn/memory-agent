@@ -224,7 +224,6 @@ class VisionService:
             "go2rtc fetch_frame stream=%s url=%s auth_user=%s has_pass=%s",
             stream, url, (auth or (None, None))[0], bool((auth or (None, None))[1]),
         )
-        last_err: Exception | None = None
         for attempt in range(retries + 1):
             try:
                 t0 = time.monotonic()
@@ -236,7 +235,6 @@ class VisionService:
                 return resp.content, int((time.monotonic() - t0) * 1000)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 # 传输层瞬断：容器↔go2rtc 经宿主网络偶有抖动，退避后重试
-                last_err = exc
                 if attempt < retries:
                     _logger.warning(
                         "go2rtc 取帧第 %d 次失败（%s），%ss 后重试",
@@ -590,19 +588,7 @@ class VisionService:
                 best = {"member_id": m.get("id"), "name": m.get("name"), "score": score}
         # P1-15: 外观匹配加 margin —— 第一名和第二名分差 < 0.1 时返回 None（避免近似误配）
         if best is not None:
-            # 重新遍历计算第二名分数（因为得分相同时 > 不触发更新）
-            all_scores = []
-            for m in members:
-                try:
-                    ap = m.get("appearance_json")
-                    ap = json.loads(ap) if isinstance(ap, str) else ap
-                except Exception:
-                    ap = None
-                if not isinstance(ap, dict):
-                    continue
-                # 简化：只比较已计算过的 best 成员和其他成员的得分
-                pass
-            # 更简单的方式：从 members 中排除 best 后，重新计算最高分作为 second_score
+            # 排除 best 后重新打分取第二名（得分相同时 > 不触发更新，需独立算一遍）
             second_best = None
             for m in members:
                 if m.get("id") == best["member_id"]:

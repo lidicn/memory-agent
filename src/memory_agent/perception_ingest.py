@@ -254,7 +254,6 @@ def identity_resolve_unknown(store: Any, event: PerceptionEvent, behavior_event_
         from datetime import datetime, timedelta
         from .presence_fusion import fuse_presence
 
-        tz = getattr(store, "tz_offset_hours", 8.0)
         since_dt = datetime.now() - timedelta(minutes=_IDENTITY_LOOKBACK_MINUTES)
         since = since_dt.isoformat(timespec="seconds")
 

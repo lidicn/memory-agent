@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from importlib.util import find_spec
+
 
 def evaluate_splink(records: list[dict]) -> dict:
     """用 Splink 做概率记录链接，输出每个实体的匹配概率 + 不确定性。
@@ -12,9 +14,7 @@ def evaluate_splink(records: list[dict]) -> dict:
     未安装时返回缺失标记；安装后在此填充 ``splink.Splink`` 的
     ``compare`` 配置与 ``predict`` 调用（替换 identity.py 的 difflib 近似）。
     """
-    try:
-        import splink  # noqa: F401
-    except Exception:
+    if find_spec("splink") is None:
         return {"ok": False, "error": "splink_not_installed"}
     # TODO(P2): 接入真实概率实体解析
     return {"ok": False, "error": "not_implemented", "received": len(records)}

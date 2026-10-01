@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar as _calendar
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from starlette.requests import Request
 from starlette.routing import Route

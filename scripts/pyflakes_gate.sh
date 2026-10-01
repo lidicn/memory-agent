@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pyflakes 质量门禁：基线只准减少，不准新增。
+# pyflakes 质量门禁：基线只准减少，不准新增。当前基线为空 —— 任何输出即新增即红。
 # 用法：
 #   bash scripts/pyflakes_gate.sh                # 扫描 src/memory_agent，与 .gates/pyflakes-baseline.txt 比较
 #   bash scripts/pyflakes_gate.sh --bless        # 把当前扫描结果写为新基线（清理欠账后收编台账）
@@ -35,10 +35,17 @@ PY="${PYTHON:-python}"
 sed -E 's#^/app/src/##; s#^'"$REPO_ROOT"'/src/##; s#^src/##' "$TMP_SCAN" \
     | sed -E -e 's/:[0-9]+:[0-9]+:/:/' -e 's/(from line )[0-9]+/\1N/' | tr -d '\r' > "$TMP_NORM"
 
-if [ "$BLESS" = "1" ] || [ ! -f "$BASELINE" ]; then
+if [ "$BLESS" = "1" ]; then
     cp "$TMP_NORM" "$BASELINE"
     echo "[gates] 基线已写入：$BASELINE（$(wc -l < "$BASELINE") 条）"
     exit 0
+fi
+
+# 基线缺失不再静默"收编当前结果"——那等于把门禁关掉还给绿灯。
+# 当前基线为空（存量 71 条已于 vMA-1.2.3 清零），任何一条 pyflakes 输出都是新增。
+if [ ! -f "$BASELINE" ]; then
+    echo "[gates] ❌ 基线文件缺失：$BASELINE —— 需要重建请显式加 --bless，不要靠删文件放行"
+    exit 1
 fi
 
 NEW_COUNT=$(comm -13 <(sort "$BASELINE") <(sort "$TMP_NORM") | wc -l)

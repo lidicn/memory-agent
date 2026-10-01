@@ -90,7 +90,7 @@ async def vision_camera_test(request: Request):
             go2rtc_user=(body.get("go2rtc_user") or "").strip() or None,
             go2rtc_pass=_unmask_or_none(body.get("go2rtc_pass")),
         )
-    except httpx.TimeoutException as exc:
+    except httpx.TimeoutException:
         return error(
             f"取帧超时：go2rtc 在限定时间内未返回帧（流 '{stream}'）。"
             "请确认 go2rtc 中该流名正确且摄像头在线；米家等摄像头关键帧间隔较长，可稍后重试。",

@@ -48,7 +48,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import (Any, Dict, Iterable, List, Mapping, Optional, Protocol,
+from typing import (Any, Dict, List, Mapping, Optional, Protocol,
                     Sequence, Tuple)
 
 logger = logging.getLogger(__name__)
@@ -1189,7 +1189,7 @@ class CandidatePromoter:
             "cross_day": cross_day,
             # —— 富化字段 ——
             "days": days,
-            "distinct_days": len(days) if days else 1,
+            "distinct_days": distinct_days,
             "visit_count": visit_count,
             "reinforcement_count": max(0, count - visit_count),
             "confidences": [round(c, 4) for c in confidences],

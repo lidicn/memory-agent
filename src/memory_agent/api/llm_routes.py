@@ -154,11 +154,6 @@ async def llm_chat(request: Request):
     except (TypeError, ValueError):
         temperature = None
 
-    last_user = next(
-        (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
-        "",
-    )
-
     # 注入内置 LLM 技能提示词：任务策略 + 本家庭真实房间清单 + 工具用法指引。
     # 若前端已传 system 消息则追加，否则新建一条，避免覆盖前端设定。
     skill_prompt = skill_prompt_for(rt)

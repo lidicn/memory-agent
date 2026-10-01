@@ -92,7 +92,6 @@ def fuse_presence(roster: list[dict], occupancy: list[dict]) -> dict:
         for _ in range(unknown):
             unknown_slots.append(room)
 
-    roster_names = {m.get("name") for m in roster if m.get("name")}
     absent = [m for m in roster if m.get("name") and m["name"] not in known_present]
     total_unknown = len(unknown_slots)
 

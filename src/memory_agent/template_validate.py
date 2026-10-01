@@ -36,7 +36,7 @@ from typing import Any
 from .store import now_local
 
 try:  # 复用身份层的相似度（CJK 感知）；万一不可用则回退 difflib
-    from .identity import similarity as _identity_similarity
+    from .entity_resolution import similarity as _identity_similarity
 except Exception:  # pragma: no cover
     _identity_similarity = None
 

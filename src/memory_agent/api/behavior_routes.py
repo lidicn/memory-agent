@@ -575,7 +575,6 @@ async def behaviors_feedback_pack(request: Request):
     if err:
         return err
     body = await json_body(request)
-    rt = runtime(request)
     from ..feedback_pack import build_feedback_pack
     output_dir = "/data/feedback_packs"
     import os
@@ -644,8 +643,6 @@ async def behaviors_bad_case_export(request: Request):
     os.makedirs(output_dir, exist_ok=True)
     # 从数据库读取事件
     try:
-        events = rt.store.query_events(limit=1)
-        # query_events 不支持按 id 过滤，用 get_event 或直接查
         event = None
         if hasattr(rt.store, "get_behavior_event"):
             event = rt.store.get_behavior_event(event_id)
@@ -806,7 +803,6 @@ async def behaviors_intent(request: Request):
 
     查询参数：
     - person: 人名（可选，限定某人）
-    - window_min: 时间窗口（分钟，默认 10）
     - limit: 返回意图数量（默认 3）
     """
     _, err = require_user(request)
@@ -814,10 +810,6 @@ async def behaviors_intent(request: Request):
         return err
     rt = runtime(request)
     person = (request.query_params.get("person") or "").strip() or None
-    try:
-        window_min = int(request.query_params.get("window_min") or 10)
-    except (TypeError, ValueError):
-        window_min = 10
     try:
         limit = int(request.query_params.get("limit") or 3)
     except (TypeError, ValueError):

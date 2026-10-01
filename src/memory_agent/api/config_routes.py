@@ -8,7 +8,7 @@ import logging
 from starlette.requests import Request
 from starlette.routing import Route
 
-from ..llm_client import LLMProvider, normalize_chat_url
+from ..llm_client import LLMProvider
 from ..config import get_config
 from .deps import error, json_body, mask_secret, ok, require_admin, require_user, runtime
 

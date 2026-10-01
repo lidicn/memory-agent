@@ -44,11 +44,9 @@ import threading
 import time
 
 from .mcp_context import caller as _caller_context
-from .mcp_errors import (  # noqa: F401
+from .mcp_errors import (
     ALL_CODES,
-    ErrorCode,
     _is_error,
-    infer_error_code,
     normalize_tool_result,
 )
 from .mcp_scopes import note_unknown, requires, scope_of
@@ -2187,7 +2185,7 @@ def _build_server():
         yesterday_text = diaries[-1]["text"][:200] if diaries else "（还没有日记）"
 
         # 2. 从当天 events 提取脱敏摘要
-        from datetime import datetime, timedelta
+        from datetime import datetime
         today = datetime.now().strftime("%Y-%m-%d")
         events = await asyncio.to_thread(
             rt.store.query_events, "", today, "", 100

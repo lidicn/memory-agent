@@ -22,7 +22,6 @@ import os
 from memory_agent import __version__ as __app_version__
 import shlex
 import subprocess
-from typing import Optional
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -140,7 +139,6 @@ async def apply_update(request: Request):
         cfg = get_config()
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)})
-    repo = (cfg.update_repo_url or DEFAULT_REPO).strip()
     branch = (cfg.update_branch or DEFAULT_BRANCH).strip()
 
     try:

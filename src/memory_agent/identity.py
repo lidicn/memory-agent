@@ -32,21 +32,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
-from .entity_resolution import (  # 归一化/相似度/概率解析：唯一口径（P2）
-    PREFIX_MERGE_MIN,
+from .entity_resolution import (  # 归一化/阈值/概率解析：唯一口径（P2）
     SIMILARITY_THRESHOLD,
     ProbabilisticMatcher,
     _CJK,
-    _common_prefix_len,
     normalize_name,
-    similarity,
 )
 from .store import now_local
 
-# SIMILARITY_THRESHOLD / PREFIX_MERGE_MIN / normalize_name / similarity /
-# _common_prefix_len 现已定义于 entity_resolution（概率解析与字符串工具同源，
-# 保证"硬规则"与"概率判定"口径一致）；此处再导出，使 identity.similarity 等
-# 既有引用方式继续可用。
+# 归一化与相似度判定的唯一来源是 entity_resolution（概率解析与字符串工具同源，
+# 保证"硬规则"与"概率判定"口径一致）；需要 similarity / _common_prefix_len /
+# PREFIX_MERGE_MIN 的调用方请直接 import entity_resolution，不要经本模块中转。
 
 # 超过该天数未在 HA 注册表出现 → 标记 stale
 STALE_DAYS = 30

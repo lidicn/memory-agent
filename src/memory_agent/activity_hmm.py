@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import defaultdict
+from importlib.util import find_spec
 from typing import Optional
 
 logger = logging.getLogger("memory_agent.activity_hmm")
@@ -71,11 +72,7 @@ class HMMActivityInferrer:
         return {k: v / total for k, v in d.items()}
 
     def _backend(self) -> str:
-        try:
-            import hmmlearn  # noqa: F401
-            return "hmmlearn"
-        except Exception:
-            return "reference"
+        return "hmmlearn" if find_spec("hmmlearn") is not None else "reference"
 
     # -- 推断（Viterbi） ------------------------------------------------------
     def infer(self, tags: list[str], room: Optional[str] = None) -> Optional[dict]:
