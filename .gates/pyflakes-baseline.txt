@@ -1,71 +1,71 @@
-memory_agent/algo_eval.py:16:9: 'pm4py' imported but unused
-memory_agent/algo_eval.py:30:9: 'river' imported but unused
-memory_agent/config.py:11:1: 'secrets' imported but unused
-memory_agent/candidate_promotion.py:51:1: 'typing.Iterable' imported but unused
-memory_agent/candidate_promotion.py:1156:9: local variable 'distinct_days' is assigned to but never used
-memory_agent/presence_fusion.py:95:5: local variable 'roster_names' is assigned to but never used
-memory_agent/activity_hmm.py:75:13: 'hmmlearn' imported but unused
-memory_agent/perception_ingest.py:257:9: local variable 'tz' is assigned to but never used
-memory_agent/identity_splink_eval.py:16:9: 'splink' imported but unused
-memory_agent/identity.py:35:1: '.entity_resolution.PREFIX_MERGE_MIN' imported but unused
-memory_agent/identity.py:35:1: '.entity_resolution._common_prefix_len' imported but unused
-memory_agent/identity.py:35:1: '.entity_resolution.similarity' imported but unused
-memory_agent/mcp_server.py:47:1: '.mcp_errors.ErrorCode' imported but unused
-memory_agent/mcp_server.py:47:1: '.mcp_errors.infer_error_code' imported but unused
-memory_agent/mcp_server.py:2096:9: 'datetime.timedelta' imported but unused
-memory_agent/store.py:18:1: 'logging' imported but unused
-memory_agent/store.py:2272:5: redefinition of unused 'add_bug_report' from line 2240
-memory_agent/store.py:2290:5: redefinition of unused 'list_bug_reports' from line 2258
-memory_agent/store.py:4514:9: redefinition of unused 'logging' from line 18
-memory_agent/runtime.py:266:17: local variable 'now' is assigned to but never used
-memory_agent/runtime.py:888:5: `global _runtime` is unused: name is never assigned in scope
-memory_agent/insights_legacy.py:761:9: local variable 'attr_key' is assigned to but never used
-memory_agent/insights_legacy.py:2253:13: local variable 'blob' is assigned to but never used
-memory_agent/intent_inference.py:21:1: 'collections.defaultdict' imported but unused
-memory_agent/intent_inference.py:23:1: 'typing.Any' imported but unused
-memory_agent/vision_service.py:239:17: local variable 'last_err' is assigned to but never used
-memory_agent/vision_service.py:594:13: local variable 'all_scores' is assigned to but never used
-memory_agent/activity_inference.py:25:1: 'json' imported but unused
-memory_agent/insights/__init__.py:16:1: 'from ..insights_legacy import *' used; unable to detect undefined names
-memory_agent/insights/__init__.py:16:1: '..insights_legacy.*' imported but unused
-memory_agent/insights/__init__.py:19:1: '.api.InsightService' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.DEFAULT_DEBOUNCE_SECONDS' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.fmt_duration' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.num_stale' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.parse_time_range' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.split_by_day' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.clip_to_time_range' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.summarize_events' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.fallback_name' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.make_activity' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.CATEGORY_DOMAINS' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.category_of' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.finalize_climate_session' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.resolve_nl_window' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.synthesize_persona' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.synthesize_compare' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.CAPABILITY_KEYWORDS' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.CAPABILITY_ALIASES' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.TAG_RULES' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.capability_of' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.tags_of' imported but unused
-memory_agent/insights/__init__.py:23:1: '.utils.get_runtime' imported but unused
-memory_agent/insights/__init__.py:63:1: '.activity.analyze_rhythm' imported but unused
-memory_agent/insights/__init__.py:69:1: '.models' imported but unused
-memory_agent/insights/__init__.py:70:1: '.parser' imported but unused
-memory_agent/insights/__init__.py:71:1: '.anomaly' imported but unused
-memory_agent/insights/__init__.py:72:1: '.report' imported but unused
-memory_agent/insights/__init__.py:73:1: '.utils' imported but unused
-memory_agent/insights/__init__.py:74:1: '.activity' imported but unused
-memory_agent/api/ha_assist_routes.py:13:1: 'asyncio' imported but unused
-memory_agent/api/events_routes.py:18:1: 'asyncio' imported but unused
-memory_agent/api/events_routes.py:23:1: '..store.now_local' imported but unused
-memory_agent/api/system_routes.py:25:1: 'typing.Optional' imported but unused
-memory_agent/api/system_routes.py:143:5: local variable 'repo' is assigned to but never used
-memory_agent/api/behavior_routes.py:448:5: local variable 'rt' is assigned to but never used
-memory_agent/api/behavior_routes.py:517:9: local variable 'events' is assigned to but never used
-memory_agent/api/behavior_routes.py:690:9: local variable 'window_min' is assigned to but never used
-memory_agent/api/collect_routes.py:11:1: 'datetime.datetime' imported but unused
-memory_agent/api/config_routes.py:11:1: '..llm_client.normalize_chat_url' imported but unused
-memory_agent/api/vision_routes.py:93:5: local variable 'exc' is assigned to but never used
-memory_agent/api/llm_routes.py:157:5: local variable 'last_user' is assigned to but never used
+memory_agent/algo_eval.py: 'pm4py' imported but unused
+memory_agent/algo_eval.py: 'river' imported but unused
+memory_agent/config.py: 'secrets' imported but unused
+memory_agent/candidate_promotion.py: 'typing.Iterable' imported but unused
+memory_agent/candidate_promotion.py: local variable 'distinct_days' is assigned to but never used
+memory_agent/presence_fusion.py: local variable 'roster_names' is assigned to but never used
+memory_agent/activity_hmm.py: 'hmmlearn' imported but unused
+memory_agent/perception_ingest.py: local variable 'tz' is assigned to but never used
+memory_agent/identity_splink_eval.py: 'splink' imported but unused
+memory_agent/identity.py: '.entity_resolution.PREFIX_MERGE_MIN' imported but unused
+memory_agent/identity.py: '.entity_resolution._common_prefix_len' imported but unused
+memory_agent/identity.py: '.entity_resolution.similarity' imported but unused
+memory_agent/mcp_server.py: '.mcp_errors.ErrorCode' imported but unused
+memory_agent/mcp_server.py: '.mcp_errors.infer_error_code' imported but unused
+memory_agent/mcp_server.py: 'datetime.timedelta' imported but unused
+memory_agent/store.py: 'logging' imported but unused
+memory_agent/store.py: redefinition of unused 'add_bug_report' from line N
+memory_agent/store.py: redefinition of unused 'list_bug_reports' from line N
+memory_agent/store.py: redefinition of unused 'logging' from line N
+memory_agent/runtime.py: local variable 'now' is assigned to but never used
+memory_agent/runtime.py: `global _runtime` is unused: name is never assigned in scope
+memory_agent/insights_legacy.py: local variable 'attr_key' is assigned to but never used
+memory_agent/insights_legacy.py: local variable 'blob' is assigned to but never used
+memory_agent/intent_inference.py: 'collections.defaultdict' imported but unused
+memory_agent/intent_inference.py: 'typing.Any' imported but unused
+memory_agent/vision_service.py: local variable 'last_err' is assigned to but never used
+memory_agent/vision_service.py: local variable 'all_scores' is assigned to but never used
+memory_agent/activity_inference.py: 'json' imported but unused
+memory_agent/insights/__init__.py: 'from ..insights_legacy import *' used; unable to detect undefined names
+memory_agent/insights/__init__.py: '..insights_legacy.*' imported but unused
+memory_agent/insights/__init__.py: '.api.InsightService' imported but unused
+memory_agent/insights/__init__.py: '.utils.DEFAULT_DEBOUNCE_SECONDS' imported but unused
+memory_agent/insights/__init__.py: '.utils.fmt_duration' imported but unused
+memory_agent/insights/__init__.py: '.utils.num_stale' imported but unused
+memory_agent/insights/__init__.py: '.utils.parse_time_range' imported but unused
+memory_agent/insights/__init__.py: '.utils.split_by_day' imported but unused
+memory_agent/insights/__init__.py: '.utils.clip_to_time_range' imported but unused
+memory_agent/insights/__init__.py: '.utils.summarize_events' imported but unused
+memory_agent/insights/__init__.py: '.utils.fallback_name' imported but unused
+memory_agent/insights/__init__.py: '.utils.make_activity' imported but unused
+memory_agent/insights/__init__.py: '.utils.CATEGORY_DOMAINS' imported but unused
+memory_agent/insights/__init__.py: '.utils.category_of' imported but unused
+memory_agent/insights/__init__.py: '.utils.finalize_climate_session' imported but unused
+memory_agent/insights/__init__.py: '.utils.resolve_nl_window' imported but unused
+memory_agent/insights/__init__.py: '.utils.synthesize_persona' imported but unused
+memory_agent/insights/__init__.py: '.utils.synthesize_compare' imported but unused
+memory_agent/insights/__init__.py: '.utils.CAPABILITY_KEYWORDS' imported but unused
+memory_agent/insights/__init__.py: '.utils.CAPABILITY_ALIASES' imported but unused
+memory_agent/insights/__init__.py: '.utils.TAG_RULES' imported but unused
+memory_agent/insights/__init__.py: '.utils.capability_of' imported but unused
+memory_agent/insights/__init__.py: '.utils.tags_of' imported but unused
+memory_agent/insights/__init__.py: '.utils.get_runtime' imported but unused
+memory_agent/insights/__init__.py: '.activity.analyze_rhythm' imported but unused
+memory_agent/insights/__init__.py: '.models' imported but unused
+memory_agent/insights/__init__.py: '.parser' imported but unused
+memory_agent/insights/__init__.py: '.anomaly' imported but unused
+memory_agent/insights/__init__.py: '.report' imported but unused
+memory_agent/insights/__init__.py: '.utils' imported but unused
+memory_agent/insights/__init__.py: '.activity' imported but unused
+memory_agent/api/ha_assist_routes.py: 'asyncio' imported but unused
+memory_agent/api/events_routes.py: 'asyncio' imported but unused
+memory_agent/api/events_routes.py: '..store.now_local' imported but unused
+memory_agent/api/system_routes.py: 'typing.Optional' imported but unused
+memory_agent/api/system_routes.py: local variable 'repo' is assigned to but never used
+memory_agent/api/behavior_routes.py: local variable 'rt' is assigned to but never used
+memory_agent/api/behavior_routes.py: local variable 'events' is assigned to but never used
+memory_agent/api/behavior_routes.py: local variable 'window_min' is assigned to but never used
+memory_agent/api/collect_routes.py: 'datetime.datetime' imported but unused
+memory_agent/api/config_routes.py: '..llm_client.normalize_chat_url' imported but unused
+memory_agent/api/vision_routes.py: local variable 'exc' is assigned to but never used
+memory_agent/api/llm_routes.py: local variable 'last_user' is assigned to but never used

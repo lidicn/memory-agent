@@ -28,8 +28,12 @@ trap 'rm -f "$TMP_SCAN" "$TMP_NORM"' EXIT
 PY="${PYTHON:-python}"
 "$PY" -m pyflakes "$TARGET_DIR" > "$TMP_SCAN" 2>&1 || true
 
-# 归一化：去掉容器/绝对路径前缀与 CR，统一为 memory_agent/... 相对形式
-sed -E 's#^/app/src/##; s#^'"$REPO_ROOT"'/src/##; s#^src/##' "$TMP_SCAN" | tr -d '\r' > "$TMP_NORM"
+# 归一化：去掉容器/绝对路径前缀与 CR，统一为 memory_agent/... 相对形式；
+# 再去掉行列号 —— 基线键为「文件: 消息」。带行号会让任何一次上方插入都把同一条目
+# 同时算成"新增"和"已修"，门禁误判红（实测 71 条去掉行列号后零重复）。
+# `from line NNNN` 是 pyflakes 消息自带的话术（redefinition 类），同样会漂移，一并归一。
+sed -E 's#^/app/src/##; s#^'"$REPO_ROOT"'/src/##; s#^src/##' "$TMP_SCAN" \
+    | sed -E -e 's/:[0-9]+:[0-9]+:/:/' -e 's/(from line )[0-9]+/\1N/' | tr -d '\r' > "$TMP_NORM"
 
 if [ "$BLESS" = "1" ] || [ ! -f "$BASELINE" ]; then
     cp "$TMP_NORM" "$BASELINE"
