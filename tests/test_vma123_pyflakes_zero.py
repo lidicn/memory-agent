@@ -13,8 +13,12 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SRC = REPO_ROOT / "src" / "memory_agent"
+import memory_agent
+
+# 源码路径从"被 import 的那个包"反查，而不是按 tests/ 的相对深度猜：
+# 容器里 tests/ 在 /tmp/tests、源码在 /app/src，两者不同根，按深度拼路径会扑空。
+PKG_DIR = Path(memory_agent.__file__).resolve().parent
+REPO_ROOT = PKG_DIR.parents[1] if PKG_DIR.parents[0].name == "src" else PKG_DIR.parents[0]
 BASELINE = REPO_ROOT / ".gates" / "pyflakes-baseline.txt"
 
 
@@ -25,7 +29,7 @@ def _read(path: Path) -> str:
 def test_pyflakes_baseline_stays_empty():
     """基线为空 = 任何 pyflakes 输出都是新增。加回条目必须先修问题。"""
     if not BASELINE.exists():
-        pytest.skip("非仓库根运行（容器内只挂了 tests/），由 CI 与本地口径负责拦")
+        pytest.skip(f"非仓库根运行，取不到 {BASELINE}；由 CI 与本地口径负责拦")
     assert _read(BASELINE).strip() == "", (
         ".gates/pyflakes-baseline.txt 已归零，重新写入条目即放行新缺陷；"
         "请先修掉 pyflakes 报出的问题，再考虑是否真的要放行"
@@ -35,7 +39,7 @@ def test_pyflakes_baseline_stays_empty():
 def test_insights_facade_has_no_star_import_and_all_names_resolve():
     import memory_agent.insights as pkg
 
-    tree = ast.parse(_read(SRC / "insights" / "__init__.py"))
+    tree = ast.parse(_read(Path(pkg.__file__).resolve()))
     stars = [
         node for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names)
@@ -62,7 +66,7 @@ def test_insights_facade_keeps_its_actual_consumers(name):
 
 
 def test_store_has_no_duplicate_method_definitions():
-    tree = ast.parse(_read(SRC / "store.py"))
+    tree = ast.parse(_read(PKG_DIR / "store.py"))
     for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
         seen: dict[str, int] = {}
         for body in cls.body:
