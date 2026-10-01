@@ -243,8 +243,10 @@ class TestViewSqlMirror:
         return _SCHEMA_SQL[start:end]
 
     def _mirror(self) -> str:
-        import os
-        path = os.path.join(os.path.dirname(__file__), "..", "src", "memory_agent",
+        # 从已导入的包定位镜像：容器里测试副本在 /tmp/tests，用 __file__/../src
+        # 会指向不存在的 /tmp/src，让这条漂移断言只在本地有意义。
+        import memory_agent
+        path = os.path.join(os.path.dirname(memory_agent.__file__),
                             "sql", "vMA-1.3_unified_events_view.sql")
         with open(path, encoding="utf-8") as fh:
             text = fh.read()

@@ -3,6 +3,11 @@
 # 用法：
 #   bash scripts/pyflakes_gate.sh                # 扫描 src/memory_agent，与 .gates/pyflakes-baseline.txt 比较
 #   bash scripts/pyflakes_gate.sh --bless        # 把当前扫描结果写为新基线（清理欠账后收编台账）
+# 口径：基线是「仓库内 src/memory_agent」的扫描结果（CI 即此口径）。
+#       在容器里直接扫 /app/src 会多出 NAS 盘上 git 未跟踪的历史残留
+#       （memory_agent/insights.py、memory_agent/static/js/pages/vision_service.py）
+#       共 2 条幻影。切勿用容器口径 --bless，否则把不存在的文件写进台账。
+#       容器内取仓库口径：把 /app/src 复制到别处删掉这 2 个残留再扫。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"

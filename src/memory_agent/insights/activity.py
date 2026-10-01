@@ -271,7 +271,7 @@ class ActivityEngine:
         subset = [ev for eid in wanted for ev in by_entity.get(eid, ())
                   if start <= ev.ts < end]
         sessions = compute_sessions(
-            subset, TimeRange(_ts_dt(start), _ts_dt(end)), self.config.min_session_seconds)
+            subset, TimeRange(house_dt(start), house_dt(end)), self.config.min_session_seconds)
         flat = [s for sess in sessions.values() for s in sess]
         return {"minutes": round(sum(s.minutes for s in flat), 1),
                 "count": len(flat),
@@ -314,11 +314,6 @@ class ActivityEngine:
                              day=day_key(first), start=first, end=last,
                              minutes=minutes, confidence=confidence,
                              tags=list(rule.tags), signals=detail)
-
-
-def _ts_dt(ts: float):
-    from datetime import datetime
-    return house_dt(ts)
 
 
 def analyze_rhythm(buckets: List[int], coverage: float = 0.8,
