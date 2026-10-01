@@ -339,8 +339,14 @@ class AppRuntime:
 
         间隔默认 300 秒（5 分钟），总开关 candidate_promotion_enabled 默认开。
         单次失败仅记录，不影响主流程。
+
+        vMA-1.2.1 §5.1：负样本聚类→规则建议**搭载在本任务内轮转**（不新建裸
+        asyncio task），间隔 negative_sample_interval_seconds（默认 86400=每日），
+        总开关 negative_sample_enabled 默认关（显式开启后建议只落 staging）。
         """
         interval = max(60, int(getattr(self.config, "candidate_promotion_interval_seconds", 300) or 300))
+        neg_interval = max(600, int(getattr(self.config, "negative_sample_interval_seconds", 86400) or 86400))
+        neg_last = 0.0
         try:
             await asyncio.sleep(30)  # 启动稍延
             while True:
@@ -351,6 +357,18 @@ class AppRuntime:
                             print(f"[CandidatePromotion] 扫描 {stats['scanned']}，晋升 {stats['promoted']}，失败 {stats['failed']}")
                     except Exception as exc:
                         print(f"[CandidatePromotion] 周期任务异常: {exc}")
+                if getattr(self.config, "negative_sample_enabled", False):
+                    now_mono = asyncio.get_event_loop().time()
+                    if now_mono - neg_last >= neg_interval:
+                        neg_last = now_mono
+                        try:
+                            from .negative_samples import run_negative_sample_analysis
+                            res = await asyncio.to_thread(run_negative_sample_analysis, self.store)
+                            if res.get("written"):
+                                print(f"[NegativeSamples] 负样本 {res['total_negative']}，"
+                                      f"成簇 {res['cluster_count']}，写入建议 {res['written']}（staging）")
+                        except Exception as exc:
+                            print(f"[NegativeSamples] 周期任务异常: {exc}")
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass

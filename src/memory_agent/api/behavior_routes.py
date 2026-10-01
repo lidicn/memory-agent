@@ -125,6 +125,27 @@ async def candidate_rules_export(request: Request):
     return ok({"rules": rules, "count": len(rules)})
 
 
+async def negative_sample_suggestions(request: Request):
+    """手动触发 vMA-1.2.1 §5.1 负样本聚类 → 候选规则建议。
+
+    负样本口径：rejected 候选规则 + feedback_down≥1 记忆；按
+    (entity_id, 时间段, 预测标签) 三元组聚类，≥min_count(默认 3) 成簇。
+    红线：建议只写 staging/user_confirmed=0，永不直接影响推断。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    body = await json_body(request)
+    try:
+        min_count = int(body.get("min_count") or 3)
+    except (TypeError, ValueError):
+        return error("min_count 必须是整数")
+    from ..negative_samples import run_negative_sample_analysis
+    res = await asyncio.to_thread(run_negative_sample_analysis, rt.store, max(1, min_count))
+    return ok(res)
+
+
 async def behaviors_mine_process(request: Request):
     """手动触发过程挖掘（P1.1）：挖行为过程模型 + 一致性检验 → 行为异常 / 候选规则。
 
@@ -776,6 +797,7 @@ ROUTES = [
     Route("/api/behaviors/candidate-rules", candidate_rules_list, methods=["GET"]),
     Route("/api/behaviors/candidate-rules/update", candidate_rule_update, methods=["POST"]),
     Route("/api/behaviors/candidate-rules/export", candidate_rules_export, methods=["GET"]),
+    Route("/api/behaviors/negative-samples/suggestions", negative_sample_suggestions, methods=["POST"]),
     Route("/api/behaviors/mine-process", behaviors_mine_process, methods=["POST"]),
     Route("/api/behaviors/anomalies", behaviors_anomalies, methods=["GET"]),
     Route("/api/behaviors/anomalies/update", behavior_anomaly_update, methods=["POST"]),

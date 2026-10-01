@@ -81,6 +81,15 @@ class SignalLearningService:
         # 按出现次数排序
         suggestions.sort(key=lambda x: x["occurrence_count"], reverse=True)
 
+        # vMA-1.2.1: 建议外发文本统一脱敏（记忆原文可能是脱敏上线前写入的）
+        try:
+            from .negative_samples import sanitize_text, _store_member_names
+            names = _store_member_names(self.store)
+            for s in suggestions:
+                s["sample_text"] = sanitize_text(s.get("sample_text") or "", names)
+        except Exception:  # noqa: BLE001 - 脱敏失败保持原样返回，不阻断建议查询
+            pass
+
         return {
             "ok": True,
             "suggestions": suggestions,
@@ -132,6 +141,12 @@ class SignalLearningService:
         # kind == 'soft'：走 agent_memory 软记忆（topic_key=signal_trust）
         if not text or not text.strip():
             return {"ok": False, "error": "kind='soft' 必须提供 text", "code": 400}
+        # vMA-1.2.1: 记忆写入路径 PII 脱敏（姓名→成员N、手机/邮箱/身份证/长数字打码）
+        try:
+            from .negative_samples import sanitize_text, _store_member_names
+            text = sanitize_text(text, _store_member_names(self.store))
+        except Exception:  # noqa: BLE001 - 脱敏异常不阻断教学写入，但宁可丢原文
+            text = "<脱敏失败>"
         refs = source_refs or [f"event:taught:{entity_id}"]
         res = self.agent_memory.add_semantic_memory(
             session_id=session_id,
