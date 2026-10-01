@@ -19,6 +19,24 @@
 - 目标：≥10 条
 - 当前：0 条
 
+### 2026-10-01 门状态实测（Qoder 接手）
+
+0/10 不是采集没做，是**没有可采集的信号源**。生产库 `/data/memory_agent.db` 只读探针：
+
+| 读数 | 值 |
+|------|-----|
+| `events` 总行 | 1,074,424 |
+| `behavior_events` 总行 | 4,022 |
+| `agent_memories` 总行 | 245 |
+| 其中 `feedback_down >= 1`（被判负的记忆） | **0** |
+| `candidate_rules` 中 `status='rejected'` | **0** |
+| `learning_feedback` 表 | 不存在 |
+
+即：数据面很厚，人在环裁决面为 0。且现有反馈入口 `/api/agent/memories/feedback`（`api/agent_memory_routes.py:135`）只收 `memory_id + useful` 布尔，不收问题文本，事后无法还原"当初问了什么、为什么答不出"——即便用户开始点踩，也回不出一条合格 badcase。
+
+已就此向 DCD 申请裁决（`关键决策部/inbox/20261001-MA-vMA2.0门无反馈源与PII存量回填与生效通道-决策申请.md` R1：维持等待 / 改判据 / 明确延期）。**在裁决前不构造 badcase**——按本文 §收集方式，制造出来的案例不满足"真实"这一条合格标准。
+
+
 ## Badcase 列表
 
 （待收集）
