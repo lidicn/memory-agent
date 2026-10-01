@@ -226,6 +226,139 @@ class TestScopeRegistration:
         assert "mcp" in spec.expose
 
 
+class TestPagePushdown:
+    """审计 P2-4：查询不再直接打视图，而是把过滤+top-N 下推到三个分支。
+
+    等价性用视图本身当参照（行内容 + 顺序 + 总数逐组合比对），
+    这是唯一能抓住「分支投影抄歪」的红条件——性能断言在 CI 上不算证据。
+    """
+
+    COMBOS = [
+        ({}, 1), ({}, 3), ({}, 7), ({}, 500),
+        ({"room": "客厅"}, 2),
+        ({"person": "lidicn"}, 1),
+        ({"source": "vision"}, 5),
+        ({"source": "perception"}, 1),
+        ({"start": "2026-09-29T00:00:00"}, 2),
+        ({"start": "2026-09-29T00:00:00", "end": "2026-09-29T23:59:59"}, 1),
+        ({"room": "书房", "person": "Kevin"}, 1),
+    ]
+
+    @staticmethod
+    def _view_page(conn, flt: dict, limit: int, order: str):
+        parts, args = [], []
+        for key, col in (("person", "person"), ("room", "room"), ("source", "source")):
+            if flt.get(key):
+                parts.append(f"{col} = ?")
+                args.append(flt[key])
+        if flt.get("start"):
+            parts.append("server_ts >= ?")
+            args.append(flt["start"])
+        if flt.get("end"):
+            parts.append("server_ts <= ?")
+            args.append(flt["end"])
+        where = (" WHERE " + " AND ".join(parts)) if parts else ""
+        direction = "DESC" if order == "desc" else "ASC"
+        return [dict(r) for r in conn.execute(
+            "SELECT event_id, server_ts, day, room, source, event_type, person, "
+            f"entity_id, confidence, payload FROM unified_events{where} "
+            f"ORDER BY server_ts {direction} LIMIT ?", [*args, limit]).fetchall()]
+
+    @pytest.mark.parametrize("flt,limit", COMBOS)
+    @pytest.mark.parametrize("order", ["desc", "asc"])
+    def test_page_rows_match_view(self, store, flt, limit, order):
+        _seed(store)
+        conn = store.connect()
+        expected = self._view_page(conn, flt, limit, order)
+        res = store.query_unified_events(limit=limit, order=order, **flt)
+        assert [(r["event_id"], r["server_ts"], r["source"]) for r in res["rows"]] == [
+            (r["event_id"], r["server_ts"], r["source"]) for r in expected], f"{flt} limit={limit}"
+        assert res["rows"] == expected, f"{flt} limit={limit} 行内容/列不一致"
+
+    def test_unknown_source_returns_empty(self, store):
+        _seed(store)
+        res = store.query_unified_events(limit=10, source="不存在的源")
+        assert res == {"ok": True, "total": 0, "count": 0, "rows": []}
+
+
+class TestCountPushdown:
+    """审计 P0-6：视图 COUNT 的下推版必须在每个过滤组合上给出同一个精确总数。
+
+    下推是把视图定义在 Python 里抄了一遍——风险就是抄歪。所以断言对象不是
+    "耗时变短"（CI 上不可信），而是**与视图逐组合等价**：视图列一改，这里必红。
+    """
+
+    COMBOS = [
+        {},
+        {"room": "客厅"},
+        {"room": "书房"},
+        {"person": "lidicn"},
+        {"person": "Kevin"},
+        {"person": ""},
+        {"source": "device"},
+        {"source": "vision"},
+        {"source": "perception"},
+        {"source": "不存在的源"},
+        {"start": "2026-09-29T00:00:00"},
+        {"end": "2026-09-28T23:59:59"},
+        {"start": "2026-09-29T00:00:00", "end": "2026-09-29T23:59:59"},
+        {"room": "客厅", "start": "2026-09-28T00:00:00", "end": "2026-09-28T23:59:59"},
+        {"person": "lidicn", "source": "vision"},
+    ]
+
+    def _view_where(self, flt: dict):
+        parts, args = [], []
+        for key, col in (("person", "person"), ("room", "room"), ("source", "source")):
+            if flt.get(key):
+                parts.append(f"{col} = ?")
+                args.append(flt[key])
+        if flt.get("start"):
+            parts.append("server_ts >= ?")
+            args.append(flt["start"])
+        if flt.get("end"):
+            parts.append("server_ts <= ?")
+            args.append(flt["end"])
+        where = (" WHERE " + " AND ".join(parts)) if parts else ""
+        return where, args
+
+    @pytest.mark.parametrize("flt", COMBOS)
+    def test_pushdown_total_matches_view_count(self, store, flt):
+        _seed(store)
+        conn = store.connect()
+        where, args = self._view_where(flt)
+        expected = conn.execute(
+            f"SELECT COUNT(*) FROM unified_events{where}", args).fetchone()[0]
+        # limit=1 逼出"本页填满"分支，让 query_unified_events 真的去数
+        res = store.query_unified_events(limit=1, **flt)
+        assert res["total"] == expected, f"{flt}: 下推 total {res['total']} != 视图 {expected}"
+
+    def test_small_result_skips_the_count_entirely(self, store):
+        """行数不足一页时总数直接由本页长度得出，不该再扫一遍。"""
+        _seed(store)
+        log = []
+        real_connect = store.connect
+
+        class _ConnProxy:
+            def __init__(self, c):
+                self._c = c
+
+            def execute(self, sql, *a, **kw):
+                log.append(" ".join(str(sql).split())[:80])
+                return self._c.execute(sql, *a, **kw)
+
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+
+        store.connect = lambda: _ConnProxy(real_connect())
+        try:
+            res = store.query_unified_events(limit=500)
+        finally:
+            store.connect = real_connect
+        assert res["total"] == res["count"] == 7
+        assert not [s for s in log if s.upper().startswith("SELECT COUNT")], (
+            f"结果未满页却仍去 COUNT：{log}")
+
+
 class TestViewSqlMirror:
     """sql/vMA-1.3_unified_events_view.sql 是人读镜像，必须与 _SCHEMA_SQL 逐列一致。"""
 

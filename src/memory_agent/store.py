@@ -73,7 +73,12 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_day       ON events(day);
 CREATE INDEX IF NOT EXISTS idx_events_room_ts   ON events(room, ts);
-CREATE INDEX IF NOT EXISTS idx_events_entity_ts ON events(entity_id, ts);
+-- 审计 P0-6：实体聚合（entity_catalog / entity_stats / entity_last_seen）要在锁内
+-- GROUP BY entity_id 再取 MAX(room)/MAX(domain)。只含 (entity_id, ts) 的索引命中后
+-- 仍要为 room/domain 回表 30 万次，实测 12.0s；把两列并进索引让它自成覆盖，
+-- 同一个库实测降到 0.45s（26×），写入侧 5000 行前后差值在噪声内。
+-- 取代旧的 idx_events_entity_ts：它的两列是本索引的严格前缀，同时保留即纯写放大。
+CREATE INDEX IF NOT EXISTS idx_events_entity_cover ON events(entity_id, ts, room, domain);
 CREATE INDEX IF NOT EXISTS idx_events_ts        ON events(ts);
 
 -- Agent 记忆（参与式写回向量库）：元数据权威源，chroma 仅存标量镜像
@@ -275,7 +280,8 @@ CREATE TABLE IF NOT EXISTS perception_events (
   payload_json TEXT NOT NULL DEFAULT '{}',
   raw_event_json TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_pe_event_id ON perception_events(event_id);
+-- 审计 P2-1：event_id 的索引由 init_schema 里的**唯一**索引负责（idx_perception_events_event_id），
+-- 这里不再建同名非唯一索引——两份索引等于每行写两遍。
 CREATE INDEX IF NOT EXISTS idx_pe_source_day ON perception_events(source, day);
 CREATE INDEX IF NOT EXISTS idx_pe_kind_ts ON perception_events(kind, server_ts);
 
@@ -444,6 +450,90 @@ def _median_hhmm(values: list[str]) -> str | None:
     return items[len(items) // 2]
 
 
+# ── 保留清理（审计 P0-7/P0-8）───────────────────────────────────────────────
+# 每批删除行数：锁只在批内持有，批与批之间释放。5000 行实测单批 <10ms，
+# 再小会让 VACUUM 前的 WAL 提交次数失控。
+PURGE_BATCH_ROWS = 5000
+# 达到这个删除量才付一次 VACUUM 的代价：VACUUM 是排他的（100MB 级约几百 ms），
+# 小清理不值得。
+PURGE_VACUUM_MIN_ROWS = 50_000
+
+# ── 统一视图的分支下推表（审计 P0-6 / P2-4）────────────────────────────────
+#: unified_events 的三个分支：投影 + 视图级过滤列在该分支上的真实表达式。
+#: ``extra`` 是该分支在视图里自带的条件（vision 只放行 status='ok'）。
+#: ⚠ 这里的投影必须与 _SCHEMA_SQL 中 unified_events 的定义逐列等价。
+#:    防漂移的是 tests/test_vma13_unified_events_contract.py 的
+#:    TestPagePushdown / TestCountPushdown——它们拿视图本身当参照逐组合比对行与
+#:    总数，视图列一改这两组必红，而不是等到线上查出列对不上才发现。
+_UNIFIED_COLS = ("event_id", "server_ts", "day", "room", "source", "event_type",
+                 "person", "entity_id", "confidence", "payload")
+
+_UNIFIED_BRANCHES = (
+    {
+        "source": "device",
+        "ts": "e.ts",
+        "room": "e.room",
+        "person": "e.person",
+        "extra": "",
+        "select": (
+            "SELECT e.id AS event_id, e.ts AS server_ts, e.day AS day, "
+            "e.room AS room, 'device' AS source, "
+            "e.entity_id || ':' || e.action AS event_type, e.person AS person, "
+            "e.entity_id AS entity_id, CAST(NULL AS REAL) AS confidence, "
+            "COALESCE(e.attrs_json, '{}') AS payload FROM events e"
+        ),
+    },
+    {
+        "source": "vision",
+        "ts": "be.server_ts",
+        "room": "be.room",
+        "person": "COALESCE(json_extract(be.persons_json, '$[0].name'), '')",
+        "extra": "be.status = 'ok'",
+        "select": (
+            "SELECT CAST(be.id AS TEXT) AS event_id, be.server_ts AS server_ts, "
+            "be.day AS day, be.room AS room, 'vision' AS source, "
+            "COALESCE(be.action, '') AS event_type, "
+            "COALESCE(json_extract(be.persons_json, '$[0].name'), '') AS person, "
+            "COALESCE(be.camera_src, '') AS entity_id, be.confidence AS confidence, "
+            "json_object('scene', COALESCE(be.scene, ''), 'count', COALESCE(be.count, 0), "
+            "'camera_src', COALESCE(be.camera_src, '')) AS payload "
+            "FROM behavior_events be"
+        ),
+    },
+    {
+        "source": "perception",
+        "ts": "pe.server_ts",
+        "room": "COALESCE(pe.room, '')",
+        "person": "COALESCE(json_extract(pe.payload_json, '$.person'), '')",
+        "extra": "",
+        "select": (
+            "SELECT COALESCE(pe.event_id, CAST(pe.id AS TEXT)) AS event_id, "
+            "pe.server_ts AS server_ts, pe.day AS day, COALESCE(pe.room, '') AS room, "
+            "'perception' AS source, pe.kind AS event_type, "
+            "COALESCE(json_extract(pe.payload_json, '$.person'), '') AS person, "
+            "COALESCE(pe.entity_id, '') AS entity_id, pe.confidence AS confidence, "
+            "pe.payload_json AS payload FROM perception_events pe"
+        ),
+    },
+)
+
+#: 启动自检力度（审计 P0-11）。``PRAGMA integrity_check`` 逐页扫描整个文件，
+#: 耗时随体积近似线性（104 MB / 30 万行实测 2.1s），是唯一一项**只会越来越慢**的
+#: 启动开销。``quick_check`` 覆盖同样的"还能不能用"判定且快一个数量级。
+#: 环境变量 ``MA_DB_INTEGRITY_CHECK`` = quick（默认）| full | off。
+#: quick 判红时会自动升级到 full 复核，确认损坏才走"从备份恢复"——
+#: 快速自检的误判不允许直接导致数据回滚。
+INTEGRITY_CHECK_MODES = ("quick", "full", "off")
+
+
+def _integrity_check_mode() -> str:
+    mode = (os.getenv("MA_DB_INTEGRITY_CHECK") or "quick").strip().lower()
+    if mode not in INTEGRITY_CHECK_MODES:
+        print(f"[Store] MA_DB_INTEGRITY_CHECK={mode!r} 不是合法值，按 quick 处理")
+        mode = "quick"
+    return mode
+
+
 # ── 主类 ───────────────────────────────────────────────────────────────────
 
 class Store:
@@ -511,9 +601,13 @@ class Store:
         return result
 
 
-    def __init__(self, db_path: str = "/data/memory_agent.db", tz_offset_hours: float = 8.0):
+    def __init__(self, db_path: str = "/data/memory_agent.db", tz_offset_hours: float = 8.0,
+                 backup_dir: str = ""):
         self.db_path = db_path
         self.tz_offset_hours = tz_offset_hours
+        # 自查发现：BackupManager 把快照写到 backup_dir/ma-<date>.db，而恢复逻辑原先只找
+        # db_path + ".bak*"，两边永不相交 → 损坏时"自动恢复"永远空跑。现在两处都找。
+        self.backup_dir = backup_dir or ""
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
 
@@ -552,38 +646,89 @@ class Store:
             cols = [d[0] for d in cur.description] if cur.description else []
             return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-    def check_and_recover(self) -> dict:
-        """启动时自检数据库完整性；损坏则从最近备份自动恢复。"""
+    def check_and_recover(self, mode: str | None = None) -> dict:
+        """启动时自检数据库完整性；损坏则从最近备份自动恢复。
+
+        审计 P0-11：默认只做 ``quick_check``。``integrity_check`` 要逐页扫全文件，
+        启动阻塞随数据量线性增长（104 MB 实测 4.0s）。quick 判红时升级 full 复核，
+        只有复核也判红才真的回滚到备份。``MA_DB_INTEGRITY_CHECK=full`` 留给手动运维。
+
+        快照来源两处：``<db>.bak*``（历史约定）与 ``backup_dir/ma-*.db``
+        （``BackupManager`` 每日 ``VACUUM INTO`` 的实际落点），按 mtime 取最新。
+        """
         import glob
         import logging as _logging
         logger = _logging.getLogger("memory_agent.store")
-        result = {"checked": True, "recovered": False, "backup_used": None, "error": None}
+        mode = (mode or _integrity_check_mode()).strip().lower()
+        if mode not in INTEGRITY_CHECK_MODES:
+            mode = "quick"
+        result = {"checked": mode != "off", "mode": mode, "pragma": None,
+                  "recovered": False, "backup_used": None, "error": None}
+        if mode == "off":
+            logger.info("DB integrity check: skipped (MA_DB_INTEGRITY_CHECK=off)")
+            return result
 
-        conn = self.connect()
-        try:
-            r = conn.execute("PRAGMA integrity_check").fetchone()
+        def _run(pragma: str) -> str | None:
+            """返回 None 表示 ok，否则返回问题描述。"""
+            label = pragma.split()[-1]
+            conn = self.connect()
+            try:
+                r = conn.execute(pragma).fetchone()
+            except Exception as exc:  # noqa: BLE001
+                return f"{label} exception: {exc}"
             if r and r[0] == "ok":
-                logger.info("DB integrity check: OK")
-                return result
-            result["error"] = f"integrity_check failed: {r[0] if r else 'unknown'}"
-            logger.error(result["error"])
-        except Exception as e:
-            result["error"] = f"integrity_check exception: {e}"
-            logger.error(result["error"])
+                return None
+            return f"{label} failed: {r[0] if r else 'unknown'}"
 
-        bak_glob = self.db_path + ".bak*"
-        backups = sorted(glob.glob(bak_glob), key=os.path.getmtime, reverse=True)
+        primary = "PRAGMA integrity_check" if mode == "full" else "PRAGMA quick_check"
+        problem = _run(primary)
+        if problem is None:
+            result["pragma"] = primary.split()[-1]
+            logger.info(f"DB integrity check ({result['pragma']}): OK")
+            return result
+        if mode == "quick":
+            # 快速自检判红 → 逐页复核。宁可慢这 4 秒，也不凭快判就覆盖数据。
+            full = _run("PRAGMA integrity_check")
+            if full is None:
+                result["pragma"] = "quick_check+integrity_check"
+                result["error"] = (
+                    f"quick_check 判红但 integrity_check 通过，未做回滚；原件保留待排查：{problem}")
+                logger.error(result["error"])
+                return result
+            problem = full
+        result["pragma"] = "integrity_check"
+        result["error"] = problem
+        logger.error(problem)
+
+        candidates = [self.db_path + ".bak*"]
+        if self.backup_dir:
+            candidates.append(os.path.join(self.backup_dir, "ma-*.db"))
+        backups: list[str] = []
+        for pat in candidates:
+            backups.extend(p for p in glob.glob(pat) if os.path.isfile(p))
+        backups.sort(key=os.path.getmtime, reverse=True)
         if not backups:
-            logger.error("No backup found for recovery")
+            logger.error(
+                f"No backup found for recovery (查找位置: {', '.join(candidates)})")
             return result
 
         latest_bak = backups[0]
         logger.warning(f"Recovering from backup: {latest_bak}")
 
+        conn = self.connect()
         conn.close()
         self._conn = None
         import shutil
         shutil.copy2(latest_bak, self.db_path)
+        # 快照是 VACUUM INTO 出来的独立库。留下旧的 -wal/-shm 等于把上一份日志
+        # 叠到新文件上；未干净关闭过的库正是"要恢复"的那些，风险最高的就是这里。
+        for suffix in ("-wal", "-shm"):
+            try:
+                os.remove(self.db_path + suffix)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.error(f"清理残留 {self.db_path}{suffix} 失败: {exc}")
 
         try:
             new_conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
@@ -695,8 +840,23 @@ class Store:
                     "CREATE UNIQUE INDEX IF NOT EXISTS idx_perception_events_event_id "
                     "ON perception_events(event_id)"
                 )
+                # 审计 P2-1：唯一索引在位后，schema 里那条同名**非唯一**索引就是纯写放大
+                # （每插一行维护两份索引）。只在确认唯一索引建起来之后才删，
+                # 否则两条一起没了，event_id 查询会退化成全表扫。
+                conn.execute("DROP INDEX IF EXISTS idx_pe_event_id")
             except Exception as _exc:
                 print(f"[Store] perception_events.event_id 唯一索引创建失败: {_exc}")
+            # 审计 P0-6：存量库的 (entity_id, ts) 是覆盖索引的严格前缀。
+            # 覆盖索引确认在位后才删旧的——顺序反了会让实体聚合退化成全表扫，
+            # 而 CREATE 失败会直接跳到 except，旧的因此保留。
+            try:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_events_entity_cover "
+                    "ON events(entity_id, ts, room, domain)"
+                )
+                conn.execute("DROP INDEX IF EXISTS idx_events_entity_ts")
+            except Exception as _exc:
+                print(f"[Store] events 实体覆盖索引迁移失败: {_exc}")
             # TV端 FaceID 上报：client 字段标识调用方（xiaotiancai/mytv/...）
             try:
                 conn.execute(
@@ -999,6 +1159,9 @@ class Store:
                 "promoted_at TEXT NOT NULL DEFAULT ''",
                 "activated_at TEXT NOT NULL DEFAULT ''",
                 "revoked_at TEXT NOT NULL DEFAULT ''",
+                # 触发策略（count/single/absence）。此前 match_event 读 rule["trigger"]
+                # 但库里没有这一列，count 分支不可达 → DCD Q2 的 60 秒/3 次无处落地。
+                "trigger_json TEXT NOT NULL DEFAULT '{}'",
             ]
             for _ddl in _rule_cols:
                 try:
@@ -3511,46 +3674,53 @@ class Store:
         limit: int = 100,
         order: str = "desc",
     ) -> dict:
-        """vMA-1.3 统一事件查询（VIEW，只读）。
+        """vMA-1.3 统一事件查询（视图口径，只读）。
 
-        查询 unified_events 视图，聚合 events + behavior_events + perception_events。
-        所有参数均可选，不传返回最近事件。
+        聚合 events + behavior_events + perception_events。所有参数均可选，
+        不传返回最近事件。返回列集与 ``unified_events`` 视图逐列一致。
+
+        审计 P0-6/P2-4：不直接 ``SELECT ... FROM unified_events``。视图是
+        UNION ALL，SQLite 不会把 WHERE / ORDER BY+LIMIT 下推进复合分支，
+        直接查它等于把三张表连 payload 全量物化再排序（30 万行实测 3.1s，
+        全程持全局 RLock）。这里把过滤和每支的 top-N 下推到分支，
+        外层只合并 3×limit 行——口径不变，代价从「全表」降到「索引取 N 条」。
         """
-        where_parts = []
-        args: list[Any] = []
-
-        if person:
-            where_parts.append("person = ?")
-            args.append(person)
-        if room:
-            where_parts.append("room = ?")
-            args.append(room)
-        if start:
-            where_parts.append("server_ts >= ?")
-            args.append(start)
-        if end:
-            where_parts.append("server_ts <= ?")
-            args.append(end)
-        if source:
-            where_parts.append("source = ?")
-            args.append(source)
-
-        where = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
-        order_dir = "DESC" if str(order).lower() == "desc" else "ASC"
         limit = max(1, min(int(limit), 500))
+        order_dir = "DESC" if str(order).lower() == "desc" else "ASC"
+        flt = {"person": person, "room": room, "start": start, "end": end}
+        branches = [b for b in _UNIFIED_BRANCHES
+                    if not source or b["source"] == source]
 
         conn = self.connect()
         with self._lock:
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM unified_events{where}", args
-            ).fetchone()[0]
-            cur = conn.execute(
-                f"SELECT event_id, server_ts, day, room, source, event_type, person, "
-                f"entity_id, confidence, payload "
-                f"FROM unified_events{where} ORDER BY server_ts {order_dir} LIMIT ?",
-                [*args, limit],
-            )
-            rows = [dict(r) for r in cur.fetchall()]
+            rows: list[dict] = []
+            if branches:
+                # 每支先各自取 top-limit 再合并：SQLite 允许 CTE 内带 ORDER BY+LIMIT
+                # （复合 SELECT 的「每支各自 ORDER BY」写法在这个版本上直接报语法错）。
+                # 全局前 limit 名必然落在各支自己的前 limit 名里，所以结果与查视图等价。
+                ctes, params, names = [], [], []
+                for i, b in enumerate(branches):
+                    conds, args = self._unified_conds(b, flt)
+                    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+                    name = f"_ue{i}"
+                    ctes.append(f"{name} AS ({b['select']}{where} "
+                                f"ORDER BY {b['ts']} {order_dir} LIMIT ?)")
+                    names.append(name)
+                    params.extend(args)
+                    params.append(limit)
+                sql = (
+                    "WITH " + ", ".join(ctes) + " SELECT "
+                    + ", ".join(_UNIFIED_COLS) + " FROM ("
+                    + " UNION ALL ".join(f"SELECT * FROM {n}" for n in names)
+                    + f") ORDER BY server_ts {order_dir} LIMIT ?"
+                )
+                cur = conn.execute(sql, [*params, limit])
+                rows = [dict(r) for r in cur.fetchall()]
+            # 本页没填满 = LIMIT 没截断任何行，len(rows) 就是精确总数；
+            # 只有本页被填满时才需要真去数（数也是走分支，不物化视图）。
+            total = len(rows)
+            if total >= limit:
+                total = self._count_unified_events(conn, flt, source)
 
         return {
             "ok": True,
@@ -3558,6 +3728,35 @@ class Store:
             "count": len(rows),
             "rows": rows,
         }
+
+    @staticmethod
+    def _unified_conds(branch: dict, flt: dict) -> tuple[list[str], list[Any]]:
+        """把一个视图级过滤翻成该分支自己的谓词（列表达式取自视图定义）。"""
+        conds: list[str] = []
+        args: list[Any] = []
+        if branch.get("extra"):
+            conds.append(branch["extra"])
+        for key, op in (("person", "="), ("room", "="), ("start", ">="), ("end", "<=")):
+            val = flt.get(key)
+            if not val:
+                continue
+            col = branch["ts"] if key in ("start", "end") else branch[key]
+            conds.append(f"{col} {op} ?")
+            args.append(val)
+        return conds, args
+
+    def _count_unified_events(self, conn, flt: dict, source: str | None) -> int:
+        """``SELECT COUNT(*) FROM unified_events WHERE ...`` 的等价下推版。"""
+        total = 0
+        for b in _UNIFIED_BRANCHES:
+            if source and b["source"] != source:
+                continue
+            conds, args = self._unified_conds(b, flt)
+            where = (" WHERE " + " AND ".join(conds)) if conds else " WHERE 1=1"
+            head = b["select"].index(" FROM ")
+            count_sql = "SELECT COUNT(*)" + b["select"][head:] + where
+            total += int(conn.execute(count_sql, args).fetchone()[0])
+        return total
 
     def entity_last_seen(self, entities: list[str] | None = None) -> dict[str, str]:
         """实体 → 最后一次出现的时间戳。设备目录用（判断「最后在线」）。"""
@@ -3978,20 +4177,51 @@ class Store:
 
     # -- 保留策略 ----------------------------------------------------------
 
-    def purge_old(self, retention_days: int) -> int:
+    def purge_old(self, retention_days: int, *, batch_rows: int | None = None) -> int:
+        """按保留期清理事件（分批删除 + 分批提交）。
+
+        审计 P0-7：原来是一条 ``DELETE FROM events WHERE day < cutoff`` 包在
+        ``with self._lock`` 里。全局 RLock 是全进程共用的——实测 30 万行一次删完
+        持锁 **143 秒**，期间采集线程、WebUI、MCP 全部排队（一个并发读者实测等了
+        143151 ms）。改成每批只锁到本批提交，锁释放点摊平，其它线程在批间隙能进。
+
+        代价：不再是一个原子事务。保留清理是幂等的周期任务（``runtime.py:137`` 走
+        ``to_thread`` 定时跑），中途失败下次接着删即可，不值得为它牺牲全局可用性的
+        两分钟。
+        """
         if retention_days <= 0:
             return 0
         cutoff = (
             now_local(self.tz_offset_hours) - timedelta(days=retention_days)
         ).strftime("%Y-%m-%d")
         conn = self.connect()
+        step = int(batch_rows or PURGE_BATCH_ROWS)
+        removed = 0
+        while True:
+            # ``DELETE ... LIMIT`` 不是 SQLite 标准语法（需 SQLITE_ENABLE_UPDATE_DELETE_LIMIT），
+            # 用 rowid 子查询取每批的行，任何构建都能跑。
+            with self._lock:
+                cur = conn.execute(
+                    "DELETE FROM events WHERE rowid IN ("
+                    "SELECT rowid FROM events WHERE day < ? LIMIT ?)",
+                    (cutoff, step),
+                )
+                n = int(cur.rowcount or 0)
+                conn.commit()
+            removed += n
+            if n < step:
+                break
         with self._lock:
-            cur = conn.execute("DELETE FROM events WHERE day < ?", (cutoff,))
-            removed = cur.rowcount or 0
             conn.execute("DELETE FROM collect_days WHERE day < ?", (cutoff,))
             conn.commit()
         if removed:
             print(f"[Store] 按保留策略清理 {removed} 条事件（早于 {cutoff}）")
+        # 审计 P0-8：DELETE 只把页放进空闲链，磁盘不归还文件系统（实测删 50 万行
+        # 体积 198MB 纹丝不动）。NAS/树莓派盘小，删得多的那一轮顺手回收一次。
+        if removed >= PURGE_VACUUM_MIN_ROWS:
+            with self._lock:
+                conn.execute("VACUUM")
+            print(f"[Store] 清理后执行 VACUUM 回收磁盘（本轮删除 {removed} 条）")
         return removed
 
     # ── Agent 记忆（参与式写回向量库）────────────────────────────────────────
@@ -4568,6 +4798,56 @@ class Store:
             sql += " AND triggered_at >= ?"
             args.append(since)
         return int(conn.execute(sql, args).fetchone()[0])
+
+    def purge_rule_triggers(self, cutoff: str, max_rows: int = 100_000) -> dict:
+        """裁剪触发历史：先删 ``triggered_at < cutoff`` 的，再删超额的最旧行。
+
+        DCD 2026-10-01 §Q3.1 裁定「保留期 7 天 + 行数上限 10 万」——本方法的
+        例外是**被人工标为误报（false_positive=1）的行不受保留期与行数上限约束**：
+        整个反馈面 currently 是 0 条标注（裁定 §Q3 的原话），有标注的行是唯一的
+        负样本，裁掉就等于把攒 badcase 门的机会又清零一次。裁观测记录不是裁用户
+        数据，但裁掉"人的判断"比裁掉机器日志贵。
+        """
+        conn = self.connect()
+        expired = 0
+        over_cap = 0
+        with self._lock:
+            cur = conn.execute(
+                "DELETE FROM rule_trigger_history "
+                "WHERE triggered_at < ? AND false_positive = 0",
+                (cutoff,),
+            )
+            expired = int(cur.rowcount or 0)
+            total = int(conn.execute(
+                "SELECT COUNT(*) FROM rule_trigger_history WHERE false_positive = 0"
+            ).fetchone()[0] or 0)
+            if total > max_rows:
+                cur = conn.execute(
+                    """
+                    DELETE FROM rule_trigger_history WHERE trigger_id IN (
+                        SELECT trigger_id FROM rule_trigger_history
+                        WHERE false_positive = 0
+                        ORDER BY triggered_at ASC, trigger_id ASC
+                        LIMIT ?
+                    )
+                    """,
+                    (total - max_rows,),
+                )
+                over_cap = int(cur.rowcount or 0)
+            conn.commit()
+            remaining = int(conn.execute(
+                "SELECT COUNT(*) FROM rule_trigger_history").fetchone()[0] or 0)
+            labeled = int(conn.execute(
+                "SELECT COUNT(*) FROM rule_trigger_history WHERE false_positive = 1"
+            ).fetchone()[0] or 0)
+        return {
+            "cutoff": cutoff,
+            "max_rows": int(max_rows),
+            "deleted_expired": expired,
+            "deleted_over_cap": over_cap,
+            "remaining": remaining,
+            "kept_labeled": labeled,
+        }
 
     def get_detected_activity(self, activity_id: str):
         conn = self.connect()

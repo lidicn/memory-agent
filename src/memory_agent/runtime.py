@@ -59,7 +59,8 @@ class AppRuntime:
 
     def __init__(self) -> None:
         self.config: Config = get_config()
-        self.store = Store(self.config.db_path, self.config.tz_offset_hours)
+        self.store = Store(self.config.db_path, self.config.tz_offset_hours,
+                           backup_dir=getattr(self.config, "backup_dir", "") or "")
         self.auth = AuthManager(self.config)
         self.ha = HAClient(self.config)
         self.ha_db = self._build_ha_db(self.config)
@@ -183,17 +184,13 @@ class AppRuntime:
         self._sweep_task = task_registry.create(
             self._periodic_agent_memory_sweep(), name="runtime.agent_memory_sweep"
         )
-        # 身份层：启动即跑一次对账，让模板/查询尽快拿到逻辑映射；失败不影响启动
-        try:
-            res = await asyncio.to_thread(self.identity_reconciler.reconcile)
-            print(
-                f"[Identity] 首次对账完成：实体 {res.get('entities', 0)}，"
-                f"逻辑设备 {res.get('devices', 0)}，合并 {res.get('merged', 0)}，"
-                f"重匹配 {res.get('remapped', 0)}，失效 {res.get('stale', 0)}"
-            )
-        except Exception as exc:  # noqa: BLE001 - 对账失败不应阻断启动
-            print(f"[Identity] 首次对账失败（不影响启动）: {exc}")
-        self._publish_health_changes(res if isinstance(res, dict) else {})
+        # 身份层：首次对账挪到后台（审计 P1-12）。reconcile 要等 HA 回答：
+        # HA 地址不通时实测这一步卡 5139 ms（走连接失败/超时路径），而它后面还排着
+        # MQTT/备份/模板校验/活动推断的任务注册——启动阻塞会连带放大成"整站卡十几秒"。
+        # 原注释自己就写着「失败不影响启动」，那它同样不该阻塞启动。
+        self._identity_first_pass_task = task_registry.create(
+            self._first_identity_reconcile(), name="runtime.identity_first_pass"
+        )
         self._identity_task = task_registry.create(
             self._periodic_identity_reconcile(), name="runtime.identity_reconcile"
         )
@@ -497,6 +494,29 @@ class AppRuntime:
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             return
+
+    async def _first_identity_reconcile(self) -> None:
+        """启动后立刻补一次对账，让模板/查询尽快拿到逻辑映射——但不阻塞 startup。
+
+        原来这段写在 ``startup()`` 里：``res`` 只在 try 内赋值，一旦
+        ``reconcile()`` 抛异常，紧跟着的 ``self._publish_health_changes(res...)``
+        就踩在未绑定的名字上（UnboundLocalError），把"失败不影响启动"
+        变成"启动直接炸"。收进后台协程后这条路径不存在了。
+        """
+        try:
+            res = await asyncio.to_thread(self.identity_reconciler.reconcile)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 对账失败不应阻断启动
+            print(f"[Identity] 首次对账失败（不影响启动）: {exc}")
+            return
+        res = res if isinstance(res, dict) else {}
+        print(
+            f"[Identity] 首次对账完成：实体 {res.get('entities', 0)}，"
+            f"逻辑设备 {res.get('devices', 0)}，合并 {res.get('merged', 0)}，"
+            f"重匹配 {res.get('remapped', 0)}，失效 {res.get('stale', 0)}"
+        )
+        self._publish_health_changes(res)
 
     async def _periodic_identity_reconcile(self) -> None:
         """常驻任务：低频对账 HA 实体注册表，维护逻辑设备映射与健康状态。

@@ -50,6 +50,10 @@ class TestP17BehaviorEventsIndexes(unittest.TestCase):
             db_path = os.path.join(tmpdir, "test.db")
             store = Store(db_path=db_path, tz_offset_hours=8)
             store.init_schema()
+            # Store 缓存连接不关，Windows 上 TemporaryDirectory 退出时删不掉仍被占用的
+            # .db（WinError 32），断言本身早已通过却在 teardown 变红。Linux 能 unlink
+            # 打开中的文件，所以这条只在 Windows 复现——不是产品缺陷，是测试自己漏收尾。
+            store.close()
 
             conn = sqlite3.connect(db_path)
             cur = conn.cursor()
@@ -69,6 +73,7 @@ class TestP17BehaviorEventsIndexes(unittest.TestCase):
             db_path = os.path.join(tmpdir, "test.db")
             store = Store(db_path=db_path, tz_offset_hours=8)
             store.init_schema()
+            store.close()          # 同上：留打开的句柄会让临时目录删不掉
 
             # 插入测试数据
             conn = sqlite3.connect(db_path)

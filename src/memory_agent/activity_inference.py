@@ -138,12 +138,11 @@ class ActivityInferenceService:
         return out
 
     def _tags_of(self, eid: str, name: str) -> set:
-        if self.insights is not None and hasattr(self.insights, "_tags_of"):
-            try:
-                return self.insights._tags_of(eid, name)
-            except Exception:
-                pass
-        return set()
+        # 审计 P0-5：原先走 ``self.insights._tags_of`` + except → ``set()``。
+        # Phase 4 门面没有这个方法，标签全部静默为空，规则引擎一条 tag 都匹配不上。
+        # 直接用规范实现，不依赖注入的 insights 实例。
+        from .insights.utils import tags_of
+        return tags_of(eid, name)
 
     def _debounce(self, events: list[dict], sec: int) -> list[dict]:
         """同一实体在 ``sec`` 秒内的连续事件合并为一次（PIR 去抖）。"""
@@ -672,20 +671,11 @@ class ActivityInferenceService:
         （线上实测：30 天窗口反而只看到 3 个 case）。
         """
         kw = {"rooms": rooms, "order": "asc", "exclude_domains": list(TELEMETRY_DOMAINS)}
-        ins = self.insights
-        if ins is not None and hasattr(ins, "_iter_all_events"):
-            try:
-                return ins._iter_all_events(start, end, max_rows=max_rows, **kw)
-            except TypeError as _e:
-                # E-MA-01: 不要静默丢掉过滤条件，打警告
-                import logging
-                logging.getLogger(__name__).warning("_iter_all_events 不支持 exclude_domains，过滤条件已丢弃: %s", _e)
-                kw.pop("exclude_domains", None)
-                return ins._iter_all_events(start, end, max_rows=max_rows, **kw)
-        # E-MA-01: fallback 到 query_events 时不要静默截断，提高 limit 并打警告
-        import logging
-        logging.getLogger(__name__).warning("_iter_all_events 不可用，fallback 到 query_events 可能截断数据")
-        return self.store.query_events(start=start, end=end, limit=min(max_rows, 50000), **kw)
+        # 审计 P0-5：原先只在 ``hasattr(self.insights, "_iter_all_events")`` 成立时才分页，
+        # 否则退回 ``query_events(limit=5000/50000)`` —— 窗口被静默截断成最早几天。
+        # 分页逻辑本就是纯函数，直接调规范实现，不再绕 insights 实例。
+        from .insights.utils import iter_all_events
+        return iter_all_events(self.store.query_events, start, end, max_rows, **kw)
 
     def mine_process(self, start: str | None = None, end: str | None = None,
                      days: int = 7, rooms: list | None = None, *,

@@ -26,7 +26,6 @@ src/memory_agent/insights_legacy.py#swallow-and-claim-ok#InsightService.plan_que
 src/memory_agent/mcp_server.py#swallow-and-claim-ok#_build_server.retrieve_agent_memories
 src/memory_agent/signal_learning.py#swallow-and-claim-ok#SignalLearningService.suggest_rules_from_negative_feedback
 src/memory_agent/acp_server.py#except-pass-broad#_acp_kind
-src/memory_agent/activity_inference.py#except-pass-broad#ActivityInferenceService._tags_of
 src/memory_agent/agent_memory.py#except-pass-broad#AgentMemoryService.promote_memory
 src/memory_agent/algo_kernel.py#except-pass-broad#build_process_cases._primary
 src/memory_agent/api/debug_routes.py#except-pass-broad#DebugRun.emit

@@ -22,7 +22,27 @@ from .service import BehaviorService
 
 LOG = logging.getLogger(__name__)
 
-__all__ = ["InsightService"]
+__all__ = ["InsightService", "LEGACY_CONTRACT_MEMBERS"]
+
+
+#: 生产代码仍在调用、但本门面未自行实现的成员（审计 P0-5，实测 11 个）。
+#: 每一项由 ``InsightService`` 显式转发到 ``insights_legacy.InsightService``，
+#: ``tests/test_insights_facade_contract.py`` 用「生产侧属性访问扫描」锁定这张表。
+#: 新增成员必须同时补转发方法，否则契约测试红——不允许再靠 ``_degrade``/``hasattr``
+#: 把缺失静默降级成空结果。
+LEGACY_CONTRACT_MEMBERS = (
+    "store",
+    "resolve_range",
+    "name_map",
+    "decorate",
+    "_parse",
+    "_fallback_name",
+    "_usage_one",
+    "_usage_by_attr",
+    "_count_by_filter",
+    "_iter_all_events",
+    "_tags_of",
+)
 
 
 def _empty() -> Dict[str, Any]:
@@ -64,6 +84,14 @@ class InsightService:
 
     def __init__(self, store: Any = None, config: Optional[InsightConfig] = None,
                  repository: Optional[BaseRepository] = None) -> None:
+        # 审计 P0-5：Phase 4 把门面切到本包后，legacy 上仍被生产代码调用的成员
+        # 凭空消失（templates / activity_inference / mcp_server / llm_routes 共 11 个），
+        # 且被 ``_degrade``、``hasattr`` + 空 ``set()`` 这类降级静默吞掉，
+        # 表现为"行为推断/模板分析/实体名兜底/缓存"四条功能线无声返回空。
+        # 修复策略是**组合 + 显式转发**（不整体换回 legacy 门面：那会改掉
+        # 本类 ~17 个共享公开方法的返回形状，而生产真正依赖的只有下面这张表）。
+        self.store: Any = store
+        raw_config = config  # legacy 读的是原始 app Config（rooms / tz_offset_hours / …）
         # 兼容生产 Config：非 InsightConfig 时用默认值包装，
         # 避免 'Config' object has no attribute 'cache_ttl'/'default_days'
         if config is None:
@@ -83,6 +111,9 @@ class InsightService:
         self.resolver = EntityResolver(self._safe_entities())
         self.core = BehaviorService(self.repo, self.resolver, self.config)
         self.nl = NLQueryEngine(self.core, self.resolver, self.config)
+        # 延迟导入：insights_legacy 体积大且反向依赖本包 utils，仅在实例化时取。
+        from ..insights_legacy import InsightService as LegacyInsightService
+        self.legacy = LegacyInsightService(raw_config, store)
 
     # ------------------------------------------------------------------
     # 内部工具
@@ -385,3 +416,37 @@ class InsightService:
 
     def persona_report(self, fmt: str = "markdown", days: int = 14) -> str:
         return self.core.reports.persona_report(self.get_user_persona(days=days), fmt)
+
+    # ------------------------------------------------------------------
+    # 审计 P0-5：legacy 契约成员显式转发（清单见 LEGACY_CONTRACT_MEMBERS）
+    # 这些方法**不套 ``_degrade``**：调用失败必须抛出真异常，而不是静默变成空结果。
+    # ------------------------------------------------------------------
+    def resolve_range(self, *args: Any, **kwargs: Any):
+        return self.legacy.resolve_range(*args, **kwargs)
+
+    def name_map(self) -> Dict[str, Any]:
+        return self.legacy.name_map()
+
+    def decorate(self, rows: Any) -> List[dict]:
+        return self.legacy.decorate(rows)
+
+    def _parse(self, raw: str):
+        return self.legacy._parse(raw)
+
+    def _fallback_name(self, entity_id: str) -> str:
+        return self.legacy._fallback_name(entity_id)
+
+    def _usage_one(self, *args: Any, **kwargs: Any):
+        return self.legacy._usage_one(*args, **kwargs)
+
+    def _usage_by_attr(self, *args: Any, **kwargs: Any):
+        return self.legacy._usage_by_attr(*args, **kwargs)
+
+    def _count_by_filter(self, *args: Any, **kwargs: Any):
+        return self.legacy._count_by_filter(*args, **kwargs)
+
+    def _iter_all_events(self, *args: Any, **kwargs: Any):
+        return self.legacy._iter_all_events(*args, **kwargs)
+
+    def _tags_of(self, eid: str, name: str) -> set:
+        return self.legacy._tags_of(eid, name)

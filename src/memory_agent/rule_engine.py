@@ -16,9 +16,31 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+from .activity_inference import _is_on
 from .store import now_local
 
 logger = logging.getLogger("memory_agent.rule_engine")
+
+# 设备事件的 kind 字面量：feed 与 build_condition 共用这一个值，倒排索引按它建桶。
+DEVICE_EVENT_KIND = "device"
+
+
+def state_matches(state: Any, want: Any) -> bool:
+    """``cond["state"]`` 与事件状态的比对口径。
+
+    空/``any`` 表示不限；``on``/``off`` 走二值归类（cover 的 closed、插座的 off
+    都算 off），复用 ``activity_inference._is_on`` 而不是再抄一份状态字面量表——
+    两套口径迟早分叉的话，会出现「同一条规则在推断层命中、在引擎层不命中」
+    这种查不出来的分歧。
+    """
+    w = str(want if want is not None else "").strip().lower()
+    if w in ("", "any", "none"):
+        return True
+    if w == "on":
+        return _is_on(state)
+    if w == "off":
+        return not _is_on(state)
+    return str(state or "").strip().lower() == w
 
 
 class ActiveRuleEngine:
@@ -40,6 +62,21 @@ class ActiveRuleEngine:
         """家庭墙钟（naive）。事件 ts / store 时间戳同为墙钟口径，混用机器时区
         会让冷却期、观察期与 time_range 判定整体偏移（BUG-TZ1 同类缺陷）。"""
         return now_local(getattr(self.store, "tz_offset_hours", 8.0))
+
+    def _event_now(self, event: dict) -> datetime:
+        """事件自带时间的墙钟口径（解析不出来才退回当前墙钟）。
+
+        ``time_range`` 判定用它：批量 feed 喂的是历史窗口里的事件，"现在"和
+        「事件发生时刻」最多差一个轮询周期（默认 1 小时），足以把边界事件
+        错分到窗口内外。
+        """
+        raw = str(event.get("ts") or event.get("server_ts") or "").strip()
+        if raw:
+            try:
+                return datetime.fromisoformat(raw.replace(" ", "T")[:19])
+            except ValueError:
+                pass
+        return self._now()
 
 
     # ── 倒排索引 ──────────────────────────────────────────────────────
@@ -273,6 +310,7 @@ class ActiveRuleEngine:
         source_rule_id: str = "",
         mode: str = "live",
         evidence_count: int = 0,
+        trigger: dict | None = None,
     ) -> dict:
         """添加规则。
 
@@ -280,6 +318,11 @@ class ActiveRuleEngine:
         origin/ source_rule_id/ mode/ evidence_count 是 DCD R3 生效通道的载体：
         人工建的规则默认 ``manual`` + ``live``，候选晋升走 ``candidate_promoted``
         + ``dry_run``（观察期内只记录不触发）。
+
+        ``trigger`` 是触发策略（``{"type": "count", "window_seconds": 60,
+        "min_count": 3}``）。此前它只存在于 ``match_event`` 的读取端，
+        ``active_rules`` 没有对应列，于是 ``rule.get("trigger")`` 恒为 ``{}``——
+        count 分支是不可达代码，DCD Q2 裁定的「60 秒 3 次」也无从落地。
         """
         conn = self.store.connect()
         rule_id = f"rule_{self._now().strftime('%Y%m%d%H%M%S%f')}"
@@ -290,8 +333,9 @@ class ActiveRuleEngine:
                 INSERT INTO active_rules
                 (rule_id, name, description, condition_json, action_json, enabled,
                  cooldown_seconds, rule_type, origin, source_rule_id, mode,
-                 evidence_count, promoted_at, activated_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 evidence_count, promoted_at, activated_at, created_at, updated_at,
+                 trigger_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rule_id,
@@ -310,6 +354,7 @@ class ActiveRuleEngine:
                     now,
                     now,
                     now,
+                    json.dumps(trigger or {}, ensure_ascii=False),
                 ),
             )
             conn.commit()
@@ -334,6 +379,7 @@ class ActiveRuleEngine:
             d = dict(row)
             d["condition"] = json.loads(d.pop("condition_json", "{}"))
             d["action"] = json.loads(d.pop("action_json", "{}"))
+            d["trigger"] = json.loads(d.pop("trigger_json", "") or "{}")
             d["enabled"] = bool(d.get("enabled"))
             d["rule_type"] = d.pop("rule_type", "static")
             result.append(d)
@@ -350,6 +396,7 @@ class ActiveRuleEngine:
         d = dict(row)
         d["condition"] = json.loads(d.pop("condition_json", "{}"))
         d["action"] = json.loads(d.pop("action_json", "{}"))
+        d["trigger"] = json.loads(d.pop("trigger_json", "") or "{}")
         d["enabled"] = bool(d.get("enabled"))
         return d
 
@@ -371,6 +418,9 @@ class ActiveRuleEngine:
         if "action" in kwargs:
             updates.append("action_json = ?")
             params.append(json.dumps(kwargs["action"], ensure_ascii=False))
+        if "trigger" in kwargs:
+            updates.append("trigger_json = ?")
+            params.append(json.dumps(kwargs["trigger"] or {}, ensure_ascii=False))
         if not updates:
             return {"ok": False, "error": "无更新字段"}
         updates.append("updated_at = ?")
@@ -402,24 +452,39 @@ class ActiveRuleEngine:
 
     # ── 规则匹配 ──────────────────────────────────────────────────────
 
-    def match_event(self, event: dict, rule_type: str | None = None) -> list[dict]:
+    def match_event(self, event: dict, rule_type: str | None = None, *,
+                    now_ts: float | None = None) -> list[dict]:
         """匹配事件，返回触发的规则列表。
 
-        event 结构：
-        {
-            "kind": "face_unknown",
-            "room": "客厅",
-            "person": "陌生人",
-            "confidence": 0.8,
-            "server_ts": "2026-09-22T12:00:00",
-        }
+        event 结构（感知）::
+
+            {
+                "kind": "face_unknown",
+                "room": "客厅",
+                "person": "陌生人",
+                "confidence": 0.8,
+                "server_ts": "2026-09-22T12:00:00",
+            }
+
+        event 结构（设备，由 ``device_feed`` 产出）::
+
+            {
+                "kind": "device", "domain": "binary_sensor",
+                "entity_id": "binary_sensor.door_front", "tags": ["door"],
+                "state": "on", "old_state": "off", "action": "off->on",
+                "room": "客厅", "ts": "2026-09-22T12:00:00",
+            }
 
         rule_type: 可选，只匹配指定类型的规则（static/dynamic）
+        now_ts: count 触发窗口的「当前时刻」（真实 epoch）。在线路径不传，
+        用 ``time.time()``；批量扫描器**必须**传事件自身的时间——否则回放
+        一小时的历史时，全部事件都被当成「同一瞬间」发生，``min_count``
+        门槛形同不存在（这是 Q1=B「聚合再评估」的核心语义，不是精度优化）。
         """
         # 使用倒排索引获取候选规则
         rules = self._get_candidate_rules(event.get("kind", ""))
         triggered = []
-        now = time.time()
+        now = time.time() if now_ts is None else float(now_ts)
         for rule in rules:
             # 只匹配启用的规则
             if not rule.get("enabled", True):
@@ -429,10 +494,11 @@ class ActiveRuleEngine:
                 continue
             if self._match_condition(rule["condition"], event):
                 # 触发策略
-                trigger = rule.get("trigger", {})
+                trigger = rule.get("trigger") or {}
                 trigger_type = trigger.get("type", "single")
                 if trigger_type == "count":
-                    # count：N 次才触发
+                    # count：N 次才触发。60 秒 / 3 次是 DCD Q2 的**裁定值**，
+                    # 不是开发拍的默认值，改动要回 DCD。
                     window_seconds = int(trigger.get("window_seconds", 60))
                     min_count = int(trigger.get("min_count", 3))
                     if not self._check_count_trigger(rule["rule_id"], now, window_seconds, min_count):
@@ -602,8 +668,10 @@ class ActiveRuleEngine:
             # 格式："19:00-22:00"
             if "-" in time_range:
                 start_str, end_str = time_range.split("-")
-                # 获取当前家庭墙钟时间
-                now = self._now()
+                # 判定基准取**事件自身**的墙钟（无 ts 才退回当前墙钟）：
+                # 批量扫描器喂的是上一窗口的历史事件，用「现在」判 time_range
+                # 会把 18:50 的开门算进 "19:00-22:00" 这类规则里。
+                now = self._event_now(event)
                 current_minutes = now.hour * 60 + now.minute
                 # 解析开始时间
                 start_h, start_m = map(int, start_str.split(":"))
@@ -615,10 +683,42 @@ class ActiveRuleEngine:
                 if not (start_minutes <= current_minutes <= end_minutes):
                     failures.append(f"time_range: expected {time_range}, current {now.strftime('%H:%M')}")
 
-        # state 匹配（如 away_mode）
+        # state 匹配（设备二值态，如门开/灯关）
         if "state" in cond:
-            # TODO: 检查当前状态（如离家模式）
-            pass
+            # 此前这里是 ``# TODO`` + ``pass``——带 state 原子的条件**恒真**，
+            # 「门开着」的规则会在门关时也命中。feed 上线同时把语义补实，
+            # 判红口径与推断层一致（``state_matches``）。
+            actual_state = event.get("state")
+            if not state_matches(actual_state, cond["state"]):
+                failures.append(f"state: expected {cond['state']}, got {actual_state}")
+
+        # domain 匹配（HA 实体域，如 binary_sensor / climate）
+        if "domain" in cond:
+            expected = cond["domain"]
+            actual_domain = event.get("domain", "")
+            if isinstance(expected, list):
+                if actual_domain not in expected:
+                    failures.append(f"domain: expected {expected}, got {actual_domain}")
+            elif actual_domain != expected:
+                failures.append(f"domain: expected {expected}, got {actual_domain}")
+
+        # entity_id 匹配（精确到某个实体）
+        if "entity_id" in cond:
+            expected = cond["entity_id"]
+            actual_eid = event.get("entity_id", "")
+            if isinstance(expected, list):
+                if actual_eid not in expected:
+                    failures.append(f"entity_id: expected {expected}, got {actual_eid}")
+            elif actual_eid != expected:
+                failures.append(f"entity_id: expected {expected}, got {actual_eid}")
+
+        # tag 匹配（设备语义标签，词表与 device_feed.FEED_TAGS 同源）
+        if "tag" in cond:
+            expected = cond["tag"]
+            event_tags = set(event.get("tags") or ())
+            want = {expected} if isinstance(expected, str) else set(expected or ())
+            if not (want & event_tags):
+                failures.append(f"tag: expected {sorted(want)}, got {sorted(event_tags)}")
 
         result = len(failures) == 0
         if trace:
@@ -637,16 +737,21 @@ class ActiveRuleEngine:
 
     # ── 执行动作 ──────────────────────────────────────────────────────
 
-    def execute_action(self, rule: dict, event: dict) -> dict:
+    def execute_action(self, rule: dict, event: dict, *,
+                       dry_run_override: bool = False) -> dict:
         """执行规则动作。
 
         DCD R3 观察期红线：``mode == 'dry_run'`` 的规则照常匹配并记录触发历史
         （带 ``dry_run=1``），但**不派发任何副作用**。误报在试运行期被发现
         时不会真的吵到家里人。
+
+        ``dry_run_override`` 让调用方在不改规则mode的情况下强制试运行——
+        设备 feed 的首轮（DCD Q3=(i)「通道建好、推进等人」）用它保证
+        「即便规则已是 live，新通道第一遍也只记录不吵人」。
         """
         action = rule.get("action", {})
         action_type = action.get("type", "log")
-        dry_run = str(rule.get("mode") or "live") == "dry_run"
+        dry_run = dry_run_override or str(rule.get("mode") or "live") == "dry_run"
         if dry_run:
             logged = self._log_trigger(rule["rule_id"], event, {**action, "dispatched": False},
                                        dry_run=True)
