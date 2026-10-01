@@ -96,6 +96,12 @@ async def candidate_rule_update(request: Request):
     changed = await asyncio.to_thread(rt.store.set_candidate_rule_status, rule_id, status)
     if not changed:
         return error("规则不存在", 404)
+    # DCD R3 红线"审计"：人工确认/驳回是链路上的一环，必须留痕
+    if status in ("accepted", "rejected"):
+        from ..rule_lifecycle import log_confirmation
+        await asyncio.to_thread(
+            log_confirmation, rt.store, rule_id, status, "user",
+            str(body.get("reason") or ""))
     return ok({"rule_id": rule_id, "status": status})
 
 
@@ -432,6 +438,130 @@ async def behaviors_delete_rule(request: Request, rule_id: str):
     if not result.get("ok"):
         return error(result.get("error", "删除失败"))
     return ok(result)
+
+
+# ── DCD R3 生效通道：accepted → active_rules（试运行 → 转正 / 撤销）─────────
+
+def _lifecycle(rt):
+    from ..rule_engine import get_rule_engine
+    from ..rule_lifecycle import get_rule_lifecycle
+    return get_rule_lifecycle(rt.store, get_rule_engine(rt.store, rt.alert_dispatcher))
+
+
+async def rule_channel_status(request: Request):
+    """通道全景：试运行中 / 已转正 / 已撤销的晋升规则与各自观察读数。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    return ok(await asyncio.to_thread(_lifecycle(runtime(request)).channel_status))
+
+
+async def rule_channel_pending(request: Request):
+    """accepted 候选的晋升预演清单（只读，逐条给四红线判据）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rows = await asyncio.to_thread(_lifecycle(runtime(request)).pending_promotions)
+    return ok({"items": rows, "count": len(rows)})
+
+
+async def rule_channel_eligibility(request: Request):
+    """单条候选的门槛判定（只读）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    candidate_id = (request.query_params.get("candidate_id") or "").strip()
+    if not candidate_id:
+        return error("缺少 candidate_id")
+    return ok(await asyncio.to_thread(
+        _lifecycle(runtime(request)).eligibility, candidate_id))
+
+
+async def rule_channel_promote(request: Request):
+    """晋升一条 accepted 候选进引擎（一律先落 dry_run）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    body = await json_body(request)
+    candidate_id = (body.get("candidate_id") or "").strip()
+    if not candidate_id:
+        return error("缺少 candidate_id")
+    res = await asyncio.to_thread(
+        _lifecycle(rt).promote, candidate_id, "user",
+        str(body.get("reason") or ""))
+    if not res.get("ok"):
+        return error(res.get("error", "晋升失败"), 409)
+    return ok(res)
+
+
+async def rule_channel_advance(request: Request):
+    """试运行满观察期且零误报 → 转正为 live。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    body = await json_body(request)
+    rule_id = (body.get("rule_id") or "").strip()
+    if not rule_id:
+        return error("缺少 rule_id")
+    res = await asyncio.to_thread(
+        _lifecycle(rt).advance_to_live, rule_id, "user", str(body.get("reason") or ""))
+    if not res.get("ok"):
+        return error(res.get("error", "转正失败"), 409)
+    return ok(res)
+
+
+async def rule_channel_revoke(request: Request):
+    """撤销生效规则，并连同它产生的推断一起回滚。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    body = await json_body(request)
+    rule_id = (body.get("rule_id") or "").strip()
+    if not rule_id:
+        return error("缺少 rule_id")
+    res = await asyncio.to_thread(
+        _lifecycle(rt).revoke, rule_id, "user", str(body.get("reason") or ""),
+        bool(body.get("rollback_inferences", True)))
+    if not res.get("ok"):
+        return error(res.get("error", "撤销失败"), 409)
+    return ok(res)
+
+
+async def rule_channel_false_positive(request: Request):
+    """把一条触发记录判为误报（观察期的红判据）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    body = await json_body(request)
+    rule_id = (body.get("rule_id") or "").strip()
+    trigger_id = body.get("trigger_id")
+    if not rule_id or trigger_id in (None, ""):
+        return error("缺少 rule_id / trigger_id")
+    res = await asyncio.to_thread(
+        _lifecycle(rt).flag_false_positive, rule_id, int(trigger_id), "user",
+        str(body.get("reason") or ""))
+    if not res.get("ok"):
+        return error(res.get("error", "标记失败"), 404)
+    return ok(res)
+
+
+async def rule_channel_audit(request: Request):
+    """规则生命周期审计（全链路留痕）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    rule_id = (request.query_params.get("rule_id") or "").strip()
+    try:
+        limit = max(1, min(500, int(request.query_params.get("limit") or "100")))
+    except ValueError:
+        limit = 100
+    rows = await asyncio.to_thread(rt.store.list_rule_lifecycle, rule_id, limit)
+    return ok({"items": rows, "count": len(rows)})
 
 
 async def behaviors_feedback_pack(request: Request):
@@ -812,6 +942,14 @@ ROUTES = [
     Route("/api/behaviors/bad-cases/export", behaviors_bad_case_export, methods=["POST"]),
     Route("/api/behaviors/home-profile", behaviors_home_profile, methods=["GET"]),
     Route("/api/behaviors/rules", behaviors_rules, methods=["GET"]),
+    Route("/api/behaviors/rule-channel", rule_channel_status, methods=["GET"]),
+    Route("/api/behaviors/rule-channel/pending", rule_channel_pending, methods=["GET"]),
+    Route("/api/behaviors/rule-channel/eligibility", rule_channel_eligibility, methods=["GET"]),
+    Route("/api/behaviors/rule-channel/promote", rule_channel_promote, methods=["POST"]),
+    Route("/api/behaviors/rule-channel/advance", rule_channel_advance, methods=["POST"]),
+    Route("/api/behaviors/rule-channel/revoke", rule_channel_revoke, methods=["POST"]),
+    Route("/api/behaviors/rule-channel/false-positive", rule_channel_false_positive, methods=["POST"]),
+    Route("/api/behaviors/rule-channel/audit", rule_channel_audit, methods=["GET"]),
     Route("/api/alerts/stats", alerts_stats, methods=["GET"]),
     Route("/api/behaviors/causal/analyze", causal_analyze, methods=["GET"]),
     Route("/api/behaviors/causal/counterfactual", causal_counterfactual, methods=["GET"]),

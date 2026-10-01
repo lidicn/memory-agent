@@ -70,6 +70,8 @@ REGISTERED_TOOLS = frozenset({
     "list_rooms_entities",
     "list_signal_rules",
     "list_candidate_rules",
+    "list_rule_channel",
+    "list_rule_lifecycle_audit",
     "list_bug_reports",
     "list_skills",
     "list_vision_cameras",
@@ -119,6 +121,11 @@ WRITE_TOOLS = frozenset({
     "trigger_incremental_collection",
     # vMA-1.2.1 候选规则确认（写操作：改 candidate_rules 状态）
     "confirm_candidate_rule",
+    # DCD R3 生效通道（写操作：候选晋升进 active_rules / 转正 / 撤销+回滚推断 / 判误报）
+    "promote_candidate_rule",
+    "advance_rule_to_live",
+    "revoke_active_rule",
+    "flag_rule_false_positive",
     # bug 上报通道
     "report_bug",
 })

@@ -30,6 +30,8 @@ SCHEMA_VERSION = 1
 # candidate_rules 的"人已确认"状态字（DCD 裁定 7 红线位 user_confirmed 由它推导）。
 # HTTP 与 MCP 两条入口必须写同一个字面量，否则确认结果互不可见。
 CANDIDATE_ACCEPTED = "accepted"
+# DCD R3：已进引擎的候选规则改此状态，避免同一候选被重复晋升
+CANDIDATE_PROMOTED = "promoted"
 
 # 审计 S8：语音问答缓存软上限，超过则按创建时间淘汰最旧 10% 防止无限增长
 _VOICE_CACHE_MAX = int(os.getenv("MA_VOICE_CACHE_MAX", "2000"))
@@ -954,6 +956,98 @@ class Store:
             except Exception as _exc:
                 if "duplicate column" not in str(_exc).lower():
                     print(f"[Store] candidate_rules.user_confirmed 列迁移异常: {_exc}")
+            # Phase 3.1 / DCD R3：引擎唯一读取的规则表。
+            # 这两张表历史上只在生产库里存在、src 里没有 DDL，全新库会把整条
+            # 规则链（路线图 §5）直接打死，所以列形状必须与生产保持一致。
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS active_rules (
+                    rule_id          TEXT PRIMARY KEY,
+                    name             TEXT NOT NULL,
+                    description      TEXT NOT NULL DEFAULT '',
+                    condition_json   TEXT NOT NULL DEFAULT '{}',
+                    action_json      TEXT NOT NULL DEFAULT '{}',
+                    enabled          INTEGER NOT NULL DEFAULT 1,
+                    cooldown_seconds INTEGER NOT NULL DEFAULT 300,
+                    created_at       TEXT NOT NULL,
+                    updated_at       TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS rule_trigger_history (
+                    trigger_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_id      TEXT NOT NULL,
+                    event_json   TEXT NOT NULL DEFAULT '{}',
+                    action_json  TEXT NOT NULL DEFAULT '{}',
+                    triggered_at TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rules_enabled "
+                "ON active_rules(enabled)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rule_trigger_rule "
+                "ON rule_trigger_history(rule_id, triggered_at)"
+            )
+            # DCD R3 四红线的载体：来源/生效模式/证据数/生命周期时间戳 + 试运行与误报标记
+            _rule_cols = [
+                "rule_type TEXT NOT NULL DEFAULT 'static'",
+                "origin TEXT NOT NULL DEFAULT 'manual'",
+                "source_rule_id TEXT NOT NULL DEFAULT ''",
+                "mode TEXT NOT NULL DEFAULT 'live'",
+                "evidence_count INTEGER NOT NULL DEFAULT 0",
+                "promoted_at TEXT NOT NULL DEFAULT ''",
+                "activated_at TEXT NOT NULL DEFAULT ''",
+                "revoked_at TEXT NOT NULL DEFAULT ''",
+            ]
+            for _ddl in _rule_cols:
+                try:
+                    conn.execute(f"ALTER TABLE active_rules ADD COLUMN {_ddl}")
+                except Exception as _exc:
+                    if "duplicate column" not in str(_exc).lower():
+                        print(f"[Store] active_rules.{_ddl.split()[0]} 列迁移异常: {_exc}")
+            for _ddl in ("dry_run INTEGER NOT NULL DEFAULT 0",
+                         "false_positive INTEGER NOT NULL DEFAULT 0"):
+                try:
+                    conn.execute(f"ALTER TABLE rule_trigger_history ADD COLUMN {_ddl}")
+                except Exception as _exc:
+                    if "duplicate column" not in str(_exc).lower():
+                        print(f"[Store] rule_trigger_history.{_ddl.split()[0]} 列迁移异常: {_exc}")
+            # 撤销要能定位"这条规则产生过哪些推断"
+            try:
+                conn.execute(
+                    "ALTER TABLE detected_activities ADD COLUMN source_rule_id TEXT NOT NULL DEFAULT ''"
+                )
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] detected_activities.source_rule_id 列迁移异常: {_exc}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_detected_source_rule "
+                "ON detected_activities(source_rule_id)"
+            )
+            # 红线"审计"：机器建议 → 人工确认 → 生效 → 转正/撤销 全链路留痕
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS rule_lifecycle_audit (
+                    audit_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_id        TEXT NOT NULL,
+                    source_rule_id TEXT NOT NULL DEFAULT '',
+                    action         TEXT NOT NULL,
+                    actor          TEXT NOT NULL DEFAULT '',
+                    from_state     TEXT NOT NULL DEFAULT '',
+                    to_state       TEXT NOT NULL DEFAULT '',
+                    reason         TEXT NOT NULL DEFAULT '',
+                    detail_json    TEXT NOT NULL DEFAULT '{}',
+                    created_at     TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_rule "
+                "ON rule_lifecycle_audit(rule_id, created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_src "
+                "ON rule_lifecycle_audit(source_rule_id)"
+            )
             # vMA-1.2.2 bug 上报通道：agent 使用 MCP 时发现 bug 记录于此
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS bug_reports (
@@ -2344,8 +2438,27 @@ class Store:
             out.append(d)
         return out
 
+    def get_candidate_rule(self, rule_id: str) -> dict | None:
+        """取一条候选规则（解析 steps/evidence），供生效通道做门槛判定。"""
+        conn = self.connect()
+        row = conn.execute(
+            "SELECT * FROM candidate_rules WHERE rule_id=?", (rule_id,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["steps"] = json.loads(d.get("steps_json") or "[]")
+        except Exception:
+            d["steps"] = []
+        try:
+            d["evidence"] = json.loads(d.get("evidence_json") or "[]")
+        except Exception:
+            d["evidence"] = []
+        return d
+
     def set_candidate_rule_status(self, rule_id: str, status: str) -> bool:
-        """更新候选规则状态（staging | accepted | rejected），并同步 user_confirmed 红线位。
+        """更新候选规则状态（staging | accepted | rejected | promoted），并同步 user_confirmed 红线位。
 
         词表只有一套：HTTP 与 MCP 都写 ``accepted`` 表示"人已确认"。历史上 MCP
         写过 ``confirmed``，导致该状态既不进 WebUI 的 accepted 列表、又不被任何读方识别。
@@ -2354,7 +2467,7 @@ class Store:
         with self._lock:
             cur = conn.execute(
                 "UPDATE candidate_rules SET status=?, user_confirmed=?, updated_at=? WHERE rule_id=?",
-                (status, 1 if status == CANDIDATE_ACCEPTED else 0,
+                (status, 1 if status in (CANDIDATE_ACCEPTED, CANDIDATE_PROMOTED) else 0,
                  now_local(self.tz_offset_hours).isoformat(sep="T"), rule_id),
             )
             conn.commit()
@@ -4360,19 +4473,133 @@ class Store:
             conn.executemany(
                 """INSERT OR REPLACE INTO detected_activities
                    (activity_id, day, activity, confidence, evidence, room, session_id, created_at,
-                    entities_json, events_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    entities_json, events_json, source_rule_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         r.get("activity_id"), r.get("day"), r.get("activity"),
                         r.get("confidence"), json.dumps(r.get("evidence"), ensure_ascii=False),
                         r.get("room"), r.get("session_id", ""), r.get("created_at", ""),
                         r.get("entities_json", "[]"), r.get("events_json", "[]"),
+                        r.get("source_rule_id", ""),
                     )
                     for r in rows
                 ],
             )
             conn.commit()
+
+    # ── 规则生命周期（DCD R3 四红线：证据门槛 / 观察期 / 可回滚 / 审计）──────
+
+    def log_rule_lifecycle(self, rule_id: str, action: str, *,
+                           source_rule_id: str = "", actor: str = "",
+                           from_state: str = "", to_state: str = "",
+                           reason: str = "", detail: dict | None = None) -> dict:
+        """写入一条"机器建议 → 人工确认 → 生效 → 转正/撤销"审计记录。"""
+        conn = self.connect()
+        now = now_local(self.tz_offset_hours).isoformat(sep="T")
+        with self._lock:
+            cur = conn.execute(
+                """INSERT INTO rule_lifecycle_audit
+                   (rule_id, source_rule_id, action, actor, from_state, to_state,
+                    reason, detail_json, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (rule_id, source_rule_id, action, actor, from_state, to_state,
+                 self.sanitize_feedback_text(reason),
+                 json.dumps(detail or {}, ensure_ascii=False), now),
+            )
+            conn.commit()
+            return {"audit_id": cur.lastrowid, "created_at": now}
+
+    def set_rule_mode(self, rule_id: str, mode: str, *,
+                      enabled: bool | None = None, revoked: bool = False) -> bool:
+        """切换规则生效模式（dry_run | live | revoked）。
+
+        只由生效通道调用：HTTP/MCP 的 update_rule 白名单里没有 ``mode``，
+        否则一次 PUT 就能跳过观察期（红线"观察期"会被绕过）。
+        """
+        conn = self.connect()
+        sets = ["mode = ?", "updated_at = ?"]
+        args: list = [mode, now_local(self.tz_offset_hours).isoformat(sep="T")]
+        if enabled is not None:
+            sets.append("enabled = ?")
+            args.append(1 if enabled else 0)
+        if revoked:
+            sets.append("revoked_at = ?")
+            args.append(now_local(self.tz_offset_hours).isoformat(sep="T"))
+        args.append(rule_id)
+        with self._lock:
+            cur = conn.execute(
+                f"UPDATE active_rules SET {', '.join(sets)} WHERE rule_id = ?", args)
+            conn.commit()
+            return bool(cur.rowcount)
+
+    def list_rule_lifecycle(self, rule_id: str = "", limit: int = 100) -> list[dict]:
+        """列出规则生命周期审计（默认全局最近 N 条）。"""
+        conn = self.connect()
+        sql = "SELECT * FROM rule_lifecycle_audit"
+        args: list = []
+        if rule_id:
+            sql += " WHERE rule_id = ?"
+            args.append(rule_id)
+        sql += " ORDER BY audit_id DESC LIMIT ?"
+        args.append(int(limit))
+        rows = conn.execute(sql, args).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["detail"] = json.loads(d.pop("detail_json") or "{}")
+            except Exception:
+                d["detail"] = {}
+                d.pop("detail_json", None)
+            out.append(d)
+        return out
+
+    def rollback_detected_activities(self, source_rule_id: str) -> int:
+        """删除某条规则产生的全部推断活动（红线"可回滚"），返回删除行数。"""
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                "DELETE FROM detected_activities WHERE source_rule_id = ?",
+                (source_rule_id,),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def list_rule_triggers(self, rule_id: str, *, since: str = "",
+                           mode: str | None = None) -> list[dict]:
+        """列出规则触发历史，可按时间下界与试运行标记过滤。"""
+        conn = self.connect()
+        sql = "SELECT * FROM rule_trigger_history WHERE rule_id = ?"
+        args: list = [rule_id]
+        if since:
+            sql += " AND triggered_at >= ?"
+            args.append(since)
+        if mode == "dry_run":
+            sql += " AND dry_run = 1"
+        elif mode == "live":
+            sql += " AND dry_run = 0"
+        sql += " ORDER BY trigger_id DESC LIMIT 500"
+        return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+    def mark_rule_trigger_false_positive(self, trigger_id: int) -> bool:
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                "UPDATE rule_trigger_history SET false_positive = 1 WHERE trigger_id = ?",
+                (int(trigger_id),),
+            )
+            conn.commit()
+            return bool(cur.rowcount)
+
+    def count_rule_false_positives(self, rule_id: str, *, since: str = "") -> int:
+        conn = self.connect()
+        sql = "SELECT COUNT(*) FROM rule_trigger_history WHERE rule_id = ? AND false_positive = 1"
+        args: list = [rule_id]
+        if since:
+            sql += " AND triggered_at >= ?"
+            args.append(since)
+        return int(conn.execute(sql, args).fetchone()[0])
 
     def get_detected_activity(self, activity_id: str):
         conn = self.connect()

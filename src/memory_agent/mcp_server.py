@@ -52,6 +52,7 @@ from .mcp_errors import (  # noqa: F401
     normalize_tool_result,
 )
 from .mcp_scopes import note_unknown, requires, scope_of
+from .rule_lifecycle import log_confirmation
 from .runtime import AppRuntime, get_runtime
 from .store import CANDIDATE_ACCEPTED, now_local
 from .tool_schema import build_catalog, TOOL_NAMES as TOOL_NAMES_FROM_SPEC, register_simple_tools  # noqa: F401
@@ -988,6 +989,13 @@ def get_mcp_stats(top_n: int = 20, sort_by: str = "calls") -> dict:
         "total_calls": total_calls, "total_errors": total_errors,
         "slow_threshold_ms": MCP_SLOW_MS, "tools": items,
     }
+
+
+def _rule_lifecycle(rt):
+    """DCD R3 生效通道（与 HTTP 侧同源：同一个引擎单例 + 通道单例）。"""
+    from .rule_engine import get_rule_engine
+    from .rule_lifecycle import get_rule_lifecycle
+    return get_rule_lifecycle(rt.store, get_rule_engine(rt.store, rt.alert_dispatcher))
 
 
 def _build_server():
@@ -2005,15 +2013,86 @@ def _build_server():
 
         confirmed=true: 落 status='accepted' 且 user_confirmed=1（与 WebUI 同一状态字）。
         confirmed=false: 落 status='rejected'，不再出现在建议列表。
-        本工具只改候选区状态，不写入规则引擎：引擎只读 active_rules 表，
-        候选区到引擎之间没有自动通道（DCD 裁定7红线）。
+        确认只是"人已同意"，**不等于已生效**：还需 promote_candidate_rule 过
+        证据门槛才会进引擎，且先进试运行（DCD R3 四红线）。本步会留审计记录。
         """
         rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
         status = CANDIDATE_ACCEPTED if confirmed else "rejected"
         rule = await asyncio.to_thread(rt.store.update_candidate_rule_status, rule_id, status)
         if not rule:
             return {"ok": False, "error": f"候选规则 {rule_id} 不存在"}
+        await asyncio.to_thread(
+            log_confirmation, rt.store, rule_id, status, _tok or _origin or "agent")
         return {"ok": True, "rule_id": rule_id, "status": status}
+
+    @mcp.tool()
+    async def list_rule_channel(candidate_id: str = "") -> dict:
+        """DCD R3 生效通道全景（只读）。
+
+        candidate_id 非空时只返回该候选的门槛判据（eligibility 预演）；
+        否则返回 accepted 候选的晋升预演清单 + 试运行/已转正/已撤销规则与观察读数。
+        判据：accepted + user_confirmed + ≥MA_RULE_MIN_EVIDENCE 个独立证据日 + 事件类型在引擎实时 feed 词表内。
+        """
+        rt = get_runtime()
+        lc = _rule_lifecycle(rt)
+        if candidate_id:
+            return await asyncio.to_thread(lc.eligibility, candidate_id)
+        return await asyncio.to_thread(lc.channel_status)
+
+    @mcp.tool()
+    async def promote_candidate_rule(rule_id: str, reason: str = "") -> dict:
+        """把一条 accepted 候选规则晋升进引擎（DCD R3）。
+
+        必须先过证据门槛，否则拒绝并返回 blockers；晋升成功的规则一律
+        ``mode='dry_run'``（只记录不触发），观察期满再 advance_rule_to_live 转正。
+        """
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        return await asyncio.to_thread(
+            _rule_lifecycle(rt).promote, rule_id, _tok or _origin or "agent", reason)
+
+    @mcp.tool()
+    async def advance_rule_to_live(rule_id: str, reason: str = "") -> dict:
+        """试运行规则转正为 live（红线"观察期"）。
+
+        判据：观察满 MA_RULE_DRY_RUN_DAYS 天且期间零误报，否则拒绝并给出 blockers。
+        """
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        return await asyncio.to_thread(
+            _rule_lifecycle(rt).advance_to_live, rule_id, _tok or _origin or "agent", reason)
+
+    @mcp.tool()
+    async def revoke_active_rule(rule_id: str, reason: str = "",
+                                 rollback_inferences: bool = True) -> dict:
+        """撤销一条生效规则（红线"可回滚"）。
+
+        关闭规则（mode='revoked'、enabled=0）并删除它经 infer_activity 产生的
+        推断活动，回滚条数写入审计。
+        """
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        return await asyncio.to_thread(
+            _rule_lifecycle(rt).revoke, rule_id, _tok or _origin or "agent",
+            reason, rollback_inferences)
+
+    @mcp.tool()
+    async def flag_rule_false_positive(rule_id: str, trigger_id: int,
+                                       reason: str = "") -> dict:
+        """把一条规则触发记录判为误报（观察期的红判据，误报未清零不能转正）。"""
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        return await asyncio.to_thread(
+            _rule_lifecycle(rt).flag_false_positive, rule_id, trigger_id,
+            _tok or _origin or "agent", reason)
+
+    @mcp.tool()
+    async def list_rule_lifecycle_audit(rule_id: str = "", limit: int = 50) -> dict:
+        """列出规则生命周期审计（机器建议→人工确认→生效→转正/撤销全链路留痕）。"""
+        rt = get_runtime()
+        rows = await asyncio.to_thread(rt.store.list_rule_lifecycle, rule_id, limit)
+        return {"ok": True, "count": len(rows), "items": rows}
 
     @mcp.tool()
     async def report_bug(

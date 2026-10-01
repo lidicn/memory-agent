@@ -13,8 +13,10 @@ import json
 import logging
 import time
 from collections import defaultdict, deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
+
+from .store import now_local
 
 logger = logging.getLogger("memory_agent.rule_engine")
 
@@ -33,6 +35,12 @@ class ActiveRuleEngine:
         self._rules_cache: dict[str, dict] = {}
         # 索引是否需要重建
         self._index_dirty = True
+
+    def _now(self) -> datetime:
+        """家庭墙钟（naive）。事件 ts / store 时间戳同为墙钟口径，混用机器时区
+        会让冷却期、观察期与 time_range 判定整体偏移（BUG-TZ1 同类缺陷）。"""
+        return now_local(getattr(self.store, "tz_offset_hours", 8.0))
+
 
     # ── 倒排索引 ──────────────────────────────────────────────────────
 
@@ -193,19 +201,20 @@ class ActiveRuleEngine:
         }
         """
         conn = self.store.connect()
-        # 查询最近 N 天的触发历史
-        since = datetime.now().timestamp() - days * 86400
+        # 查询最近 N 天的触发历史（triggered_at 是墙钟 ISO 串，按字典序即可比较）
+        since = (self._now() - timedelta(days=days)).isoformat(sep="T")
         rows = conn.execute(
             """
             SELECT * FROM rule_trigger_history
             WHERE rule_id = ? AND triggered_at >= ?
             """,
-            (rule_id, datetime.fromtimestamp(since).isoformat())
+            (rule_id, since)
         ).fetchall()
 
         trigger_count = len(rows)
-        # TODO: 从触发历史中提取误触发和漏触发
-        false_positive = 0
+        false_positive = sum(1 for r in rows if r["false_positive"]) if rows else 0
+        dry_run_count = sum(1 for r in rows if r["dry_run"]) if rows else 0
+        # 漏触发需要负样本来源，目前仍无人工标注入口，保持 0（不虚构召回率）
         false_negative = 0
         precision = round((trigger_count - false_positive) / trigger_count, 4) if trigger_count > 0 else 1.0
         recall = 1.0  # 暂时设为 1.0
@@ -216,6 +225,7 @@ class ActiveRuleEngine:
             "trigger_count": trigger_count,
             "false_positive": false_positive,
             "false_negative": false_negative,
+            "dry_run_count": dry_run_count,
             "precision": precision,
             "recall": recall,
             "effect": "good" if precision >= 0.8 else ("tune" if precision >= 0.5 else "review")
@@ -259,24 +269,29 @@ class ActiveRuleEngine:
         enabled: bool = True,
         cooldown_seconds: int = 300,
         rule_type: str = "static",
+        origin: str = "manual",
+        source_rule_id: str = "",
+        mode: str = "live",
+        evidence_count: int = 0,
     ) -> dict:
         """添加规则。
 
         rule_type: static（确定性，无 VLM 快路径）/ dynamic（需 VLM 语义理解）
+        origin/ source_rule_id/ mode/ evidence_count 是 DCD R3 生效通道的载体：
+        人工建的规则默认 ``manual`` + ``live``，候选晋升走 ``candidate_promoted``
+        + ``dry_run``（观察期内只记录不触发）。
         """
         conn = self.store.connect()
-        rule_id = f"rule_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        rule_id = f"rule_{self._now().strftime('%Y%m%d%H%M%S%f')}"
+        now = self._now().isoformat(sep="T")
         try:
-            # 先尝试加列（如果不存在）
-            try:
-                conn.execute("ALTER TABLE active_rules ADD COLUMN rule_type TEXT NOT NULL DEFAULT 'static'")
-            except Exception:
-                pass  # 列已存在
             conn.execute(
                 """
                 INSERT INTO active_rules
-                (rule_id, name, description, condition_json, action_json, enabled, cooldown_seconds, rule_type, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (rule_id, name, description, condition_json, action_json, enabled,
+                 cooldown_seconds, rule_type, origin, source_rule_id, mode,
+                 evidence_count, promoted_at, activated_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rule_id,
@@ -287,13 +302,19 @@ class ActiveRuleEngine:
                     1 if enabled else 0,
                     cooldown_seconds,
                     rule_type,
-                    datetime.now().isoformat(),
-                    datetime.now().isoformat(),
+                    origin,
+                    source_rule_id,
+                    mode,
+                    int(evidence_count or 0),
+                    now if origin == "candidate_promoted" else "",
+                    now,
+                    now,
+                    now,
                 ),
             )
             conn.commit()
             self._index_dirty = True  # 标记索引为脏
-            return {"ok": True, "rule_id": rule_id}
+            return {"ok": True, "rule_id": rule_id, "mode": mode}
         except Exception as exc:
             logger.error(f"添加规则失败: {exc}")
             return {"ok": False, "error": str(exc)}
@@ -351,7 +372,7 @@ class ActiveRuleEngine:
         if not updates:
             return {"ok": False, "error": "无更新字段"}
         updates.append("updated_at = ?")
-        params.append(datetime.now().isoformat())
+        params.append(self._now().isoformat(sep="T"))
         params.append(rule_id)
         try:
             conn.execute(
@@ -579,8 +600,8 @@ class ActiveRuleEngine:
             # 格式："19:00-22:00"
             if "-" in time_range:
                 start_str, end_str = time_range.split("-")
-                # 获取当前时间
-                now = datetime.now()
+                # 获取当前家庭墙钟时间
+                now = self._now()
                 current_minutes = now.hour * 60 + now.minute
                 # 解析开始时间
                 start_h, start_m = map(int, start_str.split(":"))
@@ -615,9 +636,22 @@ class ActiveRuleEngine:
     # ── 执行动作 ──────────────────────────────────────────────────────
 
     def execute_action(self, rule: dict, event: dict) -> dict:
-        """执行规则动作。"""
+        """执行规则动作。
+
+        DCD R3 观察期红线：``mode == 'dry_run'`` 的规则照常匹配并记录触发历史
+        （带 ``dry_run=1``），但**不派发任何副作用**。误报在试运行期被发现
+        时不会真的吵到家里人。
+        """
         action = rule.get("action", {})
         action_type = action.get("type", "log")
+        dry_run = str(rule.get("mode") or "live") == "dry_run"
+        if dry_run:
+            self._log_trigger(rule["rule_id"], event, {**action, "dispatched": False},
+                              dry_run=True)
+            logger.info(f"[RuleDryRun] 试运行命中（未派发）: {rule.get('name')} "
+                        f"/ {action_type} / 事件 {event.get('kind')}")
+            return {"ok": True, "dry_run": True, "dispatched": False,
+                    "action_type": action_type}
         try:
             if action_type == "alert":
                 return self._action_alert(rule, event, action)
@@ -631,12 +665,37 @@ class ActiveRuleEngine:
                 return self._action_light(rule, event, action)
             elif action_type == "camera":
                 return self._action_camera(rule, event, action)
+            elif action_type == "infer_activity":
+                return self._action_infer_activity(rule, event, action)
             else:
                 logger.warning(f"未知动作类型: {action_type}")
                 return {"ok": False, "error": f"未知动作类型: {action_type}"}
         except Exception as exc:
             logger.error(f"执行动作失败: {exc}")
             return {"ok": False, "error": str(exc)}
+
+    def _action_infer_activity(self, rule: dict, event: dict, action: dict) -> dict:
+        """落地一条规则推断的活动（带 source_rule_id，供撤销时回滚）。"""
+        activity = str(action.get("activity") or rule.get("name") or "").strip()
+        if not activity:
+            return {"ok": False, "error": "infer_activity 缺少 activity"}
+        day = str(event.get("ts") or event.get("server_ts") or "")[:10] \
+            or self._now().date().isoformat()
+        rule_id = rule["rule_id"]
+        row = {
+            "activity_id": f"rule:{rule_id}:{day}:{activity}",
+            "day": day,
+            "activity": activity,
+            "confidence": float(action.get("confidence") or 0.6),
+            "evidence": [f"rule:{rule_id}", str(event.get("entity_id") or event.get("kind") or "")],
+            "room": str(event.get("room") or action.get("room") or ""),
+            "session_id": str(event.get("session_id") or ""),
+            "created_at": self._now().isoformat(sep="T"),
+            "source_rule_id": rule_id,
+        }
+        self.store.upsert_detected_activities([row])
+        self._log_trigger(rule_id, event, action)
+        return {"ok": True, "activity_id": row["activity_id"], "day": day}
 
     def _action_alert(self, rule: dict, event: dict, action: dict) -> dict:
         """推送告警动作。"""
@@ -691,21 +750,23 @@ class ActiveRuleEngine:
         self._log_trigger(rule["rule_id"], event, action)
         return {"ok": True, "device": device, "action": cam_action}
 
-    def _log_trigger(self, rule_id: str, event: dict, action: dict) -> None:
-        """记录规则触发历史。"""
+    def _log_trigger(self, rule_id: str, event: dict, action: dict,
+                    dry_run: bool = False) -> None:
+        """记录规则触发历史（试运行命中带 dry_run=1，观察期判据靠这一位）。"""
         try:
             conn = self.store.connect()
             conn.execute(
                 """
                 INSERT INTO rule_trigger_history
-                (rule_id, event_json, action_json, triggered_at)
-                VALUES (?, ?, ?, ?)
+                (rule_id, event_json, action_json, triggered_at, dry_run)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     rule_id,
                     json.dumps(event, ensure_ascii=False),
                     json.dumps(action, ensure_ascii=False),
-                    datetime.now().isoformat(),
+                    self._now().isoformat(sep="T"),
+                    1 if dry_run else 0,
                 ),
             )
             conn.commit()
