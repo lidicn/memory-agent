@@ -3,9 +3,9 @@
 当前 ``activity_inference.py`` 用「手写 n-gram + 众数小时」判定活动（启发式）。本模块用
 统计方法（HMM）从稀疏标签序列推断隐藏活动状态，天然处理不确定与部分观测。
 
-设计：默认用**内置纯 Python 多类别 HMM（监督式）**，可离线测试、无第三方依赖；若环境
-装了 ``hmmlearn``，``fit``/``infer`` 会切换其实现（见 ``_backend``）。这样 P1 spike 在
-任何环境都能跑通对照实验，真实库仅在安装后生效。
+设计：**始终使用内置纯 Python 多类别 HMM（监督式）**，可离线测试、无第三方依赖。
+``_backend`` 只报告环境里是否**存在** ``hmmlearn``，`fit`/`infer` 并没有接它的实现——
+把它当"后端已切换"来读会得出错误结论。真要接入需要先补一条 hmmlearn 路径与对照测试。
 """
 from __future__ import annotations
 
