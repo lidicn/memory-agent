@@ -15,7 +15,6 @@ from typing import Any, Mapping, Sequence
 
 from learning_models import (
     DEFAULT_VALENCE,
-    EPS,
     FeedbackKind,
     FeedbackSignal,
     ReasonCode,

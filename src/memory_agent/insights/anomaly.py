@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from .models import (
     Anomaly, AnomalyType, EntityInfo, EventRecord, InsightConfig, Page,
-    Session, Severity, TimeRange, day_key, fmt_ts,
+    Session, Severity, TimeRange, fmt_ts,
 )
 from .parser.entity import EntityResolver, normalize_state
 

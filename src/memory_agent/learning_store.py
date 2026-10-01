@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 from learning_models import FeedbackKind, FeedbackSignal, ReasonCode, SubjectType
 from learning_optimizer import ParamAdjustment

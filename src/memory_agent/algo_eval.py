@@ -5,8 +5,6 @@
 """
 from __future__ import annotations
 
-from typing import Any
-
 
 def eval_pm4py(sequences: list[list[str]]) -> dict:
     """用 pm4py 从事件序列挖掘过程模型 + 一致性检验（异常=偏离过程）。

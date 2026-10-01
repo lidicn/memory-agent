@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import statistics
-from typing import Any
 
 
 def compute_return_time_baseline(

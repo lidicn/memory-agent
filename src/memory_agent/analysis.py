@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 from .store import TELEMETRY_DOMAINS, Store, now_local
 
@@ -117,7 +117,7 @@ class AnalysisService:
         """把画像渲染为紧凑文本，比直接塞 JSON 更省 token 且更易读。"""
         lines: list[str] = []
         rng = digest["range"]
-        lines.append(f"# 行为数据画像")
+        lines.append("# 行为数据画像")
         lines.append(
             f"时间范围: {rng['start']} ~ {rng['end']}｜"
             f"事件总量: {digest['total_events']}｜"

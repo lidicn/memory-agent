@@ -19,7 +19,6 @@ from learning_models import (
     SUGGESTION,
     SubjectType,
     WeakLink,
-    negative_rate,
     signal_weight,
     weighted_sums,
 )

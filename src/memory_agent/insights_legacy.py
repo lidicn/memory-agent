@@ -39,11 +39,9 @@ from __future__ import annotations
 # ─────────────────────────────────────────────────
 
 
-import copy
 import json
 import re
 import statistics
-import time
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Optional
@@ -59,7 +57,6 @@ NOISE_RATIO_CAP = 0.6
 
 #: 设备类别 → HA domain 集合。让调用方能用「空调 / 灯 / 媒体」这类人话过滤。
 # Phase 3 迁移：CATEGORY_DOMAINS 和 KEYWORD_DOMAINS 已迁移到新版 insights.utils。
-from .insights.utils import CATEGORY_DOMAINS
 from .insights.utils import KEYWORD_DOMAINS
 #: 视为「关闭 / 不可用」的状态值。其余一律视为「开启」。
 #: climate 的 ``heat`` / ``cool``、media_player 的 ``playing`` 都会被正确判为开启。
@@ -68,9 +65,6 @@ from .insights.utils import OFF_STATES
 
 # 中文环境下常见的「关闭/开启」状态词（门窗传感器、开关等可能上报中文状态）
 # Phase 3 迁移：_CN_OFF_STATES 和 _CN_ON_STATES 已迁移到新版 insights.utils。
-from .insights.utils import CN_OFF_STATES as _CN_OFF_STATES
-from .insights.utils import CN_ON_STATES as _CN_ON_STATES
-
 
 # Phase 3 迁移：_state_is_off 和 _state_is_on 已迁移到新版 insights.utils。
 from .insights.utils import is_off_state as _state_is_off
@@ -83,12 +77,9 @@ from .insights.utils import DEFAULT_DEBOUNCE_SECONDS
 #: 否则一律按「精确到某个 area」处理 —— 这是「房间」既是通用名词
 #: 又是真实区域名时最关键的一条判据。
 # Phase 3 迁移：ROOM_AGGREGATE_WORDS 和 GENERIC_ROOM_WORDS 已迁移到新版 insights.utils。
-from .insights.utils import ROOM_AGGREGATE_WORDS
-from .insights.utils import GENERIC_ROOM_WORDS
 
 
 # Phase 3 迁移：_norm 已迁移到新版 insights.utils。
-from .insights.utils import normalize_text as _norm
 
 
 # Phase 3 迁移：_tokens 和 fmt_duration 已迁移到新版 insights.utils。

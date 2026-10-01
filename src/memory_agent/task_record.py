@@ -70,7 +70,6 @@ def upsert_task_record(
 
 def archive_daily_records(store: Any, task_id: str, day: str) -> dict:
     """日归档：把某天的记录汇总成周/月归档。"""
-    import json
     conn = store.connect()
     with store._lock:
         rows = conn.execute(

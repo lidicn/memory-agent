@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, List, Mapping, Optional, Sequence
 
 from .models import InsightConfig
 
