@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 部署 main 上相对已部署基线的变更文件到 NAS volume mount，并重启容器。
 # 用法：
-#   bash scripts/deploy_nas.sh                # 自动 diff HEAD 与 NAS_DEPLOYED_REF（默认 a879dd3），scp src/ tests/ benchmarks/ 内变更
+#   bash scripts/deploy_nas.sh                # 自动 diff HEAD 与基线（默认 a879dd3）
 #   bash scripts/deploy_nas.sh <ref>          # 指定基线 ref
 #   bash scripts/deploy_nas.sh --no-restart   # 只 scp 不重启
+# 注意：按目录分组推送并保留相对路径（嵌套子目录不会被平铺到仓库根）。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,42 +25,68 @@ for arg in "$@"; do
     esac
 done
 
+SSH_OPTS=(-i "$KEY" -o StrictHostKeyChecking=no)
+SCP_OPTS=(-i "$KEY" -o StrictHostKeyChecking=no -q)
+
 # 收集变更/新增文件（仅可部署目录）
-mapfile -t FILES < <(git diff --name-only "$BASE"..HEAD -- src/ tests/ benchmarks/ .gates/ | grep -E '\.(py|txt|sh)$' || true)
+mapfile -t FILES < <(git diff --name-only "$BASE"...HEAD -- src/ tests/ benchmarks/ .gates/ | grep -E '\.(py|txt|sh|toml|sql|json|js|css|html)$' || true)
 if [ "${#FILES[@]}" -eq 0 ]; then
-    echo "[deploy] 相对 $BASE 无源码变更，跳过 scp"
+    echo "[deploy] 相对 $BASE 无可部署变更，跳过 scp"
+    exit 0
 fi
 
-SRC_FILES=(); TEST_FILES=(); BENCH_FILES=(); GATE_FILES=()
+# bucket -> 仓库内前缀 : NAS 内目标根
+# src/memory_agent/** -> $NAS_SRC/src/memory_agent/**
+declare -A BUCKET_ROOT=(
+    [src]="$NAS_SRC/src"
+    [tests]="$NAS_SRC/tests"
+    [benchmarks]="$NAS_SRC/benchmarks"
+    [.gates]="$NAS_SRC/.gates"
+)
+
+# 按「目标目录」分组，保留相对路径
+declare -A GROUP  # dest_dir -> 空格分隔的本地相对路径
 for f in "${FILES[@]}"; do
-    case "$f" in
-        src/*)        SRC_FILES+=("$f") ;;
-        tests/*)      TEST_FILES+=("$f") ;;
-        benchmarks/*) BENCH_FILES+=("$f") ;;
-        .gates/*)     GATE_FILES+=("$f") ;;
-    esac
+    top="${f%%/*}"
+    root="${BUCKET_ROOT[$top]:-}"
+    if [ -z "$root" ]; then
+        echo "[deploy] 跳过非部署目录: $f"; continue
+    fi
+    rel="${f#*/}"                       # 去掉 bucket 顶层目录名
+    dir="$(dirname "$rel")"
+    dest="$root"
+    [ "$dir" != "." ] && dest="$root/$dir"
+    GROUP["$dest"]+="$f"$'\n'
 done
 
-push() {  # push <目标目录> <文件...>
-    local dest="$1"; shift
-    [ $# -eq 0 ] && return 0
-    "$SCP" -i "$KEY" -o StrictHostKeyChecking=no -q "$@" "$NAS:$dest/"
-    echo "[deploy] scp $# 个文件 -> $dest"
-}
-
-[ "${#SRC_FILES[@]}" -gt 0 ]  && push "$NAS_SRC/src/memory_agent" "${SRC_FILES[@]}"
-[ "${#TEST_FILES[@]}" -gt 0 ] && push "$NAS_SRC/tests" "${TEST_FILES[@]}"
-[ "${#BENCH_FILES[@]}" -gt 0 ] && push "$NAS_SRC/benchmarks" "${BENCH_FILES[@]}"
-[ "${#GATE_FILES[@]}" -gt 0 ] && push "$NAS_SRC/.gates" "${GATE_FILES[@]}"
-
-# 逐个确认到位（抽样 grep 文件名存在即可）
-for f in "${SRC_FILES[@]}"; do
-    base="$(basename "$f")"
-    "$SSH" -i "$KEY" -o StrictHostKeyChecking=no "$NAS" "test -f $NAS_SRC/src/memory_agent/$base" || { echo "[deploy] ❌ NAS 未见 $base"; exit 1; }
+# 校验：bucket 子集内的文件必须真实存在于工作树（diff 可能含已删除文件）
+PUSHED=()
+for dest in "${!GROUP[@]}"; do
+    mapfile -t candidates < <(printf '%s' "${GROUP[$dest]}" | sed '/^$/d')
+    local_files=()
+    for f in "${candidates[@]}"; do
+        [ -f "$f" ] && local_files+=("$f")
+    done
+    [ "${#local_files[@]}" -eq 0 ] && continue
+    "$SSH" "${SSH_OPTS[@]}" "$NAS" "mkdir -p '$dest'"
+    "$SCP" "${SCP_OPTS[@]}" "${local_files[@]}" "$NAS:$dest/"
+    echo "[deploy] scp ${#local_files[@]} 个文件 -> $dest"
+    for f in "${local_files[@]}"; do PUSHED+=("$f"); done
 done
-echo "[deploy] 文件确认到位"
+
+# 逐个确认到位（按完整相对路径校验，不是 basename）
+missing=0
+for f in "${PUSHED[@]}"; do
+    top="${f%%/*}"; rel="${f#*/}"
+    remote="${BUCKET_ROOT[$top]}/$rel"
+    if ! "$SSH" "${SSH_OPTS[@]}" "$NAS" "test -f '$remote'"; then
+        echo "[deploy] ❌ NAS 未见 $remote"; missing=1
+    fi
+done
+[ "$missing" -eq 0 ] || exit 1
+echo "[deploy] ${#PUSHED[@]} 个文件确认到位（路径保留）"
 
 if [ "$RESTART" = "1" ]; then
-    "$SSH" -i "$KEY" -o StrictHostKeyChecking=no "$NAS" "docker restart memory-agent"
+    "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker restart memory-agent"
     echo "[deploy] 容器已重启；chroma 冷启动约需 12 分钟后再做健康检查"
 fi
