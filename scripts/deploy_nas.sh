@@ -31,6 +31,20 @@ done
 SSH_OPTS=(-i "$KEY" -o StrictHostKeyChecking=no)
 SCP_OPTS=(-i "$KEY" -o StrictHostKeyChecking=no -q)
 
+# 两条分支都以 HEAD 为源：--full 走 git archive HEAD，增量走 git diff BASE...HEAD。
+# 未提交的工作区改动不会有任何一条路径带上——实测过：改完 src 直接 --full，
+# NAS 上落的是 HEAD 版本，本地 md5 与 NAS md5 不一致却打印"全量同步完成"。
+DIRTY="$(git status --porcelain -- src tests benchmarks .gates)"
+if [ -n "$DIRTY" ]; then
+    echo "[deploy] ✗ 工作区有未提交的可部署改动，git archive/diff 只看 HEAD，不会带上："
+    echo "$DIRTY" | sed 's/^/[deploy]   /'
+    echo "[deploy] 先 commit 再部署；确认就是要只发 HEAD 时 MA_ALLOW_DIRTY=1 重来。"
+    if [ -z "${MA_ALLOW_DIRTY:-}" ]; then
+        exit 1
+    fi
+    echo "[deploy] MA_ALLOW_DIRTY=1，继续按 HEAD 部署（未提交改动留在工作区）"
+fi
+
 if [ "$FULL" = "1" ]; then
     # 全量：git archive 的包内路径就是 src/ tests/ benchmarks/ .gates/，
     # 直接解到 NAS_SRC 根，路径天然对齐，不需要 basename 猜测。
