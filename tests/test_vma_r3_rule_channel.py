@@ -336,13 +336,18 @@ def test_channel_status_buckets_and_stats_use_real_flags(store):
 
 
 def test_confirmation_is_audited(store):
-    """红线"审计"的人工确认环节：候选确认落 rule_lifecycle_audit。"""
+    """红线"审计"的人工确认环节：确认（HTTP/MCP 入口做的事）落 rule_lifecycle_audit。"""
     from memory_agent.rule_lifecycle import log_confirmation
     rid = _accepted_candidate(store, status="staging")
+    assert store.get_candidate_rule(rid)["user_confirmed"] == 0
+    store.set_candidate_rule_status(rid, "accepted")   # 状态字 + 红线位
     log_confirmation(store, rid, "accepted", actor="user")
     rows = store.list_rule_lifecycle(rid)
     assert rows[0]["action"] == "confirm" and rows[0]["actor"] == "user"
     assert store.get_candidate_rule(rid)["user_confirmed"] == 1
+    # log_confirmation 只留痕，不改状态（撤销/查询复用同一条链路时不能误写）
+    log_confirmation(store, rid, "rejected", actor="user")
+    assert store.get_candidate_rule(rid)["status"] == "accepted"
 
 
 # ── 6. 生产库形状兼容（迁移不破坏既有表） ─────────────────────────────────
