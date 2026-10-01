@@ -492,7 +492,10 @@ class AgentMemoryService:
     def list_negative_feedback(self, limit: int = 50) -> dict:
         """vMA-2.0 门取料：带问题文本的 👎 明细（已入库脱敏，姓名→成员N）。"""
         rows = self.store.list_negative_feedback(limit)
-        return {"ok": True, "count": len(rows), "items": rows}
+        # 取料口交给 vMA-2.0 门的每一行都必须能还原成 badcase（有 id、有当初的问题文本）
+        usable = all(str(r.get("memory_id") or "") and str(r.get("feedback_question") or "")
+                     for r in rows)
+        return {"ok": usable, "count": len(rows), "items": rows}
 
     def list_agent_memories(self, state: str = "all", source: str = "",
                              member_id: str = "") -> dict:

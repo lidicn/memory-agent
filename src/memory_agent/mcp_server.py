@@ -2092,7 +2092,10 @@ def _build_server():
         """列出规则生命周期审计（机器建议→人工确认→生效→转正/撤销全链路留痕）。"""
         rt = get_runtime()
         rows = await asyncio.to_thread(rt.store.list_rule_lifecycle, rule_id, limit)
-        return {"ok": True, "count": len(rows), "items": rows}
+        # 红线 4 的留痕要求：审计行必须带规则、动作和时间，缺任何一样都不算「取到了链路」
+        intact = all(str(r.get("rule_id") or "") and str(r.get("action") or "")
+                     and str(r.get("created_at") or "") for r in rows)
+        return {"ok": intact, "count": len(rows), "items": rows}
 
     @mcp.tool()
     async def report_bug(

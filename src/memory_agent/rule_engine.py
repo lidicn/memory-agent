@@ -285,7 +285,7 @@ class ActiveRuleEngine:
         rule_id = f"rule_{self._now().strftime('%Y%m%d%H%M%S%f')}"
         now = self._now().isoformat(sep="T")
         try:
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO active_rules
                 (rule_id, name, description, condition_json, action_json, enabled,
@@ -313,8 +313,10 @@ class ActiveRuleEngine:
                 ),
             )
             conn.commit()
-            self._index_dirty = True  # 标记索引为脏
-            return {"ok": True, "rule_id": rule_id, "mode": mode}
+            inserted = cur.rowcount == 1
+            if inserted:
+                self._index_dirty = True  # 标记索引为脏
+            return {"ok": inserted, "rule_id": rule_id if inserted else "", "mode": mode}
         except Exception as exc:
             logger.error(f"添加规则失败: {exc}")
             return {"ok": False, "error": str(exc)}
@@ -646,11 +648,11 @@ class ActiveRuleEngine:
         action_type = action.get("type", "log")
         dry_run = str(rule.get("mode") or "live") == "dry_run"
         if dry_run:
-            self._log_trigger(rule["rule_id"], event, {**action, "dispatched": False},
-                              dry_run=True)
+            logged = self._log_trigger(rule["rule_id"], event, {**action, "dispatched": False},
+                                       dry_run=True)
             logger.info(f"[RuleDryRun] 试运行命中（未派发）: {rule.get('name')} "
                         f"/ {action_type} / 事件 {event.get('kind')}")
-            return {"ok": True, "dry_run": True, "dispatched": False,
+            return {"ok": logged, "dry_run": True, "dispatched": False,
                     "action_type": action_type}
         try:
             if action_type == "alert":
@@ -694,8 +696,8 @@ class ActiveRuleEngine:
             "source_rule_id": rule_id,
         }
         self.store.upsert_detected_activities([row])
-        self._log_trigger(rule_id, event, action)
-        return {"ok": True, "activity_id": row["activity_id"], "day": day}
+        logged = self._log_trigger(rule_id, event, action)
+        return {"ok": logged, "activity_id": row["activity_id"], "day": day}
 
     def _action_alert(self, rule: dict, event: dict, action: dict) -> dict:
         """推送告警动作。"""
@@ -751,11 +753,14 @@ class ActiveRuleEngine:
         return {"ok": True, "device": device, "action": cam_action}
 
     def _log_trigger(self, rule_id: str, event: dict, action: dict,
-                    dry_run: bool = False) -> None:
-        """记录规则触发历史（试运行命中带 dry_run=1，观察期判据靠这一位）。"""
+                    dry_run: bool = False) -> bool:
+        """记录规则触发历史（试运行命中带 dry_run=1，观察期判据靠这一位）。
+
+        返回是否真的落库：观察期天数、误报计数都以这条行为准，写失败得让调用方知道。
+        """
         try:
             conn = self.store.connect()
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO rule_trigger_history
                 (rule_id, event_json, action_json, triggered_at, dry_run)
@@ -770,8 +775,10 @@ class ActiveRuleEngine:
                 ),
             )
             conn.commit()
+            return cur.rowcount == 1
         except Exception as exc:
             logger.error(f"记录规则触发历史失败: {exc}")
+            return False
 
 
 # 全局单例

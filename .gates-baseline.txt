@@ -24,7 +24,6 @@ src/memory_agent/agent_memory.py#swallow-and-claim-ok#AgentMemoryService.promote
 src/memory_agent/insights_legacy.py#swallow-and-claim-ok#InsightService.device_health
 src/memory_agent/insights_legacy.py#swallow-and-claim-ok#InsightService.plan_question
 src/memory_agent/mcp_server.py#swallow-and-claim-ok#_build_server.retrieve_agent_memories
-src/memory_agent/rule_engine.py#swallow-and-claim-ok#ActiveRuleEngine.add_rule
 src/memory_agent/signal_learning.py#swallow-and-claim-ok#SignalLearningService.suggest_rules_from_negative_feedback
 src/memory_agent/acp_server.py#except-pass-broad#_acp_kind
 src/memory_agent/activity_inference.py#except-pass-broad#ActivityInferenceService._tags_of
@@ -46,7 +45,6 @@ src/memory_agent/mqtt_bridge.py#except-pass-broad#MqttBridge.close
 src/memory_agent/mqtt_bridge.py#except-pass-broad#_default_client_factory
 src/memory_agent/patterns.py#except-pass-broad#PatternManager.match_pattern
 src/memory_agent/poller.py#except-pass-broad#CollectService.stop
-src/memory_agent/rule_engine.py#except-pass-broad#ActiveRuleEngine.add_rule
 src/memory_agent/signal_learning.py#except-pass-broad#SignalLearningService.suggest_rules_from_negative_feedback
 src/memory_agent/store.py#except-pass-broad#Store.close
 src/memory_agent/template_validate.py#except-pass-broad#_sim

@@ -166,7 +166,9 @@ class RuleLifecycle:
             blockers.append(
                 f"evidence_gate: 独立证据 {evidence_days} 天（口径 {evidence_basis}）< 门槛 {self.min_evidence}")
         return {
-            "ok": True,
+            # ok = 「通道真的给出了可匹配的触发子」。设备序列类候选（engine_feed_gap）
+            # 在这里 condition={}，于是 ok=False，缺口暴露在接口上而不是被 ok=True 掩盖。
+            "ok": bool(condition),
             "candidate_id": candidate_id,
             "name": cand.get("name") or "",
             "status": cand.get("status"),
@@ -214,7 +216,9 @@ class RuleLifecycle:
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error"), "gate": gate}
 
-        rule_id = res["rule_id"]
+        rule_id = res.get("rule_id") or ""
+        if not rule_id:
+            return {"ok": False, "error": "引擎未返回 rule_id，晋升未落库", "gate": gate}
         self.store.set_candidate_rule_status(candidate_id, CANDIDATE_PROMOTED)
         self.store.log_rule_lifecycle(
             rule_id, ACT_PROMOTE, source_rule_id=candidate_id, actor=actor,
@@ -226,7 +230,7 @@ class RuleLifecycle:
                     "dry_run_days": self.dry_run_days,
                     "note": "序列步骤未全部表达，仅首个事件类型作为触发子"})
         logger.info("[RuleLifecycle] 晋升 %s → %s（试运行）", candidate_id, rule_id)
-        return {"ok": True, "rule_id": rule_id, "mode": MODE_DRY_RUN,
+        return {"ok": bool(rule_id), "rule_id": rule_id, "mode": MODE_DRY_RUN,
                 "candidate_id": candidate_id, "gate": gate}
 
     # ── 红线 2：观察期满 + 零误报 → live ────────────────────────────────
@@ -243,7 +247,9 @@ class RuleLifecycle:
         triggers = self.store.list_rule_triggers(rule_id)
         dry_hits = sum(1 for t in triggers if t.get("dry_run"))
         return {
-            "ok": True,
+            # 观察期判据全部挂在这条时间轴上：时间戳解析不出来就没有可信读数，
+            # ok=False 会让 advance_to_live 直接退回（宁可挡住转正，不拿 observed_days=0 冒充证据）。
+            "ok": activated is not None,
             "rule_id": rule_id,
             "mode": rule.get("mode") or MODE_LIVE,
             "origin": rule.get("origin") or "manual",
@@ -264,7 +270,7 @@ class RuleLifecycle:
         if obs["mode"] == MODE_REVOKED:
             return {"ok": False, "error": "规则已撤销，不能直接转正", "observation": obs}
         if obs["mode"] == MODE_LIVE:
-            return {"ok": True, "rule_id": rule_id, "mode": MODE_LIVE,
+            return {"ok": bool(obs.get("ok")), "rule_id": rule_id, "mode": MODE_LIVE,
                     "already_live": True, "observation": obs}
         blockers = []
         if obs["observed_days"] < obs["required_days"]:
@@ -278,7 +284,8 @@ class RuleLifecycle:
                 reason=reason or "；".join(blockers), detail={"observation": obs})
             return {"ok": False, "error": "；".join(blockers), "blockers": blockers,
                     "observation": obs}
-        if not self.store.set_rule_mode(rule_id, MODE_LIVE):
+        moved = self.store.set_rule_mode(rule_id, MODE_LIVE)
+        if not moved:
             return {"ok": False, "error": "规则状态更新失败"}
         self.engine._index_dirty = True
         self.store.log_rule_lifecycle(
@@ -287,7 +294,7 @@ class RuleLifecycle:
             detail={"observation": obs})
         logger.info("[RuleLifecycle] %s 试运行转正（观察 %.2f 天，误报 0）",
                     rule_id, obs["observed_days"])
-        return {"ok": True, "rule_id": rule_id, "mode": MODE_LIVE, "observation": obs}
+        return {"ok": moved, "rule_id": rule_id, "mode": MODE_LIVE, "observation": obs}
 
     # ── 红线 3：撤销 + 回滚它产生的推断 ─────────────────────────────────
 
@@ -299,8 +306,9 @@ class RuleLifecycle:
         rolled_back = 0
         if rollback_inferences:
             rolled_back = self.store.rollback_detected_activities(rule_id)
-        if not self.store.set_rule_mode(
-                rule_id, MODE_REVOKED, enabled=False, revoked=True):
+        moved = self.store.set_rule_mode(
+            rule_id, MODE_REVOKED, enabled=False, revoked=True)
+        if not moved:
             return {"ok": False, "error": "规则状态更新失败"}
         self.engine._index_dirty = True
         self.store.log_rule_lifecycle(
@@ -310,19 +318,20 @@ class RuleLifecycle:
             detail={"rolled_back_inferences": rolled_back,
                     "rollback_inferences": rollback_inferences})
         logger.info("[RuleLifecycle] 撤销 %s，回滚推断 %d 条", rule_id, rolled_back)
-        return {"ok": True, "rule_id": rule_id, "mode": MODE_REVOKED,
+        return {"ok": moved, "rule_id": rule_id, "mode": MODE_REVOKED,
                 "rolled_back_inferences": rolled_back}
 
     # ── 红线 2 的输入：把试运行命中判为误报 ─────────────────────────────
 
     def flag_false_positive(self, rule_id: str, trigger_id: int,
                             actor: str = "user", reason: str = "") -> dict:
-        if not self.store.mark_rule_trigger_false_positive(trigger_id):
+        marked = self.store.mark_rule_trigger_false_positive(trigger_id)
+        if not marked:
             return {"ok": False, "error": f"触发记录 {trigger_id} 不存在"}
         self.store.log_rule_lifecycle(
             rule_id, ACT_FALSE_POSITIVE, actor=actor, to_state="false_positive",
             reason=reason, detail={"trigger_id": int(trigger_id)})
-        return {"ok": True, "rule_id": rule_id, "trigger_id": int(trigger_id)}
+        return {"ok": marked, "rule_id": rule_id, "trigger_id": int(trigger_id)}
 
     # ── 读侧：通道全景 ─────────────────────────────────────────────────
 
@@ -351,13 +360,19 @@ class RuleLifecycle:
         """通道全景：试运行中 / 已转正 / 已撤销的晋升规则 + 各自观察读数。"""
         buckets: dict[str, list[dict]] = {
             MODE_DRY_RUN: [], MODE_LIVE: [], MODE_REVOKED: []}
+        unreadable: list[str] = []
         for rule in self.engine.list_rules(enabled_only=False):
             if (rule.get("origin") or "manual") != "candidate_promoted":
                 continue
             mode = rule.get("mode") or MODE_LIVE
-            buckets.setdefault(mode, []).append(self.observation(rule["rule_id"]))
+            readout = self.observation(rule["rule_id"])
+            if not readout.get("ok"):
+                unreadable.append(rule["rule_id"])
+            buckets.setdefault(mode, []).append(readout)
         return {
-            "ok": True,
+            # 全景里任何一条晋升规则读不出观察数据都不算取到可信快照
+            "ok": not unreadable,
+            "unreadable_rules": unreadable,
             "min_evidence": self.min_evidence,
             "dry_run_days": self.dry_run_days,
             "promoted_rules": buckets,
