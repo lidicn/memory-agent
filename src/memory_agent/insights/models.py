@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Dict, Generic, Iterable, List, Optional, Tuple, TypeVar
 
 T = TypeVar("T")
 

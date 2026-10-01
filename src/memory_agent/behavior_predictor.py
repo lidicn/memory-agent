@@ -16,7 +16,6 @@ from __future__ import annotations
 import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any
 
 
 def predict_arrival_time(

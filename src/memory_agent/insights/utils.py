@@ -645,7 +645,7 @@ def diagnose_empty_result(
             }
         return {
             "reason": "no_event_in_window",
-            "message": f"实体有历史数据，但在当前时间窗口内没有状态变化。",
+            "message": "实体有历史数据，但在当前时间窗口内没有状态变化。",
             "last_seen": {e: seen.get(e, "") for e in entities[:20]},
             "next_step": "放大 days，或去掉 state 过滤条件",
         }
@@ -1040,72 +1040,6 @@ INACTIVE_STATES: frozenset[str] = frozenset({
     "off", "idle", "0", "unavailable", "unknown", "none", "closed",
     "standby", "not_home", "", "false",
 })
-
-
-
-def parse_attrs(raw) -> dict:
-    """解析事件的 attrs_json 字段，返回 dict。
-
-    从旧版 insights_legacy._parse_attrs 迁移而来。
-    """
-    if not raw:
-        return {}
-    if isinstance(raw, dict):
-        return raw
-    import json as _json
-    try:
-        val = _json.loads(raw)
-        return val if isinstance(val, dict) else {}
-    except (TypeError, ValueError):
-        return {}
-
-
-def as_float(v):
-    """安全转换为 float，失败返回 None。
-
-    从旧版 insights_legacy._as_float 迁移而来。
-    """
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
-
-
-def tokenize(text: str) -> list[str]:
-    """粗分词：中文按连续汉字块 + 英文按单词切。够用且零依赖。
-
-    从旧版 insights_legacy._tokens 迁移而来。
-    """
-    import re as _re
-    return [t for t in _re.split(r"[\s,，、_./|-]+", normalize_text(text)) if t]
-
-
-def fmt_duration(total_seconds: float) -> str:
-    """把秒数格式化为人类可读时长。
-
-    从旧版 insights_legacy.fmt_duration 迁移而来。
-    """
-    total = max(0, int(total_seconds))
-    d, rem = divmod(total, 86400)
-    h, rem = divmod(rem, 3600)
-    m, s = divmod(rem, 60)
-    if d:
-        return f"{d}天{h}小时{m}分"
-    if h:
-        return f"{h}小时{m}分"
-    if m:
-        return f"{m}分{s}秒"
-    return f"{s}秒"
-
-
-
-def normalize_text(text) -> str:
-    """文本归一化：转字符串、去空格、小写。
-
-    从旧版 insights_legacy._norm 迁移而来。
-    """
-    return str(text or "").strip().lower()
 
 
 

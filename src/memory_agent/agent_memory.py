@@ -15,9 +15,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-from .store import now_local, safe_json_loads
+from .store import safe_json_loads
 
 AGENT_COLLECTION = "agent_memory"
 AGENT_STATES = ("staging", "live", "revoked", "pending_review")

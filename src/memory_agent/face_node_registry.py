@@ -23,7 +23,6 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
 
 _HEARTBEAT_TTL_S = 120.0         # 心跳超时阈值：超过即视为离线并剔除（TV端默认60s心跳，留2倍余量）
 _NODE_WEIGHTS = {"phone": 100, "tv": 20, "default": 10}

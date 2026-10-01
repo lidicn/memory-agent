@@ -26,7 +26,6 @@ HA 的 ``entity_id`` 会因集成重登（小米 miot 退出重登）、双集�
 
 from __future__ import annotations
 
-import difflib
 import re
 import time
 from dataclasses import dataclass, field

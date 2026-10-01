@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .models import ActivityMatch, EventRecord, InsightConfig, TimeRange, day_key, fmt_ts
+from .models import ActivityMatch, EventRecord, InsightConfig, TimeRange, day_key
 from .parser.entity import EntityResolver
 from .parser.timeframe import split_days
 

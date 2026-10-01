@@ -26,7 +26,6 @@ from collections import Counter
 
 from .store import safe_json_loads
 from datetime import datetime
-from typing import Any
 
 
 def _tokens(s: str) -> set:

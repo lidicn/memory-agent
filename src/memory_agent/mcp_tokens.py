@@ -17,7 +17,7 @@ import secrets
 import threading
 from typing import Any
 
-from .mcp_scopes import ALL_SCOPES, DEFAULT_SCOPES, normalize
+from .mcp_scopes import DEFAULT_SCOPES, normalize
 
 _log = logging.getLogger("mcp.tokens")
 from .store import now_local

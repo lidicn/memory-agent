@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..models import DeviceCategory, EntityInfo, EventRecord, StateKind
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from .models import Insight, InsightConfig, fmt_ts
+from .models import Insight, InsightConfig
 
 __all__ = ["PersonaBuilder"]
 

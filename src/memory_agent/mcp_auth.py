@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 

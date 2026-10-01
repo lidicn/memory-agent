@@ -5,8 +5,6 @@
 """
 from __future__ import annotations
 
-from typing import Any
-
 
 def evaluate_splink(records: list[dict]) -> dict:
     """用 Splink 做概率记录链接，输出每个实体的匹配概率 + 不确定性。
