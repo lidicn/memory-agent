@@ -6,8 +6,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, List, Optional, Tuple
 
-from ..models import (HOUSE_TZ, SECONDS_PER_DAY, TimeRange, house_dt, house_now,
-                      house_ts)
+from ..models import (SECONDS_PER_DAY, TimeRange, house_dt, house_now, house_ts,
+                      house_tz)
 
 __all__ = [
     "parse_time", "as_ts", "parse_timeframe", "resolve_range",
@@ -86,7 +86,7 @@ def parse_time(value: Any) -> Optional[datetime]:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is not None:
-            return value.astimezone(HOUSE_TZ).replace(tzinfo=None, microsecond=0)
+            return value.astimezone(house_tz()).replace(tzinfo=None, microsecond=0)
         return value.replace(microsecond=0)
     if isinstance(value, (int, float)):
         return house_dt(float(value)).replace(microsecond=0)
@@ -104,7 +104,7 @@ def parse_time(value: Any) -> Optional[datetime]:
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
         # 带时区的输入先转家庭时区再去 tzinfo，之前直接丢弃偏移导致窗口偏移
         if dt.tzinfo is not None:
-            dt = dt.astimezone(HOUSE_TZ)
+            dt = dt.astimezone(house_tz())
         return dt.replace(tzinfo=None, microsecond=0)
     except ValueError:
         return None

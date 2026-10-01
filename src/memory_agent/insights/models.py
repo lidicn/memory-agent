@@ -23,7 +23,9 @@ T = TypeVar("T")
 __all__ = [
     "PAGE_DEFAULT_LIMIT", "SECONDS_PER_DAY", "MINUTES_PER_DAY",
     "now_ts", "fmt_ts", "day_key", "hour_of", "new_id", "serialize",
-    "HOUSE_TZ", "house_ts", "house_now", "house_dt",
+    "HOUSE_TZ", "HOUSE_TZ_FALLBACK_HOURS", "house_tz", "house_tz_label",
+    "set_house_tz_offset",
+    "house_ts", "house_now", "house_dt",
     "DeviceCategory", "AnomalyType", "Severity", "StateKind", "Intent",
     "EntityInfo", "EventRecord", "Session", "TimeRange", "Page",
     "Insight", "Anomaly", "ActivityMatch", "UsageStat", "QuestionPlan",
@@ -38,9 +40,47 @@ MINUTES_PER_DAY = 1440
 # --------------------------------------------------------------------------
 # 基础工具
 # --------------------------------------------------------------------------
-#: 生产数据是「深圳墙钟」的 naive ISO 字符串（与 repository._TZ 同一口径）。
-#: 容器常跑在 UTC，若用机器本地时区做 epoch<->墙钟换算，窗口会整体平移数小时。
-HOUSE_TZ = timezone(timedelta(hours=8))
+#: 家庭墙钟偏移的**唯一配置项**是 ``Config.tz_offset_hours``（env ``TZ_OFFSET_HOURS``），
+#: 由 ``config.get_config()`` 调 ``set_house_tz_offset()`` 注入本模块。
+#: 这里的 +8 只是 fallback：生产数据是「深圳墙钟」的 naive ISO 字符串，而容器常跑在
+#: UTC，若用机器本地时区做 epoch<->墙钟换算，窗口会整体平移数小时（BUG-TZ1）。
+HOUSE_TZ_FALLBACK_HOURS = 8.0
+HOUSE_TZ = timezone(timedelta(hours=HOUSE_TZ_FALLBACK_HOURS))
+
+
+def house_tz() -> timezone:
+    """当前家庭时区（由 Config 注入；未注入时为 ``HOUSE_TZ_FALLBACK_HOURS``）。"""
+    return HOUSE_TZ
+
+
+def set_house_tz_offset(hours: Any) -> timezone:
+    """把 ``Config.tz_offset_hours`` 灌进本模块——全仓墙钟口径的单点注入口。
+
+    返回生效的 tz；非法值不改变现状（宁可留在 fallback，也不要让一次配置写错
+    把整条时间轴打歪）。偏移超出真实时区范围（UTC-12 ~ UTC+14）同样按非法处理，
+    因为 ``TZ_OFFSET_HOURS=80`` 这类笔误换算不报错，却会让所有时间窗整体消失。
+    """
+    global HOUSE_TZ
+    try:
+        offset = float(hours)
+    except (TypeError, ValueError):
+        return HOUSE_TZ
+    if not (-12.0 <= offset <= 14.0):
+        return HOUSE_TZ
+    HOUSE_TZ = timezone(timedelta(hours=offset))
+    return HOUSE_TZ
+
+
+def house_tz_label() -> str:
+    """墙钟口径的可读标签（只用于回显/meta，不参与换算）。
+
+    默认口径下沿用「Asia/Shanghai」这个大家看得懂的名字；被注入成别的偏移时
+    如实写成 UTC±h，免得对外宣称深圳时间、其实按别的钟面切窗口。
+    """
+    hours = HOUSE_TZ.utcoffset(None) / timedelta(hours=1)
+    if hours == HOUSE_TZ_FALLBACK_HOURS:
+        return "Asia/Shanghai"
+    return f"UTC{hours:+g}"
 
 
 def house_ts(dt: Any) -> float:

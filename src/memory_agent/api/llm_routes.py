@@ -486,7 +486,7 @@ async def llm_ask(request: Request):
     t0 = time.monotonic()
 
     clean = strip_wake_word(raw_q, wake_word)
-    today = now_local(8.0)
+    today = now_local(rt.config.tz_offset_hours)
     window = resolve_window(clean, today)
     device_match = match_device(clean, rt.insights)
     intent = classify_intent(clean)

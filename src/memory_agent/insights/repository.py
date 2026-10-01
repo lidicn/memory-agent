@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Sequence, Tuple
 
-from .models import EventRecord
+from .models import EventRecord, house_tz
 
 __all__ = ["StoreRepository"]
 
@@ -37,14 +37,12 @@ EVENT_COLUMNS = ("id", "ts", "day", "room", "entity_id", "domain",
 
 
 # --------------------------------------------------------------------- 工具
-_TZ = timezone(timedelta(hours=8))  # 生产数据统一 UTC+8（深圳本地时间）
-
-
 def _to_epoch(value: Any) -> float:
-    """ISO8601 字符串 -> epoch float（生产数据为 UTC+8 naive 字符串）。
+    """ISO8601 字符串 -> epoch float（生产数据为家庭墙钟 naive 字符串）。
 
-    容器跑在 UTC，naive ISO 会被当 UTC 解析导致偏 8 小时。
-    这里显式标 UTC+8 再转 epoch。解析失败 fail-open 返回 0.0。
+    容器跑在 UTC，naive ISO 会被当 UTC 解析导致整体平移数小时。
+    这里显式按 ``house_tz()``（Config.tz_offset_hours 注入）解释再转 epoch。
+    解析失败 fail-open 返回 0.0。
     """
     if value is None or value == "":
         return 0.0
@@ -56,7 +54,7 @@ def _to_epoch(value: Any) -> float:
     try:
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_TZ)
+            dt = dt.replace(tzinfo=house_tz())
         return dt.timestamp()
     except (TypeError, ValueError):
         try:
@@ -67,8 +65,8 @@ def _to_epoch(value: Any) -> float:
 
 
 def _to_iso(value: float) -> str:
-    """epoch float -> ISO8601 字符串（秒级，UTC+8，与生产数据对齐）。"""
-    return datetime.fromtimestamp(float(value), tz=_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
+    """epoch float -> ISO8601 字符串（秒级，家庭墙钟口径，与生产数据对齐）。"""
+    return datetime.fromtimestamp(float(value), tz=house_tz()).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
 def _load_attrs(raw: Any) -> Dict[str, Any]:

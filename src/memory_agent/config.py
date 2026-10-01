@@ -489,4 +489,10 @@ def get_config() -> Config:
             "WO-MA-004 ③ 不再接受默认值或自动生成。"
         )
 
+    # 家庭墙钟口径单点注入（DCD 裁定 20261001-DB六格与MA五题 §五）：
+    # Config.tz_offset_hours 是唯一配置项，insights 层里那个 +8 从此只是 fallback。
+    # 懒导入：insights.models 只依赖标准库，不会形成环。
+    from .insights.models import set_house_tz_offset
+    set_house_tz_offset(config.tz_offset_hours)
+
     return config

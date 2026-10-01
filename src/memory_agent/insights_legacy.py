@@ -2990,7 +2990,7 @@ class InsightService:
         from .voice_util import resolve_window, match_device, classify_intent
         try:
             rt = self._get_rt()
-            today = now_local(8.0)
+            today = now_local(self.tz)
             window = resolve_window(question, today)
             if window:
                 start_iso = window["start"]

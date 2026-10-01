@@ -334,16 +334,17 @@ def resolve_nl_window(q: str, default_days: int) -> Tuple[str, str, Dict[str, An
 
     返回：(start_iso, end_iso, meta_dict)
     """
-    from ..store import now_local
-    now = now_local(8)
+    from .models import house_now, house_tz_label
+    now = house_now()
+    tz_label = house_tz_label()
     ql = q.lower()
     if "昨天" in q or "昨日" in q or "yesterday" in ql:
         start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         end = start.replace(hour=23, minute=59, second=59)
-        return start.isoformat(), end.isoformat(), {"timezone": "Asia/Shanghai", "start": start.isoformat(), "end": end.isoformat(), "note": "昨天"}
+        return start.isoformat(), end.isoformat(), {"timezone": tz_label, "start": start.isoformat(), "end": end.isoformat(), "note": "昨天"}
     if "今晚" in q or "今天" in q or "today" in ql:
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        return start.isoformat(), now.isoformat(), {"timezone": "Asia/Shanghai", "start": start.isoformat(), "end": now.isoformat(), "note": "今天"}
+        return start.isoformat(), now.isoformat(), {"timezone": tz_label, "start": start.isoformat(), "end": now.isoformat(), "note": "今天"}
     # 具体星期（周三 / 星期三 / 上周三 / 这周三）——精确到某一天，
     # 必须优先于泛化的「上周/周末」，否则「上周三晚上」会被错当成「整周」。
     m_wd = re.search(r"(上上|上|这|本)?\s*(?:周|星期|礼拜)\s*([一二三四五六日天])", q)
@@ -371,26 +372,26 @@ def resolve_nl_window(q: str, default_days: int) -> Tuple[str, str, Dict[str, An
                 part = kw
                 break
         note = f"{prefix}周{wd_char}{part}"
-        return start.isoformat(), end.isoformat(), {"timezone": "Asia/Shanghai", "start": start.isoformat(), "end": end.isoformat(), "note": note}
+        return start.isoformat(), end.isoformat(), {"timezone": tz_label, "start": start.isoformat(), "end": end.isoformat(), "note": note}
     if "上周" in q:
         start = (now - timedelta(days=now.weekday() + 7)).replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=6, hours=23, minutes=59, seconds=59)
-        return start.isoformat(), end.isoformat(), {"timezone": "Asia/Shanghai", "start": start.isoformat(), "end": end.isoformat(), "note": "上周"}
+        return start.isoformat(), end.isoformat(), {"timezone": tz_label, "start": start.isoformat(), "end": end.isoformat(), "note": "上周"}
     if "周末" in q:
         d = now
         while d.weekday() != 5:
             d = d - timedelta(days=1)
         start = d.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1, hours=23, minutes=59, seconds=59)
-        return start.isoformat(), end.isoformat(), {"timezone": "Asia/Shanghai", "start": start.isoformat(), "end": end.isoformat(), "note": "周末"}
+        return start.isoformat(), end.isoformat(), {"timezone": tz_label, "start": start.isoformat(), "end": end.isoformat(), "note": "周末"}
     if "最近" in q:
         m = re.search(r"(\d+)\s*天", q)
         if m:
             n = int(m.group(1))
             start = (now - timedelta(days=n)).replace(hour=0, minute=0, second=0, microsecond=0)
-            return start.isoformat(), now.isoformat(), {"timezone": "Asia/Shanghai", "start": start.isoformat(), "end": now.isoformat(), "note": f"最近{n}天"}
+            return start.isoformat(), now.isoformat(), {"timezone": tz_label, "start": start.isoformat(), "end": now.isoformat(), "note": f"最近{n}天"}
     start = (now - timedelta(days=default_days)).replace(hour=0, minute=0, second=0, microsecond=0)
-    return start.isoformat(), now.isoformat(), {"timezone": "Asia/Shanghai", "start": start.isoformat(), "end": now.isoformat(), "note": f"最近{default_days}天"}
+    return start.isoformat(), now.isoformat(), {"timezone": tz_label, "start": start.isoformat(), "end": now.isoformat(), "note": f"最近{default_days}天"}
 
 
 def synthesize_persona(persona: dict, top_rooms: list, most_active: str, days: int) -> str:
