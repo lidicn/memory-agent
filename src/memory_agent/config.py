@@ -221,6 +221,10 @@ class Config:
     # v0.6：多应用令牌（TVPilot / DeskPilot 各持一个），落盘为 {name: {hash, prefix, ...}}。
     # 与单 app_token 并存：校验时多令牌优先，遗留单令牌作为兜底。
     app_tokens: Dict[str, Any] = field(default_factory=dict)
+    # vMA-1.2.3 3.3.3（DCD 20261001 Q1-Q5）：统一服务令牌 {name: {hash, prefix, scopes, ...}}。
+    # 与 butler_token / app_token **并行接受**（additive，不设 expiry、不下线旧凭据）；
+    # 差别是每条自带「方法:路径」作用域、一实例一令牌、可单独吊销并计数。
+    service_tokens: Dict[str, Any] = field(default_factory=dict)
     # v0.6 #3：记忆来源（source）取值白名单，防止来源伪造。可在此扩展新来源。
     agent_memory_sources: List[str] = field(default_factory=lambda: ["ma", "butler", "vision", "manual"])
 

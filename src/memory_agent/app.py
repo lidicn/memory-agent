@@ -48,6 +48,7 @@ from .config import get_config
 from .logging_setup import configure_logging
 from .mcp_auth import MCPTokenMiddleware
 from .runtime import get_runtime, start_runtime, stop_runtime
+from .service_tokens import get_service_token_store, scope_matches as _scope_matches
 
 # 必须在任何模块产生日志**之前**配置：项目此前从未配置 logging，root logger 默认
 # WARNING + lastResort，导致全部 logger.info() 被静默丢弃（线上看不到）。
@@ -190,8 +191,18 @@ class AuthMiddleware:
             return
 
         # 应用令牌（TVPilot / DeskPilot）只放行白名单路径，超出范围一律 403
-        if user.get("app") and not self._app_allowed(path):
+        if user.get("app") and not self._app_allowed(
+            path, scope.get("method", "GET"), user.get("app_scopes")
+        ):
             await self._reject(send, path, status=403, message="应用令牌无权访问该接口")
+            return
+
+        # 统一服务令牌（vMA-1.2.3 3.3.3，DCD 20261001 Q2）：授权面由令牌自带的
+        # 「方法:路径」清单逐条匹配，不在清单内一律 403。作用域为空也拒绝。
+        if user.get("service") and not _scope_matches(
+            scope.get("method", "GET"), path, user.get("service_scopes") or []
+        ):
+            await self._reject(send, path, status=403, message="服务令牌作用域不含该接口")
             return
 
         # WO-MA-012 R-22：调试令牌（dbg_）只放行 /api/debug/* 前缀，超出范围一律 403。
@@ -257,8 +268,15 @@ class AuthMiddleware:
         return path.startswith("/api/arena/snapshots/")
 
     @staticmethod
-    def _app_allowed(path: str) -> bool:
-        """应用令牌（TVPilot / DeskPilot）的路径白名单判定。"""
+    def _app_allowed(path: str, method: str = "GET", scopes: list | None = None) -> bool:
+        """应用令牌（TVPilot / DeskPilot）白名单判定。
+
+        vMA-1.2.3 3.3.3（DCD 20261001 Q2）：令牌自带作用域时**按「方法:路径」逐条判**，
+        补掉原先"只比路径、方法不限"的 F-2。本轮之前签发、没有 scopes 字段的旧记录仍按
+        ``APP_ENDPOINTS`` 判，保证既有部署不断连（additive）。
+        """
+        if scopes:
+            return _scope_matches(method, path, scopes)
         return path in APP_ENDPOINTS
 
     @staticmethod
@@ -283,6 +301,10 @@ class AuthMiddleware:
 
         return get_app_token_store().verify(token)
 
+    def _service_verify(self, token: str) -> dict | None:
+        """校验统一服务令牌（svc_）；命中返回 ``{name, source, scopes}``，否则 ``None``。"""
+        return get_service_token_store().verify(token)
+
     def _authenticate(self, headers: dict, client_ip: str | None = None) -> dict | None:
         config = get_config()
         auth_manager = AuthManager(config)
@@ -290,6 +312,23 @@ class AuthMiddleware:
 
         if authorization.startswith("Bearer "):
             token = authorization[7:].strip()
+            # 统一服务令牌（svc_）：作用域自带、一实例一令牌、可单独吊销并计数。
+            # 排在遗留 butler/app 比对**之前**，从 env 导入进来的记录才会被计数。
+            svc_rec = self._service_verify(token)
+            if svc_rec:
+                channel = svc_rec.get("channel") or ""
+                return {
+                    "username": "service:" + svc_rec["name"],
+                    "is_admin": False,
+                    "service": True,
+                    "service_name": svc_rec["name"],
+                    "service_scopes": svc_rec.get("scopes") or [],
+                    "app_source": svc_rec.get("source", ""),
+                    # 遗留通道导入后仍带原有身份位：member_routes 按 butler 判，
+                    # 少了这个映射，豆包管家换成"同一条密钥的导入记录"就会被拒。
+                    "butler": channel == "butler",
+                    "app": channel == "app",
+                }
             # 豆包管家服务令牌：与 JWT / 设备令牌三者隔离，仅放行 BUTLER_ENDPOINTS
             if self._butler_matches(token):
                 return {"username": "butler", "is_admin": False, "butler": True}
@@ -302,6 +341,7 @@ class AuthMiddleware:
                     "app": True,
                     "app_name": app_rec["name"],
                     "app_source": app_rec.get("source", ""),
+                    "app_scopes": app_rec.get("scopes") or [],
                 }
             user = auth_manager.verify_token(token)
             if user:

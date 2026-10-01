@@ -102,9 +102,11 @@ class AppTokenStore:
     # ── 校验 ───────────────────────────────────────────────────────────────
 
     def verify(self, token: str) -> dict | None:
-        """校验令牌；命中返回 ``{name, source}``，否则 ``None``。
+        """校验令牌；命中返回 ``{name, source, scopes}``，否则 ``None``。
 
         多令牌优先；全部未命中时回退到 v0.3 遗留单 ``app_token``。
+        ``scopes`` 为空表示该记录没声明作用域，鉴权仍按 ``APP_ENDPOINTS`` 判
+        （v0.6 早期签发的令牌都没有这个字段，不能因为它们没被迁移就拒掉）。
         """
         if not token:
             return None
@@ -116,11 +118,15 @@ class AppTokenStore:
                 if isinstance(value, dict) and value.get("hash"):
                     if secrets.compare_digest(value["hash"], digest):
                         self._touch(name)
-                        return {"name": name, "source": value.get("source", "")}
+                        return {
+                            "name": name,
+                            "source": value.get("source", ""),
+                            "scopes": list(value.get("scopes") or []),
+                        }
         # 兼容遗留单令牌
         legacy = (self._cfg().app_token or "").strip()
         if legacy and secrets.compare_digest(_hash(legacy), digest):
-            return {"name": "legacy", "source": ""}
+            return {"name": "legacy", "source": "", "scopes": []}
         return None
 
     def _touch(self, name: str) -> None:

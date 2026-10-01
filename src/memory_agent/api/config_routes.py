@@ -461,6 +461,46 @@ async def revoke_app_token(request: Request):
     return ok({"message": f"已吊销: {name}"})
 
 
+# ── 统一服务令牌（vMA-1.2.3 3.3.3，DCD 20261001 Q1-Q5）──────────────────────
+# 与上面的 app-tokens 区别：一实例一令牌、令牌自带「方法:路径」作用域、可单独吊销。
+# 三个端点都按 require_admin 收（签发凭据的面不给普通用户）。
+from ..service_tokens import get_service_token_store  # noqa: E402
+
+
+async def list_service_tokens(request: Request):
+    _, err = require_admin(request)
+    if err:
+        return err
+    return ok({"tokens": get_service_token_store().list_tokens()})
+
+
+async def create_service_token(request: Request):
+    _, err = require_admin(request)
+    if err:
+        return err
+    body = await json_body(request)
+    res = get_service_token_store().generate(
+        (body.get("name") or "").strip(),
+        body.get("scopes") or [],
+        (body.get("source") or "").strip(),
+    )
+    if not res.get("ok"):
+        return error(res.get("error", "签发失败"))
+    # 明文只在这里出现一次，之后落盘只有 sha256 与前缀
+    return ok(res)
+
+
+async def revoke_service_token(request: Request):
+    _, err = require_admin(request)
+    if err:
+        return err
+    name = request.path_params.get("name", "")
+    res = get_service_token_store().revoke(name)
+    if not res.get("ok"):
+        return error(res.get("error", "吊销失败"), 404 if "不存在" in res.get("error", "") else 400)
+    return ok({"message": f"已吊销: {name}"})
+
+
 ROUTES = [
     Route("/api/config", get_config_api, methods=["GET"]),
     Route("/api/config", update_config_api, methods=["POST"]),
@@ -469,5 +509,8 @@ ROUTES = [
     Route("/api/config/app-tokens", list_app_tokens, methods=["GET"]),
     Route("/api/config/app-tokens", create_app_token, methods=["POST"]),
     Route("/api/config/app-tokens/{name}", revoke_app_token, methods=["DELETE"]),
+    Route("/api/config/service-tokens", list_service_tokens, methods=["GET"]),
+    Route("/api/config/service-tokens", create_service_token, methods=["POST"]),
+    Route("/api/config/service-tokens/{name}", revoke_service_token, methods=["DELETE"]),
     Route("/api/health", health, methods=["GET"]),
 ]

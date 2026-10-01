@@ -15,12 +15,17 @@ from ..config import get_config
 def _resolve_source(body_source, user):
     """v0.6 #3：来源白名单 + 按 token 派生来源，防伪造。
 
-    * 应用令牌带 source（如 TVPilot 令牌标 vision）时强制采用该来源，
+    * 令牌带 source（如 TVPilot 令牌标 vision）时强制采用该来源，
       忽略调用方自报值，避免越权把自己标成 butler / ma；
     * 其余情况要求 source 落在白名单内，非法值回落 ma（缺省安全值）。
+
+    vMA-1.2.3 3.3.3（DCD 20261001 Q5「保留」）：统一服务令牌同样按令牌派生，
+    合并通道不得把这条防伪造降级成"调用方自报"。
     """
     allowed = set(get_config().agent_memory_sources or ["ma", "butler", "vision", "manual"])
-    token_source = (user.get("app_source") or "").strip() if user.get("app") else ""
+    token_source = ""
+    if user.get("app") or user.get("service"):
+        token_source = (user.get("app_source") or "").strip()
     if token_source:
         return token_source
     src = (body_source or "").strip() or "ma"
