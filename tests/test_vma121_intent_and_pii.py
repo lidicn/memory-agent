@@ -463,5 +463,29 @@ def test_candidate_rule_status_vocabulary_is_single_sourced():
         os.remove(st.db_path)
 
 
+def test_infer_intent_sequence_window_min_is_honored():
+    """调用方给的 window_min 必须真的进推断，不能只在签名里躺着。
+
+    反例来源（债 18）：MCP 工具 `infer_behavior_intent` 对外声明 `window_min`（模型会照
+    schema 传参），而实现把它丢掉、固定按 [5,15,30] 三窗口跑——声明与实际不一致。
+    """
+    now = datetime.now()
+    tv = {"server_ts": now.isoformat(), "action": "电视打开", "scene": "", "room": "客厅"}
+    pc = {"server_ts": (now - timedelta(minutes=20)).isoformat(),
+          "action": "电脑打开", "scene": "", "room": "书房"}
+    events = [tv, pc]
+
+    default = imod.infer_intent_sequence(events, max_intents=3)
+    assert default, "默认三窗口路径应有结果"
+    assert {r["window_min"] for r in default} <= {5, 15, 30}
+    assert any(r["intent"] == "study_work" for r in default), \
+        "20 分钟前的电脑事件只能来自 30 分钟窗口"
+
+    tight = imod.infer_intent_sequence(events, max_intents=3, window_min=10)
+    assert tight and {r["window_min"] for r in tight} == {10}
+    assert all(r["intent"] != "study_work" for r in tight), \
+        "给了 10 分钟窗口就不该看到 20 分钟前的证据"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

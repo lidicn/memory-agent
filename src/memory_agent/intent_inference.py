@@ -319,10 +319,15 @@ def infer_intent_sequence(
     events: list[dict],
     person: str | None = None,
     max_intents: int = 3,
+    window_min: int | None = None,
 ) -> list[dict]:
     """从行为事件序列推断多个可能的意图（按置信度排序）。
 
     返回最多 max_intents 个意图，每个含 intent/label/confidence/evidence/suggestion。
+
+    window_min：调用方指定的时间窗口（分钟）。给了就**只用这一个窗口**——单个窗口
+    最多产出一个意图，这是"只看最近 N 分钟"的字面语义，不做静默补窗口。
+    不给则按 [5, 15, 30] 三窗口各试一遍再按置信度排序。
     """
     if not events:
         return []
@@ -331,7 +336,7 @@ def infer_intent_sequence(
     results = []
     seen_intents = set()
 
-    for window in [5, 15, 30]:
+    for window in [5, 15, 30] if window_min is None else [max(1, int(window_min))]:
         intent = infer_intent(events, window_min=window, person=person)
         if intent and intent["intent"] not in seen_intents:
             intent["window_min"] = window

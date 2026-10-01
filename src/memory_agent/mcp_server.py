@@ -2507,7 +2507,7 @@ def _build_server():
 
     @mcp.tool()
     async def infer_behavior_intent(
-        person: str = "", window_min: int = 10, limit: int = 3
+        person: str = "", window_min: int | None = None, limit: int = 3
     ) -> dict:
         """P4b 意图推断：从最近的行为事件推断用户意图（无 LLM 快路径）。
 
@@ -2516,7 +2516,8 @@ def _build_server():
 
         Args:
             person: 人名（可选，限定某人，如 "Kevin"）
-            window_min: 时间窗口（分钟，默认 10）
+            window_min: 时间窗口（分钟）。给定则**只用这一个窗口**（最多返回 1 个意图）；
+                不给则按 5/15/30 三个窗口各试一遍再按置信度排序。
             limit: 返回意图数量（默认 3，最多 5）
         """
         rt = get_runtime()
@@ -2527,7 +2528,9 @@ def _build_server():
         from .intent_inference import infer_intent_sequence, get_intent_suggestions
 
         p = (person or "").strip() or None
-        intents = infer_intent_sequence(events, person=p, max_intents=max(1, min(limit, 5)))
+        intents = infer_intent_sequence(
+            events, person=p, max_intents=max(1, min(limit, 5)), window_min=window_min
+        )
         for intent in intents:
             intent["suggestions"] = get_intent_suggestions(intent)
 
