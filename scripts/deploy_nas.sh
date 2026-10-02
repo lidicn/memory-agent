@@ -6,6 +6,8 @@
 #   bash scripts/deploy_nas.sh --no-restart   # 只 scp 不重启
 #   bash scripts/deploy_nas.sh --full         # 全量同步 HEAD（git archive 一次推平，不依赖 diff 基线）
 # 注意：按目录分组推送并保留相对路径（嵌套子目录不会被平铺到仓库根）。
+# 契约门禁：两条路径都在**重启前**跑 tests/contract（MA↔DB 调用面），红了就中止、不重启；
+#           逃生口 MA_SKIP_CONTRACT=1 仅限回滚窗口，用了要补跑并在交付记录里写明。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,6 +33,37 @@ done
 SSH_OPTS=(-i "$KEY" -o StrictHostKeyChecking=no)
 SCP_OPTS=(-i "$KEY" -o StrictHostKeyChecking=no -q)
 
+# ── 部署前必跑：MA↔DB 契约测试（计划卡 第 5 步 ②）────────────────────────────
+# 红了就不重启：prod 继续跑旧版本，比"新码上线但 DB 调用面断了"好。
+# 事实源是 DB 的真实调用点，所以这一跑能拦住改名/删参/返回键漂移——
+# 这类断裂在 DB 侧表现为"静默空召回"，等下一轮回归才发现就等于没测。
+# tests/ 没有挂进容器（只挂 src/data/.env），所以这里 docker cp 一份进去跑，
+# 被跑的 src 就是刚同步到挂载目录的 HEAD 代码。
+# 逃生口 MA_SKIP_CONTRACT=1：仅限回滚窗口，用了要在交付记录里写明补跑时间。
+run_contract_gate() {
+    if [ "${MA_SKIP_CONTRACT:-}" = "1" ]; then
+        echo "[deploy] ⚠ MA_SKIP_CONTRACT=1，跳过契约门禁（事后必须补跑）"
+        return 0
+    fi
+    local gtar
+    gtar="$(mktemp)"
+    git archive --format=tar HEAD tests > "$gtar"
+    if ! "$SCP" "${SCP_OPTS[@]}" "$gtar" "$NAS:/tmp/ma_contract.tar"; then
+        rm -f "$gtar"
+        echo "[deploy] ✗ 契约测试包上传失败，中止部署（未重启）"
+        exit 1
+    fi
+    rm -f "$gtar"
+    if ! "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker cp /tmp/ma_contract.tar memory-agent:/tmp/ &&
+        docker exec memory-agent sh -lc 'rm -rf /tmp/ma_gate && mkdir -p /tmp/ma_gate && tar -C /tmp/ma_gate -xf /tmp/ma_contract.tar && rm -f /tmp/ma_contract.tar' &&
+        docker exec -w /tmp/ma_gate -e PYTHONPATH=/app/src:/tmp/pylibs -e JWT_SECRET=deploy-gate \
+            memory-agent python -m pytest tests/contract -q"; then
+        echo "[deploy] ✗ MA↔DB 契约测试红，中止部署（未重启）"
+        exit 1
+    fi
+    echo "[deploy] 契约门禁绿（tests/contract 对刚同步的 /app/src）"
+}
+
 # 两条分支都以 HEAD 为源：--full 走 git archive HEAD，增量走 git diff BASE...HEAD。
 # 未提交的工作区改动不会有任何一条路径带上——实测过：改完 src 直接 --full，
 # NAS 上落的是 HEAD 版本，本地 md5 与 NAS md5 不一致却打印"全量同步完成"。
@@ -54,6 +87,7 @@ if [ "$FULL" = "1" ]; then
     "$SCP" "${SCP_OPTS[@]}" "$TAR" "$NAS:/tmp/ma_full.tar"
     "$SSH" "${SSH_OPTS[@]}" "$NAS" "cd '$NAS_SRC' && tar -xf /tmp/ma_full.tar && rm -f /tmp/ma_full.tar && find src -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null; echo '[deploy] 全量同步完成'"
     if [ "$RESTART" = "1" ]; then
+        run_contract_gate
         "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker restart memory-agent"
         echo "[deploy] 容器已重启；chroma 冷启动约需 12 分钟后再做健康检查"
     fi
@@ -119,6 +153,7 @@ done
 echo "[deploy] ${#PUSHED[@]} 个文件确认到位（路径保留）"
 
 if [ "$RESTART" = "1" ]; then
+    run_contract_gate
     "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker restart memory-agent"
     echo "[deploy] 容器已重启；chroma 冷启动约需 12 分钟后再做健康检查"
 fi
