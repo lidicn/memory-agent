@@ -317,9 +317,11 @@ class ResearcherService:
                 stats["hits"] += 1
                 _, action = await asyncio.to_thread(self._dedupe_or_add, unit, llm["text"], job)
                 stats[action] = stats.get(action, 0) + 1
-        self.store.touch_insight_job_last_run(job.get("job_id"))
+        await asyncio.to_thread(
+            self.store.touch_insight_job_last_run, job.get("job_id")
+        )
         run_id = f"run_{int(time.time() * 1000)}_{job.get('job_id', '')}"
-        self.store.record_researcher_run({
+        await asyncio.to_thread(self.store.record_researcher_run, {
             "run_id": run_id, "job_id": job.get("job_id"),
             "started_at": run_ctx.get("date") or started.strftime("%Y-%m-%d"),
             "finished_at": now_local(self.config.tz_offset_hours).isoformat(),
@@ -338,11 +340,13 @@ class ResearcherService:
         if not (self.gates.enabled or force):
             return {"skipped": "researcher_enabled=false"}
         today = now_local(self.config.tz_offset_hours).strftime("%Y-%m-%d")
-        used = self.store.researcher_daily_token_used(today)
+        used = await asyncio.to_thread(self.store.researcher_daily_token_used, today)
         budget_left = self.gates.daily_token_budget - used
         if budget_left <= 0:
             return {"skipped": "daily budget exhausted", "used": used}
-        jobs = self.store.list_insight_jobs(enabled_only=True)
+        jobs = await asyncio.to_thread(
+            self.store.list_insight_jobs, enabled_only=True
+        )
         run_ctx = {"budget_left": budget_left, "date": today}
         summary: list[dict] = []
         for job in jobs:

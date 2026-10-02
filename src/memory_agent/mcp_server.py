@@ -2271,7 +2271,8 @@ def _build_server():
                 }
             # admin 审计通道出证：谁在什么时候列了全量记忆
             try:
-                rt.store.log_mcp_audit(
+                await asyncio.to_thread(
+                    rt.store.log_mcp_audit,
                     token_name=_tok, tool="list_agent_memories",
                     scope="admin", duration_ms=0, ok=True,
                     error="AUDIT: full member_id-less listing", origin=_origin,
@@ -2333,7 +2334,8 @@ def _build_server():
                 }
             try:
                 rt0 = get_runtime()
-                rt0.store.log_mcp_audit(
+                await asyncio.to_thread(
+                    rt0.store.log_mcp_audit,
                     token_name=_tok, tool="retrieve_agent_memories",
                     scope="admin", duration_ms=0, ok=True,
                     error="AUDIT: cross-member recall", origin=_origin,

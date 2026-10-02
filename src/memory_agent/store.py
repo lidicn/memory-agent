@@ -2164,7 +2164,7 @@ class Store:
     def list_behavior_events(
         self, room: str | None = None, member: str | None = None,
         day_from: str | None = None, day_to: str | None = None,
-        limit: int = 100,
+        limit: int = 100, status: str | None = None,
     ) -> list[dict]:
         """查询行为事件。member 过滤用 JSON 解析完成（量小，见 spec §7.1）。"""
         sql = "SELECT * FROM behavior_events"
@@ -2173,6 +2173,9 @@ class Store:
         if room:
             conds.append("room = ?")
             args.append(room)
+        if status:
+            conds.append("status = ?")
+            args.append(status)
         if day_from:
             conds.append("day >= ?")
             args.append(day_from)

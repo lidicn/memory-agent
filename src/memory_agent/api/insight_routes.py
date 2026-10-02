@@ -322,7 +322,7 @@ async def researcher_job_list(request: Request):
     if err:
         return err
     rt = runtime(request)
-    jobs = rt.store.list_insight_jobs()
+    jobs = await asyncio.to_thread(rt.store.list_insight_jobs)
     return ok({"jobs": jobs, "gates": {
         "daily_token_budget": rt.researcher.gates.daily_token_budget,
         "unit_cap": rt.researcher.gates.unit_cap,
@@ -339,7 +339,7 @@ async def researcher_job_save(request: Request):
     if not (body.get("name") or "").strip():
         return error("name 必填")
     rt = runtime(request)
-    payload = rt.store.save_insight_job(body)
+    payload = await asyncio.to_thread(rt.store.save_insight_job, body)
     return ok(payload)
 
 
@@ -352,7 +352,7 @@ async def researcher_job_delete(request: Request):
     if not job_id:
         return error("job_id 必填")
     rt = runtime(request)
-    rt.store.delete_insight_job(job_id)
+    await asyncio.to_thread(rt.store.delete_insight_job, job_id)
     return ok({"job_id": job_id})
 
 
@@ -366,7 +366,7 @@ async def researcher_job_toggle(request: Request):
     if not job_id:
         return error("job_id 必填")
     rt = runtime(request)
-    rt.store.set_insight_job_enabled(job_id, enabled)
+    await asyncio.to_thread(rt.store.set_insight_job_enabled, job_id, enabled)
     return ok({"job_id": job_id, "enabled": enabled})
 
 
@@ -380,11 +380,12 @@ async def researcher_run_now(request: Request):
     job_id = (body.get("job_id") or "").strip()
     today = now_local(rt.config.tz_offset_hours).strftime("%Y-%m-%d")
     if job_id:
-        job = rt.store.get_insight_job(job_id)
+        job = await asyncio.to_thread(rt.store.get_insight_job, job_id)
         if not job:
             return error("任务不存在")
+        used = await asyncio.to_thread(rt.store.researcher_daily_token_used, today)
         task_registry.create(rt.researcher.run_job(job, {
-            "budget_left": rt.researcher.gates.daily_token_budget - rt.store.researcher_daily_token_used(today),
+            "budget_left": rt.researcher.gates.daily_token_budget - used,
             "date": today,
         }), name=f"insight.researcher_job.{job_id}")
     else:
@@ -400,7 +401,7 @@ async def researcher_runs_list(request: Request):
     rt = runtime(request)
     limit = int(request.query_params.get("limit", 50) or 50)
     job_id = (request.query_params.get("job_id") or "").strip()
-    runs = rt.store.list_researcher_runs(job_id=job_id or None, limit=limit)
+    runs = await asyncio.to_thread(rt.store.list_researcher_runs, job_id or None, limit)
     return ok({"runs": runs})
 
 
@@ -410,7 +411,8 @@ async def researcher_direction_feedback(request: Request):
     if err:
         return err
     rt = runtime(request)
-    return ok({"directions": rt.store.researcher_direction_feedback()})
+    directions = await asyncio.to_thread(rt.store.researcher_direction_feedback)
+    return ok({"directions": directions})
 
 
 ROUTES = [

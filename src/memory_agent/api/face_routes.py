@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from starlette.requests import Request
 from starlette.routing import Route
@@ -92,7 +93,8 @@ async def face_node_lib_get(request: Request):
     deny = _require_device(request)
     if deny:
         return deny
-    return ok({"members": runtime(request).store.get_face_lib()})
+    members = await asyncio.to_thread(runtime(request).store.get_face_lib)
+    return ok({"members": members})
 
 
 async def face_node_lib_post(request: Request):
@@ -105,19 +107,24 @@ async def face_node_lib_post(request: Request):
     if face_feature is None:
         return error("face_feature 必填")
     rt = runtime(request)
-    member_id = _resolve_member_id(rt, body.get("member_id"), body.get("name"))
+    member_id = await asyncio.to_thread(
+        _resolve_member_id, rt, body.get("member_id"), body.get("name")
+    )
     if not member_id:
         # P1 修复：设备端自动注册——name 不存在则自动创建成员
         # 设备端（ArcFace TV 节点）是人脸注册入口，用户在电视上注册新人脸时
         # MA 数据库里还没有这个成员，不应要求先在 WebUI 手动创建。
         name = (body.get("name") or "").strip()
         if name:
-            new_member = rt.store.create_member(name)
+            new_member = await asyncio.to_thread(rt.store.create_member, name)
             member_id = new_member.get("id", "")
             print(f"[face_node_lib] 设备端自动创建成员: {name} -> {member_id}")
     if not member_id:
         return error("需提供 member_id 或可识别的 name")
-    if not rt.store.set_member_face_feature(member_id, face_feature):
+    saved = await asyncio.to_thread(
+        rt.store.set_member_face_feature, member_id, face_feature
+    )
+    if not saved:
         return error("成员不存在", 404)
     return ok({"message": "人脸特征已回写", "member_id": member_id})
 
@@ -146,7 +153,9 @@ async def face_recognize(request: Request):
         return error("image 必填")
     room = (body.get("room") or "").strip() or None
     min_conf = body.get("min_conf")
-    res = runtime(request).vision.recognize_face(image, room, min_conf)
+    res = await asyncio.to_thread(
+        runtime(request).vision.recognize_face, image, room, min_conf
+    )
     if res is None:
         return ok({
             "ok": False, "via": "vlm", "degraded": True,
@@ -161,7 +170,8 @@ async def face_lib_get(request: Request):
     _, err = require_user(request)
     if err:
         return err
-    return ok({"members": runtime(request).store.get_face_lib()})
+    members = await asyncio.to_thread(runtime(request).store.get_face_lib)
+    return ok({"members": members})
 
 
 async def face_lib_post(request: Request):
@@ -174,10 +184,15 @@ async def face_lib_post(request: Request):
     if face_feature is None:
         return error("face_feature 必填")
     rt = runtime(request)
-    member_id = _resolve_member_id(rt, body.get("member_id"), body.get("name"))
+    member_id = await asyncio.to_thread(
+        _resolve_member_id, rt, body.get("member_id"), body.get("name")
+    )
     if not member_id:
         return error("需提供 member_id 或可识别的 name")
-    if not rt.store.set_member_face_feature(member_id, face_feature):
+    saved = await asyncio.to_thread(
+        rt.store.set_member_face_feature, member_id, face_feature
+    )
+    if not saved:
         return error("成员不存在", 404)
     return ok({"message": "人脸特征已回写", "member_id": member_id})
 

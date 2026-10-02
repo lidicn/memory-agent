@@ -604,8 +604,9 @@ async def behaviors_bad_cases_list(request: Request):
     limit = min(int(request.query_params.get("limit", 20) or 20), 100)
     room = (request.query_params.get("room") or "").strip()
     try:
-        events = rt.store.query_events(
-            status="vlm_failed", room=room or None, limit=limit,
+        events = await asyncio.to_thread(
+            rt.store.list_behavior_events,
+            room=room or None, status="vlm_failed", limit=limit,
         )
     except Exception as exc:
         return error(f"查询失败: {exc}")
@@ -642,23 +643,27 @@ async def behaviors_bad_case_export(request: Request):
     output_dir = "/data/feedback_packs"
     os.makedirs(output_dir, exist_ok=True)
     # 从数据库读取事件
-    try:
+    def _find_event():
         event = None
         if hasattr(rt.store, "get_behavior_event"):
             event = rt.store.get_behavior_event(event_id)
-        if event is None:
-            # 回退：从最近事件中找
-            all_events = rt.store.query_events(limit=500)
-            for e in all_events:
-                if str(e.get("id")) == str(event_id):
-                    event = e
-                    break
+        if event is not None:
+            return event
+        # 回退：从最近事件中找
+        for e in rt.store.list_behavior_events(limit=500):
+            if str(e.get("id")) == str(event_id):
+                return e
+        return None
+
+    try:
+        event = await asyncio.to_thread(_find_event)
     except Exception as exc:
         return error(f"查询事件失败: {exc}")
     if event is None:
         return error(f"事件 {event_id} 不存在")
     label = body.get("label") or f"bad_case_{event_id}"
-    result = build_feedback_pack(
+    result = await asyncio.to_thread(
+        build_feedback_pack,
         snapshot_path=event.get("snapshot_path", ""),
         trace=event.get("raw_response", ""),
         output_dir=output_dir,
@@ -685,7 +690,6 @@ async def behaviors_task_records(request: Request):
         limit = int(request.query_params.get("limit") or 100)
     except (TypeError, ValueError):
         return error("limit 必须是整数")
-    conn = rt.store.connect()
     sql = "SELECT * FROM task_records"
     conds, args = [], []
     if task_id:
@@ -698,8 +702,12 @@ async def behaviors_task_records(request: Request):
         sql += " WHERE " + " AND ".join(conds)
     sql += " ORDER BY period_key DESC LIMIT ?"
     args.append(max(1, min(limit, 1000)))
-    with rt.store._lock:
-        rows = conn.execute(sql, args).fetchall()
+    def _fetch_rows():
+        conn = rt.store.connect()
+        with rt.store._lock:
+            return conn.execute(sql, args).fetchall()
+
+    rows = await asyncio.to_thread(_fetch_rows)
     import json as _json
     records = []
     for r in rows:

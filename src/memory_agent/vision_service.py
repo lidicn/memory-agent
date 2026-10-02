@@ -89,6 +89,7 @@ class VisionService:
         self._light_cache: dict[str, tuple] = {}      # entity_id -> (monotonic, on|None)
         self._skip_counts: dict[str, dict] = {}       # room -> {reason: n}
         self._last_result: dict[str, dict] = {}       # room -> 最近一次结果摘要
+        self._vlm_inflight: set[str] = set()          # 已有识别在跑的房间（TV 事件节流）
         self._last_vlm_usage: dict | None = None      # 最近一次 VLM 响应的 usage（可能无）
         self._last_cleanup_day: str = ""
         self._patrol_task: asyncio.Task | None = None
@@ -1151,7 +1152,15 @@ class VisionService:
         """TV 端人脸事件（spec §5.1）。空 persons = 「房间没人了」，直接入库不调 VLM。"""
         if persons:
             # 有身份变化 → 触发一次识别（同步等 VLM 结果意义不大，走异步任务）
-            task_registry.create(
+            # 第五轮审计 MEDIUM：同房间上一次识别没跑完就不再投。TV 高频上报时
+            # 逐条投线程会把「一次身份变化」变成 N 个堆叠的 VLM 调用。
+            if room in self._vlm_inflight:
+                counts = self._skip_counts.setdefault(room, {})
+                counts["vlm_inflight"] = counts.get("vlm_inflight", 0) + 1
+                return {"accepted": True, "deduped": True, "vlm_dispatched": False,
+                        "reason": f"房间 {room} 上一次识别仍在执行"}
+            self._vlm_inflight.add(room)
+            task = task_registry.create(
                 asyncio.to_thread(
                     self.analyze_room, room,
                     trigger=trigger or "identity_change",
@@ -1159,6 +1168,11 @@ class VisionService:
                 ),
                 name=f"vision.analyze_room.{room}",
             )
+
+            def _clear_inflight(_task, _room=room):
+                self._vlm_inflight.discard(_room)
+
+            task.add_done_callback(_clear_inflight)
             return {"accepted": True, "deduped": False, "vlm_dispatched": True}
         self.store.insert_behavior_event({
             "room": room, "camera_src": camera or (self.camera_for_room(room) or {}).get("stream", ""),

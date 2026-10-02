@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from starlette.requests import Request
 from starlette.routing import Route
 
@@ -23,7 +25,7 @@ async def device_list(request: Request):
     identity = getattr(runtime(request), "identity", None)
     if identity is None:
         return error("身份层未启用")
-    devices = identity.list_devices()
+    devices = await asyncio.to_thread(identity.list_devices)
     return ok({"devices": devices, "total": len(devices)})
 
 
@@ -40,7 +42,7 @@ async def health_list(request: Request):
     identity = getattr(runtime(request), "identity", None)
     if identity is None:
         return error("身份层未启用")
-    rows = identity.store.list_device_health(state)
+    rows = await asyncio.to_thread(identity.store.list_device_health, state)
     return ok({"health": rows, "total": len(rows), "state": state or "all"})
 
 
@@ -52,7 +54,7 @@ async def merge_audit(request: Request):
     identity = getattr(runtime(request), "identity", None)
     if identity is None:
         return error("身份层未启用")
-    rows = identity.store.list_merged_logical_devices()
+    rows = await asyncio.to_thread(identity.store.list_merged_logical_devices)
     return ok({"merges": rows, "total": len(rows)})
 
 
@@ -68,7 +70,7 @@ async def merge_split(request: Request):
     identity = getattr(runtime(request), "identity", None)
     if identity is None:
         return error("身份层未启用")
-    result = identity.store.split_logical_device(stable_id)
+    result = await asyncio.to_thread(identity.store.split_logical_device, stable_id)
     if not result.get("ok"):
         return error(result.get("error", "拆分失败"), result.get("code", 400), result)
     identity.invalidate_cache()

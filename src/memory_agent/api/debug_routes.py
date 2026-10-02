@@ -56,6 +56,16 @@ _CONV_ORDER: list[str] = []  # FIFO 淘汰顺序
 
 _TERMINAL = object()  # 内部哨兵：标记流结束（不进 history）
 
+# 第五轮审计 MEDIUM：SSE 订阅队列原本无界。客户端停读（关标签页、慢网络）时
+# put_nowait 只堆不丢，一个 run 就能把进程拖大；满员即判慢消费者——摘掉订阅并
+# 投终止哨兵，让它的流正常收尾，而不是一直吞内存。
+_SUBSCRIBER_MAXSIZE = 1000
+
+
+def new_subscriber_queue() -> asyncio.Queue:
+    """SSE 订阅队列的唯一构造口（acp_server 与 debug_stream 共用同一上限）。"""
+    return asyncio.Queue(maxsize=_SUBSCRIBER_MAXSIZE)
+
 
 class DebugRun:
     def __init__(
@@ -87,6 +97,26 @@ class DebugRun:
         self.rounds_done = 0
         self.error: str | None = None
         self.created_at = time.time()
+        self.dropped_subscribers = 0  # 因队列满而被断开的慢消费者数
+
+    def _drop_slow(self, q: asyncio.Queue) -> None:
+        """队列满 = 客户端不再读：摘掉订阅，尽力投一个终止哨兵让它收尾。"""
+        try:
+            self.subscribers.remove(q)
+        except ValueError:
+            pass
+        self.dropped_subscribers += 1
+        print(f"[Debug] run={self.run_id} 订阅者队列满（{_SUBSCRIBER_MAXSIZE}），已断开慢消费者")
+        # 此刻队列是满的：不先腾位就投不进哨兵，消费者会永远等不到流结束。
+        # 丢一条已缓冲事件可接受——这个客户端本来就追不上了。
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            q.put_nowait(_TERMINAL)
+        except asyncio.QueueFull:
+            pass
 
     def emit(self, event_type: str, data: dict) -> None:
         packed = sse_pack(event_type, data)
@@ -94,6 +124,8 @@ class DebugRun:
         for q in list(self.subscribers):
             try:
                 q.put_nowait(packed)
+            except asyncio.QueueFull:
+                self._drop_slow(q)
             except Exception:
                 pass
 
@@ -104,6 +136,8 @@ class DebugRun:
         for q in list(self.subscribers):
             try:
                 q.put_nowait(_TERMINAL)
+            except asyncio.QueueFull:
+                self._drop_slow(q)
             except Exception:
                 pass
 
@@ -367,7 +401,7 @@ async def debug_stream(request: Request):
 
         async def gen():
             # 先订阅再取快照，避免漏发/重复；订阅后产生的事件只会进 own 队列
-            own = asyncio.Queue()
+            own = new_subscriber_queue()
             run.subscribers.append(own)
             snapshot = list(run.history)
             try:

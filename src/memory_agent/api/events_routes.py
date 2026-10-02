@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from starlette.requests import Request
 from starlette.routing import Route
 
@@ -72,13 +74,18 @@ async def butler_events_push(request: Request):
         })
 
     rt = runtime(request)
-    inserted = 0
-    for it in items:
-        try:
-            rt.store.insert_behavior_event(it)
-            inserted += 1
-        except Exception as exc:  # 单条失败不中断整批
-            print(f"[Events] 写入失败 {it.get('room')}/{it.get('action')}: {exc}")
+
+    def _insert_batch() -> int:
+        inserted = 0
+        for it in items:
+            try:
+                rt.store.insert_behavior_event(it)
+                inserted += 1
+            except Exception as exc:  # 单条失败不中断整批
+                print(f"[Events] 写入失败 {it.get('room')}/{it.get('action')}: {exc}")
+        return inserted
+
+    inserted = await asyncio.to_thread(_insert_batch)
     return ok({"inserted": inserted, "total": len(items)})
 
 

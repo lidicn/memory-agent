@@ -49,6 +49,7 @@ from .api.debug_routes import (
     _register,
     _RUNS,
     _TERMINAL,
+    new_subscriber_queue,
 )
 from .api.llm_routes import _run_memory_tool
 from .runtime import get_runtime
@@ -452,7 +453,7 @@ async def acp_handle(
         async def gen() -> AsyncIterator[str]:
             # 订阅范式与 debug_stream 对齐：先追加队列、回放历史、再消费实时，
             # 以 _TERMINAL 哨兵结束。
-            own: asyncio.Queue = asyncio.Queue()
+            own: asyncio.Queue = new_subscriber_queue()
             run.subscribers.append(own)
             snapshot = list(run.history)
             try:
