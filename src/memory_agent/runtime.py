@@ -118,6 +118,8 @@ class AppRuntime:
         self._backup_task: Any = None
         self._tpl_validate_task: Any = None
         self._activity_task: Any = None
+        self._device_feed: Any = None
+        self._device_feed_task: Any = None
         self._livingroom_ai_task: Any = None
         # 记忆研究员（v0.8 定向洞察）：依赖上面已装配的 insights/llm/agent_memory/history
         self.researcher = ResearcherService(self)
@@ -215,6 +217,18 @@ class AppRuntime:
         self._activity_task = task_registry.create(
             self._periodic_activity_inference(), name="runtime.activity_inference"
         )
+        # 设备事件 feed（DCD 裁定 20261001 §二 Q1=B）：独立批量扫描器，小时级轮询。
+        # 任务常驻、开关每轮重读——SP 把总开关打开不该再等一次重启。
+        from .device_feed import get_device_feed
+        from .rule_engine import get_rule_engine
+        self._device_feed = get_device_feed(
+            self.store, get_rule_engine(self.store, self.alert_dispatcher), self.config)
+        self._device_feed_task = task_registry.create(
+            self._periodic_device_feed(), name="runtime.device_feed"
+        )
+        print(f"[DeviceFeed] 通道已装配：间隔 {self._device_feed.interval_seconds()}s，"
+              f"总开关 device_feed_enabled={self._device_feed.enabled()}，"
+              f"dry_run={self._device_feed.dry_run()}")
         # 主动感知 v2.0 · Phase 0.1 + 0.4：客厅盒侧 AI 事件轻量轮询 + 主动播报闭环
         announcer = Announcer(
             self.ha, self.store,
@@ -271,19 +285,24 @@ class AppRuntime:
                 # 生成日记
                 try:
                     # 读昨天日记
-                    all_mem = self.store.list_agent_memories("all", "", 500, "")
+                    all_mem = await asyncio.to_thread(
+                        self.store.list_agent_memories, "all", "", 500, ""
+                    )
                     diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
                     diaries.sort(key=lambda x: x.get("created_at", ""))
                     yesterday_text = diaries[-1]["text"][:200] if diaries else "（还没有日记）"
 
                     # 从当天 events 提取摘要
                     today = datetime.now().strftime("%Y-%m-%d")
-                    events = self.store.query_events("", today, "", 100)
+                    events = await asyncio.to_thread(
+                        self.store.query_events,
+                        start=f"{today}T00:00:00", end=f"{today}T23:59:59", limit=100,
+                    )
                     summary_lines = []
                     for e in events[:50]:
                         t = e.get("ts", "")[11:16]
                         room = e.get("room", "")
-                        state = e.get("state", "")
+                        state = e.get("new_state") or ""
                         if room and state:
                             summary_lines.append(f"{t} {room}: {state}")
                     summary = "\n".join(summary_lines[:30])
@@ -310,7 +329,8 @@ class AppRuntime:
                     diary_text = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
 
                     # 写入 staging
-                    self.store.add_agent_memory(
+                    await asyncio.to_thread(
+                        self.store.add_agent_memory,
                         "self_diary", diary_text, "self_diary",
                         "[]", "[]", 365, "staging", 1,
                     )
@@ -545,6 +565,54 @@ class AppRuntime:
                 break
             except Exception as exc:  # noqa: BLE001
                 print(f"[Identity] 周期对账异常: {exc}")
+
+    async def _periodic_device_feed(self) -> None:
+        """常驻任务：设备事件批量扫描（DCD 裁定 20261001 §二 Q1=B / Q3=(i)）。
+
+        **任务常驻、开关每轮重读**：注册时按 ``device_feed_enabled`` 决定是否建任务，
+        等于把「打开通道」这件运维动作绑死在一次重启上；这里让它当班值只在每轮
+        开头读一次配置，env/`config.json` 改完下一轮即生效。
+
+        扫描是同步 SQLite + 同步匹配，跑在 ``asyncio.to_thread`` 里——批量扫描器的
+        全部意义就是**不占用感知链路同进程**（Q1 不选 A 的理由），不能反过来把
+        在线事件循环拖住。响应滞后一个轮询周期是裁定接受的代价。
+
+        触发历史按裁定 §Q3.1（保留 7 天 + 上限 10 万行）每日裁一次。
+        """
+        feed = self._device_feed
+        purge_day = ""
+        try:
+            await asyncio.sleep(60)  # 首跑延时，避开启动期采集/对账争抢
+            while True:
+                await asyncio.sleep(feed.interval_seconds())
+                if not feed.enabled():
+                    continue
+                try:
+                    res = await asyncio.to_thread(feed.run_once)
+                    print(
+                        f"[DeviceFeed] {res['window']['start']}→{res['window']['end']}："
+                        f"扫描 {res['scanned']}，二元变化 {res['kept']}，命中 {res['matched']}，"
+                        f"派发 {res['dispatched']}，仅记录 {res['logged_only']}"
+                        f"{'，截断' if res['truncated'] else ''}"
+                        f"{'，异常 ' + str(len(res['errors'])) if res['errors'] else ''}"
+                        f"（dry_run={res['dry_run']}）"
+                    )
+                    day = now_local(self.config.tz_offset_hours).strftime("%Y-%m-%d")
+                    if day != purge_day:
+                        purge_day = day
+                        p = await asyncio.to_thread(feed.purge_trigger_history)
+                        if not p.get("ok"):
+                            print(f"[DeviceFeed] 触发历史裁剪失败: {p.get('error')}")
+                        else:
+                            print(
+                                f"[DeviceFeed] 触发历史裁剪：删 {p.get('deleted_expired', 0)} 过期 "
+                                f"+ {p.get('deleted_over_cap', 0)} 超额，余 {p.get('remaining', 0)} 行"
+                                f"（保留误报标注 {p.get('kept_labeled', 0)} 行）"
+                            )
+                except Exception as exc:  # noqa: BLE001 - 旁路通道不得打死常驻任务
+                    print(f"[DeviceFeed] 扫描异常: {exc}")
+        except asyncio.CancelledError:
+            pass
 
     async def _periodic_activity_inference(self) -> None:
         """常驻任务：周期跑行为推断（v0.9.5），产出 canonical 状态写 ``behavior_states``。

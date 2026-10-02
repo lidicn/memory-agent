@@ -15,12 +15,31 @@
 
 ## 已知结构限制（不掩盖）
 
-``active_rules`` 的实时事件源只有客厅感知链路（``livingroom_ai.py`` 把
+``active_rules`` 的实时事件源原先只有客厅感知链路（``livingroom_ai.py`` 把
 ``ev.kind`` 喂给引擎），词表就是感知总线那一组 kind；而挖掘出的候选是
 ``{"tag": "door"|"presence"|"computer", "state": ...}`` 的**设备序列**，
-引擎既没有设备事件源、也没有序列语义。因此本通道对这类候选给
-``engine_feed_gap`` 判红而不是塞进表里当死规则——通道通了，但设备序列候选
-要真生效，还需要"设备事件进引擎"这条 feed（属独立改动，需另行裁决）。
+引擎既没有设备事件源、也没有序列语义，于是这类候选在这里被
+``engine_feed_gap`` 如实拒绝——通道通了，但设备进不了引擎。
+
+**该缺口已由 ``device_feed`` 补上**（DCD 裁定 20261001-MA-service_token与设备事件feed
+§二 · Q1=B 独立批量扫描器）。因此本通道的判定改成两条可查的口径：
+
+* 候选步骤带 ``kind`` → 感知路径，判据不变（不在 ``ENGINE_FEED_KINDS`` 里就拒）；
+* 候选步骤带 ``tag`` → 设备路径，条件译成 ``{"kind": "device", "tag": …}``，
+  由 ``device_feed`` 喂；tag 不在 feed 词表（``FEED_TAGS``）、或 state 不是
+  二元翻转（``BINARY_STATES``，裁定 Q2 第 2 项）时**仍然拒**——放宽的是
+  "引擎有没有这个字"，不是"这个候选能不能命中"。
+
+仍未消除的限制，如实留在这里：
+
+1. **序列语义只取首步**。引擎 ``_match_atom`` 没有跨事件的序列状态，晋升后的规则
+   是「首步命中即触发」，序列的其余步骤作为 note 进审计，不假装保留了语义。
+2. **设备路径响应滞后一个轮询周期**（Q1=B 的裁定代价），且总开关
+   ``device_feed_enabled`` 默认关——晋升进来的设备规则在开关打开前不会收到事件；
+   观察期读数会是恒 0 的 ``dry_run_hits``，那是"没喂"，不是"没命中"。
+3. **``count`` 触发依赖 ``trigger_json`` 列**（Q2 第 3 项的载体）：列由
+   ``Store.init_schema`` 的 ADD COLUMN 迁移建，未重启的在线进程里 ``rule["trigger"]``
+   仍是 ``{}``，count 分支走不到——落库与否要在重启窗后复查，不在此处谎报。
 """
 
 from __future__ import annotations
@@ -31,6 +50,8 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
+from .device_feed import BINARY_STATES, DEVICE_TRIGGER, FEED_TAGS
+from .rule_engine import DEVICE_EVENT_KIND
 from .store import CANDIDATE_ACCEPTED, CANDIDATE_PROMOTED
 
 logger = logging.getLogger("memory_agent.rule_lifecycle")
@@ -44,7 +65,10 @@ MODE_DRY_RUN = "dry_run"
 MODE_LIVE = "live"
 MODE_REVOKED = "revoked"
 
-# 引擎实时 feed 能见到的 kind 词表（口径见 store.py 感知总线 perception_events.kind 注释）
+# 引擎**感知** feed 能见到的 kind 词表（口径见 store.py 感知总线 perception_events.kind 注释）。
+# 设备侧不在这张表里：它走 ``device_feed`` 的 ``kind="device"`` + tag 条件，
+# 词表是 ``device_feed.FEED_TAGS``——两张表各管一条链路，合并成一张就看不出
+# 「这个候选是被哪条链路挡在门外的」。
 ENGINE_FEED_KINDS = frozenset({
     "face_known", "face_unknown", "human", "pet", "cry", "gesture",
     "day_night", "fav_area", "no_human", "motion", "object",
@@ -89,35 +113,67 @@ def build_condition(candidate: dict) -> tuple[dict, list[str]]:
     """把候选规则翻译成引擎可匹配的原子条件。返回 ``(condition, blockers)``。
 
     引擎的 ``_match_atom`` 只认扁平原子（kind/room/person/identity/
-    min_confidence/home_mode/time_range），没有序列语义，所以这里取**首个
-    事件类型**作为触发子，时间窗映射为 ``time_range``；序列的其余步骤无法
-    表达，作为 note 记录而不是假装保留了语义。
+    min_confidence/home_mode/time_range + 设备侧的 domain/entity_id/tag/state），
+    没有序列语义，所以这里取**首个事件**作为触发子，时间窗映射为 ``time_range``；
+    序列的其余步骤无法表达，作为 note 记录而不是假装保留了语义。
+
+    两条来源分别判：
+
+    * 步骤带 ``kind`` —— 感知链路（``livingroom_ai`` 实时喂），词表是
+      ``ENGINE_FEED_KINDS``；
+    * 步骤带 ``tag`` —— 设备链路（``device_feed`` 批量喂），条件是
+      ``{"kind": "device", "tag": …}``，词表是 ``FEED_TAGS``，state 只认
+      ``BINARY_STATES``（DCD Q2 第 2 项：数值型读数不进 feed）。
     """
     steps = candidate.get("steps") or []
     kinds: list[str] = []
     room = str(candidate.get("room") or "").strip()
+    first_tag = ""
+    first_state = ""
     for step in steps:
         if not isinstance(step, dict):
             continue
         kind = str(step.get("kind") or "").strip()
+        tag = str(step.get("tag") or "").strip()
         if not room:
             room = str(step.get("room") or "").strip()
         if kind:
             kinds.append(kind)
-    if not kinds:
-        tags = [str(s.get("tag") or "") for s in steps if isinstance(s, dict)]
-        return {}, [f"engine_feed_gap: 候选步骤是设备序列 tag={tags[:5]}，"
-                    f"引擎实时 feed 只认感知 kind（{sorted(ENGINE_FEED_KINDS)[:4]}…）"]
-    unreachable = [k for k in kinds if k not in ENGINE_FEED_KINDS]
-    if unreachable:
-        return {}, [f"engine_feed_gap: 事件类型 {unreachable} 不在引擎实时 feed 词表内"]
-    condition: dict[str, Any] = {"kind": kinds[0]}
-    if room:
-        condition["room"] = room
+        elif tag and not first_tag:
+            first_tag = tag
+            first_state = str(step.get("state") or "").strip().lower()
     window = str(candidate.get("time_window") or "").strip()
-    if window:
-        condition["time_range"] = window
-    return condition, []
+
+    if kinds:
+        unreachable = [k for k in kinds if k not in ENGINE_FEED_KINDS]
+        if unreachable:
+            return {}, [f"engine_feed_gap: 事件类型 {unreachable} 不在引擎实时 feed 词表内"]
+        condition: dict[str, Any] = {"kind": kinds[0]}
+        if room:
+            condition["room"] = room
+        if window:
+            condition["time_range"] = window
+        return condition, []
+
+    if first_tag:
+        # DCD 裁定 §二 Q1=B 之后，设备序列候选不再是「引擎没有这个字」——
+        # 判据换成 feed 真能产出什么：词表 + 二元态。
+        if first_tag not in FEED_TAGS:
+            return {}, [f"device_feed_gap: tag={first_tag} 不在设备 feed 词表内"
+                        f"（词表与 insights 标签口径同源：{sorted(FEED_TAGS)}）"]
+        if first_state and first_state not in BINARY_STATES:
+            return {}, [f"device_feed_gap: 状态 {first_state} 不是二元翻转"
+                        f"（feed 只产出 {sorted(BINARY_STATES)}，数值读数按 Q2 第 2 项不进 feed）"]
+        condition = {"kind": DEVICE_EVENT_KIND, "tag": first_tag}
+        if first_state:
+            condition["state"] = first_state
+        if room:
+            condition["room"] = room
+        if window:
+            condition["time_range"] = window
+        return condition, []
+
+    return {}, ["empty_steps: 候选没有带 kind 或 tag 的步骤，无法构造触发子"]
 
 
 def _parse_ts(value: Any) -> Optional[datetime]:
@@ -166,8 +222,9 @@ class RuleLifecycle:
             blockers.append(
                 f"evidence_gate: 独立证据 {evidence_days} 天（口径 {evidence_basis}）< 门槛 {self.min_evidence}")
         return {
-            # ok = 「通道真的给出了可匹配的触发子」。设备序列类候选（engine_feed_gap）
-            # 在这里 condition={}，于是 ok=False，缺口暴露在接口上而不是被 ok=True 掩盖。
+            # ok = 「通道真的给出了可匹配的触发子」。构造不出条件的候选（device_feed_gap /
+            # empty_steps）在这里 condition={}，于是 ok=False，缺口暴露在接口上
+            # 而不是被 ok=True 掩盖。
             "ok": bool(condition),
             "candidate_id": candidate_id,
             "name": cand.get("name") or "",
@@ -200,6 +257,11 @@ class RuleLifecycle:
         action = ({"type": "infer_activity", "activity": infer,
                    "confidence": float(cand.get("confidence") or 0.6)}
                   if infer else {"type": "log"})
+        # DCD Q2 第 3 项：设备类候选的 count 触发（60 秒 3 次）是**裁定值**，
+        # 必须随规则入库——此前 ``trigger`` 从不写库，``rule["trigger"]`` 恒为 ``{}``，
+        # 「保持默认值」只是一句空话。感知类候选维持原语义（匹配即触发）。
+        trigger = (dict(DEVICE_TRIGGER)
+                   if condition.get("kind") == DEVICE_EVENT_KIND else None)
         res = self.engine.add_rule(
             name=cand.get("name") or candidate_id,
             condition=condition,
@@ -212,6 +274,7 @@ class RuleLifecycle:
             source_rule_id=candidate_id,
             mode=MODE_DRY_RUN,
             evidence_count=gate["evidence_days"],
+            trigger=trigger,
         )
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error"), "gate": gate}
@@ -227,8 +290,9 @@ class RuleLifecycle:
             detail={"evidence_days": gate["evidence_days"],
                     "evidence_basis": gate["evidence_basis"],
                     "condition": condition, "action": action,
+                    "trigger": trigger or {},
                     "dry_run_days": self.dry_run_days,
-                    "note": "序列步骤未全部表达，仅首个事件类型作为触发子"})
+                    "note": "序列步骤未全部表达，仅首个事件作为触发子"})
         logger.info("[RuleLifecycle] 晋升 %s → %s（试运行）", candidate_id, rule_id)
         return {"ok": bool(rule_id), "rule_id": rule_id, "mode": MODE_DRY_RUN,
                 "candidate_id": candidate_id, "gate": gate}

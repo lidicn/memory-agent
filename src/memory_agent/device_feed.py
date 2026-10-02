@@ -210,7 +210,7 @@ class DeviceEventFeed:
         now = now_local(self.tz_offset)
         end_iso = end or now.isoformat(timespec="seconds", sep="T")
         start_iso = start or self._watermark or (
-            now - timedelta(seconds=self._interval_seconds())
+            now - timedelta(seconds=self.interval_seconds())
         ).isoformat(timespec="seconds", sep="T")
         return start_iso, end_iso
 
@@ -223,7 +223,7 @@ class DeviceEventFeed:
         同一个事件被数两次就到 3 次/60 秒了）。
         """
         start_iso, end_iso = self.window(start, end)
-        forced_dry = self._dry_run() if dry_run is None else bool(dry_run)
+        forced_dry = self.dry_run() if dry_run is None else bool(dry_run)
 
         rows = self.store.query_events(
             start=start_iso, end=end_iso, domains=list(self.domains),
@@ -279,11 +279,13 @@ class DeviceEventFeed:
         return stats
 
     # ── 配置读取（getattr 兜底：单测可传裸对象）────────────────────────────
+    # 三个读法都是公开的：runtime 的周期任务要在**每轮**重读它们——改配置生效
+    # 不该等一次重启，也不该让调用方伸手进私有方法。
 
-    def _interval_seconds(self) -> int:
+    def interval_seconds(self) -> int:
         return max(60, int(getattr(self.config, "device_feed_interval_seconds", 3600) or 3600))
 
-    def _dry_run(self) -> bool:
+    def dry_run(self) -> bool:
         return bool(getattr(self.config, "device_feed_dry_run", True))
 
     def enabled(self) -> bool:
@@ -306,6 +308,9 @@ class DeviceEventFeed:
                     "cutoff": cutoff}
         res.setdefault("retention_days", TRIGGER_RETENTION_DAYS)
         res.setdefault("max_rows", TRIGGER_MAX_ROWS)
+        # store 的返回体只给计数、没有 ok 字：成功口径由本包装统一补上。
+        # 不补的话调用方判 ``res["ok"]`` 会把每一次成功读成失败（缺键即 falsy）。
+        res.setdefault("ok", True)
         return res
 
 

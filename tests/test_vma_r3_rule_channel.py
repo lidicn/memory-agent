@@ -129,12 +129,41 @@ def test_promote_requires_independent_evidence_days(store):
     assert audit[0]["to_state"] == "rejected_by_gate"
 
 
-def test_device_sequence_candidate_is_blocked_not_installed_dead(store):
-    """设备序列候选：引擎实时 feed 只有感知 kind，晋升它会得到永不命中的死规则。"""
+def test_device_sequence_candidate_promotes_as_dry_run_with_ruled_trigger(store):
+    """DCD 20261001 §二 之后的口径：设备序列候选不再是「引擎没有这个字」。
+
+    晋升产物必须是 dry_run 规则 + 裁定值触发窗（60 秒 3 次）真的入库，序列未表达的
+    部分写在 description 里，而不是假装保留了语义。
+    """
     lc, engine = _lc(store)
     rid = _accepted_candidate(
         store, name="书房工作序列",
         steps=[{"tag": "door", "state": "on"}, {"tag": "light", "state": "on"}])
+    res = lc.promote(rid)
+    assert res["ok"], res
+    rule = engine.get_rule(res["rule_id"])
+    assert rule["mode"] == "dry_run"
+    assert rule["condition"] == {"kind": "device", "tag": "door", "state": "on"}
+    assert rule["trigger"] == {"type": "count", "window_seconds": 60, "min_count": 3}
+    assert "序列步骤未全部表达" in rule["description"]
+
+
+def test_device_candidate_outside_feed_vocabulary_is_blocked(store):
+    """放宽只放宽「引擎有没有这个字」，不放宽「feed 能不能产出这个 tag」。"""
+    lc, engine = _lc(store)
+    rid = _accepted_candidate(store, name="温度序列",
+                              steps=[{"tag": "temperature", "state": "on"}])
+    res = lc.promote(rid)
+    assert res["ok"] is False
+    assert any(b.startswith("device_feed_gap") for b in res["blockers"]), res["blockers"]
+    assert engine.list_rules(enabled_only=False) == []
+
+
+def test_perception_candidate_outside_engine_feed_is_blocked(store):
+    """感知链路仍按 ENGINE_FEED_KINDS 判，词表外的 kind 不许晋升成死规则。"""
+    lc, engine = _lc(store)
+    rid = _accepted_candidate(store, name="幻影事件",
+                              steps=[{"kind": "teleport", "room": "客厅"}])
     res = lc.promote(rid)
     assert res["ok"] is False
     assert any(b.startswith("engine_feed_gap") for b in res["blockers"]), res["blockers"]

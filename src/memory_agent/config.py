@@ -286,6 +286,16 @@ class Config:
     face_node_timeout_s: float = 3.0          # 转发到 Arcface 节点的调用超时（秒）
     face_min_conf: float = 0.6               # 生物识别覆盖 VLM 外观匹配的最低置信度
 
+    # ── 设备事件 feed（DCD 裁定 20261001-MA-service_token与设备事件feed §二）────
+    # Q1=B：独立批量扫描器（不压在感知链路同进程），按周期读 events 表把设备
+    # 状态翻转聚成 kind="device" 事件喂引擎。代价是响应滞后一个轮询周期——
+    # 裁定已接受：候选规则是「建议」不是「实时触发器」。
+    # Q3=(i)「通道建好、推进等人」：反馈面为 0 时通道结构性停在 dry_run，
+    # 所以**总开关默认关**，开启后**首轮亦默认 dry_run**（照常匹配、只记录不派发）。
+    device_feed_enabled: bool = False
+    device_feed_dry_run: bool = True
+    device_feed_interval_seconds: int = 3600
+
     # 存储
     db_path: str = "/data/memory_agent.db"
     tz_offset_hours: float = 8.0  # 容器内通常无 TZ，显式声明本地时区偏移
@@ -465,6 +475,26 @@ def get_config() -> Config:
                 setattr(config, field_name, float(raw))
             except ValueError:
                 pass
+
+    # 设备事件 feed 三个开关走**独立覆盖段**，不进 env_map：env_map 的口径是
+    # 「只在当前值为空时使用环境变量」，而 ``device_feed_dry_run=True`` /
+    # ``device_feed_interval_seconds=3600`` 都是非空默认值——进了 env_map 就等于
+    # ``DEVICE_FEED_DRY_RUN=false`` 与 ``DEVICE_FEED_INTERVAL_SECONDS`` 永不过效，
+    # 一个只能单向收紧、不能放开的开关不是可用的开关。
+    # 判定与 env_map 同口径（``1/true/yes/on``），不另立一套真值表。
+    for field_name, env_name in (
+        ("device_feed_enabled", "DEVICE_FEED_ENABLED"),
+        ("device_feed_dry_run", "DEVICE_FEED_DRY_RUN"),
+    ):
+        raw = os.getenv(env_name)
+        if raw:
+            setattr(config, field_name, raw.strip().lower() in ("1", "true", "yes", "on"))
+    raw = os.getenv("DEVICE_FEED_INTERVAL_SECONDS")
+    if raw:
+        try:
+            setattr(config, "device_feed_interval_seconds", int(float(raw)))
+        except ValueError:
+            pass
 
     # 向后兼容：旧版只有单组 llm_* 字段（无 llm_backends），
     # 自动迁移成代理池的第一条，保证升级后对话不中断。
