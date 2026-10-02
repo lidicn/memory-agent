@@ -715,6 +715,22 @@ class ActiveRuleEngine:
             if not state_matches(actual_state, cond["state"]):
                 failures.append(f"state: expected {cond['state']}, got {actual_state}")
 
+        # old_state 匹配（状态迁移语义：与 state 组成「从 X 变成 Y」）
+        # device_feed.to_event 会把 HA 的 old_state 一起喂进来；感知/视觉类事件没有
+        # 这个字段，因此带 old_state 的规则对它们恒不命中——「不知道从哪来」不等于
+        # 「确认从没来」。这里不能直接把缺失值丢给 state_matches：它把空值判成 off，
+        # 于是「没有 old_state」会伪装成「从 off 变来」，凭空造出一次迁移。
+        if "old_state" in cond:
+            want_old = str(cond["old_state"] if cond["old_state"] is not None else "")
+            want_old = want_old.strip().lower()
+            actual_old = str(event.get("old_state") or "").strip()
+            if want_old in ("", "any", "none"):
+                pass                                  # 不限，与空值口径一致
+            elif not actual_old:
+                failures.append(f"old_state: expected {cond['old_state']}, event carries none")
+            elif not state_matches(actual_old, cond["old_state"]):
+                failures.append(f"old_state: expected {cond['old_state']}, got {actual_old}")
+
         # domain 匹配（HA 实体域，如 binary_sensor / climate）
         if "domain" in cond:
             expected = cond["domain"]

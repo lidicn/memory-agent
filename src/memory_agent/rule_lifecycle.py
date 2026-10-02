@@ -113,9 +113,14 @@ def build_condition(candidate: dict) -> tuple[dict, list[str]]:
     """把候选规则翻译成引擎可匹配的原子条件。返回 ``(condition, blockers)``。
 
     引擎的 ``_match_atom`` 只认扁平原子（kind/room/person/identity/
-    min_confidence/home_mode/time_range + 设备侧的 domain/entity_id/tag/state），
-    没有序列语义，所以这里取**首个事件**作为触发子，时间窗映射为 ``time_range``；
+    min_confidence/home_mode/time_range + 设备侧的 domain/entity_id/tag/state/old_state），
+    没有跨事件的序列语义，所以这里取**首个事件**作为触发子，时间窗映射为 ``time_range``；
     序列的其余步骤无法表达，作为 note 记录而不是假装保留了语义。
+
+    ``old_state`` 只能表达**单条事件内**的迁移（HA 一行 state_changed 自带两端，
+    于是 ``{"state": "on", "old_state": "off"}`` 就是「关→开」）；跨事件的
+    「先 A 后 B」仍然表达不了。本函数不会自行为候选生成 old_state——推断步骤里
+    没有可信的"变更前状态"，凭 note 猜一个迁移方向会造出假真值。
 
     两条来源分别判：
 
