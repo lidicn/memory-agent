@@ -36,9 +36,11 @@ from memory_agent.insights import InsightService  # noqa: E402
 from memory_agent.insights.api import LEGACY_CONTRACT_MEMBERS  # noqa: E402
 from memory_agent.insights.utils import tags_of  # noqa: E402
 from memory_agent.store import TELEMETRY_DOMAINS, Store  # noqa: E402
+import memory_agent  # noqa: E402
 
-_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_PKG = os.path.join(_ROOT, "src", "memory_agent")
+# 扫的是「生产实际导入的那棵树」，不是测试文件旁边的 src：容器里 tests 被 docker cp
+# 到 /tmp/tests，按 __file__/../src 定位会指向不存在的 /tmp/src，静态半边直接空跑。
+_PKG = os.path.dirname(os.path.abspath(memory_agent.__file__))
 
 # 生产侧对 insights 对象的属性访问：rt/runtime/self/app.insights.X 以及局部别名 ins.X
 _ACCESS = re.compile(
