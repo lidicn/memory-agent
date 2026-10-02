@@ -23,7 +23,6 @@ if _SRC not in sys.path:
 
 from memory_agent import mqtt_bridge as mb  # noqa: E402
 from memory_agent import runtime as runtime_mod  # noqa: E402
-from memory_agent import vision_service as vs_mod  # noqa: E402
 from memory_agent.config import Config  # noqa: E402
 from memory_agent.mqtt_bridge import MqttBridge  # noqa: E402
 from memory_agent.vision_service import VisionService  # noqa: E402
