@@ -607,8 +607,10 @@ BUNDLED_SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "s
 
 def _fetch_attribution_events(store, days: int = 30) -> list[dict]:
     """从 behavior_events 表获取最近 N 天事件，转换为 change_attribution 需要的格式。"""
-    from datetime import datetime, timedelta
-    day_from = (datetime.now() - timedelta(days=max(1, int(days)))).strftime("%Y-%m-%d")
+    from datetime import timedelta
+    # day 列由 Store 按家庭墙钟写入，容器时钟通常是 UTC：用裸 datetime.now() 会在
+    # UTC 16:00–24:00 窗口里把窗口整体前移一天（第七轮审计 · 时区关节）。
+    day_from = (now_local(store.tz_offset_hours) - timedelta(days=max(1, int(days)))).strftime("%Y-%m-%d")
     conn = store.connect()
     with store._lock:
         rows = conn.execute(
@@ -1816,13 +1818,15 @@ def _build_server():
         :param room: room_distribution 指标时指定房间
         """
         from memory_agent.change_attribution import counterfactual_query as _cfq
-        from datetime import datetime, timedelta
+        from datetime import timedelta
         rt = get_runtime()
         events = await asyncio.to_thread(_fetch_attribution_events, rt.store, max(14, int(days)))
         if len(events) < 14:
             return {"ok": False, "error": f"事件数据不足（{len(events)} 条 < 14 天最低要求）",
                     "event_count": len(events)}
-        change_ts = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+        # 与事件行的墙钟口径保持一致（见 _fetch_attribution_events 注释）
+        change_ts = (now_local(rt.config.tz_offset_hours)
+                     - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
         result = await asyncio.to_thread(
             _cfq, events, person, metric, event_type, change_ts,
             max(30, int(days)), room or None
@@ -2208,8 +2212,9 @@ def _build_server():
             rt.store.list_agent_memories, "all", "", 500, ""
         )
         diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
-        from datetime import datetime, timedelta
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        from datetime import timedelta
+        # created_at 是家庭墙钟（agent_memory 用 now_local 落盘），cutoff 必须同口径
+        cutoff = (now_local(rt.config.tz_offset_hours) - timedelta(days=days)).isoformat()
         diaries = [d for d in diaries if d.get("created_at", "") >= cutoff]
         diaries.sort(key=lambda x: x.get("created_at", ""))
         return {
@@ -2236,8 +2241,8 @@ def _build_server():
         yesterday_text = diaries[-1]["text"][:200] if diaries else "（还没有日记）"
 
         # 2. 从当天 events 提取脱敏摘要
-        from datetime import datetime
-        today = datetime.now().strftime("%Y-%m-%d")
+        # query_events 的 day 参数按家庭墙钟匹配 day 列，用容器 UTC 日期会取到昨天的全天。
+        today = now_local(rt.config.tz_offset_hours).strftime("%Y-%m-%d")
         events = await asyncio.to_thread(
             rt.store.query_events, "", today, "", 100
         )

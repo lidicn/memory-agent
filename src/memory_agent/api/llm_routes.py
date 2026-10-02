@@ -16,7 +16,7 @@ from starlette.responses import JSONResponse
 _log = logging.getLogger(__name__)
 
 from ..llm_client import normalize_chat_url
-from ..store import now_local
+from ..store import now_local, safe_json_loads
 from ..tool_schema import build_openai_tools, dispatch
 from ..skills import skill_prompt_for
 from ..voice_util import (
@@ -40,6 +40,13 @@ CANDIDATE_MODELS = [
     "deepseek-chat", "deepseek-reasoner",
     "gpt-4o-mini", "qwen-plus",
 ]
+
+#: 答案缓存 payload 是库里可被外部写坏的 JSON 文本。第七轮审计：裸 json.loads 会让
+#: 一条脏缓存把整个问答请求打成 500。坏 payload 一律按「未命中」处理——回源重算，
+#: 并在 store.safe_json_loads 里留 WARNING，坏数据可见而不断链。
+def _cache_blob(payload) -> dict | None:
+    blob = safe_json_loads(payload, None)
+    return blob if isinstance(blob, dict) else None
 
 
 async def llm_models(request: Request):
@@ -523,9 +530,9 @@ async def llm_ask(request: Request):
             cache_key = ask_cache_key("du", query_label, window["start"][:10])
 
         hit = store.get_answer_cache(cache_key)
-        if hit:
+        blob = _cache_blob(hit["payload"]) if hit else None
+        if blob is not None:
             cached = True
-            blob = json.loads(hit["payload"])
             answer, speak, data = blob.get("answer"), blob.get("speak"), blob.get("data", {})
         else:
             if eid:
@@ -575,9 +582,9 @@ async def llm_ask(request: Request):
         norm = normalize_for_cache(clean, today)
         llm_cache_key = ask_cache_key("llm", norm)
         llm_hit = store.get_answer_cache(llm_cache_key)
-        if llm_hit:
+        blob = _cache_blob(llm_hit["payload"]) if llm_hit else None
+        if blob is not None:
             cached = True
-            blob = json.loads(llm_hit["payload"])
             answer, speak, data = blob.get("answer"), blob.get("speak"), blob.get("data", {})
             if why_llm and isinstance(data, dict):
                 data["why_llm"] = why_llm
@@ -634,7 +641,7 @@ async def llm_cache_list(request: Request):
                 "intent": r["intent"],
                 "hits": r["hits"],
                 "last_used": r["last_used"],
-                "answer": (json.loads(r["payload"]).get("answer") if r["payload"] else None),
+                "answer": (_cache_blob(r["payload"]) or {}).get("answer"),
             }
             for r in rows
         ],

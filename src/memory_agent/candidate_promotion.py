@@ -51,6 +51,8 @@ from datetime import datetime, timedelta
 from typing import (Any, Dict, List, Mapping, Optional, Protocol,
                     Sequence, Tuple)
 
+from .store import now_local
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -173,8 +175,14 @@ def _parse_ts(value: Any) -> Optional[datetime]:
     return None
 
 
-def _now_iso() -> str:
-    return datetime.now().isoformat()
+def _now_iso(tz_offset_hours: float = 8.0) -> str:
+    """家庭墙钟时间戳。
+
+    候选区读写的所有时间列（perception_events.server_ts、behavior_events.day）都由
+    Store 按 ``tz_offset_hours`` 落盘，容器 UTC 的裸 ``datetime.now()`` 会让窗口
+    边界与落库口径差 ``tz_offset`` 小时（第七轮审计 · 时区关节）。
+    """
+    return now_local(tz_offset_hours).isoformat()
 
 
 def _json_dumps(data: Any) -> str:
@@ -1085,7 +1093,8 @@ class CandidatePromoter:
         """读取候选区内同房间、同类型 + 冲突类型的原始行。"""
         kinds = (kind, *tuple(self.policy.conflict_kinds.get(kind, ())))
         placeholders = ",".join("?" for _ in kinds)
-        cutoff = (datetime.now() - timedelta(hours=window_hours)).isoformat()
+        cutoff = (now_local(self.store.tz_offset_hours)
+                  - timedelta(hours=window_hours)).isoformat()
         sql = (
             "SELECT server_ts, kind, room, confidence, payload_json "
             "FROM perception_events "
@@ -1203,7 +1212,7 @@ class CandidatePromoter:
             "last_ts": timestamps[-1] if timestamps else None,
             "span_hours": round(span_hours, 3),
             "source_refs": [f"perception:{ts}:{kind}" for ts in timestamps],
-            "collected_at": _now_iso(),
+            "collected_at": _now_iso(self.store.tz_offset_hours),
         }
         return bundle
 
@@ -1431,7 +1440,8 @@ class CandidatePromoter:
 
         try:
             # 扫描最近 24 小时的低置信度候选事件
-            cutoff = (datetime.now() - timedelta(hours=self.policy.scan_window_hours)).isoformat()
+            cutoff = (now_local(self.store.tz_offset_hours)
+                      - timedelta(hours=self.policy.scan_window_hours)).isoformat()
 
             # 第六轮审计 CRITICAL-2：读共享连接要持 Store 的锁。下面这个循环会调用
             # store.* 的写入方法（各自持锁并提交），锁外的扫描读正好会撞进它们的
@@ -1457,7 +1467,7 @@ class CandidatePromoter:
                 room = str(_row_get(row, "room") or "")
                 payload = _as_mapping(_row_get(row, "payload_json"))
                 confidence = _to_float(_row_get(row, "confidence"))
-                server_ts = str(_row_get(row, "server_ts") or _now_iso())
+                server_ts = str(_row_get(row, "server_ts") or _now_iso(self.store.tz_offset_hours))
 
                 # 提取 person_name（与旧版保持一致的默认值）
                 person_name = None

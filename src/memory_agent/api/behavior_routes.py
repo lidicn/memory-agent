@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from starlette.requests import Request
 from starlette.routing import Route
 
+from ..store import now_local
 from .deps import error, json_body, ok, require_user, runtime
 
 
@@ -910,7 +911,9 @@ async def causal_counterfactual(request: Request):
     events = await asyncio.to_thread(_fetch_attribution_events, rt.store, max(14, days))
     if len(events) < 14:
         return error(f"事件数据不足（{len(events)} 条 < 14 天最低要求）")
-    change_ts = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+    # 与事件行的墙钟口径一致（counterfactual 拿 change_ts 与 server_ts 比较）
+    change_ts = (now_local(rt.config.tz_offset_hours)
+                 - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
     result = await asyncio.to_thread(
         _cfq, events, person, metric, event_type, change_ts, max(30, days), room or None
     )

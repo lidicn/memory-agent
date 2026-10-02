@@ -2,8 +2,27 @@
 # -*- coding: utf-8 -*-
 """HA客户端"""
 import json
-from typing import Dict, Any, Optional
+import threading
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, Optional
 import httpx
+
+# 到 HA 的 HTTP 连接按 (地址, 令牌) 复用：每次请求新建 client 的建连固定成本约占单次
+# 耗时 74%（第七轮审计 · HA 客户端每次请求新建连接），而采集是高频路径，跨主机时还要
+# 加 TLS 握手。httpx.Client 的连接池本身线程安全，可以跨 asyncio.to_thread 工作线程共享。
+_CLIENT_POOL: Dict[tuple, httpx.Client] = {}
+_POOL_LOCK = threading.Lock()
+
+
+def _pooled_client(base_url: str, headers: Dict[str, str]) -> httpx.Client:
+    key = (base_url, tuple(sorted(headers.items())))
+    with _POOL_LOCK:
+        client = _CLIENT_POOL.get(key)
+        if client is None:
+            client = httpx.Client()
+            _CLIENT_POOL[key] = client
+        return client
+
 
 class HAClient:
     """Home Assistant客户端"""
@@ -19,6 +38,15 @@ class HAClient:
             "Authorization": f"Bearer {config.hass_token}",
             "Content-Type": "application/json"
         }
+
+    @contextmanager
+    def _session(self) -> Iterator[httpx.Client]:
+        """借一条共享连接到 HA。
+
+        退出时**不关闭**：连接归 `_CLIENT_POOL` 管，单个请求没有权利拆掉别人正在用的
+        池；配置热更新会换 base_url/令牌，自然落到新的池条目上。
+        """
+        yield _pooled_client(self.base_url, self.headers)
     
     def get_states(self) -> Optional[list]:
         """批量拉取全部实体状态（单请求）。
@@ -27,7 +55,7 @@ class HAClient:
         避免逐实体 N 次 HTTP 往返。失败返回 None，调用方可回退逐实体读取。
         """
         try:
-            with httpx.Client() as client:
+            with self._session() as client:
                 response = client.get(
                     f"{self.base_url}/api/states",
                     headers=self.headers,
@@ -44,7 +72,7 @@ class HAClient:
     def get_state(self, entity_id: str) -> Optional[Dict[str, Any]]:
         """获取实体状态"""
         try:
-            with httpx.Client() as client:
+            with self._session() as client:
                 response = client.get(
                     f"{self.base_url}/api/states/{entity_id}",
                     headers=self.headers,
@@ -65,7 +93,7 @@ class HAClient:
     ) -> Dict[str, Any]:
         """调用HA服务"""
         try:
-            with httpx.Client() as client:
+            with self._session() as client:
                 data = {
                     "entity_id": entity_id,
                     **(service_data or {})
@@ -131,7 +159,7 @@ class HAClient:
     def get_status(self) -> Dict[str, Any]:
         """获取HA连接状态"""
         try:
-            with httpx.Client() as client:
+            with self._session() as client:
                 response = client.get(
                     f"{self.base_url}/api/",
                     headers=self.headers,
@@ -191,7 +219,7 @@ class HAClient:
 
             safe_start = start_dt.isoformat()
 
-            with httpx.Client() as client:
+            with self._session() as client:
                 result: Dict[str, list] = {}
 
                 for i in range(0, len(entity_ids), self.HISTORY_BATCH_SIZE):
@@ -314,7 +342,7 @@ class HAClient:
             }
         """
         try:
-            with httpx.Client() as client:
+            with self._session() as client:
                 response = client.get(
                     f"{self.base_url}/api/states",
                     headers=self.headers,

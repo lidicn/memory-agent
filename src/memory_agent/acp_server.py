@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from . import tool_schema
+from .store import safe_json_loads
 from .task_registry import task_registry
 from .acp_protocol import (
     ERR_INVALID_PARAMS,
@@ -278,8 +279,9 @@ def _parse_packed(packed: str) -> tuple[str, dict]:
             ev = line[len("event: "):].strip()
         elif line.startswith("data: "):
             data_str = line[len("data: "):].strip()
-    data = json.loads(data_str) if data_str else {}
-    return ev, data
+    data = safe_json_loads(data_str, None) if data_str else None
+    # 通知映射一律用 data.get()，坏 payload 退成 {} 让这条事件空转，而不是打断整条 SSE 流
+    return ev, data if isinstance(data, dict) else {}
 
 
 def _event_to_notification(ev: str, data: dict, session_id: str, req_id: Any):

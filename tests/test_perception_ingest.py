@@ -216,6 +216,8 @@ class _FakeStore:
     def __init__(self, roster, occupancy):
         self._roster = roster
         self._occupancy = occupancy
+        # 真实 Store 的契约：tz_offset_hours 是数值，回填窗口按家庭墙钟算。
+        self.tz_offset_hours = 8.0
         self.updated = []
     def list_members(self):
         return self._roster

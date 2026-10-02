@@ -4,12 +4,17 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, timedelta
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from memory_agent.causal_scanner import CausalScanner, ALERT_ACTION
+from memory_agent.store import now_local
+
+# 测试里的 store 是 mock，但它必须遵守真实 Store 的契约：tz_offset_hours 是数值，
+# day 列按这族时间戳落库。缺了这一行，被扫描器读到的是 MagicMock 而不是偏移量。
+TZ = 8.0
 
 
 def _make_store(tmp_path):
@@ -30,6 +35,7 @@ def _make_store(tmp_path):
     db.commit()
 
     store = MagicMock()
+    store.tz_offset_hours = TZ
     store._lock = MagicMock()
     store._lock.__enter__ = MagicMock()
     store._lock.__exit__ = MagicMock(return_value=False)
@@ -41,7 +47,7 @@ def _make_store(tmp_path):
     store.list_members.side_effect = list_members
 
     def insert_behavior_event(payload):
-        ts = payload.get("server_ts") or datetime.now().isoformat()
+        ts = payload.get("server_ts") or now_local(TZ).isoformat()
         persons = payload.get("persons") or []
         cur = db.execute(
             "INSERT INTO behavior_events(server_ts, day, room, camera_src, persons_json, count, action, scene, confidence, trigger, client, status, raw_response) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -65,7 +71,7 @@ def _make_store(tmp_path):
 
 def _seed_events(db, person, days=14, action="enter_room", room="livingroom"):
     """播种 N 天的行为事件，前半段早到、后半段晚到（制造变化）。"""
-    now = datetime.now()
+    now = now_local(TZ)
     for i in range(days):
         dt = now - timedelta(days=days - i)
         # 前 7 天 18:00 到家，后 7 天 21:00 到家（显著变化）
@@ -145,12 +151,12 @@ class TestCausalScanner:
             db.execute("INSERT INTO members(member_id, name) VALUES(?, ?)", ("testuser", "Test User"))
             db.commit()
             # 全部 18:00 到家，无变化
-            now = datetime.now()
+            now = now_local(TZ)
             for i in range(14):
                 dt = (now - timedelta(days=14 - i)).replace(hour=18, minute=0)
                 db.execute(
                     "INSERT INTO behavior_events(server_ts, day, room, persons_json, action, scene, trigger, status) VALUES(?,?,?,?,?,?,?,?)",
-                    (dt.isoformat(), dt.strftime("%Y-%m-%%d"), "livingroom",
+                    (dt.isoformat(), dt.strftime("%Y-%m-%d"), "livingroom",
                      json.dumps([{"name": "testuser"}]), "enter_room", "livingroom", "test", "ok"),
                 )
             db.commit()

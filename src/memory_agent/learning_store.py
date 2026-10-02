@@ -13,15 +13,12 @@ from typing import Sequence
 from learning_models import FeedbackKind, FeedbackSignal, ReasonCode, SubjectType
 from learning_optimizer import ParamAdjustment
 
+from .store import safe_json_loads
+
 
 def _safe_json_loads(raw, default=None):
-    """NEW-P1-1：安全解析 JSON，失败返回默认值。"""
-    if not raw:
-        return default
-    try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
-        return default
+    """NEW-P1-1：安全解析 JSON，失败返回默认值（委托 store 版本，坏数据留 WARNING）。"""
+    return safe_json_loads(raw, default)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS learning_feedback (

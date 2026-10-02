@@ -16,6 +16,7 @@
 对外方法签名保持不变（MCP 工具与 API 均依赖），返回结构亦不变。
 """
 
+import time
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -65,6 +66,8 @@ class HistoryManager:
 
     COLLECTION_NAME = "behavior_history"
     AGENT_COLLECTION = "agent_memory"  # Agent 参与式写回记忆（命名空间隔离）
+    #: 连接失败后的重试冻结时长：启动竞争不该决定进程一生的降级状态（第七轮 CRITICAL-2）。
+    _CHROMA_RETRY_SECONDS = 30.0
 
     def __init__(self, config, store: Optional[Store] = None):
         self.config = config
@@ -72,7 +75,7 @@ class HistoryManager:
         self._client = None
         self._collection = None
         self._chroma_error: str = ""
-        self._chroma_tried = False
+        self._chroma_retry_after: float = 0.0
         self._embed_fn_cache = None
         self._embed_resolved = False
 
@@ -112,12 +115,17 @@ class HistoryManager:
 
     @property
     def collection(self):
-        """惰性连接向量库。不可用时返回 None，绝不让采集或启动失败。"""
+        """惰性连接向量库。不可用时返回 None，绝不让采集或启动失败。
+
+        第七轮审计 CRITICAL-2：失败缓存原本**永久**生效（`_chroma_tried and _chroma_error`
+        直接 return None）。MA 与 chroma 在 compose 里是并列服务、启动顺序不保证，
+        于是「首次那一撞」把整个进程生命周期钉死在无向量降级态，且日志只有启动期那一行。
+        现在失败只冻结 `_CHROMA_RETRY_SECONDS`，到期后允许再试——服务恢复即自愈。
+        """
         if self._collection is not None:
             return self._collection
-        if self._chroma_tried and self._chroma_error:
+        if self._chroma_error and time.monotonic() < self._chroma_retry_after:
             return None
-        self._chroma_tried = True
         try:
             import chromadb
 
@@ -130,11 +138,16 @@ class HistoryManager:
                 embedding_function=self._embedding_function(),
             )
             self._chroma_error = ""
+            self._chroma_retry_after = 0.0
             print(f"[History] 向量库已连接: {self.COLLECTION_NAME}")
         except Exception as exc:
             self._chroma_error = str(exc)
             self._collection = None
-            print(f"[History] 向量库不可用（不影响采集）: {exc}")
+            # 0.0 初值是「还没冻结」而不是「上次失败时刻」：单调时钟从 0 起算，
+            # 用 0.0 当哨兵在这里方向正确（首帧即可尝试），不会重现 P1-1 那种
+            # 「冷却期比进程 uptime 长就永不首触发」的形态。
+            self._chroma_retry_after = time.monotonic() + self._CHROMA_RETRY_SECONDS
+            print(f"[History] 向量库不可用（{self._CHROMA_RETRY_SECONDS:.0f}s 后重试）: {exc}")
         return self._collection
 
     @property
@@ -144,7 +157,7 @@ class HistoryManager:
         复用 ``collection`` 已建立的 chroma client；若 chroma 整体不可用，
         ``self._client`` 为 None，这里同样返回 None。
         """
-        if self._collection is None and not self._chroma_tried:
+        if self._collection is None:
             _ = self.collection  # 触发一次连接，建立 self._client
         if self._client is None:
             return None
@@ -165,7 +178,7 @@ class HistoryManager:
         复用 ``collection`` 已建立的 chroma client；题目去重向量索引落在这里，
         与行为历史（behavior_history）/ Agent 记忆（agent_memory）各自独立。
         """
-        if self._collection is None and not self._chroma_tried:
+        if self._collection is None:
             _ = self.collection  # 触发一次连接，建立 self._client
         if self._client is None:
             return None
@@ -357,8 +370,8 @@ class HistoryManager:
     def reset_chroma(self) -> None:
         self._client = None
         self._collection = None
-        self._chroma_tried = False
         self._chroma_error = ""
+        self._chroma_retry_after = 0.0
         self._embed_fn_cache = None
         self._embed_resolved = False
 

@@ -2,21 +2,42 @@
 # -*- coding: utf-8 -*-
 """模板管理"""
 import json
+import logging
 import os
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any
 import chromadb
 
+from .store import safe_json_loads
+
+logger = logging.getLogger("memory_agent.patterns")
+
 
 def _safe_json_loads(raw, default=None):
-    """NEW-P1-1：安全解析 JSON，失败返回默认值。"""
+    """NEW-P1-1：安全解析 JSON，失败返回默认值（委托 store 版本，坏数据留 WARNING）。"""
+    return safe_json_loads(raw, default)
+
+
+def _json_object(raw, label: str, pattern_id: str = "") -> Optional[dict]:
+    """Chroma metadata 里的 JSON 列 → dict；读不通返回 None，调用方跳过该条模板。
+
+    坏 ``condition`` 不能退化成 ``{}``：房间/时间/季节三道检查会全部变成「不限」，
+    一条读不出来的模板就此匹配全屋所有时段（第七轮审计 · 一条脏记录打断整批）。
+    """
     if not raw:
-        return default
+        return {}
     try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
-        return default
+        value = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning("[Patterns] 模板 %s 的 %s 解析失败，跳过该条: %s",
+                       pattern_id or "?", label, exc)
+        return None
+    if not isinstance(value, dict):
+        logger.warning("[Patterns] 模板 %s 的 %s 不是对象，跳过该条",
+                       pattern_id or "?", label)
+        return None
+    return value
 
 
 def _clean_metadata(source: Dict[str, Any]) -> Dict[str, Any]:
@@ -312,7 +333,11 @@ class PatternManager:
         matched = []
         for i, metadata in enumerate(results.get('metadatas', [[]])[0] if results.get('metadatas') else []):
             # 解析条件
-            condition = json.loads(metadata.get('condition', '{}'))
+            pattern_id = results['ids'][0][i] if results.get('ids') else ""
+            condition = _json_object(metadata.get('condition'), 'condition', pattern_id)
+            action = _json_object(metadata.get('action'), 'action', pattern_id)
+            if condition is None or action is None:
+                continue
             
             # 检查房间
             if condition.get('room') and condition['room'] != room:
@@ -340,11 +365,11 @@ class PatternManager:
             
             # 匹配成功
             pattern = {
-                "id": results['ids'][0][i] if results.get('ids') else "",
+                "id": pattern_id,
                 "person": metadata.get('person', ''),
                 "category": metadata.get('category', ''),
                 "description": metadata.get('description', ''),
-                "action": json.loads(metadata.get('action', '{}')),
+                "action": action,
                 "confidence": float(metadata.get('confidence', 0)),
             }
             matched.append(pattern)

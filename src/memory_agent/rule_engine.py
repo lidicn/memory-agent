@@ -368,7 +368,11 @@ class ActiveRuleEngine:
             return {"ok": False, "error": str(exc)}
 
     def list_rules(self, enabled_only: bool = False) -> list[dict]:
-        """列出所有规则。"""
+        """列出所有规则。
+
+        单条规则的 JSON 列读不通时只跳过那一条并留 WARNING，不让整批规则消失
+        （第七轮审计 · 一条脏记录打断整批）。
+        """
         with self.store._db() as conn:
             sql = "SELECT * FROM active_rules"
             if enabled_only:
@@ -377,28 +381,48 @@ class ActiveRuleEngine:
             rows = conn.execute(sql).fetchall()
         result = []
         for row in rows:
-            d = dict(row)
-            d["condition"] = json.loads(d.pop("condition_json", "{}"))
-            d["action"] = json.loads(d.pop("action_json", "{}"))
-            d["trigger"] = json.loads(d.pop("trigger_json", "") or "{}")
-            d["enabled"] = bool(d.get("enabled"))
-            d["rule_type"] = d.pop("rule_type", "static")
-            result.append(d)
+            d = self._row_to_rule(row)
+            if d is not None:
+                result.append(d)
         return result
 
     def get_rule(self, rule_id: str) -> Optional[dict]:
-        """获取单条规则。"""
+        """获取单条规则；列已损坏、无法安全求值的规则按「不存在」处理。"""
         with self.store._db() as conn:
             row = conn.execute(
                 "SELECT * FROM active_rules WHERE rule_id = ?", (rule_id,)
             ).fetchone()
         if not row:
             return None
+        return self._row_to_rule(row)
+
+    @staticmethod
+    def _row_to_rule(row: Any) -> Optional[dict]:
+        """DB 行 → 规则字典；解析不通返回 None（调用方跳过该条）。
+
+        坏 condition 绝不能退化成 ``{}`` 继续入索引：``_extract_kind({})`` 取不到 kind，
+        规则会被放进 ``*`` 通配桶、对每一条事件求值——一条读不出来的规则就此变成
+        全屋规则。
+        """
         d = dict(row)
-        d["condition"] = json.loads(d.pop("condition_json", "{}"))
-        d["action"] = json.loads(d.pop("action_json", "{}"))
-        d["trigger"] = json.loads(d.pop("trigger_json", "") or "{}")
+        try:
+            condition = json.loads(d.pop("condition_json", "{}"))
+            action = json.loads(d.pop("action_json", "{}"))
+            trigger = json.loads(d.pop("trigger_json", "") or "{}")
+        except (TypeError, ValueError) as exc:
+            logger.warning("规则 %s 的 JSON 列无法解析，跳过该条: %s",
+                           d.get("rule_id", "?"), exc)
+            return None
+        if not isinstance(condition, dict) or not isinstance(action, dict) \
+                or not isinstance(trigger, dict):
+            logger.warning("规则 %s 的 condition/action/trigger 不是对象，跳过该条",
+                           d.get("rule_id", "?"))
+            return None
+        d["condition"] = condition
+        d["action"] = action
+        d["trigger"] = trigger
         d["enabled"] = bool(d.get("enabled"))
+        d["rule_type"] = d.get("rule_type", "static")
         return d
 
     def update_rule(self, rule_id: str, **kwargs) -> dict:

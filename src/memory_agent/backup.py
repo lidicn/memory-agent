@@ -16,8 +16,9 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
-from datetime import datetime
 from typing import Any
+
+from .store import now_local
 
 
 class BackupManager:
@@ -30,7 +31,9 @@ class BackupManager:
         return self.config
 
     def _date_stamp(self) -> str:
-        return datetime.now().strftime("%Y%m%d")
+        # 备份文件名按「家庭日」归档：容器跑在 UTC 时用裸 datetime.now()，
+        # 每天 UTC 16:00–24:00 的备份会被打成前一天，轮转与排查都对不上账。
+        return now_local(getattr(self.config, "tz_offset_hours", 8.0)).strftime("%Y%m%d")
 
     def run_once(self) -> dict:
         cfg = self._cfg()

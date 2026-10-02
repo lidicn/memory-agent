@@ -98,7 +98,9 @@ def _entity_sessions(store, entity_id: str, win_start: str, win_end: str,
             cur_on = None
 
     if cur_on is not None:
-        end_dt = _parse_ts(win_end) or datetime.now()
+        # 会话未闭合时用「现在」收尾：win_start/win_end 与状态时间戳都是家庭墙钟，
+        # 容器 UTC 的 datetime.now() 会把这段时长整体平移 tz_offset 小时。
+        end_dt = _parse_ts(win_end) or now_local(store.tz_offset_hours)
         seconds = max(0.0, (end_dt - cur_on).total_seconds())
         open_at_end = True
         if seconds >= max(0, int(debounce_seconds or 0)):

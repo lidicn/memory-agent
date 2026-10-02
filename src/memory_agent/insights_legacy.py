@@ -46,7 +46,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Optional
 
-from .store import TELEMETRY_DOMAINS, Store, now_local, parse_ts
+from .store import TELEMETRY_DOMAINS, Store, now_local, parse_ts, safe_json_loads
 
 # 单实体事件数超过房间事件数该比例即视为「噪声源」，从行为/房间使用率中剔除
 # （仍保留在设备健康异常检测里）。取值偏保守：真实人类活动通常分散在多个设备，
@@ -2102,9 +2102,15 @@ class InsightService:
             }
         mem = self.store.get_agent_memory(insight_id)
         if mem:
-            refs = json.loads(mem.get("source_refs_json") or "[]")
+            refs = safe_json_loads(mem.get("source_refs_json"), [])
+            if not isinstance(refs, list):
+                refs = []
             resolved = []
             for r in refs:
+                # source_refs 是历史库里的自由文本：单条坏引用只让它自己解析不出，
+                # 不能让 explain 接口整条 500（第七轮审计 · 一条脏记录打断整批）
+                if not isinstance(r, str):
+                    continue
                 if r.startswith("event:"):
                     ev = self.store.get_event(r[6:])
                     if ev:

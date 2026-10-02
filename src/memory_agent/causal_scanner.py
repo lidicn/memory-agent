@@ -11,10 +11,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any
 
 from .change_attribution import detect_change
+from .store import now_local
 
 
 DEFAULT_METRICS = ("arrival_time", "activity_count", "active_duration")
@@ -41,7 +41,9 @@ class CausalScanner:
 
     def _already_alerted_today(self, person: str, metric: str) -> bool:
         """检查今天是否已对该成员+指标写过告警。"""
-        today = datetime.now().strftime("%Y-%m-%d")
+        # day 列按家庭墙钟落库；UTC 容器里的裸 datetime.now() 会让「今天」在
+        # 凌晨 0–8 点指到昨天，去重随之失效（一天内重复告警）。
+        today = now_local(self.store.tz_offset_hours).strftime("%Y-%m-%d")
         scene_prefix = f"{metric}:"
         conn = self.store.connect()
         with self.store._lock:

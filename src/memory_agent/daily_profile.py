@@ -79,11 +79,14 @@ def get_return_time_profile(store, person: str, days: int = 14, min_days: int = 
     返回:
         {"person": str, "baseline": dict|None, "anomaly_today": dict|None, "data_days": int}
     """
-    from datetime import datetime, timedelta
+    from datetime import timedelta
+    from .store import now_local
 
     # 查询最近 N 天的 face_known 事件（客厅）
-    today = datetime.now().strftime("%Y-%m-%d")
-    day_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    # day_from/day_to 匹配 day 列（家庭墙钟），容器 UTC 时钟会让窗口整体错位一天。
+    _now = now_local(store.tz_offset_hours)
+    today = _now.strftime("%Y-%m-%d")
+    day_from = (_now - timedelta(days=days)).strftime("%Y-%m-%d")
     events = store.list_behavior_events(
         room="客厅", member=person, day_from=day_from, day_to=today, limit=500,
     )

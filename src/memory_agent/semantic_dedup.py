@@ -34,11 +34,24 @@ class SemanticDeduplicator:
     def __init__(self, config=None, embedding_fn=None) -> None:
         self.config = config
         self._embedding_fn = embedding_fn
+        #: 构造时注入的 embedding_fn 不归热更新管，重置探测时要还原它
+        self._injected_embedding_fn = embedding_fn
         self._embedding_tried = False
         self._embedding_available = False
 
+    def reset_embedding_probe(self) -> None:
+        """清除「试一次就定终身」的 embedding 探测缓存，让下次调用重新构建。
+
+        第七轮审计 CRITICAL-2 的姊妹处：`_get_embedding_fn()` 一旦 `_embedding_tried`
+        为真就永不重试。用户在 WebUI 里补对 embedding 端点后，若不重置探测，
+        语义去重会一直停留在精确匹配降级态，直到重启进程。
+        """
+        self._embedding_tried = False
+        self._embedding_available = False
+        self._embedding_fn = self._injected_embedding_fn
+
     def _get_embedding_fn(self):
-        """获取 embedding 函数（懒加载，失败一次后不再重试）。"""
+        """获取 embedding 函数（懒加载；失败后由 `reset_embedding_probe()` 解锁重试）。"""
         if self._embedding_tried:
             return self._embedding_fn if self._embedding_available else None
         self._embedding_tried = True

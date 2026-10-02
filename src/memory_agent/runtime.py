@@ -274,9 +274,9 @@ class AppRuntime:
         try:
             await asyncio.sleep(10)  # 启动稍延
             while True:
-                # 算到下一个 23:00 的秒数
-                from datetime import datetime, timedelta
-                now_dt = datetime.now()
+                # 算到下一个 23:00 的秒数（家庭墙钟口径：日记是给这个家庭写的）
+                from datetime import timedelta
+                now_dt = now_local(self.config.tz_offset_hours)
                 next_23 = now_dt.replace(hour=23, minute=0, second=0, microsecond=0)
                 if next_23 <= now_dt:
                     next_23 += timedelta(days=1)
@@ -292,8 +292,8 @@ class AppRuntime:
                     diaries.sort(key=lambda x: x.get("created_at", ""))
                     yesterday_text = diaries[-1]["text"][:200] if diaries else "（还没有日记）"
 
-                    # 从当天 events 提取摘要
-                    today = datetime.now().strftime("%Y-%m-%d")
+                    # 从当天 events 提取摘要（start/end 与 ts 列同为家庭墙钟）
+                    today = now_local(self.config.tz_offset_hours).strftime("%Y-%m-%d")
                     events = await asyncio.to_thread(
                         self.store.query_events,
                         start=f"{today}T00:00:00", end=f"{today}T23:59:59", limit=100,
@@ -828,19 +828,24 @@ class AppRuntime:
                 print(f"[Runtime] 关闭旧 HA MariaDB 客户端异常: {_exc}")
         self.ha_db = self._build_ha_db(self.config)
         self.history.config = self.config
-        # chroma 地址（host/port）变化时，重置连接缓存，让下次访问用新地址重连，
+        # chroma 地址（host/port）或 embedding 端点变化时，重置连接缓存，让下次访问用新地址重连，
         # 否则运行时会一直卡在「首次连接失败」的状态，健康页/写入都报错。
+        _embed_changed = (old.embedding_base_url, old.embedding_model, old.embedding_api_key) \
+            != (self.config.embedding_base_url, self.config.embedding_model, self.config.embedding_api_key)
         if self.history is not None and (
             (old.chroma_host, old.chroma_port)
             != (self.config.chroma_host, self.config.chroma_port)
-            or (old.embedding_base_url, old.embedding_model, old.embedding_api_key)
-            != (self.config.embedding_base_url, self.config.embedding_model, self.config.embedding_api_key)
+            or _embed_changed
         ):
             try:
                 self.history.reset_chroma()
                 print("[Runtime] chroma / embedding 配置变更，已重置连接与嵌入缓存")
             except Exception as exc:
                 print(f"[Runtime] 重置 chroma 连接缓存异常: {exc}")
+        if _embed_changed:
+            # 同一个「试一次就定终身」的形态（第七轮 CRITICAL-2 的姊妹处）：
+            # 语义去重的 embedding 探针失败后永不重试，端点修好了也不回头。
+            self.semantic_dedup.reset_embedding_probe()
         self.tokens.config = self.config
         self.llm.reconfigure(self.config)
         self.arena.config = self.config
@@ -856,6 +861,16 @@ class AppRuntime:
         self.vision.ha = self.ha  # HA 客户端已重建，灯态查询须跟随
         self.tv.reconfigure(self.config, self.ha, self.vision)
         self.store.tz_offset_hours = self.config.tz_offset_hours
+        # 第七轮审计 CRITICAL-1：配置→组件的接缝原先漏了这 5 条。它们在构造时抓住
+        # `runtime.config` 的**对象引用**，而 reload 换的是新对象，于是设置页提示"已生效"、
+        # 行为推断仍按旧时区归档、备份仍读旧开关（backup_enabled 关了也可能继续跑）、
+        # HA 辅助仍用旧的 ha_assist_memory_top_k。这 5 个对象都是「调用时 getattr(self.config…)」，
+        # 重指向即可整条跟随，不需要重建。
+        self.ha_assist.config = self.config
+        self.backup.config = self.config
+        self.semantic_dedup.config = self.config
+        self.activity.config = self.config
+        self.researcher.config = self.config
         return self.config
 
     # ── 可选依赖 ─────────────────────────────────────────────────────────

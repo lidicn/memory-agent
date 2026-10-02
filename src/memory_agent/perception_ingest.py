@@ -251,10 +251,12 @@ def identity_resolve_unknown(store: Any, event: PerceptionEvent, behavior_event_
         return None
 
     try:
-        from datetime import datetime, timedelta
+        from datetime import timedelta
         from .presence_fusion import fuse_presence
+        from .store import now_local
 
-        since_dt = datetime.now() - timedelta(minutes=_IDENTITY_LOOKBACK_MINUTES)
+        # recent_occupancy 的时间戳是家庭墙钟，回溯窗口必须同口径计算
+        since_dt = now_local(store.tz_offset_hours) - timedelta(minutes=_IDENTITY_LOOKBACK_MINUTES)
         since = since_dt.isoformat(timespec="seconds")
 
         roster = store.list_members()
