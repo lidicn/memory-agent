@@ -370,6 +370,37 @@ async def test_list_analysis_templates_advertises_builtin_ids(server):
 
 
 @_SKIP
+async def test_query_unified_events_default_window_uses_family_wall_clock(server, tmp_path):
+    """默认「最近 N 天」必须按家庭墙钟算，不按 UTC。
+
+    三张源表的 ts/server_ts 由 Store 按 +8 墙钟写入，容器时钟是 UTC。此前默认
+    end 取 `datetime.now(timezone.utc)`，生产实测（2026-10-02）把最近 8 小时的
+    **8105 条设备事件**静默切在窗口外——调用方只看到"这 8 小时没数据"。
+    """
+    from memory_agent.store import Store, now_local
+
+    srv, rt = server
+    st = Store(str(tmp_path / "ue.db"), tz_offset_hours=8.0)
+    st.init_schema()
+    wall_now = now_local(8.0).strftime("%Y-%m-%dT%H:%M:%S")
+    with st.transaction() as conn:
+        conn.execute(
+            "INSERT INTO events(id,ts,day,room,entity_id,domain,action,person,attrs_json)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            ("fresh-1", wall_now, wall_now[:10], "客厅", "light.a", "light", "on", "K", "{}"),
+        )
+        conn.commit()
+    rt.store = st
+    try:
+        res = await srv.call_tool("query_unified_events", {"days": 1, "source": "device"})
+        _text, parsed = _call_result(res)
+        assert parsed.get("total") == 1, parsed
+        assert parsed["events"][0]["event_id"] == "fresh-1"
+    finally:
+        st.close()
+
+
+@_SKIP
 async def test_add_semantic_memory_carries_member_id(server):
     srv, rt = server
     res = await srv.call_tool("add_semantic_memory", {

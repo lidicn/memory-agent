@@ -28,7 +28,12 @@
 | `person` | TEXT | 关联人员名（可空） |
 | `entity_id` | TEXT | 关联实体 ID（device=HA entity_id, vision=camera_src, perception=entity_id） |
 | `confidence` | REAL | 置信度（device 为 NULL，vision/perception 为 VLM/AI 置信度） |
-| `raw_json` | TEXT | 原始 JSON 载荷（device=attrs_json, vision=persons_json, perception=payload_json） |
+| `payload` | TEXT | 原始 JSON 载荷（device=`attrs_json`, vision=`json_object(scene,count,camera_src)`, perception=`payload_json`） |
+
+> 2026-10-02 更正：本行原写作 `raw_json`，视图从未有过这一列（DDL 里是 `AS payload`）。
+> 按旧文写 SQL 会直接 `no such column: raw_json`。列名以
+> `doc/路线图与规划/unified_events视图字段语义_20261001.md` 与
+> `tests/test_vma13_unified_events_contract.py` 的十字列契约为准。
 
 ## event_type 语义映射（关键）
 

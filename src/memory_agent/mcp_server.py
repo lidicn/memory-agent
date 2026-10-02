@@ -1367,13 +1367,16 @@ def _build_server():
         event_type 语义：device=entity:action, vision=action, perception=kind。
         只读工具，read scope。
         """
-        from datetime import datetime, timedelta, timezone
+        from datetime import timedelta
 
         rt = get_runtime()
-        now = datetime.now(timezone.utc)
+        # 默认窗口按**家庭墙钟**起算，不用 UTC：三张源表的 server_ts/ts 都由 Store
+        # 按 +8 墙钟写入，容器时钟是 UTC。按 UTC 取 end 会把最近 tz_offset 小时内
+        # 的事件整段切在窗口外——生产实测「最近 7 天」少掉 8105 条设备事件（8 小时），
+        # 且调用方看不出少的是最新那段。与 BUG-TZ1 同源，判据同 rule_engine._now。
         if not start and not end:
-            end_dt = now
-            start_dt = end_dt - timedelta(days=days)
+            end_dt = now_local(getattr(rt.config, "tz_offset_hours", 8.0))
+            start_dt = end_dt - timedelta(days=max(1, int(days)))
             start = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
             end = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
