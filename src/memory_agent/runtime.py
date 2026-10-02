@@ -38,7 +38,7 @@ from .researcher import ResearcherService
 from .activity_inference import ActivityInferenceService
 from .llm_client import LLMRouter
 from .mcp_tokens import MCPTokenStore
-from .mqtt_bridge import MqttBridge
+from .mqtt_bridge import MqttBridge, reset_presence_probe
 from .backup import BackupManager
 from .template_validate import validate_all
 from .poller import CollectService
@@ -201,6 +201,10 @@ class AppRuntime:
             self._mqtt_task = task_registry.create(
                 self._periodic_mqtt_presence(), name="runtime.mqtt_presence"
             )
+            # 启动即尝试建连并登记 LWT：connect() 是异步的，此刻多半还没连上，
+            # 这次返回 False 不要紧——周期任务里的 ensure_advertised 会补发，
+            # 但 will_set 必须在 CONNECT 之前完成，所以客户端要在这里就造出来。
+            self.mqtt.ensure_advertised(self.adm_caps())
             print(
                 f"[MQTT] 实时推送已启用 → {self.config.tv_mqtt_host}:"
                 f"{self.config.tv_mqtt_port} 主题前缀 {self.config.ma_mqtt_topic_prefix}"
@@ -435,6 +439,20 @@ class AppRuntime:
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass
+    def adm_caps(self) -> dict:
+        """本仓能力摘要（契约表 §三 caps 的形状：``{mcp, tools, version}``）。
+
+        工具名取 ``tool_schema.TOOL_NAMES``——那份就是"MCP 面暴露了哪些工具"的唯一真源，
+        不在那里登记的工具 DB 也调不到，写进 caps 只会让探测方打 404。
+        """
+        from . import __version__, tool_schema
+
+        return {
+            "mcp": True,
+            "tools": list(tool_schema.TOOL_NAMES),
+            "version": __version__,
+        }
+
     async def _periodic_mqtt_presence(self) -> None:
         """常驻任务：周期推送成员在场快照，**只在内容变化时发**，避免刷屏。"""
         interval = max(
@@ -444,6 +462,9 @@ class AppRuntime:
         while True:
             try:
                 await asyncio.sleep(interval)
+                # presence 先于在场快照：探测方读的是 retained status/caps，
+                # 断连重连或 broker 重启后（retained 丢失）靠这里重发。
+                self.mqtt.ensure_advertised(self.adm_caps())
                 now = now_local(self.config.tz_offset_hours)
                 # 回溯窗口取 3 倍间隔，避免边界抖动导致成员被误判为离开
                 since = (now - timedelta(seconds=max(120, interval * 3))).isoformat()
@@ -857,6 +878,8 @@ class AppRuntime:
         self.identity.tz_offset_hours = self.config.tz_offset_hours
         self.identity_reconciler.tz_offset_hours = self.config.tz_offset_hours
         self.mqtt.config = self.config
+        # homesdk 可能是热更新之后才到位的（与 house_time 同一口径：探测缓存必须可解）
+        reset_presence_probe()
         self.insights.reload_config(self.config)
         self.analysis.config = self.config
         self.agent_memory.config = self.config

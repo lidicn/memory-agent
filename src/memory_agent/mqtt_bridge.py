@@ -7,6 +7,8 @@ TVPilot / DeskPilot 希望在状态变化时**被推送**，而不是轮询 MA�
 
 * ``ma/presence``      成员在场快照（谁在哪个房间、通过什么方式识别）
 * ``ma/device-health`` 设备健康状态变化（在线 ↔ 失联 ↔ 失效）
+* ``adm/memory-agent/status|caps`` 本仓在线与能力摘要（retained，ADM 契约 §三）
+* ``butler/inbox/notify`` 请 DB 说话（ADM 公共收件箱，白名单内、不 retained）
 
 设计约束
 --------
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import Any
 
 from . import house_time
@@ -62,6 +65,62 @@ def _on_connect(client, userdata, flags, rc, *args):  # noqa: ANN001
         print(f"[MQTT] 连接被拒绝: {_CONNACK_TEXT.get(rc, f'rc={rc}')}")
 
 
+def _new_trace_id() -> str:
+    """契约表 §二：MA 域名下每条载荷都带 trace_id，DB/AF 拿它串起"发了什么、为什么没动"。"""
+    return uuid.uuid4().hex
+
+
+# ── ADM presence / 收件箱（契约表 §三、§五） ────────────────────────────────
+#
+# 主题与上限照 homesdk.presence 的口径写死在本模块一份：库在场时直接调库（真源在库，
+# 白名单与 fail-closed 由库执行），库缺席时 MA 用**同一形状**直发。两条路必须产出
+# 逐字节同构的载荷——否则"装了库"会改变 DB 侧解析结果，而交付形态目前还未裁定。
+
+ADM_MEMBER = "memory-agent"                       # 契约表 ADM_MEMBERS 里 MA 的域名
+ADM_STATUS_TOPIC = f"adm/{ADM_MEMBER}/status"
+ADM_CAPS_TOPIC = f"adm/{ADM_MEMBER}/caps"
+ADM_ONLINE = "online"
+ADM_OFFLINE = "offline"
+
+#: 公共收件箱白名单（DB 拥有）。投递侧只写这三条，不碰 DB 内部语义主题。
+INBOX_TOPICS = frozenset({"butler/inbox/speak", "butler/inbox/notify", "butler/inbox/tv"})
+INBOX_NOTIFY_TOPIC = "butler/inbox/notify"
+INBOX_MAX_TITLE = 80
+INBOX_MAX_BODY = 500
+
+#: homesdk.presence 探测结果缓存：None=未探测，False=不可用，Module=可用
+_presence_probe: Any = None
+
+
+def homesdk_presence() -> Any:
+    """返回 ``homesdk.presence`` 模块，缺席则 ``False``（结果缓存，探测只发生一次）。"""
+    global _presence_probe
+    if _presence_probe is None:
+        try:
+            from homesdk import presence as _presence  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 - 可选依赖，缺席只是走 MA 同构直发
+            _presence_probe = False
+        else:
+            _presence_probe = _presence if hasattr(_presence, "notify") else False
+    return _presence_probe
+
+
+def reset_presence_probe() -> None:
+    """清掉 presence 探测缓存（热更新后库可能才到位，与 house_time 同一口径）。"""
+    global _presence_probe
+    _presence_probe = None
+
+
+def _bounded(text: Any, limit: int, field: str) -> str:
+    """按契约上限收口：库的口径是"超长即拒绝投递"，MA 先截断再发，
+    好让告警不会因为一句话超长就整条消失（截断会打日志，不静默）。"""
+    value = "" if text is None else str(text)
+    if len(value) <= limit:
+        return value
+    print(f"[MQTT] {field} 超长（{len(value)}>{limit}），截断后投递")
+    return value[: limit - 1] + "…"
+
+
 def _default_client_factory(cfg: Any):
     """按配置建一个已连接的 paho 客户端；失败返回 None。"""
     if not MQTT_AVAILABLE:
@@ -87,6 +146,9 @@ def _default_client_factory(cfg: Any):
         client.username_pw_set(user, getattr(cfg, "tv_mqtt_pass", "") or "")
     try:
         client.on_connect = _on_connect
+        # LWT 必须在 connect() **之前**设：will 是 CONNECT 报文里的字段，
+        # 连上之后再 will_set，broker 永远不会知道（kill -9 后也就没人代发 offline）。
+        client.will_set(ADM_STATUS_TOPIC, ADM_OFFLINE, qos=1, retain=True)
         client.connect(
             getattr(cfg, "tv_mqtt_host", "") or "",
             int(getattr(cfg, "tv_mqtt_port", 1883) or 1883),
@@ -110,6 +172,7 @@ class MqttBridge:
         # 冷却结束后再次尝试，达成「broker 恢复后自动重连」，无需重启 MA（v0.6 修复）。
         self._retry_after = 0.0
         self._closed = False  # close() 后置位：关停后残留任务不得再推送
+        self._advertised = False  # presence 是否已广播（断连重连后重置，见 ensure_advertised）
 
     # ── 状态 ──────────────────────────────────────────────────────────────
 
@@ -139,6 +202,8 @@ class MqttBridge:
             # 拒绝（如未授权 rc=5）后仍保留对象并持续重连，导致健康出口长期
             # 显示 connected=true 而消息其实一条都发不出去，严重误导排查。
             "connected": bool(self._client is not None and self._client.is_connected()),
+            "advertised": self._advertised,
+            "homesdk_presence": bool(homesdk_presence()),
             "retry_after": round(retry_after, 1),
             "closed": self._closed,
         }
@@ -188,7 +253,9 @@ class MqttBridge:
     def publish_presence(self, members: list[dict], ts: str) -> bool:
         """成员在场快照。``retain=True`` 让新订阅者立刻拿到当前状态。"""
         return self.publish(
-            "presence", {"members": members, "total": len(members), "ts": ts}, retain=True
+            "presence",
+            {"trace_id": _new_trace_id(), "members": members, "total": len(members), "ts": ts},
+            retain=True,
         )
 
     def publish_health_change(self, entity_id: str, from_state: str, to_state: str,
@@ -197,6 +264,7 @@ class MqttBridge:
         return self.publish(
             "device-health",
             {
+                "trace_id": _new_trace_id(),  # 契约表 §二 每条 ma/* 载荷都带它
                 "entity_id": entity_id,
                 "stable_id": stable_id,
                 "from": from_state,
@@ -206,6 +274,109 @@ class MqttBridge:
                 "ts": house_time.now_local(self.config.tz_offset_hours).isoformat(),
             },
         )
+
+    # ── ADM presence（契约表 §三：retained status + caps + LWT） ────────────
+
+    def advertise(self, caps: dict | None = None) -> bool:
+        """广播本仓在线与能力摘要（两条都 retained，QoS=1）。
+
+        不记状态，重复调就重复发；运行时请用 ``ensure_advertised()``。
+        """
+        if not self.enabled or self._closed:
+            return False
+        client = self._ensure_client()
+        if client is None:
+            return False
+        if not client.is_connected():
+            # 与 publish() 同一个理由：未连上时的 publish 会"成功"但发不出去，
+            # 让 presence 也照实返回 False，运行时下轮重试，别把没送达记成已广播。
+            # 同时把标记清掉——否则断连期间标记还停在 True，重连后 ensure_advertised
+            # 会认为"已经广播过"，而 broker 重启早把 retained 丢了，探测方永远读不到在线。
+            print("[MQTT] 客户端尚未连接，跳过 presence 广播（下一轮重试）")
+            self._advertised = False
+            return False
+        presence = homesdk_presence()
+        if presence:
+            try:
+                presence.advertise(client, ADM_MEMBER, caps=caps)
+                self._advertised = True
+                return True
+            except Exception as exc:  # noqa: BLE001 - 旁路能力，失败不上抛
+                print(f"[MQTT] presence 广播失败（homesdk 口径）: {exc}")
+                return False
+        ok = self.publish_raw(ADM_STATUS_TOPIC, ADM_ONLINE, retain=True)
+        if caps is not None:
+            ok = self.publish_raw(ADM_CAPS_TOPIC, caps, retain=True) and ok
+        self._advertised = ok
+        return ok
+
+    def ensure_advertised(self, caps: dict | None = None) -> bool:
+        """连上后广播一次；断开重连（边沿）再发一次。
+
+        重发的理由不是心跳：broker 重启会丢 retained 消息，而探测方是按"读 retained
+        零往返"来判在线的，不重发就会长期把在线的 MA 读成离线。
+        """
+        if not self.enabled or self._closed:
+            return False
+        client = self._client
+        if self._advertised and client is not None and client.is_connected():
+            return True
+        return self.advertise(caps)
+
+    def publish_notify(self, title: str, body: str, *, trace_id: str,
+                       channel: str = "", priority: int = 0) -> bool:
+        """请 DB 推送通知（``butler/inbox/notify``，不 retained）。
+
+        ``trace_id`` 缺失即拒发——契约把它定为跨仓排障锚点（fail-closed）。MA 是旁路
+        能力，所以"拒绝"的表现是返回 False + 打日志，而不是把异常抛进采集主链路。
+        """
+        if not self.enabled or self._closed:
+            return False
+        tid = (trace_id or "").strip()
+        if not tid:
+            print("[MQTT] 收件箱投递被拒：缺 trace_id（契约要求必填）")
+            return False
+        client = self._ensure_client()
+        if client is None:
+            return False
+        if not client.is_connected():
+            print(f"[MQTT] 客户端尚未连接，跳过收件箱投递 {INBOX_NOTIFY_TOPIC}")
+            return False
+        safe_title = _bounded(title, INBOX_MAX_TITLE, "title")
+        safe_body = _bounded(body, INBOX_MAX_BODY, "body")
+        presence = homesdk_presence()
+        if presence:
+            try:
+                presence.notify(client, safe_title, safe_body, trace_id=tid,
+                                channel=channel, priority=priority)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                print(f"[MQTT] 收件箱投递失败（homesdk 口径）: {exc}")
+                return False
+        # 库缺席时的同构载荷：ts 用 epoch（库那份就是 int(time.time())），
+        # channel/priority 为空或 0 时**不写进载荷**——和库的 include 规则一致，
+        # 否则"装没装库"会改变 DB 侧看到的字段集。
+        payload: dict[str, Any] = {"trace_id": tid, "ts": int(time.time()),
+                                   "title": safe_title, "body": safe_body}
+        if channel:
+            payload["channel"] = channel
+        if priority:
+            payload["priority"] = priority
+        return self.publish_raw(INBOX_NOTIFY_TOPIC, payload)
+
+    def _publish_adm_state(self, state: str) -> None:
+        """尽力把 status 落到 retained（关停路径用，不判定成功）。"""
+        client = self._client
+        if client is None:
+            return
+        try:
+            info = client.publish(ADM_STATUS_TOPIC, state, qos=1, retain=True)
+            # 关停时 loop 线程随时会停，给这条 retained 一个有界的送达窗口
+            waiter = getattr(info, "wait_for_publish", None)
+            if callable(waiter):
+                waiter(timeout=1.0)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[MQTT] 下线状态未送达（不阻塞关停）: {exc}")
 
     # ── 内部 ──────────────────────────────────────────────────────────────
 
@@ -231,6 +402,7 @@ class MqttBridge:
             return None
         self._client = client
         self._retry_after = 0.0
+        self._advertised = False  # 换了新客户端就得重新广播（LWT 也是随 CONNECT 才生效）
         return client
 
     def close(self) -> None:
@@ -238,7 +410,12 @@ class MqttBridge:
         self._closed = True
         self._retry_after = 0.0
         client = self._client
+        # 优雅下线：主动把 retained 置成 offline，而不是等 broker 的 LWT——
+        # LWT 只在异常断连时代发，正常 disconnect 不会触发，否则探测方会一直读到 online。
+        if client is not None and self._advertised:
+            self._publish_adm_state(ADM_OFFLINE)
         self._client = None
+        self._advertised = False
         if client is None:
             return
         try:

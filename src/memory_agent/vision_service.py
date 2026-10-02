@@ -1108,18 +1108,33 @@ class VisionService:
         # DCD 裁定 2026-09-29：MA 不得直推 DB 内部主题；告警统一投 ma/insights，
         # 不 retained，QoS1（publish_raw 内部已统一 QoS=1）
         topic = getattr(self.config, "vision_alert_mqtt_topic", "") or "ma/insights"
+        # 同一条告警的两个通道共用一个 trace_id：契约把 trace_id 定为跨仓排障锚点，
+        # 各生成一个就串不起来"MA 发了、DB 为什么没说话"。
+        trace_id = uuid.uuid4().hex
+        message = action or f"{room} 出现未识别人员"
         try:
             mqtt.publish_raw(topic, {
                 "type": "alert",
                 "source": "ma",
-                "trace_id": uuid.uuid4().hex,
+                "trace_id": trace_id,
+                "ts": now_local(self.config.tz_offset_hours).isoformat(),  # 契约表 §二：ts 必填
                 "room": room,
                 "alert_type": "stranger",
-                "message": action or f"{room} 出现未识别人员",
+                "message": message,
                 "snapshot_url": snapshot_url,
             }, retain=False)
         except Exception as exc:  # noqa: BLE001
             print(f"[Vision] 异常 MQTT 推送失败（已忽略）: {exc}")
+        # 双通道的另一半（ADM 联动计划 第 1 步 ①）：投 DB 的公共收件箱，让 DB 决定
+        # 要不要说话。收件箱载荷只带文字，不带 snapshot_url——快照路径进音箱链路上等于
+        # 把内部存储位置广播出去，而播报本身用不到它。
+        try:
+            mqtt.publish_notify(
+                f"{room} 出现未识别人员", message,
+                trace_id=trace_id, channel="vision", priority=5,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Vision] 收件箱通知投递失败（已忽略）: {exc}")
 
     def _register_failure(
         self, room: str, stream: str, trigger: str, error: str,
