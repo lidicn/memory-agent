@@ -2359,7 +2359,7 @@ def _build_server():
     @mcp.tool()
     async def retrieve_agent_memories(
         question: str = "", trust_min: float = -1.0, top_k: int = 5,
-        member_id: str = "", query: str = ""
+        member_id: str = "", query: str = "", limit: int = 0
     ) -> dict:
         """从 Agent 记忆库检索已晋升 live 的记忆（按相似度+trust 重排）。
 
@@ -2370,6 +2370,8 @@ def _build_server():
         member_id: 成员归属过滤（只召回该成员的记忆；空=全部）。
         trust_min: 最低信任分过滤（默认 -1 不限制）。
         top_k: 返回条数（默认 5，最多受配置 agent_retrieve_k 约束）。
+        limit: top_k 的兼容别名（butler 侧沿用的是 HTTP 分页口径的命名）；
+               非 0 时覆盖 top_k，否则用 top_k。
         返回 {ok, schema, count, memories: [{memory_id, text, member_id, similarity, trust, final_score, topic_key}]}。
         """
         # WO-ADM-001 R-60：query/question 兼容（butler 旧版传 query，新版传 question）
@@ -2399,11 +2401,12 @@ def _build_server():
             except Exception:
                 pass
         rt = get_runtime()
+        k = int(limit) if limit and int(limit) > 0 else int(top_k)
         hits = await asyncio.to_thread(
             rt.agent_memory.retrieve,
             q,
             trust_min=trust_min if trust_min > -1 else None,
-            top_k=max(1, int(top_k)),
+            top_k=max(1, k),
             member_id=member_id,
         )
         return {"ok": True, "schema": "ma-recall/1", "count": len(hits), "memories": hits}

@@ -360,6 +360,51 @@ TOOL_SPECS: list = [
         pitfall="days 越大画像越稳；默认 14 天。画像基于行为统计，非绝对标签。",
     ),
     ToolSpec(
+        name="get_member_persona",
+        summary="成员生活习惯画像：档案 + 全屋画像 +（已绑定房间时）房间定向洞察 + 已存档标签。",
+        description=(
+            "拉取某成员的生活习惯画像：成员档案（name/rooms/avatar）+ 全屋行为画像 + "
+            "若已绑定房间则附该房间定向洞察 + 已确认的存档标签。"
+            "ADM 联动计划第 4 步点名给 DB 消费的工具之一，签名以本条为唯一事实源。"
+        ),
+        group="洞察",
+        # 与 3.5 只读汇总工具同口径：只有 MCP 手写函数体，没有 rt.<service>.<method>，
+        # 所以标 static（validate_specs 会拦「service 有值但 method 为空」的自相矛盾登记）。
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("member_id", "string", "成员 ID（不是姓名），如 member:xxxx", required=True),
+            _p("days", "integer", "画像统计窗口，默认 14", default=14),
+        ],
+        example="get_member_persona(member_id='member:abc', days=30)",
+        pitfall="member_id 必填且必须存在，不存在返回 {ok:false, error:'成员不存在'}——"
+                "成员隔离是 fail-closed，没有「全部成员」视图。姓名版指标请用 get_user_persona。",
+    ),
+    ToolSpec(
+        name="analyze_behavior_change",
+        summary="行为变化因果归因：检测某人某指标是否发生拐点，并搜索验证可能原因（P5a+P5b）。",
+        description=(
+            "P5a 检测变化点 → P5b 分组比较法验证每个候选原因的因果性（有事件天 vs 无事件天）。"
+            "支持 metric：arrival_time（到家时间）、activity_count（日活动量）、"
+            "active_duration（日活跃时长）、room_distribution（房间分布，需指定 room）。"
+            "ADM 联动计划第 4 步点名给 DB 消费的工具之一，签名以本条为唯一事实源。"
+        ),
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("person", "string", "成员名称，如 lidicn/Kevin/Emily", required=True),
+            _p("metric", "string", "行为指标", default="arrival_time",
+               enum=["arrival_time", "activity_count", "active_duration", "room_distribution"]),
+            _p("days", "integer", "回溯总天数，默认 30", default=30),
+            _p("lookback_days", "integer", "变化点前搜索候选原因的天数，默认 7", default=7),
+            _p("room", "string", "room_distribution 指标时指定房间"),
+        ],
+        example="analyze_behavior_change(person='Kevin', metric='arrival_time', days=30)",
+        pitfall="metric=room_distribution 必须带 room，否则结果无指向；归因给的是**相关性验证过的候选原因**，"
+                "不是因果定论。person 用姓名口径（与 get_member_persona 的 member_id 不同）。",
+    ),
+    ToolSpec(
         name="explain_insight",
         summary="解读某条洞察：返回其计算口径、数据来源、置信度与使用建议。",
         description=(
@@ -653,7 +698,9 @@ TOOL_SPECS: list = [
             _p("include_timeline", "boolean", "是否返回会话时间轴，默认 True", default=True),
         ],
         example="run_analysis_template(template_id='xbox_daily_usage', days=2)",
-        pitfall="这是'执行'模板，不是导出配置；拿到 summary_text/entities 直接作答，不要重新统计。",
+        pitfall="这是'执行'模板，不是导出配置；拿到 summary_text/entities 直接作答，不要重新统计。"
+                "内置模板 id（如 ac_runtime_daily 空调运行时长、water_purifier_daily 净水器出水量）"
+                "以 list_analysis_templates 返回为准，不要凭记忆猜。",
     ),
     ToolSpec(
         name="save_skill",
@@ -721,6 +768,7 @@ TOOL_SPECS: list = [
             _p("topic_key", "string", "主题键（可选）"),
             _p("dry_run", "boolean", "True（默认）只自检不落库；False 才写入", default=True),
             _p("session_id", "string", "会话 ID，默认 'mcp'", default="mcp"),
+            _p("member_id", "string", "成员归属（WO-MA-005）；写入时记录该记忆属于哪个成员"),
         ],
         example="add_semantic_memory(text='书房电脑通常 23:50 关机', source_refs=['insight:...'], dry_run=False)",
         pitfall="dry_run 默认 True 不落库；要真正写入需显式 dry_run=False。写入恒为 staging。",
@@ -786,15 +834,20 @@ TOOL_SPECS: list = [
     ),
     ToolSpec(
         name="list_agent_memories",
-        summary="列出 agent 记忆（按状态过滤）。",
-        description="列出 agent 记忆（state=staging|live|revoked|pending_review|all）。",
+        summary="列出 agent 记忆（按状态 + 成员归属过滤）。",
+        description="列出 agent 记忆（state=staging|live|revoked|pending_review|all；"
+                    "member_id 过滤成员）。revoked 永不经本工具返回。",
         group="记忆",
         service="agent_memory", method="list_agent_memories",
         expose=("mcp",),
         generated=False,
-        params=[_p("state", "string", "状态过滤，默认 'all'", default="all")],
-        example="list_agent_memories(state='live')",
-        pitfall="默认列出全部状态；用 state 缩小范围。",
+        params=[
+            _p("state", "string", "状态过滤，默认 'live'", default="live"),
+            _p("member_id", "string", "成员归属过滤；普通令牌必填，缺省仅 admin scope 可查全量"),
+        ],
+        example="list_agent_memories(state='live', member_id='member:abc')",
+        pitfall="member_id 是隐私面硬门：普通令牌不传 member_id 直接 403（不会退回全量）；"
+                "state 默认 live 而非 all，取历史需显式传。",
     ),
     ToolSpec(
         name="get_session_trust",
@@ -822,8 +875,9 @@ TOOL_SPECS: list = [
     ),
     ToolSpec(
         name="retrieve_agent_memories",
-        summary="语义检索 agent 记忆（带信任阈值与 top_k）。",
-        description="语义检索 agent 记忆（带信任阈值与 top_k），用于为回答提供证据。",
+        summary="语义检索 agent 记忆（带信任阈值、成员归属与 top_k/limit）。",
+        description="语义检索 agent 记忆（带信任阈值与 top_k），用于为回答提供证据。"
+                    "返回 {ok, schema:'ma-recall/1', count, memories:[...]}。",
         group="记忆",
         service="agent_memory", method="retrieve",
         expose=("mcp",),
@@ -832,9 +886,12 @@ TOOL_SPECS: list = [
             _p("question", "string", "检索问题", required=True),
             _p("trust_min", "number", "最低信任分过滤，默认 -1（不限制）", default=-1.0),
             _p("top_k", "integer", "返回条数，默认 5", default=5),
+            _p("member_id", "string", "成员归属过滤；普通令牌必填，缺省仅 admin scope 可跨成员"),
+            _p("query", "string", "question 的兼容别名（butler 旧参数名）"),
+            _p("limit", "integer", "top_k 的兼容别名（butler 侧命名）；非 0 时覆盖 top_k", default=0),
         ],
-        example="retrieve_agent_memories(question='昨晚空调开了几次', top_k=5)",
-        pitfall="trust_min 低于 0 表示不限制；过高会召回过少。",
+        example="retrieve_agent_memories(question='昨晚空调开了几次', top_k=5, member_id='member:abc')",
+        pitfall="trust_min 低于 0 表示不限制；过高会召回过少。member_id 缺失时普通令牌直接 ok:false。",
     ),
     ToolSpec(
         name="agent_memory_health",

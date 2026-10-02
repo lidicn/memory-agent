@@ -218,6 +218,71 @@ BUILTIN_INSIGHTS: list[BehaviorInsight] = [
         interpretation="在 {window} 内，卧室人体传感器持续无人的时长约 {total_human}（近似就寝时段，v1 取首实体）。",
         created_at=datetime.now().isoformat(),
         updated_at=datetime.now().isoformat()
+    ),
+    BehaviorInsight(
+        id="ac_runtime_daily",
+        name="空调运行时长汇总",
+        description="汇总各房间空调（climate 域）的运行时长，一次调用拿到逐台累计值与分日明细",
+        category="climate",
+        entities=[
+            EntityQuery(
+                entity_id="climate.lumi_cn_84159632_v2",
+                logical_id="climate__书房空调空调",
+                attribute="state",
+                pattern="equals",
+                # value 留空 = 走 OFF_STATES 判定：heat/cool/auto/dry/fan_only 等任一非关闭态都算运行。
+                # 若写死 value="cool"，制热/自动模式会被漏计。
+                value="",
+                time_range="",
+                metric="duration"
+            ),
+            EntityQuery(
+                entity_id="climate.lumi_cn_124561701_mcn02",
+                logical_id="climate__主卧室空调空调",
+                attribute="state",
+                pattern="equals",
+                value="",
+                time_range="",
+                metric="duration"
+            ),
+            EntityQuery(
+                entity_id="climate.lumi_cn_93873475_v3",
+                logical_id="climate__房间空调空调",
+                attribute="state",
+                pattern="equals",
+                value="",
+                time_range="",
+                metric="duration"
+            ),
+            EntityQuery(
+                entity_id="climate.xiaomi_cn_533439795_mt0",
+                logical_id="climate__米家新风空调尊享版15匹空调",
+                attribute="state",
+                pattern="equals",
+                value="",
+                time_range="",
+                metric="duration"
+            )
+        ],
+        pattern="climate 实体 state 从 off 变为 heat/cool/auto/dry/fan_only 等任一模式即视为空调运行，回到 off 结束该段",
+        confidence=0.9,
+        sample_days=30,
+        nr_condition="""
+// 查询条件：汇总各房间空调运行时长
+// 1. 取各 climate 实体在窗口内的状态历史（含窗口前最后一条，避免跨零点长段被吞）
+// 2. state ∈ OFF_STATES(off/unavailable/unknown/…) 视为关闭，其余视为运行
+// 3. 按运行区间累计，短于去抖阈值的片段丢弃
+""".strip(),
+        nr_action="""
+// 执行动作：
+// 方案 A：把 summary_text 直接转述给用户（一次调用，无需另写查询）
+// 方案 B：单台日均超阈值（如 8 小时）时提醒检查温度设定/滤网
+// 方案 C：长时间无人房间空调仍运行 → 联动规则确认是否忘关
+""".strip(),
+        default_days=7,
+        interpretation="在 {window} 内，空调运行情况：{body}。",
+        created_at=datetime.now().isoformat(),
+        updated_at=datetime.now().isoformat()
     )
 ]
 

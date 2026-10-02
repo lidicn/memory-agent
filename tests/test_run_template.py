@@ -228,3 +228,77 @@ def test_run_analysis_template_function_registered():
     assert "def run_analysis_template(" in src
     from memory_agent.tool_schema import SPEC_BY_NAME
     assert "run_analysis_template" in SPEC_BY_NAME
+
+
+# ── 内置「空调时长」聚合模板（ADM 联动计划第 4 步 ②）────────────────────────
+
+def _builtin(template_id: str):
+    from memory_agent.templates import BUILTIN_INSIGHTS
+    return next((t for t in BUILTIN_INSIGHTS if t.id == template_id), None)
+
+
+def test_builtin_ac_runtime_template_shape():
+    t = _builtin("ac_runtime_daily")
+    assert t is not None, "计划卡 ② 要求内置「空调时长」聚合模板"
+    assert t.category == "climate"
+    assert len(t.entities) >= 2, "多房间汇总才有意义，单实体不算聚合"
+    for eq in t.entities:
+        assert eq.entity_id.startswith("climate."), eq.entity_id
+        assert eq.metric == "duration"
+        assert eq.attribute == "state"
+        # value 留空才走 OFF_STATES 判定；写死 "cool" 会把 heat/auto/dry 模式漏掉
+        assert eq.value in ("", None), eq.value
+        # 不裁剪时段：00:00-23:59 会每天丢掉 23:59-00:00 这段运行时长
+        assert eq.time_range == "", eq.time_range
+        assert eq.logical_id, "必须带逻辑引用，HA 重登导致实体漂移时才能自愈"
+    assert "{window}" in t.interpretation
+    # 多实体模板若只用 {total_human}，话术会退化成「只报第一台」
+    assert "{body}" in t.interpretation, t.interpretation
+
+
+def test_builtin_ac_runtime_template_roundtrip_and_builtin_protection(tmp_path):
+    from memory_agent.templates import BehaviorInsight, TemplateManager
+    t = _builtin("ac_runtime_daily")
+    t2 = BehaviorInsight.from_dict(t.to_dict())
+    assert [e.logical_id for e in t2.entities] == [e.logical_id for e in t.entities]
+    assert [e.value for e in t2.entities] == ["" for _ in t.entities]
+    assert [e.time_range for e in t2.entities] == ["" for _ in t.entities]
+    mgr = TemplateManager(str(tmp_path))
+    assert mgr.is_builtin("ac_runtime_daily") is True
+    assert mgr.get("ac_runtime_daily") is not None
+    assert mgr.delete("ac_runtime_daily") is False, "内置模板不可删"
+
+
+def test_run_template_ac_runtime_aggregates_every_room():
+    t = _builtin("ac_runtime_daily")
+    rt = _FakeRT(t)
+    out = run_template(rt, "ac_runtime_daily")
+    assert out["ok"] is True
+    assert len(out["entities"]) == len(t.entities)
+    assert out["summary_text"].count("累计 1小时") == len(t.entities)
+    assert "空调运行情况" in out["summary_text"]
+    assert out["template"]["id"] == "ac_runtime_daily"
+
+
+def test_run_template_ac_runtime_prefers_logical_ref_resolution():
+    """身份层给出新实体时，模板必须用新实体而不是写死的 entity_id。"""
+    t = _builtin("ac_runtime_daily")
+    mapping = {
+        eq.logical_id: [f"climate.migrated_{i}"]
+        for i, eq in enumerate(t.entities)
+    }
+    rt = _FakeRT(t)
+    rt.identity = _FakeIdentity(mapping)
+    out = run_template(rt, "ac_runtime_daily")
+    used = [e["entity_id"] for e in out["entities"]]
+    assert used == [f"climate.migrated_{i}" for i in range(len(t.entities))]
+    assert all(e["stale"] is False for e in out["entities"])
+
+
+class _FakeIdentity:
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+    def resolve(self, ref):
+        eids = self._mapping.get(ref) or []
+        return (list(eids), None) if eids else ([], "unresolved")
