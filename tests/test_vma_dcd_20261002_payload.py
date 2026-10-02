@@ -187,14 +187,20 @@ def test_inbox_notify_ts_stays_epoch_int_as_the_registered_exception():
 # ── 交付面 Q1：vendor 的三处一致 ─────────────────────────────────────────────
 
 _WHEEL = os.path.join(_ROOT, "vendor", "homesdk-0.3.1-py3-none-any.whl")
+_README = os.path.join(_ROOT, "vendor", "README.md")
+_DOCKERFILE = os.path.join(_ROOT, "Dockerfile")
+# 三件齐全才是"完整检出"：容器快照常只 `git archive src tests …`，那种缺件不是不一致，
+# 判红就是把取证手法的差异报成产品缺陷。
+_PROVENANCE_COMPLETE = os.path.exists(_WHEEL) and os.path.exists(_README) and os.path.exists(_DOCKERFILE)
 
 
-@pytest.mark.skipif(not os.path.exists(_WHEEL), reason="vendored wheel 不在工作区（CI 精简检出）")
+@pytest.mark.skipif(not _PROVENANCE_COMPLETE,
+                    reason="wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对")
 def test_vendored_wheel_matches_the_sha_registered_in_vendor_readme():
-    readme = open(os.path.join(_ROOT, "vendor", "README.md"), encoding="utf-8").read()
+    readme = open(_README, encoding="utf-8").read()
     actual = hashlib.sha256(open(_WHEEL, "rb").read()).hexdigest()
     assert actual in readme, f"wheel 实算 sha {actual} 与 vendor/README.md 登记值不一致"
 
-    dockerfile = open(os.path.join(_ROOT, "Dockerfile"), encoding="utf-8").read()
+    dockerfile = open(_DOCKERFILE, encoding="utf-8").read()
     assert "vendor/homesdk-0.3.1-py3-none-any.whl" in dockerfile
     assert "COPY vendor/" in dockerfile, " wheel 进了仓但没进镜像构建上下文"

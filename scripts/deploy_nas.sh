@@ -68,7 +68,11 @@ run_contract_gate() {
     fi
     # 清理不参与判红：docker cp 落盘的属主是宿主机 uid，容器用户（实测 uid 10001）在
     # sticky /tmp 里删不掉它——上一版把 rm 串进判定链，把 42 passed 的绿跑成了假红。
-    "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker exec memory-agent sh -lc 'rm -rf /tmp/ma_gate || true; rm -f /tmp/ma_contract.tar || true'; rm -f /tmp/ma_contract.tar" || true
+    # 清理各删各的：容器里的 /tmp/ma_gate 归容器用户（uid 10001），宿主机删不动它；
+    # /tmp/ma_contract.tar 是 scp 落在**宿主机**上的，归宿主机用户，容器里 rm 只会报
+    # "Operation not permitted"（上一版把这条串进判定链，把 42 passed 绿跑读成了假红）。
+    "$SSH" "${SSH_OPTS[@]}" "$NAS" "rm -f /tmp/ma_contract.tar;
+        docker exec memory-agent sh -lc 'rm -rf /tmp/ma_gate || true'" || true
     echo "[deploy] 契约门禁绿（tests/contract 对刚同步的 /app/src）"
 }
 
