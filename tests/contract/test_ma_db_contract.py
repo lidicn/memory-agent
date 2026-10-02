@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -184,10 +185,15 @@ class _FakeAgentMemory:
         self.calls.append({"question": question, "top_k": top_k, "member_id": member_id})
         return [{"memory_id": "m1", "text": "证据", "member_id": member_id, "trust": 0.8}]
 
-    def add_semantic_memory(self, text, source_refs=None, tags=None, ttl_days=0,
-                            topic_key="", dry_run=True, session_id="mcp", member_id=""):
-        self.calls.append({"text": text, "dry_run": dry_run, "member_id": member_id})
-        return {"ok": True, "dry_run": dry_run, "memory_id": "m-new", "member_id": member_id}
+    def add_semantic_memory(self, *args, **kwargs):
+        """按真实位置参签名收：mcp_server 以 12 个位置参调用（见其 add_semantic_memory）。
+
+        契约只关心 member_id 是否透传，因此这里照单收下并记录位置参，
+        由测试断言末位（member_id）等于请求里的成员。
+        """
+        member_id = kwargs.get("member_id") or (args[11] if len(args) > 11 else "")
+        self.calls.append({"args": args, "kwargs": kwargs, "member_id": member_id})
+        return {"ok": True, "memory_id": "m-new", "member_id": member_id}
 
 
 class _FakeVision:
@@ -199,6 +205,21 @@ class _FakeVision:
 
 
 class _FakeStore:
+    """够用的 Store 桩：契约只要求工具不抛异常并返回 JSON，不要求真事件数据。
+
+    `tz_offset_hours` 是产品码 `_fetch_attribution_events` 直接读的 Store 属性
+    （第七轮审计·时区关节把裸 datetime.now() 换成了家庭墙钟），桩子缺它会在
+    调用前 AttributeError——那是桩子失真，不是产品 bug。
+    """
+
+    tz_offset_hours = 8.0
+
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    def connect(self):
+        return _FakeConn()
+
     def entity_last_seen(self, entities=None):
         return {}
 
@@ -207,6 +228,16 @@ class _FakeStore:
 
     def get_member(self, member_id):
         return None if member_id == "member:ghost" else {"member_id": member_id, "name": "K"}
+
+
+class _FakeConn:
+    def execute(self, *a, **k):
+        return _FakeRows()
+
+
+class _FakeRows:
+    def fetchall(self):
+        return []
 
 
 class _FakeCfg:
@@ -347,7 +378,11 @@ async def test_add_semantic_memory_carries_member_id(server):
     })
     _text, parsed = _call_result(res)
     assert parsed.get("ok") is True, parsed
-    assert rt.agent_memory.calls[-1]["member_id"] == "member:abc"
+    last = rt.agent_memory.calls[-1]
+    assert last["member_id"] == "member:abc"
+    # 位置参口径也钉住：MA 内部用位置参转发，成员必须落在末位（args[11]）。
+    # 只看 kwargs 会漏掉"改名后走位置参错位"这类回归。
+    assert last["args"][11] == "member:abc", last["args"]
 
 
 # ── 4. 收件箱主题白名单 ──────────────────────────────────────────────────────
