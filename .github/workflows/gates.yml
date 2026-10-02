@@ -50,11 +50,17 @@ jobs:
       - name: pyflakes gate (baseline ratchet)
         run: bash scripts/pyflakes_gate.sh
 
-      # 基线只准减少：这里再跑一次全量口径，把净变化打进日志，方便评审直接引用。
-      - name: Full tally (informational)
-        if: always()
-        continue-on-error: true
-        run: homesdk-gates . --no-baseline --no-smoke --quiet
+      # 基线只准减少：:42 那条硬闸的输出已经把净变化打进日志了——
+      # `扫描完成：新增/未获批 N 条（error/warn），基线内存量 M 条，过期基线条目 K 条`，
+      # 评审要的两个读数（N 与 M）都在同一行里。
+      #
+      # DCD 裁定 20261002 §一 点名删掉这里的 `continue-on-error: true`（假绿：一条永远不可能红的步）。
+      # 实测之后按"删除该步"落，不是"留着并让它红"：
+      #   `homesdk-gates . --no-baseline --no-smoke --quiet` → 新增/未获批 **208 条**（error 33 / warn 175），**EXIT=1**
+      #   `homesdk-gates . --no-smoke --quiet`（带基线，即 :42 的口径）→ 新增 **0 条**，基线内存量 **208 条**，**EXIT=0**
+      # 同一条命令去掉 `--no-baseline` 才是"能红且今天绿"的判据；留着 `--no-baseline` 又去掉容错，
+      # 等于把 208 条已入账的欠账变成每次 push 必红——那不是门禁，是永久红灯。欠账清零是路线图 3.1.3
+      # 的活（pyflakes 那档已清零），清完再谈把全量口径升成硬闸。
 
   smoke-gates:
     # 冒烟在镜像里跑：装齐依赖之后，这条红才配当结论。

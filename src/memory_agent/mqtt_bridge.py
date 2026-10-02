@@ -260,12 +260,20 @@ class MqttBridge:
 
     def publish_health_change(self, entity_id: str, from_state: str, to_state: str,
                               stable_id: str = "") -> bool:
-        """设备健康状态变化（A3 告警出口）。"""
+        """设备健康状态变化（A3 告警出口）。
+
+        DCD 裁定 20261002 Q2：契约形状是 ``{device_id, status}``，MA 原有的是
+        ``{entity_id, to}``。裁定取"加别名、保留原键"——`from`/`to` 携带的迁移方向
+        是 DB 判「失联 vs 恢复」的依据，只留 `status` 会把它丢掉。
+        """
         return self.publish(
             "device-health",
             {
                 "trace_id": _new_trace_id(),  # 契约表 §二 每条 ma/* 载荷都带它
                 "entity_id": entity_id,
+                # 契约字段名（同一值的两个别名，DB 按契约写就不落空）
+                "device_id": entity_id,
+                "status": to_state,
                 "stable_id": stable_id,
                 "from": from_state,
                 "to": to_state,
@@ -356,7 +364,11 @@ class MqttBridge:
         # 库缺席时的同构载荷：ts 用 epoch（库那份就是 int(time.time())），
         # channel/priority 为空或 0 时**不写进载荷**——和库的 include 规则一致，
         # 否则"装没装库"会改变 DB 侧看到的字段集。
-        payload: dict[str, Any] = {"trace_id": tid, "ts": int(time.time()),
+        payload: dict[str, Any] = {"trace_id": tid,
+                                   # 裁定 20261002 Q6 的**登记特例**：事件类载荷的 ts 用家庭墙钟
+                                   # ISO（见 publish_health_change），但收件箱是 DB 侧消费、要按
+                                   # epoch 排序，所以这一条保留 epoch int，不跟墙钟统一。
+                                   "ts": int(time.time()),
                                    "title": safe_title, "body": safe_body}
         if channel:
             payload["channel"] = channel

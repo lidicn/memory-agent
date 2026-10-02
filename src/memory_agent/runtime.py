@@ -444,13 +444,16 @@ class AppRuntime:
 
         工具名取 ``tool_schema.TOOL_NAMES``——那份就是"MCP 面暴露了哪些工具"的唯一真源，
         不在那里登记的工具 DB 也调不到，写进 caps 只会让探测方打 404。
+
+        ``version`` 报**计划号**（``PLAN_VERSION``）而不是包版本：DCD 裁定 20261002 Q7。
+        包版本是 1.0.0 这种内部实现号，各仓对外沟通用的是 vMA-x.y.z，DB/AF 读 caps 要看的是后者。
         """
-        from . import __version__, tool_schema
+        from . import PLAN_VERSION, tool_schema
 
         return {
             "mcp": True,
             "tools": list(tool_schema.TOOL_NAMES),
-            "version": __version__,
+            "version": PLAN_VERSION,
         }
 
     async def _periodic_mqtt_presence(self) -> None:

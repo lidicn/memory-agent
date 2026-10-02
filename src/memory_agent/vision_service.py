@@ -1112,15 +1112,31 @@ class VisionService:
         # 各生成一个就串不起来"MA 发了、DB 为什么没说话"。
         trace_id = uuid.uuid4().hex
         message = action or f"{room} 出现未识别人员"
+        # DCD 裁定 20261002 Q3：ma/insights 用 `kind` 词表 + `summary` + `evidence[]`，
+        # 身份一律走复数 `persons[]`（多人同框是现实，单数 person 装不下）。
+        # 旧键（type/alert_type/message）保留到 DB/AF 迁完再摘——只加不减，避免
+        # 把「键名对齐」做成又一次静默归零（同裁定 §四 判例 1）。
+        persons_list = [p for p in (persons or []) if isinstance(p, dict)]
         try:
             mqtt.publish_raw(topic, {
                 "type": "alert",
                 "source": "ma",
+                "kind": "security.stranger",
                 "trace_id": trace_id,
                 "ts": now_local(self.config.tz_offset_hours).isoformat(),  # 契约表 §二：ts 必填
                 "room": room,
                 "alert_type": "stranger",
                 "message": message,
+                "summary": f"{room} 出现未识别人员（{len(strangers)} 人）",
+                "persons": persons_list,
+                "evidence": [
+                    {
+                        "name": p.get("name") or "",
+                        "via": p.get("via") or "",
+                        "confidence": float(p.get("confidence") or p.get("match_confidence") or 0.0),
+                    }
+                    for p in persons_list
+                ],
                 "snapshot_url": snapshot_url,
             }, retain=False)
         except Exception as exc:  # noqa: BLE001
