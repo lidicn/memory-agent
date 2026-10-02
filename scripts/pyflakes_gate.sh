@@ -4,10 +4,13 @@
 #   bash scripts/pyflakes_gate.sh                # 扫描 src/memory_agent，与 .gates/pyflakes-baseline.txt 比较
 #   bash scripts/pyflakes_gate.sh --bless        # 把当前扫描结果写为新基线（清理欠账后收编台账）
 # 口径：基线是「仓库内 src/memory_agent」的扫描结果（CI 即此口径）。
-#       在容器里直接扫 /app/src 会多出 NAS 盘上 git 未跟踪的历史残留
-#       （memory_agent/insights.py、memory_agent/static/js/pages/vision_service.py）
-#       共 2 条幻影。切勿用容器口径 --bless，否则把不存在的文件写进台账。
-#       容器内取仓库口径：把 /app/src 复制到别处删掉这 2 个残留再扫。
+#       容器里直接扫 /app/src 会一并扫到 NAS 盘上 git 未跟踪的残留 .py（幻影）。
+#       2026-10-02 实测过 5 个：insights.py、member_routes.py、test_agent_memory.py、
+#       unified_store.py、static/js/pages/vision_service.py —— 已 mv 到
+#       _quarantine_deploy_strays_20261001/_from_src_20261002/，两个口径当天对齐
+#       （容器内 .py 数 130 → 125 = git 跟踪数；容器口径扫出 0 条）。
+#       但 NAS 盘随时可能被再污染，所以仍然禁止用容器口径 --bless：
+#       要重建台账就在仓库根跑，或先把 /app/src 复制到别处剔掉未跟踪文件再扫。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
