@@ -32,6 +32,9 @@ from .store import now_local
 TOKEN_PREFIX = "svc_"
 PREFIX_LEN = 12
 LAST_USED_THROTTLE_SECONDS = 15
+# 计划卡 3.3.3 ① 要求记录带族别位：消费方（运维面板/审计）要在 app_token、arena、
+# debug 几套令牌族里认出"这是服务令牌"，缺这个位就只能靠字段形状猜。
+KIND_SERVICE = "service"
 
 # 签发时禁止写入的作用域：带上这些面就不再是"窄接口"。
 SCOPE_DENY_PREFIXES = (
@@ -172,6 +175,7 @@ class ServiceTokenStore:
             out[name] = {
                 "hash": digest,
                 "prefix": digest[:PREFIX_LEN],
+                "kind": KIND_SERVICE,
                 "created_at": stats["created_at"],
                 "last_used_at": stats["last_used_at"],
                 "use_count": stats["use_count"],
@@ -222,6 +226,7 @@ class ServiceTokenStore:
             record = {
                 "hash": _hash(plain),
                 "prefix": plain[:PREFIX_LEN],
+                "kind": KIND_SERVICE,
                 "created_at": self._now(),
                 "last_used_at": "",
                 "use_count": 0,
@@ -280,6 +285,9 @@ class ServiceTokenStore:
                     "created_at": value.get("created_at", ""),
                     "last_used_at": value.get("last_used_at", ""),
                     "use_count": int(value.get("use_count") or 0),
+                    # 这个 store 只装服务令牌，族别没有第二解；所以存量记录读不到 kind
+                    # 时按 service 报，不需要为多写一个字段而迁移历史配置。
+                    "kind": value.get("kind") or KIND_SERVICE,
                     "source": value.get("source", ""),
                     "scopes": list(value.get("scopes") or []),
                     "imported_from": value.get("imported_from", ""),
@@ -292,6 +300,7 @@ class ServiceTokenStore:
                 "created_at": value["created_at"],
                 "last_used_at": value["last_used_at"],
                 "use_count": value["use_count"],
+                "kind": value["kind"],
                 "source": value["source"],
                 "scopes": value["scopes"],
                 "imported_from": "env",

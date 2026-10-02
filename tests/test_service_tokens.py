@@ -120,6 +120,24 @@ def test_reserved_names_cannot_be_issued(store):
     assert store.generate(st.BUTLER_ENV_NAME, SCOPE_OK)["ok"] is False
 
 
+def test_records_carry_service_kind(store, cfg):
+    """计划卡 3.3.3 ①：记录要带族别位 ``kind="service"``。
+
+    消费方面前同时摆着 app_token / arena / debug 几套令牌族，没有族别就只能靠
+    字段形状猜"这条是不是服务令牌"。env 导入的记录走同一个面，所以也带。
+    """
+    store.generate("tvpilot", SCOPE_OK)
+    assert cfg.service_tokens["tvpilot"]["kind"] == st.KIND_SERVICE
+    cfg.butler_token = "btl_env_secret"
+    assert store.legacy_records()[st.BUTLER_ENV_NAME]["kind"] == st.KIND_SERVICE
+    # 存量记录（加这个字段之前签发的）不带 kind，读出来按服务令牌报，不需要迁移配置
+    cfg.service_tokens["old-row"] = {"prefix": "svc_old", "created_at": "", "scopes": []}
+    rows = {r["name"]: r for r in store.list_tokens()}
+    assert rows["tvpilot"]["kind"] == st.KIND_SERVICE
+    assert rows["old-row"]["kind"] == st.KIND_SERVICE
+    assert rows[st.BUTLER_ENV_NAME]["kind"] == st.KIND_SERVICE
+
+
 # ── Q3：env 只读导入 ─────────────────────────────────────────────────────────
 
 def test_env_butler_secret_is_imported_readonly(cfg, monkeypatch):
