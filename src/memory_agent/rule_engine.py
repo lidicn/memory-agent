@@ -237,16 +237,18 @@ class ActiveRuleEngine:
             "avg_latency_ms": 平均延迟
         }
         """
-        conn = self.store.connect()
-        # 查询最近 N 天的触发历史（triggered_at 是墙钟 ISO 串，按字典序即可比较）
-        since = (self._now() - timedelta(days=days)).isoformat(sep="T")
-        rows = conn.execute(
-            """
-            SELECT * FROM rule_trigger_history
-            WHERE rule_id = ? AND triggered_at >= ?
-            """,
-            (rule_id, since)
-        ).fetchall()
+        # 第六轮审计 CRITICAL-2：共享连接必须在 Store 的锁内使用（_db() 持锁并交连接），
+        # 否则本线程的读会撞进别的线程尚未提交的事务里。
+        with self.store._db() as conn:
+            # 查询最近 N 天的触发历史（triggered_at 是墙钟 ISO 串，按字典序即可比较）
+            since = (self._now() - timedelta(days=days)).isoformat(sep="T")
+            rows = conn.execute(
+                """
+                SELECT * FROM rule_trigger_history
+                WHERE rule_id = ? AND triggered_at >= ?
+                """,
+                (rule_id, since)
+            ).fetchall()
 
         trigger_count = len(rows)
         false_positive = sum(1 for r in rows if r["false_positive"]) if rows else 0
@@ -324,40 +326,39 @@ class ActiveRuleEngine:
         ``active_rules`` 没有对应列，于是 ``rule.get("trigger")`` 恒为 ``{}``——
         count 分支是不可达代码，DCD Q2 裁定的「60 秒 3 次」也无从落地。
         """
-        conn = self.store.connect()
         rule_id = f"rule_{self._now().strftime('%Y%m%d%H%M%S%f')}"
         now = self._now().isoformat(sep="T")
         try:
-            cur = conn.execute(
-                """
-                INSERT INTO active_rules
-                (rule_id, name, description, condition_json, action_json, enabled,
-                 cooldown_seconds, rule_type, origin, source_rule_id, mode,
-                 evidence_count, promoted_at, activated_at, created_at, updated_at,
-                 trigger_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    rule_id,
-                    name,
-                    description,
-                    json.dumps(condition, ensure_ascii=False),
-                    json.dumps(action, ensure_ascii=False),
-                    1 if enabled else 0,
-                    cooldown_seconds,
-                    rule_type,
-                    origin,
-                    source_rule_id,
-                    mode,
-                    int(evidence_count or 0),
-                    now if origin == "candidate_promoted" else "",
-                    now,
-                    now,
-                    now,
-                    json.dumps(trigger or {}, ensure_ascii=False),
-                ),
-            )
-            conn.commit()
+            with self.store.transaction() as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO active_rules
+                    (rule_id, name, description, condition_json, action_json, enabled,
+                     cooldown_seconds, rule_type, origin, source_rule_id, mode,
+                     evidence_count, promoted_at, activated_at, created_at, updated_at,
+                     trigger_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        rule_id,
+                        name,
+                        description,
+                        json.dumps(condition, ensure_ascii=False),
+                        json.dumps(action, ensure_ascii=False),
+                        1 if enabled else 0,
+                        cooldown_seconds,
+                        rule_type,
+                        origin,
+                        source_rule_id,
+                        mode,
+                        int(evidence_count or 0),
+                        now if origin == "candidate_promoted" else "",
+                        now,
+                        now,
+                        now,
+                        json.dumps(trigger or {}, ensure_ascii=False),
+                    ),
+                )
             inserted = cur.rowcount == 1
             if inserted:
                 self._index_dirty = True  # 标记索引为脏
@@ -368,12 +369,12 @@ class ActiveRuleEngine:
 
     def list_rules(self, enabled_only: bool = False) -> list[dict]:
         """列出所有规则。"""
-        conn = self.store.connect()
-        sql = "SELECT * FROM active_rules"
-        if enabled_only:
-            sql += " WHERE enabled = 1"
-        sql += " ORDER BY created_at DESC"
-        rows = conn.execute(sql).fetchall()
+        with self.store._db() as conn:
+            sql = "SELECT * FROM active_rules"
+            if enabled_only:
+                sql += " WHERE enabled = 1"
+            sql += " ORDER BY created_at DESC"
+            rows = conn.execute(sql).fetchall()
         result = []
         for row in rows:
             d = dict(row)
@@ -387,10 +388,10 @@ class ActiveRuleEngine:
 
     def get_rule(self, rule_id: str) -> Optional[dict]:
         """获取单条规则。"""
-        conn = self.store.connect()
-        row = conn.execute(
-            "SELECT * FROM active_rules WHERE rule_id = ?", (rule_id,)
-        ).fetchone()
+        with self.store._db() as conn:
+            row = conn.execute(
+                "SELECT * FROM active_rules WHERE rule_id = ?", (rule_id,)
+            ).fetchone()
         if not row:
             return None
         d = dict(row)
@@ -402,7 +403,6 @@ class ActiveRuleEngine:
 
     def update_rule(self, rule_id: str, **kwargs) -> dict:
         """更新规则。"""
-        conn = self.store.connect()
         updates = []
         params = []
         for k in ("name", "description", "enabled", "cooldown_seconds"):
@@ -427,11 +427,11 @@ class ActiveRuleEngine:
         params.append(self._now().isoformat(sep="T"))
         params.append(rule_id)
         try:
-            conn.execute(
-                f"UPDATE active_rules SET {', '.join(updates)} WHERE rule_id = ?",
-                params,
-            )
-            conn.commit()
+            with self.store.transaction() as conn:
+                conn.execute(
+                    f"UPDATE active_rules SET {', '.join(updates)} WHERE rule_id = ?",
+                    params,
+                )
             self._index_dirty = True  # 标记索引为脏
             return {"ok": True}
         except Exception as exc:
@@ -440,10 +440,9 @@ class ActiveRuleEngine:
 
     def delete_rule(self, rule_id: str) -> dict:
         """删除规则。"""
-        conn = self.store.connect()
         try:
-            conn.execute("DELETE FROM active_rules WHERE rule_id = ?", (rule_id,))
-            conn.commit()
+            with self.store.transaction() as conn:
+                conn.execute("DELETE FROM active_rules WHERE rule_id = ?", (rule_id,))
             self._index_dirty = True  # 标记索引为脏
             return {"ok": True}
         except Exception as exc:
@@ -864,22 +863,21 @@ class ActiveRuleEngine:
         返回是否真的落库：观察期天数、误报计数都以这条行为准，写失败得让调用方知道。
         """
         try:
-            conn = self.store.connect()
-            cur = conn.execute(
-                """
-                INSERT INTO rule_trigger_history
-                (rule_id, event_json, action_json, triggered_at, dry_run)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    rule_id,
-                    json.dumps(event, ensure_ascii=False),
-                    json.dumps(action, ensure_ascii=False),
-                    self._now().isoformat(sep="T"),
-                    1 if dry_run else 0,
-                ),
-            )
-            conn.commit()
+            with self.store.transaction() as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO rule_trigger_history
+                    (rule_id, event_json, action_json, triggered_at, dry_run)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        rule_id,
+                        json.dumps(event, ensure_ascii=False),
+                        json.dumps(action, ensure_ascii=False),
+                        self._now().isoformat(sep="T"),
+                        1 if dry_run else 0,
+                    ),
+                )
             return cur.rowcount == 1
         except Exception as exc:
             logger.error(f"记录规则触发历史失败: {exc}")

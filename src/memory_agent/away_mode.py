@@ -56,17 +56,17 @@ class AwayModeManager:
         if self._active is not None:
             return
         try:
-            conn = getattr(self.store, "_conn", None)
-            if conn is None:
-                self._active = False
-                return
-            row = conn.execute(
-                "SELECT value FROM meta WHERE key=?", (_AWAY_KEY,)
-            ).fetchone()
+            # 第六轮审计 CRITICAL-2：原先是 `conn = getattr(self.store, "_conn", None)`——
+            # 直接抓共享连接，既不持锁，又会在 Store 尚未建连时拿到 None 而静默跳过读，
+            # 于是"离家状态没加载出来"被当成"在家"。_db() 会负责建连并在锁内交连接。
+            with self.store._db() as conn:
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key=?", (_AWAY_KEY,)
+                ).fetchone()
+                row2 = conn.execute(
+                    "SELECT value FROM meta WHERE key=?", (_AWAY_SINCE_KEY,)
+                ).fetchone()
             self._active = (row is not None and row[0] == "1")
-            row2 = conn.execute(
-                "SELECT value FROM meta WHERE key=?", (_AWAY_SINCE_KEY,)
-            ).fetchone()
             self._since = row2[0] if row2 else ""
         except Exception as exc:
             logger.warning("离家模式状态加载失败: %s", exc)
@@ -103,8 +103,9 @@ class AwayModeManager:
         self._active = active
         now_iso = time.strftime("%Y-%m-%dT%H:%M:%S")
         try:
-            conn = getattr(self.store, "_conn", None)
-            if conn is not None:
+            # 三条 meta 写入 + commit 必须在同一个锁区内（第六轮审计 CRITICAL-2：
+            # 原写法在锁外直连，别的线程可以在中途把"半套"状态一并提交出去）。
+            with self.store.transaction() as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
                     (_AWAY_KEY, "1" if active else "0"),
@@ -121,7 +122,6 @@ class AwayModeManager:
                         "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
                         (_AWAY_SINCE_KEY, ""),
                     )
-                conn.commit()
         except Exception as exc:
             logger.warning("离家模式状态写入失败: %s", exc)
         logger.info(

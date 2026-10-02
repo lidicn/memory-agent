@@ -3,6 +3,7 @@
 import sys
 import os
 import time
+from contextlib import contextmanager
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -10,10 +11,22 @@ from memory_agent.away_mode import AwayModeManager
 
 
 class FakeStore:
-    """模拟 store，用内存 dict 代替 meta 表。"""
+    """模拟 store，用内存 dict 代替 meta 表。
+
+    away_mode 走 Store 的 ``_db()`` / ``transaction()``（第六轮审计 CRITICAL-2：不再
+    直抓共享连接），所以这里要交出的也是这两个入口；FakeStore 自己就实现
+    execute/commit，直接把 self 交出去即可。
+    """
     def __init__(self):
         self._meta = {}
-        self._conn = self  # 让 away_mode 能拿到 conn
+
+    @contextmanager
+    def _db(self):
+        yield self
+
+    @contextmanager
+    def transaction(self):
+        yield self
 
     def execute(self, sql, params=()):
         if "SELECT" in sql:

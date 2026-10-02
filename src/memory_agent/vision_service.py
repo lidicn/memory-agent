@@ -237,11 +237,14 @@ class VisionService:
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 # 传输层瞬断：容器↔go2rtc 经宿主网络偶有抖动，退避后重试
                 if attempt < retries:
+                    # 第六轮审计 M-3：退避加 ±50% 抖动。多路摄像头会同时对同一台
+                    # go2rtc 失败，固定间隔让它们的重试齐步撞在同一个瞬间。
+                    delay = 0.5 * (attempt + 1) * random.uniform(0.5, 1.5)
                     _logger.warning(
-                        "go2rtc 取帧第 %d 次失败（%s），%ss 后重试",
-                        attempt + 1, type(exc).__name__, 0.5 * (attempt + 1),
+                        "go2rtc 取帧第 %d 次失败（%s），%.2fs 后重试",
+                        attempt + 1, type(exc).__name__, delay,
                     )
-                    time.sleep(0.5 * (attempt + 1))
+                    time.sleep(delay)
                     continue
                 raise
 

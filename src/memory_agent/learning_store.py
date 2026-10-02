@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Sequence
 
@@ -74,10 +77,33 @@ class LearningStore:
 
     def __init__(self, db_path: str = "memoryagent.db") -> None:
         # NEW-P0-1：加 timeout + busy_timeout，与主库 store.py 对齐，防并发写 database is locked
+        # 第六轮审计 CRITICAL-2：连接是本实例的单例共享对象，FastAPI 会在多个线程里调用它；
+        # execute 与 commit 之间无锁 → 甲线程的 commit 会把乙线程未写完的半截事务一并提交。
+        # 与 Store._db()/Store.transaction() 同一口径，锁住"语句 + 提交"整段。
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
-        self._conn.execute("PRAGMA busy_timeout=30000")
-        self._conn.executescript(SCHEMA_SQL)
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("PRAGMA busy_timeout=30000")
+            self._conn.executescript(SCHEMA_SQL)
+            self._conn.commit()
+
+    @contextmanager
+    def _db(self):
+        """持锁连接区；正常退出提交、异常回滚（与 Store.transaction() 同语义）。
+        只读语句也走这里：无待提交事务时 commit() 是空操作，换取单一入口。
+        """
+        with self._lock:
+            try:
+                yield self._conn
+                self._conn.commit()
+            except Exception:
+                try:
+                    self._conn.rollback()
+                except Exception as rb_exc:
+                    # 回滚失败说明连接本身已断；记录后仍上抛原始异常
+                    logging.getLogger(__name__).warning(
+                        "[LearningStore] 事务回滚失败: %s", rb_exc)
+                raise
 
     # -- 反馈信号 ---------------------------------------------------------
     def insert_signals(self, signals: Sequence[FeedbackSignal]) -> int:
@@ -90,19 +116,21 @@ class LearningStore:
             )
             for s in signals
         ]
-        self._conn.executemany(
-            "INSERT OR IGNORE INTO learning_feedback VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
-        )
-        self._conn.commit()
+        with self._db() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO learning_feedback VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
+            )
         return len(rows)
 
     def list_signals(self, start: datetime, end: datetime) -> list[FeedbackSignal]:
-        cur = self._conn.execute(
-            "SELECT * FROM learning_feedback WHERE created_at >= ? AND created_at < ? ORDER BY created_at",
-            (_iso(start), _iso(end)),
-        )
+        with self._db() as conn:
+            cur = conn.execute(
+                "SELECT * FROM learning_feedback WHERE created_at >= ? AND created_at < ? ORDER BY created_at",
+                (_iso(start), _iso(end)),
+            )
+            rows = cur.fetchall()
         out: list[FeedbackSignal] = []
-        for row in cur.fetchall():
+        for row in rows:
             (
                 fid, kind, subject_type, subject_id, valence, confidence,
                 member_id, room, reason, repeat_count, context_json, dropped, created_at,
@@ -128,22 +156,24 @@ class LearningStore:
 
     # -- 参数变更审计 -----------------------------------------------------
     def insert_adjustment(self, adj: ParamAdjustment) -> None:
-        self._conn.execute(
-            "INSERT OR IGNORE INTO learning_adjustment VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                adj.adjustment_id, adj.param, adj.old_value, adj.new_value, adj.reason,
-                json.dumps(list(adj.evidence), ensure_ascii=False), adj.mode, adj.verdict,
-                1 if adj.rolled_back else 0, _iso(adj.created_at), None,
-            ),
-        )
-        self._conn.commit()
+        with self._db() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO learning_adjustment VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    adj.adjustment_id, adj.param, adj.old_value, adj.new_value, adj.reason,
+                    json.dumps(list(adj.evidence), ensure_ascii=False), adj.mode, adj.verdict,
+                    1 if adj.rolled_back else 0, _iso(adj.created_at), None,
+                ),
+            )
 
     def list_adjustments(self, limit: int = 100) -> list[ParamAdjustment]:
-        cur = self._conn.execute(
-            "SELECT * FROM learning_adjustment ORDER BY created_at DESC LIMIT ?", (limit,)
-        )
+        with self._db() as conn:
+            cur = conn.execute(
+                "SELECT * FROM learning_adjustment ORDER BY created_at DESC LIMIT ?", (limit,)
+            )
+            rows = cur.fetchall()
         out: list[ParamAdjustment] = []
-        for row in cur.fetchall():
+        for row in rows:
             (
                 aid, param, old_v, new_v, reason, evidence_json,
                 mode, verdict, rolled_back, created_at, _evaluated_at,
@@ -159,34 +189,37 @@ class LearningStore:
         return out
 
     def mark_evaluated(self, adjustment_id: str, verdict: str, now: datetime) -> None:
-        self._conn.execute(
-            "UPDATE learning_adjustment SET verdict = ?, evaluated_at = ? WHERE adjustment_id = ?",
-            (verdict, _iso(now), adjustment_id),
-        )
-        self._conn.commit()
+        with self._db() as conn:
+            conn.execute(
+                "UPDATE learning_adjustment SET verdict = ?, evaluated_at = ? WHERE adjustment_id = ?",
+                (verdict, _iso(now), adjustment_id),
+            )
 
     def mark_rolled_back(self, adjustment_id: str) -> None:
-        self._conn.execute(
-            "UPDATE learning_adjustment SET rolled_back = 1 WHERE adjustment_id = ?", (adjustment_id,)
-        )
-        self._conn.commit()
+        with self._db() as conn:
+            conn.execute(
+                "UPDATE learning_adjustment SET rolled_back = 1 WHERE adjustment_id = ?", (adjustment_id,)
+            )
 
     # -- 参数现值 ---------------------------------------------------------
     def param_values(self) -> dict[str, float]:
-        cur = self._conn.execute("SELECT param, value FROM learning_param_state")
-        return {row[0]: float(row[1]) for row in cur.fetchall()}
+        with self._db() as conn:
+            cur = conn.execute("SELECT param, value FROM learning_param_state")
+            return {row[0]: float(row[1]) for row in cur.fetchall()}
 
     def set_param(self, param: str, value: float, now: datetime) -> None:
-        self._conn.execute(
-            "INSERT INTO learning_param_state(param, value, updated_at) VALUES (?,?,?) "
-            "ON CONFLICT(param) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            (param, float(value), _iso(now)),
-        )
-        self._conn.commit()
+        with self._db() as conn:
+            conn.execute(
+                "INSERT INTO learning_param_state(param, value, updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(param) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (param, float(value), _iso(now)),
+            )
 
     def last_adjusted_at(self) -> dict[str, datetime]:
-        cur = self._conn.execute("SELECT param, MAX(created_at) FROM learning_adjustment GROUP BY param")
-        return {row[0]: _parse_dt(row[1]) for row in cur.fetchall()}
+        with self._db() as conn:
+            cur = conn.execute("SELECT param, MAX(created_at) FROM learning_adjustment GROUP BY param")
+            return {row[0]: _parse_dt(row[1]) for row in cur.fetchall()}
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()

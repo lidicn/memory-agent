@@ -926,23 +926,22 @@ class StoreAuditSink:
                 self.fallback.record(data)
                 return
         try:
-            conn = self.store.connect()
-            with self._lock:
+            # 第六轮审计 CRITICAL-2：连接是 Store 的单例共享对象，本类自己的 self._lock
+            # 管不到它——建表 + INSERT + commit 必须走 Store 的事务区入口。缺 transaction()
+            # 的存储替身会在这里抛 AttributeError，由下面的降级接住（改走内存审计）。
+            with self.store.transaction() as conn:
                 if not self._table_ready:
                     conn.execute(self.DDL)
                     self._table_ready = True
-            conn.execute(self.INSERT, (
-                data.get("event_id"), data.get("ts"), data.get("decision"),
-                data.get("kind"), data.get("room"), data.get("person_name"),
-                data.get("score"), data.get("threshold"), data.get("behavior_id"),
-                _json_dumps(data.get("breakdown", {})),
-                _json_dumps(data.get("evidence", {})),
-                _json_dumps(data.get("reasons", [])),
-                _json_dumps(data.get("policy", {})),
-            ))
-            commit = getattr(conn, "commit", None)
-            if callable(commit):
-                commit()
+                conn.execute(self.INSERT, (
+                    data.get("event_id"), data.get("ts"), data.get("decision"),
+                    data.get("kind"), data.get("room"), data.get("person_name"),
+                    data.get("score"), data.get("threshold"), data.get("behavior_id"),
+                    _json_dumps(data.get("breakdown", {})),
+                    _json_dumps(data.get("evidence", {})),
+                    _json_dumps(data.get("reasons", [])),
+                    _json_dumps(data.get("policy", {})),
+                ))
         except Exception as exc:
             self._downgrade(exc)
             self.fallback.record(data)
@@ -1096,8 +1095,10 @@ class CandidatePromoter:
         )
         params: Tuple[Any, ...] = (room, cutoff, *kinds, self.policy.evidence_limit)
         try:
-            conn = self.store.connect()
-            rows = conn.execute(sql, params).fetchall()
+            # 共享连接必须在 Store 的锁内读（第六轮审计 CRITICAL-2）：锁外的读可能落进
+            # 别的线程尚未提交的事务，拿到"半条"证据。
+            with self.store._db() as conn:
+                rows = conn.execute(sql, params).fetchall()
         except Exception as exc:
             logger.error("读取候选区证据失败: %s", exc)
             return []
@@ -1388,13 +1389,13 @@ class CandidatePromoter:
             return False
         cutoff = (moment - timedelta(hours=self.policy.evidence_window_hours)).isoformat()
         try:
-            conn = self.store.connect()
-            rows = conn.execute(
-                "SELECT server_ts, payload_json, persons FROM behavior_events "
-                "WHERE kind = ? AND room = ? AND source = ? AND server_ts >= ? "
-                "ORDER BY server_ts DESC LIMIT 50",
-                (kind, room, "perception_ingest", cutoff),
-            ).fetchall()
+            with self.store._db() as conn:
+                rows = conn.execute(
+                    "SELECT server_ts, payload_json, persons FROM behavior_events "
+                    "WHERE kind = ? AND room = ? AND source = ? AND server_ts >= ? "
+                    "ORDER BY server_ts DESC LIMIT 50",
+                    (kind, room, "perception_ingest", cutoff),
+                ).fetchall()
         except Exception:
             return False
 
@@ -1429,21 +1430,24 @@ class CandidatePromoter:
         }
 
         try:
-            conn = self.store.connect()
             # 扫描最近 24 小时的低置信度候选事件
             cutoff = (datetime.now() - timedelta(hours=self.policy.scan_window_hours)).isoformat()
 
-            rows = conn.execute(
-                """
-                SELECT DISTINCT kind, room, payload_json, server_ts, confidence
-                FROM perception_events
-                WHERE server_ts >= ?
-                  AND confidence < ?
-                ORDER BY server_ts DESC
-                LIMIT ?
-                """,
-                (cutoff, self.policy.high_confidence_threshold, self.policy.scan_limit),
-            ).fetchall()
+            # 第六轮审计 CRITICAL-2：读共享连接要持 Store 的锁。下面这个循环会调用
+            # store.* 的写入方法（各自持锁并提交），锁外的扫描读正好会撞进它们的
+            # 半截事务里。
+            with self.store._db() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT kind, room, payload_json, server_ts, confidence
+                    FROM perception_events
+                    WHERE server_ts >= ?
+                      AND confidence < ?
+                    ORDER BY server_ts DESC
+                    LIMIT ?
+                    """,
+                    (cutoff, self.policy.high_confidence_threshold, self.policy.scan_limit),
+                ).fetchall()
 
             stats["scanned"] = len(rows)
             seen: set = set()

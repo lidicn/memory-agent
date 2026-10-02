@@ -525,6 +525,9 @@ _UNIFIED_BRANCHES = (
 #: 快速自检的误判不允许直接导致数据回滚。
 INTEGRITY_CHECK_MODES = ("quick", "full", "off")
 
+# 幂等键 TTL 的比较口径（第六轮审计 M-1：原来按 %Y-%m-%d 存，小时级 TTL 全塌成同一天）
+IDEMPOTENCY_TS_FMT = "%Y-%m-%d %H:%M:%S"
+
 
 def _integrity_check_mode() -> str:
     mode = (os.getenv("MA_DB_INTEGRITY_CHECK") or "quick").strip().lower()
@@ -636,6 +639,30 @@ class Store:
         with self._lock:
             yield self.connect()
 
+    @contextmanager
+    def transaction(self):
+        """持锁的事务区：正常退出提交、异常回滚。
+
+        第六轮审计 CRITICAL-2 的统一入口。连接是单例共享的，「execute 与 commit 之间
+        没有锁」意味着别的线程可能把自己的半截事务一并提交（实测复现），也可能在自己的
+        语句中途读到本线程尚未写入完成的行。事务区把「加锁 + 提交 + 失败回滚」绑成一步，
+        调用方不再需要手写 try/except/rollback——也不容易漏。
+        """
+        conn = self.connect()
+        with self._lock:
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception as rb_exc:
+                    # 回滚都失败 = 连接本身已经断了（进程级故障，不是本次事务的问题）；
+                    # 记下来但让原始异常继续上抛，调用方看到的仍是自己那步失败。
+                    logging.getLogger(__name__).warning(
+                        "[Store] 事务回滚失败: %s", rb_exc)
+                raise
+
     def db_query(self, sql: str, params: tuple = ()) -> list:
         """Raw SQL query (read-only) for new insights framework compatibility.
 
@@ -671,9 +698,10 @@ class Store:
         def _run(pragma: str) -> str | None:
             """返回 None 表示 ok，否则返回问题描述。"""
             label = pragma.split()[-1]
-            conn = self.connect()
             try:
-                r = conn.execute(pragma).fetchone()
+                # 共享连接的读也要落在锁区内（第六轮审计 CRITICAL-2 静态门）
+                with self._db() as conn:
+                    r = conn.execute(pragma).fetchone()
             except Exception as exc:  # noqa: BLE001
                 return f"{label} exception: {exc}"
             if r and r[0] == "ok":
@@ -1313,12 +1341,33 @@ class Store:
                     result_text TEXT NOT NULL,
                     is_error    INTEGER NOT NULL DEFAULT 0,
                     created_at  TEXT NOT NULL,
-                    expires_at  TEXT NOT NULL
+                    expires_at  TEXT NOT NULL,
+                    state       TEXT NOT NULL DEFAULT 'done'
                 )"""
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON idempotency_keys(expires_at)"
             )
+            # 第六轮审计 CRITICAL-1：幂等要保证「同一 key 只执行一次」，检查与执行之间
+            # 不能有窗口。做法是先把行占住（state='pending'）再执行，成功才写 done。
+            # 旧库补列：默认 'done'——历史行都是已完成的缓存结果，语义不变。
+            try:
+                conn.execute(
+                    "ALTER TABLE idempotency_keys ADD COLUMN state TEXT NOT NULL DEFAULT 'done'"
+                )
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] idempotency_keys.state 列迁移异常: {_exc}")
+            # M-1：expires_at 历史上按「天」存，TTL 却按小时承诺（实测承诺 24h、
+            # 实际 24.5–48h；ttl 1/2/12 小时全塌成同一个日期串）。旧行补到当天
+            # 23:59:59，比较口径从此统一为完整时间戳。
+            try:
+                conn.execute(
+                    "UPDATE idempotency_keys SET expires_at = expires_at || ' 23:59:59'"
+                    " WHERE length(expires_at) = 10"
+                )
+            except Exception as _exc:
+                print(f"[Store] idempotency_keys.expires_at 时间戳归一失败: {_exc}")
             # vMA-1.3 多模态统一：三源只读 VIEW（events + behavior_events + perception_events）
             # VIEW 只读，不动写入路径；event_type 语义：device=entity:action, vision=action, perception=kind
             # 历史缺陷修复：本定义曾与 _SCHEMA_SQL 中的定义列不一致
@@ -2502,13 +2551,13 @@ class Store:
         """同 set_candidate_rule_status，额外返回更新后的整行（MCP 工具需要）。"""
         if not self.set_candidate_rule_status(rule_id, status):
             return None
-        conn = self.connect()
-        row = conn.execute(
-            "SELECT * FROM candidate_rules WHERE rule_id=?", (rule_id,)
-        ).fetchone()
-        if not row:
-            return None
-        cols = [d[0] for d in conn.execute("SELECT * FROM candidate_rules LIMIT 0").description]
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT * FROM candidate_rules WHERE rule_id=?", (rule_id,)
+            ).fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in conn.execute("SELECT * FROM candidate_rules LIMIT 0").description]
         return dict(zip(cols, row))
 
     def add_bug_report(self, tool_name: str, description: str,
@@ -2531,7 +2580,6 @@ class Store:
 
     def list_bug_reports(self, status: str = "open", limit: int = 50) -> list[dict]:
         """列出 bug 上报。status: open|resolved|all"""
-        conn = self.connect()
         sql = "SELECT * FROM bug_reports"
         params = []
         if status and status != "all":
@@ -2539,8 +2587,9 @@ class Store:
             params.append(status)
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
-        rows = conn.execute(sql, params).fetchall()
-        cols = [d[0] for d in conn.execute("SELECT * FROM bug_reports LIMIT 0").description]
+        with self._db() as conn:
+            rows = conn.execute(sql, params).fetchall()
+            cols = [d[0] for d in conn.execute("SELECT * FROM bug_reports LIMIT 0").description]
         return [dict(zip(cols, row)) for row in rows]
 
     def list_candidate_rules(self, status: str | None = None, limit: int = 200) -> list[dict]:
@@ -2574,10 +2623,10 @@ class Store:
 
     def get_candidate_rule(self, rule_id: str) -> dict | None:
         """取一条候选规则（解析 steps/evidence），供生效通道做门槛判定。"""
-        conn = self.connect()
-        row = conn.execute(
-            "SELECT * FROM candidate_rules WHERE rule_id=?", (rule_id,)
-        ).fetchone()
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT * FROM candidate_rules WHERE rule_id=?", (rule_id,)
+            ).fetchone()
         if not row:
             return None
         d = dict(row)
@@ -2808,40 +2857,140 @@ class Store:
     # ── 幂等键（v0.9 MCP 契约：写工具防重复执行）──────────────────────────
 
     def get_idempotency(self, idem_key: str) -> dict | None:
-        """取幂等键缓存结果；不存在或已过期返回 None。"""
+        """取幂等键缓存结果；不存在、已过期、或仍是占位（未执行完）返回 None。"""
         conn = self.connect()
-        row = conn.execute(
-            "SELECT * FROM idempotency_keys WHERE idem_key = ?", (idem_key,)
-        ).fetchone()
+        with self._lock:
+            row = conn.execute(
+                "SELECT idem_key, tool, result_text, is_error, created_at, expires_at,"
+                " COALESCE(state, 'done') AS state"
+                " FROM idempotency_keys WHERE idem_key = ?", (idem_key,)
+            ).fetchone()
         if not row:
             return None
-        today = now_local(self.tz_offset_hours).strftime("%Y-%m-%d")
-        if (row["expires_at"] or "") < today:
+        if (row["state"] or "done") != "done":
+            return None
+        if (row["expires_at"] or "") < self._idem_now():
             return None
         return dict(row)
 
+    def _idem_now(self) -> str:
+        """幂等 TTL 的比较基准：完整时间戳（M-1 前只有日期，粒度差 24 倍）。"""
+        return now_local(self.tz_offset_hours).strftime(IDEMPOTENCY_TS_FMT)
+
+    def _idem_expires(self, ttl_hours: int) -> str:
+        return (now_local(self.tz_offset_hours)
+                + timedelta(hours=max(1, int(ttl_hours)))).strftime(IDEMPOTENCY_TS_FMT)
+
     def save_idempotency(self, idem_key: str, tool: str, result_text: str,
                          is_error: bool = False, ttl_hours: int = 24) -> None:
-        """记录幂等键 → 结果映射（重复调用可直接返回缓存）。"""
+        """记录幂等键 → 结果映射（重复调用可直接返回缓存）。
+
+        这是「先执行、后写缓存」的旧入口，并发下同一 key 会各自执行一次；
+        分发层请改走 ``reserve_idempotency`` + ``finalize_idempotency``
+        （第六轮审计 CRITICAL-1）。
+        """
         now = now_local(self.tz_offset_hours)
-        expires = (now + timedelta(hours=max(1, int(ttl_hours)))).strftime("%Y-%m-%d")
         conn = self.connect()
         with self._lock:
             conn.execute(
                 """INSERT OR REPLACE INTO idempotency_keys
-                   (idem_key, tool, result_text, is_error, created_at, expires_at)
-                   VALUES (?,?,?,?,?,?)""",
+                   (idem_key, tool, result_text, is_error, created_at, expires_at, state)
+                   VALUES (?,?,?,?,?,?,'done')""",
                 (idem_key, tool, result_text, 1 if is_error else 0,
-                 now.isoformat(timespec="seconds"), expires),
+                 now.isoformat(timespec="seconds"), self._idem_expires(ttl_hours)),
             )
             conn.commit()
 
-    def purge_idempotency(self) -> int:
-        """清理过期幂等键。"""
-        today = now_local(self.tz_offset_hours).strftime("%Y-%m-%d")
+    def reserve_idempotency(self, idem_key: str, tool: str,
+                            ttl_hours: int = 24) -> dict:
+        """原子占位：把「查缓存」和「开始执行」压成同一步（第六轮审计 CRITICAL-1）。
+
+        返回 ``{"state": ...}``：
+
+        * ``reserved``——本次调用拿到执行权，随后**必须** finalize 或 release，
+          否则这一路调用永远不会缓存结果；
+        * ``done``——已有结果（带 ``result_text`` / ``is_error``），直接回放；
+        * ``in_flight``——同一 key 正在别处执行，调用方**不得**再执行工具。
+
+        占位靠的是 ``idem_key`` 主键 + ``INSERT OR IGNORE``，判定全在同一把锁与同
+        一个写连接里完成，因此跨线程成立；崩溃残留的 pending 行到期后可被重新占位。
+        """
+        now_ts = self._idem_now()
+        expires = self._idem_expires(ttl_hours)
+        created = now_local(self.tz_offset_hours).isoformat(timespec="seconds")
         conn = self.connect()
         with self._lock:
-            cur = conn.execute("DELETE FROM idempotency_keys WHERE expires_at < ?", (today,))
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO idempotency_keys
+                   (idem_key, tool, result_text, is_error, created_at, expires_at, state)
+                   VALUES (?, ?, '', 0, ?, ?, 'pending')""",
+                (idem_key, tool, created, expires),
+            )
+            if cur.rowcount == 1:
+                conn.commit()
+                return {"state": "reserved", "idem_key": idem_key}
+            row = conn.execute(
+                "SELECT result_text, is_error, expires_at, COALESCE(state, 'done') AS state"
+                " FROM idempotency_keys WHERE idem_key = ?", (idem_key,)
+            ).fetchone()
+            if (row["state"] or "done") == "done" and (row["expires_at"] or "") >= now_ts:
+                conn.commit()
+                return {"state": "done", "result_text": row["result_text"],
+                        "is_error": bool(row["is_error"])}
+            # 过期行（done 或 pending 崩溃残留）：条件改写，只有抢到的人 rowcount==1，
+            # 第二个并发者的 WHERE expires_at < now 已不成立 → in_flight。
+            cur = conn.execute(
+                """UPDATE idempotency_keys
+                     SET tool = ?, result_text = '', is_error = 0,
+                         created_at = ?, expires_at = ?, state = 'pending'
+                   WHERE idem_key = ? AND expires_at < ?""",
+                (tool, created, expires, idem_key, now_ts),
+            )
+            conn.commit()
+            if cur.rowcount == 1:
+                return {"state": "reserved", "idem_key": idem_key}
+            return {"state": "in_flight", "idem_key": idem_key}
+
+    def finalize_idempotency(self, idem_key: str, result_text: str,
+                             is_error: bool = False, ttl_hours: int = 24) -> None:
+        """占位成功后写入真实结果，行转为 done（幂等回放的数据来源）。"""
+        conn = self.connect()
+        with self._lock:
+            conn.execute(
+                """UPDATE idempotency_keys
+                     SET result_text = ?, is_error = ?, state = 'done', expires_at = ?
+                   WHERE idem_key = ?""",
+                (result_text, 1 if is_error else 0, self._idem_expires(ttl_hours), idem_key),
+            )
+            conn.commit()
+
+    def release_idempotency(self, idem_key: str) -> int:
+        """执行失败/异常时撤掉占位，允许调用方重试（只删 pending，绝不动已完成结果）。"""
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                "DELETE FROM idempotency_keys"
+                " WHERE idem_key = ? AND COALESCE(state, 'done') = 'pending'",
+                (idem_key,),
+            )
+            conn.commit()
+            return int(cur.rowcount or 0)
+
+    def pending_idempotency_count(self) -> int:
+        """占位行计数（长跑可观测：占位只增不减说明有执行路径漏了 finalize/release）。"""
+        conn = self.connect()
+        with self._lock:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM idempotency_keys WHERE state = 'pending'"
+            ).fetchone()
+        return int(row["c"] or 0)
+
+    def purge_idempotency(self) -> int:
+        """清理过期幂等键（含崩溃后残留的占位行）。"""
+        cutoff = self._idem_now()
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute("DELETE FROM idempotency_keys WHERE expires_at < ?", (cutoff,))
             conn.commit()
             return cur.rowcount or 0
 
@@ -4237,16 +4386,16 @@ class Store:
 
     def get_events_by_entity(self, entity_id: str, day: str = "") -> list:
         """按实体 id（可选限定日期）取事件列表，供 explain_insight 由 entity_id 重建底层证据。"""
-        conn = self.connect()
-        if day:
-            rows = conn.execute(
-                "SELECT * FROM events WHERE entity_id=? AND day=? ORDER BY ts",
-                (entity_id, day),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM events WHERE entity_id=? ORDER BY ts", (entity_id,)
-            ).fetchall()
+        with self._db() as conn:
+            if day:
+                rows = conn.execute(
+                    "SELECT * FROM events WHERE entity_id=? AND day=? ORDER BY ts",
+                    (entity_id, day),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM events WHERE entity_id=? ORDER BY ts", (entity_id,)
+                ).fetchall()
         return [dict(r) for r in rows]
 
     def add_agent_memory(
@@ -4388,7 +4537,6 @@ class Store:
 
     def list_agent_memories(self, state: str = "all", source: str = "", limit: int = 500,
                             member_id: str = "", *, exact_member: bool = False) -> list:
-        conn = self.connect()
         # WO-MA-005: 成员归属过滤。member_id 非空时只返回该成员的记忆。
         # vMA-1.2.2: exact_member=True 时空字符串也精确匹配 member_id=''（公共记忆），
         # 用于对外 API 的 fail-closed；内部 sweep 不传此参数以保持"看全部"语义。
@@ -4406,16 +4554,17 @@ class Store:
         elif member_id:
             where_parts.append("member_id=?")
             params.append(member_id)
-        if where_parts:
-            where_sql = "WHERE " + " AND ".join(where_parts)
-            rows = conn.execute(
-                f"SELECT * FROM agent_memories {where_sql} ORDER BY updated_at DESC LIMIT ?",
-                (*params, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM agent_memories ORDER BY updated_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+        with self._db() as conn:
+            if where_parts:
+                where_sql = "WHERE " + " AND ".join(where_parts)
+                rows = conn.execute(
+                    f"SELECT * FROM agent_memories {where_sql} ORDER BY updated_at DESC LIMIT ?",
+                    (*params, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM agent_memories ORDER BY updated_at DESC LIMIT ?", (limit,)
+                ).fetchall()
         return [dict(r) for r in rows]
 
     def search_agent_memories_fts(self, query: str, limit: int = 20,
@@ -4430,27 +4579,27 @@ class Store:
             return []
         # 以 phrase 包裹，转义内部双引号，避免 MATCH 语法注入
         phrase = '"' + q.replace('"', '""') + '"'
-        conn = self.connect()
-        try:
-            rows = conn.execute(
-                """
-                SELECT a.memory_id, a.text, a.topic_key, a.state, a.trust,
-                       a.source, a.tags_json, a.member_id, f.rank
-                FROM (
-                    SELECT rowid AS rid, bm25(agent_memories_fts) AS rank
-                    FROM agent_memories_fts
-                    WHERE agent_memories_fts MATCH ?
-                ) f
-                JOIN agent_memories a ON a.rowid = f.rid
-                WHERE a.state = ?
-                ORDER BY f.rank
-                LIMIT ?
-                """,
-                (phrase, state, limit),
-            ).fetchall()
-        except Exception as exc:  # pragma: no cover
-            print(f"[Store] FTS 检索失败: {exc}")
-            return []
+        with self._db() as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT a.memory_id, a.text, a.topic_key, a.state, a.trust,
+                           a.source, a.tags_json, a.member_id, f.rank
+                    FROM (
+                        SELECT rowid AS rid, bm25(agent_memories_fts) AS rank
+                        FROM agent_memories_fts
+                        WHERE agent_memories_fts MATCH ?
+                    ) f
+                    JOIN agent_memories a ON a.rowid = f.rid
+                    WHERE a.state = ?
+                    ORDER BY f.rank
+                    LIMIT ?
+                    """,
+                    (phrase, state, limit),
+                ).fetchall()
+            except Exception as exc:  # pragma: no cover
+                print(f"[Store] FTS 检索失败: {exc}")
+                return []
         return [dict(r) for r in rows]
 
     def list_dirty_agent_mirrors(self) -> list:
@@ -4516,31 +4665,32 @@ class Store:
 
     def record_agent_feedback(self, memory_id: str, useful: bool, trust_step: float = 0.2,
                                comment: str = "", question: str = "") -> dict | None:
-        conn = self.connect()
-        row = conn.execute(
-            "SELECT * FROM agent_memories WHERE memory_id=?", (memory_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        up = row["feedback_up"]
-        down = row["feedback_down"]
-        trust = float(row["trust"])
-        ttl = int(row["ttl_days"])
-        if useful:
-            up += 1
-            trust = min(1.0, trust + trust_step)
-        else:
-            down += 1
-            trust = max(-1.0, trust - trust_step)
-        now = now_local(self.tz_offset_hours)
-        if useful:
-            expires_at = (now + timedelta(days=ttl)).strftime("%Y-%m-%d")
-        else:
-            expires_at = (now + timedelta(days=max(1, ttl // 2))).strftime("%Y-%m-%d")
         # vMA-1.2.1 / DCD R1：反馈评论与"当初的问题文本"入库前脱敏（成员姓名 → 成员N）
         safe_comment = self.sanitize_feedback_text((comment or "")[:_FEEDBACK_TEXT_MAX])
         safe_question = self.sanitize_feedback_text((question or "")[:_FEEDBACK_TEXT_MAX])
-        with self._lock:
+        # 第六轮审计 CRITICAL-2：读-改-写原先跨在锁区两侧，并发反馈会互相覆盖（lost update）。
+        # 整段放进事务区，counters 与 trust 的增量才对得上同一次读到的行。
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_memories WHERE memory_id=?", (memory_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            up = row["feedback_up"]
+            down = row["feedback_down"]
+            trust = float(row["trust"])
+            ttl = int(row["ttl_days"])
+            if useful:
+                up += 1
+                trust = min(1.0, trust + trust_step)
+            else:
+                down += 1
+                trust = max(-1.0, trust - trust_step)
+            now = now_local(self.tz_offset_hours)
+            if useful:
+                expires_at = (now + timedelta(days=ttl)).strftime("%Y-%m-%d")
+            else:
+                expires_at = (now + timedelta(days=max(1, ttl // 2))).strftime("%Y-%m-%d")
             conn.execute(
                 """UPDATE agent_memories SET feedback_up=?, feedback_down=?,
                    trust=?, expires_at=?, updated_at=?, mirror_dirty=1,
@@ -4548,7 +4698,6 @@ class Store:
                 (up, down, trust, expires_at, now.isoformat(timespec="seconds"),
                  safe_question, safe_comment, memory_id),
             )
-            conn.commit()
         return {"feedback_up": up, "feedback_down": down, "trust": trust,
                 "expires_at": expires_at, "comment": safe_comment,
                 "question": safe_question}
@@ -4559,18 +4708,18 @@ class Store:
         DCD 2026-10-01 R1 裁定 A 的前提是"门可测"：默认只返回带问题文本的行，
         因为没写下当初问了什么的 👎 事后无法还原成 badcase，放进分母只会稀释判据。
         """
-        conn = self.connect()
         where = "WHERE feedback_down > 0"
         if with_question_only:
             where += " AND feedback_question <> ''"
-        rows = conn.execute(
-            f"""SELECT memory_id, text, topic_key, state, trust,
-                        feedback_up, feedback_down, feedback_question,
-                        feedback_comment, updated_at
-                 FROM agent_memories {where}
-                 ORDER BY updated_at DESC LIMIT ?""",
-            (int(limit),),
-        ).fetchall()
+        with self._db() as conn:
+            rows = conn.execute(
+                f"""SELECT memory_id, text, topic_key, state, trust,
+                            feedback_up, feedback_down, feedback_question,
+                            feedback_comment, updated_at
+                     FROM agent_memories {where}
+                     ORDER BY updated_at DESC LIMIT ?""",
+                (int(limit),),
+            ).fetchall()
         return [dict(zip(
             ["memory_id", "text", "topic_key", "state", "trust", "feedback_up",
              "feedback_down", "feedback_question", "feedback_comment", "updated_at"], r
@@ -4585,15 +4734,15 @@ class Store:
         供成员详情展示并可继续反馈（把洞察反馈反哺到成员档案视图）。
         """
         import json as _json
-        conn = self.connect()
         keys = [f"member:{self._escape_like(member_id)}"]
         if member_name and member_name != member_id:
             keys.append(f"member:{self._escape_like(member_name)}")
         clause = " OR ".join(["tags_json LIKE ? ESCAPE '\\'"] * len(keys))
-        rows = conn.execute(
-            f"SELECT * FROM agent_memories WHERE ({clause}) ORDER BY updated_at DESC LIMIT ?",
-            (*[f"%{k}%" for k in keys], limit),
-        ).fetchall()
+        with self._db() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM agent_memories WHERE ({clause}) ORDER BY updated_at DESC LIMIT ?",
+                (*[f"%{k}%" for k in keys], limit),
+            ).fetchall()
         out = []
         up = down = 0
         for r in rows:
@@ -4616,11 +4765,11 @@ class Store:
     def researcher_direction_feedback(self) -> list:
         """v0.8-3 按方向聚合研究员洞察的 👍/👎（方向/模板权重反哺参考）。"""
         import json as _json
-        conn = self.connect()
-        rows = conn.execute(
-            "SELECT tags_json, feedback_up, feedback_down, trust FROM agent_memories "
-            "WHERE tags_json LIKE '%auto-researcher%'"
-        ).fetchall()
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT tags_json, feedback_up, feedback_down, trust FROM agent_memories "
+                "WHERE tags_json LIKE '%auto-researcher%'"
+            ).fetchall()
         agg: dict = {}
         for r in rows:
             try:
@@ -4644,10 +4793,10 @@ class Store:
         return out
 
     def get_session_agent_trust(self, session_id: str, strict_threshold: float = -0.3) -> dict:
-        conn = self.connect()
-        rows = conn.execute(
-            "SELECT trust, state FROM agent_memories WHERE session_id=?", (session_id,)
-        ).fetchall()
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT trust, state FROM agent_memories WHERE session_id=?", (session_id,)
+            ).fetchall()
         if not rows:
             return {"session_id": session_id, "count": 0, "avg_trust": 0.0,
                     "live": 0, "revoked": 0, "strict": False}
@@ -4736,7 +4885,6 @@ class Store:
 
     def list_rule_lifecycle(self, rule_id: str = "", limit: int = 100) -> list[dict]:
         """列出规则生命周期审计（默认全局最近 N 条）。"""
-        conn = self.connect()
         sql = "SELECT * FROM rule_lifecycle_audit"
         args: list = []
         if rule_id:
@@ -4744,7 +4892,8 @@ class Store:
             args.append(rule_id)
         sql += " ORDER BY audit_id DESC LIMIT ?"
         args.append(int(limit))
-        rows = conn.execute(sql, args).fetchall()
+        with self._db() as conn:
+            rows = conn.execute(sql, args).fetchall()
         out = []
         for r in rows:
             d = dict(r)
@@ -4770,7 +4919,6 @@ class Store:
     def list_rule_triggers(self, rule_id: str, *, since: str = "",
                            mode: str | None = None) -> list[dict]:
         """列出规则触发历史，可按时间下界与试运行标记过滤。"""
-        conn = self.connect()
         sql = "SELECT * FROM rule_trigger_history WHERE rule_id = ?"
         args: list = [rule_id]
         if since:
@@ -4781,7 +4929,8 @@ class Store:
         elif mode == "live":
             sql += " AND dry_run = 0"
         sql += " ORDER BY trigger_id DESC LIMIT 500"
-        return [dict(r) for r in conn.execute(sql, args).fetchall()]
+        with self._db() as conn:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
 
     def mark_rule_trigger_false_positive(self, trigger_id: int) -> bool:
         conn = self.connect()
@@ -4794,13 +4943,13 @@ class Store:
             return bool(cur.rowcount)
 
     def count_rule_false_positives(self, rule_id: str, *, since: str = "") -> int:
-        conn = self.connect()
         sql = "SELECT COUNT(*) FROM rule_trigger_history WHERE rule_id = ? AND false_positive = 1"
         args: list = [rule_id]
         if since:
             sql += " AND triggered_at >= ?"
             args.append(since)
-        return int(conn.execute(sql, args).fetchone()[0])
+        with self._db() as conn:
+            return int(conn.execute(sql, args).fetchone()[0])
 
     def purge_rule_triggers(self, cutoff: str, max_rows: int = 100_000) -> dict:
         """裁剪触发历史：先删 ``triggered_at < cutoff`` 的，再删超额的最旧行。
@@ -4853,10 +5002,10 @@ class Store:
         }
 
     def get_detected_activity(self, activity_id: str):
-        conn = self.connect()
-        row = conn.execute(
-            "SELECT * FROM detected_activities WHERE activity_id=?", (activity_id,)
-        ).fetchone()
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT * FROM detected_activities WHERE activity_id=?", (activity_id,)
+            ).fetchone()
         if row is None:
             return None
         d = dict(row)
@@ -4900,14 +5049,14 @@ class Store:
         return rule_id
 
     def list_activity_rules(self, enabled_only: bool = True) -> list:
-        conn = self.connect()
         sql = (
             "SELECT rule_id, name, room, tags_json, start_hour, end_hour, "
             "min_events, confidence, note, enabled FROM activity_rules"
         )
         if enabled_only:
             sql += " WHERE enabled=1"
-        rows = conn.execute(sql).fetchall()
+        with self._db() as conn:
+            rows = conn.execute(sql).fetchall()
         out = []
         for r in rows:
             out.append(
@@ -4927,10 +5076,9 @@ class Store:
         return out
 
     def delete_activity_rule(self, name: str) -> bool:
-        conn = self.connect()
-        cur = conn.execute("DELETE FROM activity_rules WHERE name=?", (name,))
-        conn.commit()
-        return cur.rowcount > 0
+        with self.transaction() as conn:
+            cur = conn.execute("DELETE FROM activity_rules WHERE name=?", (name,))
+            return cur.rowcount > 0
 
     # ── 信号硬排除层（学习策略：teach_signal kind='hard' 落表）──
     def upsert_signal_exclusion(
@@ -4969,14 +5117,14 @@ class Store:
 
     def list_signal_exclusions(self, include_revoked: bool = False) -> list:
         """返回（默认仅生效的）信号硬排除规则。"""
-        conn = self.connect()
         sql = (
             "SELECT exclusion_id, entity_id, scope, exclusion_type, reason, "
             "created_by, created_at, revoked, revoked_at FROM signal_exclusions"
         )
         if not include_revoked:
             sql += " WHERE revoked=0"
-        rows = conn.execute(sql).fetchall()
+        with self._db() as conn:
+            rows = conn.execute(sql).fetchall()
         return [
             {
                 "exclusion_id": r["exclusion_id"],
@@ -5005,12 +5153,12 @@ class Store:
         return cur.rowcount > 0
 
     def get_signal_exclusion(self, exclusion_id: str) -> dict | None:
-        conn = self.connect()
-        r = conn.execute(
-            "SELECT exclusion_id, entity_id, scope, exclusion_type, reason, "
-            "created_by, created_at, revoked, revoked_at FROM signal_exclusions WHERE exclusion_id=?",
-            (exclusion_id,),
-        ).fetchone()
+        with self._db() as conn:
+            r = conn.execute(
+                "SELECT exclusion_id, entity_id, scope, exclusion_type, reason, "
+                "created_by, created_at, revoked, revoked_at FROM signal_exclusions WHERE exclusion_id=?",
+                (exclusion_id,),
+            ).fetchone()
         if not r:
             return None
         return {

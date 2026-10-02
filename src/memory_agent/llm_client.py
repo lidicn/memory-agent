@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import random
 import httpx
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -70,6 +71,39 @@ def _num(value: Any, default: float) -> float:
 class LLMError(Exception):
     """LLM 调用统一异常。router 捕获后触发 fallback。"""
     pass
+
+
+class _RetryLater(Exception):
+    """内部信号：这次失败可以再试一次（5xx / 超时 / 传输层错误）。
+
+    与 LLMError 分开，是为了让 4xx（密钥错、参数错、配额满）直接抛出——
+    重试一个"请求本身不对"的调用只会再撞一次，还把真实错误码吞成了"调用失败"。
+    """
+
+    def __init__(self, message: str, retry_after: str | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+# 第六轮审计 M-2：重试要有真正的退避。固定间隔会让并发请求齐步重试，
+# 把已经在喘气的上游按得更死；指数 + full jitter 才是自愈型重试。
+_LLM_MAX_ATTEMPTS = 2
+_RETRY_BASE_SECONDS = 0.5
+_RETRY_MAX_SECONDS = 8.0
+_RETRY_AFTER_MAX_SECONDS = 10.0
+
+
+def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
+    """指数退避 + 全抖动；上游给了 Retry-After 就优先尊重（截到 _RETRY_AFTER_MAX_SECONDS）。"""
+    if retry_after:
+        try:
+            hinted = float(str(retry_after).strip())
+        except (TypeError, ValueError):
+            hinted = -1.0
+        if 0.0 <= hinted <= _RETRY_AFTER_MAX_SECONDS:
+            return hinted
+    cap = min(_RETRY_MAX_SECONDS, _RETRY_BASE_SECONDS * (2 ** max(0, attempt)))
+    return random.uniform(0.0, cap)
 
 
 def _resolve_endpoint(base: str) -> str:
@@ -223,9 +257,11 @@ class LLMProvider:
         )
         timeout_cfg = httpx.Timeout(self.timeout)
         last_exc = None
-        for _ in range(2):  # 一次 5xx / 超时重试，每次用新连接
-            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
-                try:
+        # 一次 5xx / 超时重试，每次用新连接；重试间隔走 _retry_delay（第六轮审计 M-2）
+        for attempt in range(_LLM_MAX_ATTEMPTS):
+            retry_after = None
+            try:
+                async with httpx.AsyncClient(timeout=timeout_cfg) as client:
                     resp = await client.post(self.endpoint, headers=self._headers(), json=payload)
                     _logger.info("[%s] chat response status=%s", self.name, resp.status_code)
                     if resp.status_code == 200:
@@ -252,18 +288,26 @@ class LLMProvider:
                             "truncated": finish_reason == "length",
                             "_raw": raw_text,
                         }
-                    elif 500 <= resp.status_code < 600:
-                        last_exc = f"[{self.name}] HTTP {resp.status_code}: {resp.text[:300]}"
-                        await asyncio.sleep(1)
-                        continue
-                    else:
-                        raise LLMError(f"[{self.name}] HTTP {resp.status_code}: {resp.text[:300]}")
-                except (LLMError, asyncio.TimeoutError, httpx.TimeoutException) as e:
-                    last_exc = str(e)
-                    await asyncio.sleep(1)
-                    continue
-                except Exception as e:
-                    raise LLMError(f"[{self.name}] {e}")
+                    if 500 <= resp.status_code < 600:
+                        raise _RetryLater(
+                            f"[{self.name}] HTTP {resp.status_code}: {resp.text[:300]}",
+                            retry_after=resp.headers.get("Retry-After"),
+                        )
+                    raise LLMError(f"[{self.name}] HTTP {resp.status_code}: {resp.text[:300]}")
+            except _RetryLater as e:
+                retry_after = e.retry_after
+                last_exc = str(e)
+            except (asyncio.TimeoutError, httpx.TimeoutException, httpx.TransportError) as e:
+                last_exc = f"[{self.name}] {type(e).__name__}: {e}"
+            except LLMError:
+                raise
+            except Exception as e:
+                raise LLMError(f"[{self.name}] {e}")
+            if attempt + 1 < _LLM_MAX_ATTEMPTS:
+                delay = _retry_delay(attempt, retry_after)
+                _logger.warning("[%s] chat 重试 attempt=%d/%d，%.2fs 后重试: %s",
+                                self.name, attempt + 2, _LLM_MAX_ATTEMPTS, delay, last_exc)
+                await asyncio.sleep(delay)
         raise LLMError(last_exc or f"[{self.name}] 调用失败")
 
     async def stream_chat(self, messages, model=None, temperature=None, max_tokens=None,

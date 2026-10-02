@@ -153,12 +153,13 @@ def collect_negative_samples(store: Any) -> list[dict]:
 
     # 2) 负反馈记忆：用户对内容（推断结论/洞察）的 👎 纠正
     try:
-        conn = store.connect()
-        rows = conn.execute(
-            "SELECT memory_id, text, topic_key, tags_json, source_refs_json, "
-            "feedback_down, observed_at, created_at "
-            "FROM agent_memories WHERE feedback_down >= 1"
-        ).fetchall()
+        # 第六轮审计 CRITICAL-2（审计的清单漏了这一处）：共享连接必须持 Store 的锁读。
+        with store._db() as conn:
+            rows = conn.execute(
+                "SELECT memory_id, text, topic_key, tags_json, source_refs_json, "
+                "feedback_down, observed_at, created_at "
+                "FROM agent_memories WHERE feedback_down >= 1"
+            ).fetchall()
     except Exception as exc:
         logger.error("读取负反馈记忆失败: %s", exc)
         rows = []

@@ -47,8 +47,11 @@ def upsert_task_record(
     """幂等写入任务记录：同 task_id+period_key 已存在则更新，不存在则插入。"""
     import json
     data_json = json.dumps(data, ensure_ascii=False)
-    conn = store.connect()
-    with store._lock:
+    # 第六轮审计 CRITICAL-2 的补充（审计只查了"有没有加锁"，没查"提没提交"）：这里
+    # 原先持锁写入但**整个文件没有一个 commit()**，事务一直半开着，最终由别的线程的
+    # commit 顺带提交——本条写入何时落盘完全不受自己控制，进程退出即丢。
+    # 改走 Store 的事务区：正常出块提交、异常回滚。
+    with store.transaction() as conn:
         # 先查是否存在
         row = conn.execute(
             "SELECT record_id FROM task_records WHERE task_id=? AND period_key=?",
@@ -70,8 +73,7 @@ def upsert_task_record(
 
 def archive_daily_records(store: Any, task_id: str, day: str) -> dict:
     """日归档：把某天的记录汇总成周/月归档。"""
-    conn = store.connect()
-    with store._lock:
+    with store._db() as conn:
         rows = conn.execute(
             "SELECT * FROM task_records WHERE task_id=? AND period_key LIKE ?",
             (task_id, f"{day[:7]}%"),

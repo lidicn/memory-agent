@@ -47,6 +47,7 @@ from .mcp_context import caller as _caller_context
 from .mcp_errors import (
     ALL_CODES,
     _is_error,
+    ErrorCode,
     normalize_tool_result,
 )
 from .mcp_scopes import note_unknown, requires, scope_of
@@ -125,6 +126,8 @@ SERVER_INSTRUCTIONS = """Memory Agent —— 家庭行为记忆与洞察中枢�
 所有写工具（如 `trigger_collection` / `create_member` / `save_skill` / `add_semantic_memory` …）
 都支持可选参数 `idempotency_key`：传同一 key 的重复调用**只执行一次**，24h 内再次调用直接返回首次结果。
 网络重试 / 多次触发同一动作时带上它，可避免重复采集、重复建成员、重复写记忆等副作用。
+并发携带同一 key 时，后到的调用**不会执行工具**，而是返回 `RATE_LIMITED`（提示「正在执行中」），
+稍后用同一 key 重试即可取回首次结果；执行失败的结果不缓存，可直接重试。
 
 ## 响应体上限（v0.9 任务3）
 单个工具的响应正文超过 `mcp_response_max_bytes`（默认 64KB，可在「系统设置」调整）时会被
@@ -804,18 +807,42 @@ def _result_text(result) -> str:
     return ""
 
 
-def _idem_get(cache_key: str):
+def _idem_store():
     try:
-        return get_runtime().store.get_idempotency(cache_key)
-    except Exception:
+        return get_runtime().store
+    except Exception:  # noqa: BLE001
         return None
 
 
-def _idem_save(cache_key: str, tool: str, text: str) -> None:
+def _idem_reserve(cache_key: str, tool: str) -> dict:
+    """占位失败一律按「放行执行」处理：幂等是防重复的优化，不能因存储抖动打死工具。"""
+    store = _idem_store()
+    if store is None:
+        return {"state": "reserved"}
     try:
-        get_runtime().store.save_idempotency(cache_key, tool, text)
+        return store.reserve_idempotency(cache_key, tool)
+    except Exception as exc:  # noqa: BLE001
+        _mcp_stats_log.debug("幂等占位失败（放行执行）: %s", exc)
+        return {"state": "reserved"}
+
+
+def _idem_finalize(cache_key: str, text: str) -> None:
+    try:
+        store = _idem_store()
+        if store is not None:
+            store.finalize_idempotency(cache_key, text)
     except Exception as exc:  # noqa: BLE001
         _mcp_stats_log.debug("幂等键落库失败（忽略）: %s", exc)
+
+
+def _idem_release(cache_key: str) -> None:
+    """执行失败/异常：撤掉占位，让调用方可以用同一 key 重试。"""
+    try:
+        store = _idem_store()
+        if store is not None:
+            store.release_idempotency(cache_key)
+    except Exception as exc:  # noqa: BLE001
+        _mcp_stats_log.debug("幂等占位释放失败（忽略）: %s", exc)
 
 
 def _mcp_response_max_bytes() -> int:
@@ -920,11 +947,28 @@ async def _tracked_call_tool(server, name, arguments, context=None):
     # P1-10: 幂等键加命名空间（token_name），防止不同调用者撞缓存
     _token_name, _, _ = _caller_context()
     cache_key = f"{_token_name or 'anon'}:{name}:{idem_key}" if idem_key else ""
+    # 第六轮审计 CRITICAL-1（实测 50ms 工具 × 5 并发同 key = 5 次执行）：
+    # 原先「查缓存 → await 执行 → 写缓存」的 CHECK 与 ACT 之间横跨 await，窗口必然穿透。
+    # 改为先**原子占位**再执行：拿到 reserved 才执行，done 直接回放，
+    # in_flight 一律不执行工具（返回可重试的错误，而不是重复写一遍）。
+    state = ""
     if cache_key:
-        cached = _idem_get(cache_key)
-        if cached is not None:
-            await _record_mcp_call(name, 0.0, bool(cached.get("is_error")), "IDEMPOTENT-HIT")
-            return _idem_result(cached)
+        claim = await asyncio.to_thread(_idem_reserve, cache_key, name)
+        state = str(claim.get("state") or "")
+        if state == "done":
+            await _record_mcp_call(name, 0.0, bool(claim.get("is_error")), "IDEMPOTENT-HIT")
+            return _idem_result(claim)
+        if state == "in_flight":
+            _mcp_stats_log.info("幂等键执行中，未执行工具: token=%s tool=%s", _token_name, name)
+            await _record_mcp_call(name, 0.0, True, f"IDEMPOTENT-IN-FLIGHT: {idem_key}")
+            return _build_tool_result(json.dumps({
+                "ok": False,
+                "error": {
+                    "code": ErrorCode.RATE_LIMITED,
+                    "message": (f"幂等键 {idem_key} 对应的工具 '{name}' 正在执行中，"
+                                "本次未执行。请稍后用同一 idempotency_key 重试取回结果。"),
+                },
+            }, ensure_ascii=False), is_error=True)
 
     t0 = time.monotonic()
     is_err = False
@@ -939,15 +983,19 @@ async def _tracked_call_tool(server, name, arguments, context=None):
         if getattr(result, "is_error", False) or getattr(result, "isError", False):
             is_err = True
             err_text = _extract_error_text(result)
-        elif cache_key:
-            # 仅缓存成功结果；失败不缓存，允许重试
-            _idem_save(cache_key, name, _result_text(result))
         return result
     except Exception as exc:
         is_err = True
         err_text = f"{type(exc).__name__}: {exc}"
         raise
     finally:
+        if cache_key and state == "reserved":
+            # 成功才落 done；失败/异常撤占位，保持「失败可重试」的既有语义。
+            # 同步 SQLite 一律走 to_thread（第五轮 CRITICAL：不阻塞事件环）。
+            if is_err:
+                await asyncio.to_thread(_idem_release, cache_key)
+            else:
+                await asyncio.to_thread(_idem_finalize, cache_key, _result_text(result))
         dt = (time.monotonic() - t0) * 1000
         await _record_mcp_call(name, dt, is_err, err_text)
 
@@ -1328,45 +1376,48 @@ def _build_server():
             end = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
         def _query():
-            conn = rt.store.connect()
-            try:
-                sql = "SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence, payload FROM unified_events WHERE 1=1"
-                params = []
-                if person:
-                    sql += " AND person LIKE ?"
-                    params.append(f"%{person}%")
-                if room:
-                    sql += " AND room LIKE ?"
-                    params.append(f"%{room}%")
-                if source:
-                    sql += " AND source = ?"
-                    params.append(source)
-                if start:
-                    sql += " AND server_ts >= ?"
-                    params.append(start)
-                if end:
-                    sql += " AND server_ts <= ?"
-                    params.append(end)
-                # count
-                count_sql = sql.replace("SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence, payload", "SELECT COUNT(*)")
+            sql = "SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence, payload FROM unified_events WHERE 1=1"
+            params = []
+            if person:
+                sql += " AND person LIKE ?"
+                params.append(f"%{person}%")
+            if room:
+                sql += " AND room LIKE ?"
+                params.append(f"%{room}%")
+            if source:
+                sql += " AND source = ?"
+                params.append(source)
+            if start:
+                sql += " AND server_ts >= ?"
+                params.append(start)
+            if end:
+                sql += " AND server_ts <= ?"
+                params.append(end)
+            # count
+            count_sql = sql.replace("SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence, payload", "SELECT COUNT(*)")
+            # rows
+            rows_limit = max(1, min(int(limit), 2000))
+            sql += " ORDER BY server_ts DESC LIMIT ? OFFSET ?"
+            # 第六轮审计 CRITICAL-2 的附带发现（P0，审计本身没查到）：这里原先是
+            # `conn = rt.store.connect()` + `finally: conn.close()`，关掉的却是 Store 的
+            # **共享**连接——connect() 只认缓存、不判已关闭，于是本工具每调用一次，
+            # 全进程后续所有 SQLite 访问都抛 ProgrammingError: Cannot operate on a
+            # closed database。共享连接不由调用方关闭。
+            # 另外 count 与 rows 原本在锁外分两次读，中间可能有写入插进来导致
+            # total 与事件列表口径不一致；收进同一个锁区一次读完。
+            with rt.store._db() as conn:
                 total = conn.execute(count_sql, params).fetchone()[0]
-                # rows
-                rows_limit = max(1, min(int(limit), 2000))
-                sql += " ORDER BY server_ts DESC LIMIT ? OFFSET ?"
-                params.extend([rows_limit, offset])
-                rows = conn.execute(sql, params).fetchall()
-                events = [dict(r) for r in rows]
-                return {
-                    "total": total,
-                    "count": len(events),
-                    "offset": offset,
-                    "limit": rows_limit,
-                    "has_more": (offset + len(events)) < total,
-                    "next_offset": offset + len(events) if (offset + len(events)) < total else None,
-                    "events": events,
-                }
-            finally:
-                conn.close()
+                rows = conn.execute(sql, params + [rows_limit, offset]).fetchall()
+            events = [dict(r) for r in rows]
+            return {
+                "total": total,
+                "count": len(events),
+                "offset": offset,
+                "limit": rows_limit,
+                "has_more": (offset + len(events)) < total,
+                "next_offset": offset + len(events) if (offset + len(events)) < total else None,
+                "events": events,
+            }
 
         return await asyncio.to_thread(_query)
     @mcp.tool()

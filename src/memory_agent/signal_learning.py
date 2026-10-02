@@ -33,13 +33,14 @@ class SignalLearningService:
             {"ok": True, "suggestions": [...], "total_negative": int}
         """
         import json as _json
-        conn = self.store.connect()
-
-        # 查所有 feedback_down ≥ 1 的记忆
-        rows = conn.execute(
-            "SELECT memory_id, text, tags_json, feedback_down, topic_key "
-            "FROM agent_memories WHERE feedback_down >= 1 AND state = 'live'"
-        ).fetchall()
+        # 第六轮审计 CRITICAL-2：共享连接要在 Store 的锁内读（本方法经 to_thread 在
+        # 工作线程跑，与 API 路径真并发，锁外的读可能落进别人未提交的事务）。
+        with self.store._db() as conn:
+            # 查所有 feedback_down ≥ 1 的记忆
+            rows = conn.execute(
+                "SELECT memory_id, text, tags_json, feedback_down, topic_key "
+                "FROM agent_memories WHERE feedback_down >= 1 AND state = 'live'"
+            ).fetchall()
 
         if not rows:
             return {"ok": True, "suggestions": [], "total_negative": 0}
