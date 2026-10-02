@@ -417,32 +417,99 @@ def test_build_feedback_pack(tmp_path):
 # ── Phase 5 离家安防 + 家庭日常画像 ──────────────────────────────────────────────
 
 def test_away_mode_transition():
+    # P2-5 适配。旧 AwayMode 自带 `no_human_threshold_seconds` 计时；新框架把"长时间无人"
+    # 的判定交回给盒侧 AI（livingroom_ai 只转发 no_human / face_known / face_unknown 三类事件），
+    # AwayModeManager 变成纯消费者。这里用**真实 Store**（不是替身 store）跑，断言读的是
+    # meta 表盘上的行而非 manager 的内存缓存——状态写没写进去，才是重启能不能恢复的关键。
+    import time as _time
+
+    from memory_agent.away_mode import (
+        _AWAY_KEY,
+        _AWAY_SINCE_KEY,
+        AwayModeManager,
+    )
+
+    def meta(s, key):
+        with s._db() as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return None if row is None else row[0]
+
+    s = _store()
     try:
-        from memory_agent.away_mode import AwayMode
-    except ImportError:
-        pytest.skip("AwayMode 已重构为 AwayModeManager（需 store/room），本用例待适配")
-    mode = AwayMode(no_human_threshold_seconds=1)
-    assert mode.is_away() is False
-    # 模拟无人超过阈值
-    import time
-    mode.last_human_ts = time.monotonic() - 2
-    result = mode.report_no_human()
-    assert result == "away"
-    assert mode.is_away() is True
-    # 有人 → 切回在家
-    mode.report_human()
-    assert mode.is_away() is False
+        am = AwayModeManager(s, room="客厅")
+        assert am.is_active() is False, "初始应为在家"
+        assert meta(s, _AWAY_KEY) is None, "未触发过就不该有 meta 行"
+
+        r = am.handle_event("no_human", "客厅")
+        assert r["state_changed"] is True and r["new_state"] is True, r
+        assert am.is_active() is True
+        assert meta(s, _AWAY_KEY) == "1", "离家状态必须落到 meta 表"
+        since = meta(s, _AWAY_SINCE_KEY)
+        assert since and _time.strptime(since, "%Y-%m-%dT%H:%M:%S"), since
+
+        # 重复 no_human 不再产生状态变化（幂等，不刷新 since）
+        r2 = am.handle_event("no_human", "客厅")
+        assert r2["state_changed"] is False, r2
+
+        # 非配置房间的事件不参与状态机：书房来熟人不能解除客厅的离家
+        r3 = am.handle_event("face_known", "书房")
+        assert r3["state_changed"] is False and am.is_active() is True, r3
+
+        # 客厅熟人 → 解除，meta 写回 "0" 且 since 清空（不留半套状态）
+        r4 = am.handle_event("face_known", "客厅")
+        assert r4["state_changed"] is True and r4["new_state"] is False, r4
+        assert meta(s, _AWAY_KEY) == "0"
+        assert meta(s, _AWAY_SINCE_KEY) == ""
+
+        # 重启语义：换一个新实例（缓存为空）应从盘上恢复到"在家"
+        assert AwayModeManager(s, room="客厅").is_active() is False
+
+        # 再次离家后，新实例应恢复到"离家"且 since 一并带回
+        am.handle_event("no_human", "客厅")
+        revived = AwayModeManager(s, room="客厅")
+        assert revived.is_active() is True, "重启后应恢复离家状态"
+        assert revived.get_state()["since"] == meta(s, _AWAY_SINCE_KEY)
+    finally:
+        s.close()
 
 
 def test_away_mode_alert_unknown():
+    # P2-5 适配。旧 should_alert_unknown() 的两段判据（在家不告警 / 离家才告警）
+    # 现在由 handle_event 的分支 + 告警冷却承担：dispatcher 缺位时回退本地冷却
+    # (_AWAY_ALERT_COOLDOWN_S)。冷却必须是**窗口**而不是永久静默——所以这里既测
+    # 窗口内的第二条被抑制，也测窗口过后仍能再告警。
+    from memory_agent.away_mode import _AWAY_ALERT_COOLDOWN_S, AwayModeManager
+
+    s = _store()
     try:
-        from memory_agent.away_mode import AwayMode
-    except ImportError:
-        pytest.skip("AwayMode 已重构为 AwayModeManager（需 store/room），本用例待适配")
-    mode = AwayMode()
-    assert mode.should_alert_unknown() is False
-    mode.state = "away"
-    assert mode.should_alert_unknown() is True
+        am = AwayModeManager(s, room="客厅")
+        # 在家：陌生人走正常名册消除法，状态机不即时告警
+        assert am.handle_event("face_unknown", "客厅")["alert"] is False
+
+        am.handle_event("no_human", "客厅")
+        r1 = am.handle_event("face_unknown", "客厅")
+        assert r1["alert"] is True, "离家模式下陌生人应立即告警"
+        assert r1["merged_count"] == 1, r1
+
+        r2 = am.handle_event("face_unknown", "客厅")
+        assert r2["alert"] is False, "冷却窗口内不应重复告警"
+        assert "冷却" in r2["reason"], r2
+        assert r2["merged_count"] == 0, r2
+
+        # 冷却窗过后必须能再告警（把冷却写成静默就红了）
+        am._last_alert_ts -= _AWAY_ALERT_COOLDOWN_S + 1
+        assert am.handle_event("face_unknown", "客厅")["alert"] is True
+
+        # 房间过滤在告警之前：非配置房间的陌生人不由本状态机负责
+        r3 = am.handle_event("face_unknown", "卧室")
+        assert r3["alert"] is False and r3["state_changed"] is False, r3
+
+        # 解除离家后恢复静默
+        am.handle_event("face_known", "客厅")
+        am._last_alert_ts = 0.0
+        assert am.handle_event("face_unknown", "客厅")["alert"] is False
+    finally:
+        s.close()
 
 
 def test_daily_profile_baseline():
