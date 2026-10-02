@@ -81,7 +81,11 @@ except Exception:  # pragma: no cover - 本地无 mcp 时跳过
     mcp_server = None
 
 skip_mcp = pytest.mark.skipif(
-    mcp_server is None, reason="mcp 不可用，跳过 MCP 注册一致性检查"
+    mcp_server is None or getattr(mcp_server, "mcp_server", None) is None,
+    # 判据是「服务器实例是否建成」，不是「模块能否 import」：本机 mcp 是旧 SDK 时
+    # `_build_server()` 返回 None，模块 import 却照样成功——旧写法让这两条测试
+    # 长期以「本机专属红」的身份存在，而红久了就没人看，正是 P2 类回归保护失效的形态。
+    reason="MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查",
 )
 
 

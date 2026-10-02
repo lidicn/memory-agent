@@ -91,33 +91,40 @@ class InsightService:
         # 修复策略是**组合 + 显式转发**（不整体换回 legacy 门面：那会改掉
         # 本类 ~17 个共享公开方法的返回形状，而生产真正依赖的只有下面这张表）。
         self.store: Any = store
-        raw_config = config  # legacy 读的是原始 app Config（rooms / tz_offset_hours / …）
-        # 兼容生产 Config：非 InsightConfig 时用默认值包装，
-        # 避免 'Config' object has no attribute 'cache_ttl'/'default_days'
-        if config is None:
-            self.config = InsightConfig()
-        elif isinstance(config, InsightConfig):
-            self.config = config
-        else:
-            self.config = InsightConfig()
-            for attr in ("tz_offset_hours", "default_days", "default_limit"):
-                val = getattr(config, attr, None)
-                if val is not None:
-                    try:
-                        setattr(self.config, attr, val)
-                    except Exception:
-                        pass
+        self.raw_config = config  # legacy 读的是原始 app Config（rooms / tz_offset_hours / …）
+        #: 实体目录加载状态。`_safe_entities()` 失败时仍返回空表（契约要求查询不外抛），
+        #: 但状态会被记在这里，由 `/api/health` 的 `insights` 段如实暴露。
+        self.entities_loaded: bool = False
+        self.entities_error: str = ""
+        self.config = self._normalize_config(config)
+        self._injected_repo = repository is not None
         self.repo: BaseRepository = repository or build_repository(store, self.config)
         self.resolver = EntityResolver(self._safe_entities())
         self.core = BehaviorService(self.repo, self.resolver, self.config)
         self.nl = NLQueryEngine(self.core, self.resolver, self.config)
         # 延迟导入：insights_legacy 体积大且反向依赖本包 utils，仅在实例化时取。
         from ..insights_legacy import InsightService as LegacyInsightService
-        self.legacy = LegacyInsightService(raw_config, store)
+        self.legacy = LegacyInsightService(self.raw_config, store)
 
     # ------------------------------------------------------------------
     # 内部工具
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_config(config: Any) -> InsightConfig:
+        """把任意来源的 Config 归一化成 InsightConfig。
+
+        兼容生产 Config：非 InsightConfig 时用默认值包装，
+        避免 'Config' object has no attribute 'cache_ttl'/'default_days'。
+        """
+        if config is None or isinstance(config, InsightConfig):
+            return config or InsightConfig()
+        target = InsightConfig()
+        for attr in ("tz_offset_hours", "default_days", "default_limit"):
+            val = getattr(config, attr, None)
+            if val is not None:
+                setattr(target, attr, val)
+        return target
 
     def _days_to_range(self, days: int, start: str, end: str):
         """days 兼容：days>0 且 start/end 为空时计算时间范围。"""
@@ -132,12 +139,49 @@ class InsightService:
 
     def _safe_entities(self) -> List[Any]:
         try:
-            return self.repo.list_entities()
-        except Exception:  # noqa: BLE001
+            entities = self.repo.list_entities()
+            self.entities_loaded = True
+            self.entities_error = ""
+            return entities
+        except Exception as exc:  # noqa: BLE001
             # P0-1 教训：之前只 LOG.warning 一行消息，参数顺序错位这种致命 bug
             # 被静默降级成"实体目录为空"，用户完全无感。改 LOG.exception 留完整 traceback。
             LOG.exception("加载实体目录失败，InsightService 将以空实体表运行")
+            # 契约要求查询不外抛，所以这里仍返回空表；但失败必须**可见**——
+            # 状态记在 self.entities_* 上，由 runtime.health() 的 insights 段暴露。
+            self.entities_loaded = False
+            self.entities_error = f"{type(exc).__name__}: {exc}"
             return []
+
+    def reload_config(self, config: Any) -> None:
+        """配置热更新：归一化后**重建**依赖该配置的下游对象。
+
+        审计报告 20261002 · 新发现 1：runtime 原先只做
+        `self.insights.config = self.config`，而 repo / core / nl / legacy 早在构造时
+        就把旧 config 抓在自己手里（`cache_ttl`、`default_days` 等），热更新后洞察
+        仍按旧参数查询，且面板显示的是新值——状态与行为不一致。
+        """
+        self.raw_config = config
+        self.config = self._normalize_config(config)
+        # 注入了自定义仓储的门面（测试用）不重建：那个 repo 不由本对象拥有。
+        if not self._injected_repo:
+            self.repo = build_repository(self.store, self.config)
+        self.resolver.refresh(self._safe_entities())
+        self.core = BehaviorService(self.repo, self.resolver, self.config)
+        self.nl = NLQueryEngine(self.core, self.resolver, self.config)
+        # legacy 在构造时把 insight_cache_ttl 读进 _CACHE_TTL，只换 .config 不生效；
+        # 重建一次，缓存 TTL 与热更新一致（代价：丢弃进程内结果缓存）。
+        from ..insights_legacy import InsightService as LegacyInsightService
+        self.legacy = LegacyInsightService(config, self.store)
+
+    def status(self) -> Dict[str, Any]:
+        """洞察链路自检（纯内存读数，不查库）。"""
+        return {
+            "entities_loaded": self.entities_loaded,
+            "entities_error": self.entities_error,
+            "cache_ttl": getattr(self.config, "cache_ttl", None),
+            "default_days": getattr(self.config, "default_days", None),
+        }
 
     def refresh(self) -> None:
         """数据变更后刷新目录与缓存。"""

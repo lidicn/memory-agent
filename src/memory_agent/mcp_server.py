@@ -3103,16 +3103,15 @@ mcp_sse_app = (
 
 # 将单一 schema 中的 generated 工具动态注册到 MCP，与上方手写 @mcp.tool 并存。
 # 这里显式列出需要 schema 自动注册的工具，避免与手写工具重名冲突。
+# 注册失败**不再吞掉**（审计 20261002 · 新发现 5）：残缺的工具面会让客户端按目录调用却
+# 得到 NOT_FOUND，宁可导入期红掉，也不要放出去一个「目录说有、实际没有」的服务。
 if mcp_server is not None:
-    try:
-        _registered = register_simple_tools(
-            mcp_server, get_runtime,
-            names=["route_question", "list_vision_cameras", "get_vision_status", "analyze_camera", "query_behavior_events"],
-        )
-        # 目录一致性测试依赖 hasattr(mcp_server, name)，需把动态函数提升为模块级属性
-        globals().update(_registered)
-    except Exception as _exc:  # pragma: no cover
-        logging.getLogger(__name__).warning("注册 schema 工具失败：%s", _exc)
+    _registered = register_simple_tools(
+        mcp_server, get_runtime,
+        names=["route_question", "list_vision_cameras", "get_vision_status", "analyze_camera", "query_behavior_events"],
+    )
+    # 目录一致性测试依赖 hasattr(mcp_server, name)，需把动态函数提升为模块级属性
+    globals().update(_registered)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -115,7 +115,15 @@ class AgentMemoryService:
         try:
             res = col.query(query_texts=[text], where={"state": "live"}, n_results=5)
         except Exception as exc:  # pragma: no cover
-            print(f"[AgentMemory] conflict_scan 查询失败: {exc}")
+            # 生产实测：这行只会打出 "HTTPStatusError.__init__() missing 2 required
+            # keyword-only arguments"——chromadb 构造 httpx.HTTPStatusError 的方式与镜像里的
+            # httpx 不匹配，真实状态码在抛异常的路上就丢了。补类型与 cause，至少能定位到
+            # 是哪一层失败（根因是依赖版本错配，另案登记）。
+            cause = exc.__cause__ or exc.__context__
+            detail = f"{type(exc).__name__}: {exc}"
+            if cause is not None and cause is not exc:
+                detail += f" | cause={type(cause).__name__}: {cause}"
+            print(f"[AgentMemory] conflict_scan 查询失败: {detail}")
             return out
         out["available"] = True
         ids = (res.get("ids") or [[]])[0]

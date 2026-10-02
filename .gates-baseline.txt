@@ -30,7 +30,6 @@ src/memory_agent/agent_memory.py#except-pass-broad#AgentMemoryService.promote_me
 src/memory_agent/algo_kernel.py#except-pass-broad#build_process_cases._primary
 src/memory_agent/api/debug_routes.py#except-pass-broad#DebugRun.emit
 src/memory_agent/api/debug_routes.py#except-pass-broad#DebugRun.finish
-src/memory_agent/insights/api.py#except-pass-broad#InsightService.__init__
 src/memory_agent/insights_legacy.py#except-pass-broad#InsightService._semantic_anomalies
 src/memory_agent/insights_legacy.py#except-pass-broad#InsightService._usage_by_attr
 src/memory_agent/insights_legacy.py#except-pass-broad#InsightService.device_health

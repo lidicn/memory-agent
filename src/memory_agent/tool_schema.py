@@ -179,7 +179,10 @@ TOOL_SPECS: list = [
             "短于 debounce_seconds 的抖动不计。窗口内无任何事件时三个指标为 null（no_data=true）。"
         ),
         group="定量",
-        service="store", method="",
+        # service/method 描述的是 dispatch 派发目标；这三条（3.5 只读汇总工具）
+        # 只有 MCP 手写函数体、没有 rt.store.<method>，因此按既有约定标 static。
+        # validate_specs() 会在导入期拦住「service 有值但 method 为空」这类自相矛盾的登记。
+        service="static", method="",
         expose=("mcp",),
         params=[
             _p("entity_id", "string", "精确 entity_id，逗号分隔可传多个（汇总为并集）", required=True),
@@ -200,7 +203,7 @@ TOOL_SPECS: list = [
             "按标签计数；小时直方图取设备事件并默认剔除遥测域（功率/温湿度），与其余行为工具 behavior_only 口径一致。"
         ),
         group="定量",
-        service="store", method="",
+        service="static", method="",
         expose=("mcp",),
         params=[
             _p("room", "string", "区域(area)名，原样使用真实区域名", required=True),
@@ -221,7 +224,7 @@ TOOL_SPECS: list = [
             "不存在全成员视图。"
         ),
         group="定量",
-        service="store", method="",
+        service="static", method="",
         expose=("mcp",),
         params=[
             _p("member_id", "string", "成员 UUID（list_members 可查）", required=True),
@@ -1095,6 +1098,37 @@ SPEC_BY_NAME: dict = {s.name: s for s in TOOL_SPECS}
 TOOL_NAMES: list = [s.name for s in TOOL_SPECS if "mcp" in s.expose]
 
 
+def validate_specs(specs: list | None = None) -> None:
+    """导入期自检：工具登记表内部不允许自相矛盾。
+
+    审计报告 20261002 · 新发现 3 + 5 的共同根因是「目录说有、实现没有」，而这类
+    割裂过去只在运行时以 NOT_FOUND / 空 method 报错的形式暴露。把判据前置到导入期：
+    - 重名：`SPEC_BY_NAME` 会静默丢弃后来的那一条（P0-4 的重复注册形态）；
+    - 非 static 却没有 method：`dispatch()` 只能 `getattr(svc, "")` → None；
+    - `generated=True` 却没有 method：`register_simple_tools` 注册出一个必然失败的工具；
+    - 对内置/竞技场开放却无派发目标：MCP 能用、内置答不出，正是割裂复现。
+    """
+    problems: list = []
+    items = TOOL_SPECS if specs is None else specs
+    seen: set = set()
+    for spec in items:
+        if spec.name in seen:
+            problems.append(f"{spec.name}: 工具名重复登记")
+        seen.add(spec.name)
+        if spec.service != "static" and not spec.method:
+            problems.append(f"{spec.name}: service={spec.service} 但 method 为空")
+        if spec.generated and not spec.method:
+            problems.append(f"{spec.name}: generated=True 但 method 为空")
+        if ({"builtin", "arena"} & set(spec.expose)) and (
+                spec.service == "static" or not spec.method):
+            problems.append(f"{spec.name}: 对内置/竞技场开放，但没有派发目标")
+    if problems:
+        raise ValueError("工具 schema 登记不一致：" + "；".join(problems))
+
+
+validate_specs()
+
+
 # ── 生成器 ──────────────────────────────────────────────────────────────────
 
 _JSON_TYPE = {
@@ -1210,14 +1244,18 @@ async def dispatch(rt, name: str, args: dict | None) -> dict:
 def register_simple_tools(mcp, runtime_getter, names=None) -> dict:
     """为 generated 类工具动态注册 @mcp.tool()（签名与文档均来自本 schema）。
 
-    返回 {name: func} 注册的函数字典。调用方应将其 update 到模块 globals()，
+    返回 {name: func} 注册的函数字典。调用方应将其 update 到 module globals()，
     使 hasattr(module, name) 可检测（目录一致性测试依赖此约定）。
-    任何单个工具注册失败仅记录并跳过，不影响其余工具，
-    以保证 MCP 端点始终可用（零风险保护 opencode 等外部 Agent）。
+
     names: 仅注册指定工具（缺省注册全部 generated 且 expose 含 mcp 的工具）。
+
+    **注册失败一律上抛**（审计报告 20261002 · 新发现 5）：过去单工具失败只 warning
+    并跳过，于是 TOOL_CATALOG 里挂着、客户端按目录调用却得到 NOT_FOUND——
+    与 P0-2「登记了但没实现」是同一个形状。宁可启动即红，也不要把残缺工具面放出去。
     """
     logger = logging.getLogger(__name__)
     registered = {}
+    failures: dict = {}
     for spec in TOOL_SPECS:
         if not spec.generated or "mcp" not in spec.expose:
             continue
@@ -1251,6 +1289,17 @@ def register_simple_tools(mcp, runtime_getter, names=None) -> dict:
             _impl.__name__ = spec.name
             mcp.tool()(_impl)
             registered[spec.name] = _impl
-        except Exception as exc:  # pragma: no cover - 防御性兜底
-            logger.warning("注册工具 %s 失败：%s", spec.name, exc)
+        except Exception as exc:
+            logger.exception("注册工具 %s 失败", spec.name)
+            failures[spec.name] = f"{type(exc).__name__}: {exc}"
+    if failures:
+        raise RuntimeError(
+            "schema 工具注册失败：" + "；".join(f"{k}→{v}" for k, v in failures.items()))
+    if names:
+        # 请求过但一条都没匹配上 = 名字写错或该工具不是 generated，同样是目录与实现的割裂。
+        unmatched = [n for n in names if n not in registered]
+        if unmatched:
+            raise RuntimeError(
+                f"schema 工具未被注册：{', '.join(unmatched)}"
+                "（请确认它们在 TOOL_SPECS 里登记且 generated=True）")
     return registered

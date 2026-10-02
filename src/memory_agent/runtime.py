@@ -848,7 +848,7 @@ class AppRuntime:
         self.identity.tz_offset_hours = self.config.tz_offset_hours
         self.identity_reconciler.tz_offset_hours = self.config.tz_offset_hours
         self.mqtt.config = self.config
-        self.insights.config = self.config
+        self.insights.reload_config(self.config)
         self.analysis.config = self.config
         self.agent_memory.config = self.config
         self.collector.reconfigure(self.config, self.ha, self.ha_db)
@@ -915,6 +915,9 @@ class AppRuntime:
             "mqtt": self.mqtt.status(),
             "embedding": _safe(embedding, {"configured": False}),
             "store": _safe(stats, {"total_events": 0}),
+            # 实体目录是洞察链路的地基：加载失败时查询一律返回空表，
+            # 没有这个字段就只能靠人肉翻日志发现（审计 20261002 · 新发现 2）。
+            "insights": self.insights.status(),
             "collect_lag_seconds": collect_lag_seconds,
             "tokens": len(self.tokens.list_tokens()),
             "collecting": self.collector.is_running,
