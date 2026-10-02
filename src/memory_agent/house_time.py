@@ -96,10 +96,11 @@ def house_tz() -> tzinfo:
 
 
 def hours_label(hours: float) -> str:
-    sign = "+" if hours >= 0 else "-"
+    """`UTC±HH[:MM]` 的后半段；负偏移由调用方的 `+`/`-` 前缀之外自行承担。"""
     whole = int(abs(hours))
     minutes = int(round((abs(hours) - whole) * 60))
-    return f"{whole:02d}:{minutes:02d}" if minutes else f"{whole:02d}"
+    prefix = "-" if hours < 0 else "+"
+    return f"{prefix}{whole:02d}:{minutes:02d}" if minutes else f"{prefix}{whole:02d}"
 
 
 def utc_offset_hours() -> Optional[float]:
@@ -141,7 +142,6 @@ def set_fallback_hours(hours: Optional[float]) -> None:
 
 
 def _fallback_hours() -> float:
-    global _fallback_hours_cache
     if _fallback_hours_cache is None:
         from .config import get_config
 
