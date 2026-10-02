@@ -54,13 +54,21 @@ run_contract_gate() {
         exit 1
     fi
     rm -f "$gtar"
-    if ! "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker cp /tmp/ma_contract.tar memory-agent:/tmp/ &&
-        docker exec memory-agent sh -lc 'rm -rf /tmp/ma_gate && mkdir -p /tmp/ma_gate && tar -C /tmp/ma_gate -xf /tmp/ma_contract.tar && rm -f /tmp/ma_contract.tar' &&
-        docker exec -w /tmp/ma_gate -e PYTHONPATH=/app/src:/tmp/pylibs -e JWT_SECRET=deploy-gate \
-            memory-agent python -m pytest tests/contract -q"; then
+    if ! "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker cp /tmp/ma_contract.tar memory-agent:/tmp/"; then
+        echo "[deploy] ✗ 契约测试包送入容器失败，中止部署（未重启）"
+        exit 1
+    fi
+    if ! "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker exec memory-agent sh -lc 'rm -rf /tmp/ma_gate && mkdir -p /tmp/ma_gate && tar -C /tmp/ma_gate -xf /tmp/ma_contract.tar'"; then
+        echo "[deploy] ✗ 契约测试包解包失败，中止部署（未重启）"
+        exit 1
+    fi
+    if ! "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker exec -w /tmp/ma_gate -e PYTHONPATH=/app/src:/tmp/pylibs -e JWT_SECRET=deploy-gate memory-agent python -m pytest tests/contract -q"; then
         echo "[deploy] ✗ MA↔DB 契约测试红，中止部署（未重启）"
         exit 1
     fi
+    # 清理不参与判红：docker cp 落盘的属主是宿主机 uid，容器用户（实测 uid 10001）在
+    # sticky /tmp 里删不掉它——上一版把 rm 串进判定链，把 42 passed 的绿跑成了假红。
+    "$SSH" "${SSH_OPTS[@]}" "$NAS" "docker exec memory-agent sh -lc 'rm -rf /tmp/ma_gate || true; rm -f /tmp/ma_contract.tar || true'; rm -f /tmp/ma_contract.tar" || true
     echo "[deploy] 契约门禁绿（tests/contract 对刚同步的 /app/src）"
 }
 
