@@ -232,7 +232,7 @@ def memory_agent_root() -> str:
 
 def test_backup_stamp_follows_the_house_clock_not_the_container(monkeypatch):
     """UTC 16:30（北京 00:30）的备份要打成「明天」的文件，否则轮转与排查对不上账。"""
-    import memory_agent.store as store_mod
+    from memory_agent import house_time
 
     fixed_utc = datetime(2026, 10, 2, 16, 30, 0)
 
@@ -246,14 +246,17 @@ def test_backup_stamp_follows_the_house_clock_not_the_container(monkeypatch):
             shifted = fixed_utc + timedelta(hours=tz.utcoffset(None).total_seconds() / 3600)
             return shifted.replace(tzinfo=tz)
 
-    monkeypatch.setattr(store_mod, "datetime", _FakeDateTime)
+    # 第七轮之后墙钟换算住在 house_time（homesdk.time 的接缝），替身要打在它身上；
+    # _probe=False 是为了让这条用例走 fallback 分支，不受本机装没装 homesdk 影响。
+    monkeypatch.setattr(house_time, "_probe", False)
+    monkeypatch.setattr(house_time, "datetime", _FakeDateTime)
     assert BackupManager(_app_config(tz_offset_hours=8))._date_stamp() == "20261003"
     assert BackupManager(_app_config(tz_offset_hours=0))._date_stamp() == "20261002"
 
 
 def test_attribution_window_starts_from_the_house_day(monkeypatch):
     """_fetch_attribution_events 的 `day >= ?` 必须以家庭墙钟为锚，取不到昨天就整批空转。"""
-    import memory_agent.store as store_mod
+    from memory_agent import house_time
     from memory_agent.mcp_server import _fetch_attribution_events
 
     fixed_utc = datetime(2026, 10, 2, 16, 30, 0)
@@ -267,7 +270,8 @@ def test_attribution_window_starts_from_the_house_day(monkeypatch):
 
             return fixed_utc + timedelta(hours=tz.utcoffset(None).total_seconds() / 3600)
 
-    monkeypatch.setattr(store_mod, "datetime", _FakeDateTime)
+    monkeypatch.setattr(house_time, "_probe", False)
+    monkeypatch.setattr(house_time, "datetime", _FakeDateTime)
     store = _FakeStore(rows=[])
     _fetch_attribution_events(store, days=3)
     _sql, params = store.conn.calls[0]

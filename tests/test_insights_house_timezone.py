@@ -63,10 +63,20 @@ def _pin_house_tz():
 
     本模块的断言全按 +8 写死；若别处测试调过 get_config()（会按 Config.tz_offset_hours
     注入），不钉住就会把整条时间轴带走，变成跟测试顺序相关的假红。
+
+    同时把机制层钉成"不可用"：本文件锁的是 **fallback 分支**（注入即家庭时区）。
+    装了 homesdk 且按时区名声明时，主路径归 `homesdk.time`，注入是 subordinate 的——
+    那条分支由 `test_vma_step0_homesdk_time.py` 锁。不在这里钉住，CI 一旦带上
+    `HOMESDK_TZ` 就会整文件假红，而且是"谁的说法对"之争而不是缺陷。
     """
+    from memory_agent import house_time
+
+    saved_probe = house_time._probe
+    house_time._probe = False
     before = house_tz()
     set_house_tz_offset(HOUSE_TZ_FALLBACK_HOURS)
     yield
+    house_time._probe = saved_probe
     set_house_tz_offset(before.utcoffset(None).total_seconds() / 3600)
 
 

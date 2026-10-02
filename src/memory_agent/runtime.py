@@ -23,6 +23,7 @@ from typing import Any
 from .analysis import AnalysisService
 from .auth import AuthManager
 from .config import Config, get_config
+from . import house_time
 from .face_node_registry import FaceNodeRegistry
 from .ha_client import HAClient
 from .ha_db import HADBClient
@@ -815,6 +816,9 @@ class AppRuntime:
     def reload_config(self) -> Config:
         """重新读取配置并重建依赖它的客户端。"""
         old = self.config
+        # 机制层时钟的接缝（第七轮 CRITICAL-1 同形态）：库可能是刚 pip install 进来的，
+        # 进程里缓存的「不可用」判定必须解锁，否则主路径永远接不上。
+        house_time.reset_homesdk_probe()
         self.config = get_config()
         self.auth.config = self.config
         self.auth.users_file = self.config.users_file
@@ -933,6 +937,8 @@ class AppRuntime:
             # 实体目录是洞察链路的地基：加载失败时查询一律返回空表，
             # 没有这个字段就只能靠人肉翻日志发现（审计 20261002 · 新发现 2）。
             "insights": self.insights.status(),
+            # 家庭墙钟现在由哪套机制说了算、依据哪个键（契约 §四 的对外回执）。
+            "house_clock": house_time.status(),
             "collect_lag_seconds": collect_lag_seconds,
             "tokens": len(self.tokens.list_tokens()),
             "collecting": self.collector.is_running,

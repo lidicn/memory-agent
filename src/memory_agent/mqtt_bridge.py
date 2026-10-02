@@ -25,6 +25,8 @@ import json
 import time
 from typing import Any
 
+from . import house_time
+
 try:  # paho-mqtt 是可选依赖：容器装了才真正推送，缺了只是不推
     import paho.mqtt.client as mqtt
 
@@ -199,7 +201,9 @@ class MqttBridge:
                 "stable_id": stable_id,
                 "from": from_state,
                 "to": to_state,
-                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                # 跨仓 payload 的时间戳必须是家庭墙钟：`time.strftime` 读的是机器时区，
+                # UTC 容器里发出去的比 MA 库里的 `ts` 早 8 小时（契约 §四 同一口径）。
+                "ts": house_time.now_local(self.config.tz_offset_hours).isoformat(),
             },
         )
 

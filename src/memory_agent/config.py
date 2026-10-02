@@ -526,6 +526,19 @@ def get_config() -> Config:
     # Config.tz_offset_hours 是唯一配置项，insights 层里那个 +8 从此只是 fallback。
     # 懒导入：insights.models 只依赖标准库，不会形成环。
     from .insights.models import set_house_tz_offset
+
+    # 契约 §四 + ADM 联动计划第 0 步 ③：家庭时区被按 IANA 名声明（HOMESDK_TZ/TZ）时
+    # homesdk.time 是主路径，Config.tz_offset_hours 同步成它当前的小时快照——
+    # 那些仍在做 `utc + timedelta(hours=tz_offset_hours)` 显示的点因此不会停在 8.0 上。
+    # 主路径不当家（未装库、或只给了 TZ_OFFSET_HOURS）时返回 None，配置值原样保留。
+    from .house_time import set_fallback_hours, utc_offset_hours
+
+    synced_offset = utc_offset_hours()
+    if synced_offset is not None:
+        config.tz_offset_hours = float(synced_offset)
+    # 每次重建配置都刷新快照：house_time 的换算路径不能回头读 config.json。
+    set_fallback_hours(config.tz_offset_hours)
+
     set_house_tz_offset(config.tz_offset_hours)
 
     return config

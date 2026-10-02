@@ -25,6 +25,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from . import house_time
+
 SCHEMA_VERSION = 1
 
 # candidate_rules 的"人已确认"状态字（DCD 裁定 7 红线位 user_confirmed 由它推导）。
@@ -403,7 +405,8 @@ def parse_ts(raw: Any, tz_offset_hours: float = 8.0) -> datetime | None:
             return None
 
     if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone(timedelta(hours=tz_offset_hours))).replace(tzinfo=None)
+        # 与 now_local 同一口径：装了 homesdk 就按 IANA 家庭时区换算，未装才用小时偏移。
+        dt = dt.astimezone(house_time.house_tz()).replace(tzinfo=None)
     # 无时区信息时视为已经是本地时间，不做二次换算
     return dt.replace(microsecond=0)
 
@@ -419,9 +422,10 @@ def _iso(dt: datetime) -> str:
 
 
 def now_local(tz_offset_hours: float = 8.0) -> datetime:
-    return datetime.now(timezone(timedelta(hours=tz_offset_hours))).replace(
-        tzinfo=None, microsecond=0
-    )
+    """家庭墙钟的 naive datetime。主路径是 `homesdk.time`（契约 §四），
+    `tz_offset_hours` 在未装 homesdk 的部署里才是换算依据。见 `house_time.now_local`。
+    """
+    return house_time.now_local(tz_offset_hours)
 
 
 # ── 在场查询辅助（豆包管家对接）────────────────────────────────────────────

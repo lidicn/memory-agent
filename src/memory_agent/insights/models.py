@@ -1,6 +1,7 @@
 """数据模型定义（领域对象、枚举、IO 类型）。
 
-本文件只依赖标准库，且不依赖 insights 包内其它模块，
+除 ``house_tz()`` 里的一个函数内懒导入（``..house_time``，只为拿 homesdk 的家庭时区）
+之外，本文件不依赖 insights 包内其它模块，也不在模块顶层导入包内其它模块，
 被所有上层模块单向依赖，因此不会产生循环 import。
 
 约定：
@@ -49,7 +50,17 @@ HOUSE_TZ = timezone(timedelta(hours=HOUSE_TZ_FALLBACK_HOURS))
 
 
 def house_tz() -> timezone:
-    """当前家庭时区（由 Config 注入；未注入时为 ``HOUSE_TZ_FALLBACK_HOURS``）。"""
+    """当前家庭时区。
+
+    主路径是 `homesdk.time`（契约 §四，IANA 名、能表达 DST）；homesdk 不在场、或在场
+    但家里没按时区名声明时，退化为 `Config.tz_offset_hours` 注入的固定偏移——
+    也就是下面那个 ``HOUSE_TZ``。注入通道必须一直有效，否则 `set_house_tz_offset()`
+    和整套时区一致性测试会被库默认值盖掉。
+    """
+    from ..house_time import house_tz as _mechanism_house_tz, is_active
+
+    if is_active():
+        return _mechanism_house_tz()
     return HOUSE_TZ
 
 
@@ -74,32 +85,36 @@ def set_house_tz_offset(hours: Any) -> timezone:
 def house_tz_label() -> str:
     """墙钟口径的可读标签（只用于回显/meta，不参与换算）。
 
-    默认口径下沿用「Asia/Shanghai」这个大家看得懂的名字；被注入成别的偏移时
-    如实写成 UTC±h，免得对外宣称深圳时间、其实按别的钟面切窗口。
+    homesdk 在场时直接报 IANA 名；退化路径下默认口径沿用「Asia/Shanghai」这个大家
+    看得懂的名字，被注入成别的偏移时如实写成 UTC±h，免得对外宣称深圳时间、其实按别的钟面切窗口。
     """
-    hours = HOUSE_TZ.utcoffset(None) / timedelta(hours=1)
+    tz = house_tz()
+    key = getattr(tz, "key", None)
+    if isinstance(key, str) and key:
+        return key
+    hours = datetime.now(tz).utcoffset() / timedelta(hours=1)
     if hours == HOUSE_TZ_FALLBACK_HOURS:
         return "Asia/Shanghai"
     return f"UTC{hours:+g}"
 
 
 def house_ts(dt: Any) -> float:
-    """naive 墙钟 -> epoch（按 HOUSE_TZ 解释，不依赖机器时区）。"""
+    """naive 墙钟 -> epoch（按家庭墙钟解释，不依赖机器时区）。"""
     if isinstance(dt, (int, float)):
         return float(dt)
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=HOUSE_TZ).timestamp()
+        return dt.replace(tzinfo=house_tz()).timestamp()
     return dt.timestamp()
 
 
 def house_now() -> datetime:
-    """当前家庭墙钟时间（naive，HOUSE_TZ 口径）。"""
-    return datetime.now(HOUSE_TZ).replace(tzinfo=None, microsecond=0)
+    """当前家庭墙钟时间（naive，家庭时区口径）。"""
+    return datetime.now(house_tz()).replace(tzinfo=None, microsecond=0)
 
 
 def house_dt(ts: float) -> datetime:
     """epoch -> 家庭墙钟 naive datetime。"""
-    return datetime.fromtimestamp(float(ts), tz=HOUSE_TZ).replace(tzinfo=None)
+    return datetime.fromtimestamp(float(ts), tz=house_tz()).replace(tzinfo=None)
 
 
 def now_ts() -> float:
