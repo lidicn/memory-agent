@@ -649,6 +649,7 @@ class AppRuntime:
         interval = max(60, int(getattr(self.config, "activity_interval_seconds", 300) or 300))
         last_habit_day = ""
         last_process_day = ""
+        last_idle_day = ""
         try:
             await asyncio.sleep(60)  # 首跑延时，避开启动期采集/对账争抢
             while True:
@@ -661,6 +662,21 @@ class AppRuntime:
                                 f"产出 {res.get('persisted')} 状态 / {res.get('candidates')} 候选"
                             )
                         day = now_local(self.config.tz_offset_hours).strftime("%Y-%m-%d")
+                        # 空转必须自己开口。过去只有产出非零才打印，于是「规则结构性
+                        # 够不着」和「家里确实安静」在日志里长得一模一样——生产实测
+                        # behavior_states 连续一个月 0 行，没有任何一行日志提示过。
+                        if (res.get("ok") and res.get("scanned")
+                                and not res.get("persisted") and not res.get("candidates")
+                                and day != last_idle_day):
+                            last_idle_day = day
+                            print(
+                                f"[Activity] 空转告警：窗口 {res.get('window_minutes_used')} 分钟"
+                                f"内扫 {res.get('scanned')} 事件"
+                                f"（带规则标签 {res.get('tagged')} 个），0 状态 0 候选；"
+                                f"规则最长跨度 {res.get('rule_horizon_minutes')} 分钟"
+                                + ("，窗口低于规则跨度" if res.get("window_below_horizon") else "")
+                                + ("，事件数触顶已截断" if res.get("truncated") else "")
+                            )
                         # 任务 D：每日一次从 behavior_states 沉淀长期习惯
                         if day != last_habit_day:
                             hres = await asyncio.to_thread(self.activity.infer_habits)
@@ -963,6 +979,9 @@ class AppRuntime:
             # 实体目录是洞察链路的地基：加载失败时查询一律返回空表，
             # 没有这个字段就只能靠人肉翻日志发现（审计 20261002 · 新发现 2）。
             "insights": self.insights.status(),
+            # 行为推断的产出读数：behavior_states 是习惯沉淀/过程挖掘/成员日序列的
+            # 共同上游，它空转时下游一律是「结构性的空」，得能从健康面直接看出来。
+            "activity": self.activity.status(),
             # 家庭墙钟现在由哪套机制说了算、依据哪个键（契约 §四 的对外回执）。
             "house_clock": house_time.status(),
             "collect_lag_seconds": collect_lag_seconds,

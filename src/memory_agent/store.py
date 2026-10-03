@@ -2432,9 +2432,17 @@ class Store:
     def add_behavior_state(self, member: str, room: str, activity: str,
                            confidence: float, ts: str | None = None,
                            source: str = "inference", evidence: list | None = None) -> str:
-        """写入一条 canonical 行为状态（权威），返回 state_id。"""
-        sid = uuid.uuid4().hex[:16]
+        """写入一条 canonical 行为状态（权威），返回 state_id。
+
+        ``state_id`` 由 (source, room, activity, ts) 派生而不是随机：推断任务每 5 分钟
+        跑一次、窗口互相重叠，同一段序列会被连续几次运行各看见一遍。随机主键让
+        每一次看见都变成一条新行（一条 ``就寝`` 落 3-5 份）；确定性主键让
+        ``INSERT OR REPLACE`` 天然收敛成一条，member 归属以最新一次推断为准。
+        """
         ts = ts or now_local(self.tz_offset_hours).isoformat(sep="T")
+        sid = hashlib.sha1(
+            f"{source}|{room or ''}|{activity}|{ts}".encode("utf-8")
+        ).hexdigest()[:16]
         conn = self.connect()
         with self._lock:
             conn.execute(

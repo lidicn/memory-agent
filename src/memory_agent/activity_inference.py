@@ -115,6 +115,18 @@ def _in_time_window(ts: str, window: str) -> bool:
         return True
 
 
+def rule_horizon_minutes(rules: list[dict]) -> int:
+    """规则集里最长的序列跨度（分钟）。
+
+    每一步的 ``within_min`` 相对**序列首步**计时，所以一条序列要完整落在扫描
+    窗口内，窗口不得小于所有规则中最大的 ``within_min``。
+    """
+    return max(
+        (int(s.get("within_min") or 0) for r in rules for s in (r.get("steps") or [])),
+        default=0,
+    )
+
+
 class ActivityInferenceService:
     """行为推断引擎（无 LLM，纯确定性规则；可在单测里用 fake runtime 驱动）。"""
 
@@ -124,6 +136,7 @@ class ActivityInferenceService:
         self.store = runtime.store
         self.insights = getattr(runtime, "insights", None)
         self.rules = list(DEFAULT_SEQUENCE_RULES)
+        self._last: dict = {}
 
     # ── 内部工具 ─────────────────────────────────────────────────────────
     def _friendly_names(self) -> dict[str, str]:
@@ -236,26 +249,37 @@ class ActivityInferenceService:
 
     # ── 主流程 ───────────────────────────────────────────────────────────
     def run(self, start: str | None = None, end: str | None = None,
-            window_minutes: int | None = None) -> dict:
-        """对窗口内事件跑推断，产出 canonical 状态；低置信进候选规则。
+            window_minutes: int | None = None, limit: int = 5000) -> dict:
+        """对窗口内事件跑推断，产出 canonical 状态；低置信进候选。
 
-        返回 ``{ok, window, scanned, states, persisted, candidates, detail}``。
+        返回 ``{ok, window, scanned, states, persisted, candidates, detail}``，
+        外加窗口可达性读数：``rule_horizon_minutes`` / ``window_minutes_config`` /
+        ``window_minutes_used`` / ``window_below_horizon`` / ``truncated``。
         """
-        wmin = int(window_minutes or getattr(self.config, "activity_window_minutes", 15) or 15)
+        cfg_wmin = int(window_minutes or getattr(self.config, "activity_window_minutes", 15) or 15)
         deb = int(getattr(self.config, "pir_debounce_sec", 30) or 0)
         thr = float(getattr(self.config, "activity_conf_threshold", 0.6) or 0.6)
         now = now_local(self.config.tz_offset_hours)
         end = end or now.isoformat(sep="T")
+
+        # 规则每一步都相对**首步**计时，所以一条序列要能被整段看见，扫描窗口
+        # 至少得是最长规则的跨度。窗口比跨度短就等于把这条规则判死刑——而且判得
+        # 很安静：0 命中不打印任何东西（生产实测 behavior_states 长期 0 行）。
+        # 显式传 start 的调用方（回补/单测）不改它的边界，只如实报 below_horizon。
+        horizon = rule_horizon_minutes(self.rules)
+        wmin = max(cfg_wmin, horizon)
         if not start:
             start = (now.replace(microsecond=0)
                      - timedelta(minutes=wmin)).isoformat(sep="T")
 
         try:
-            events = self.store.query_events(start=start, end=end, order="asc", limit=5000)
+            events = self.store.query_events(start=start, end=end, order="asc", limit=limit)
         except Exception as exc:  # pragma: no cover
             return {"ok": False, "error": f"事件查询失败: {exc}"}
 
+        scanned_raw = len(events)
         events = self._prepare_events(events, deb)
+        tagged = sum(1 for e in events if e.get("tags"))
 
         # 按房间分组（事件 room 由采集端由 config.rooms 推出）
         by_room: dict[str, list[dict]] = {}
@@ -315,7 +339,7 @@ class ActivityInferenceService:
                                "member": st["member"], "confidence": st["confidence"],
                                "ts": st["ts"], "kind": "candidate"})
 
-        return {
+        result = {
             "ok": True,
             "window": {"start": start, "end": end},
             "scanned": len(events),
@@ -324,6 +348,41 @@ class ActivityInferenceService:
             "candidates": candidates,
             "threshold": thr,
             "detail": detail,
+            # 窗口可达性：这三条读数决定「0 产出」是 casa 真安静还是推断层看不见事件
+            "rule_horizon_minutes": horizon,
+            "window_minutes_config": cfg_wmin,
+            "window_minutes_used": wmin,
+            "window_below_horizon": wmin < horizon,
+            "truncated": scanned_raw >= limit,
+            "tagged": tagged,
+        }
+        self._last = {
+            "ran_at": now.isoformat(timespec="seconds"),
+            "scanned": result["scanned"],
+            "tagged": tagged,
+            "states": len(states),
+            "persisted": persisted,
+            "candidates": candidates,
+            "window_minutes_used": wmin,
+            "rule_horizon_minutes": horizon,
+            "window_below_horizon": result["window_below_horizon"],
+            "truncated": result["truncated"],
+        }
+        return result
+
+    def status(self) -> dict:
+        """最近一次推断的读数——供 ``/api/health`` 与运维判断「是否在空转」。
+
+        为什么要专门有这个字段：周期任务只在产出非零时打印日志，产出 0 时**什么都不说**，
+        于是「规则永远够不着」和「家里真的没事发生」在日志里长得一模一样。
+        """
+        last = dict(self._last)
+        return {
+            "ran": bool(last),
+            "idle": bool(last) and last["persisted"] == 0 and last["candidates"] == 0,
+            "rules": len(self.rules),
+            "rule_horizon_minutes": rule_horizon_minutes(self.rules),
+            **last,
         }
 
     # ── 对外读接口（GET /api/behaviors 数据源）───────────────────────────
