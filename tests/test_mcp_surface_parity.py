@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import collections
 import os
 import sys
 import tempfile
@@ -43,15 +44,16 @@ MCP_SERVER_PY = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "src", "memory_agent", "mcp_server.py"))
 
 
-def _wire_functions() -> dict[str, list[str]]:
-    """从源码读 @mcp.tool() 注册的工具名 → 参数名列表（含 keyword-only）。
+def _wire_defs_raw() -> list[tuple[str, list[str], int]]:
+    """从源码读 @mcp.tool() 注册：(工具名, 参数名列表, 行号)——**每个 def 一条，不去重**。
 
     用 AST 而不是 import：`_build_server()` 里的工具函数是闭包、不是模块属性，
     且本机 mcp 版本旧时 `mcp_server.mcp_server` 直接是 None——AST 读数两边同构。
+    保留重复是为了能钉住第一轮 P0-4 那个形状（同名工具定义两遍，SDK 丢后一份）。
     """
     with open(MCP_SERVER_PY, encoding="utf-8") as fh:
         tree = ast.parse(fh.read(), filename=MCP_SERVER_PY)
-    out: dict[str, list[str]] = {}
+    out: list[tuple[str, list[str], int]] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -63,17 +65,22 @@ def _wire_functions() -> dict[str, list[str]]:
             args += [a.arg for a in node.args.kwonlyargs]
             if node.args.vararg or node.args.kwarg:
                 args.append("**kwargs")
-            out[node.name] = args
+            out.append((node.name, args, node.lineno))
     return out
 
 
-WIRE = _wire_functions()
+WIRE_DEFS = _wire_defs_raw()
+# 后向兼容：WIRE 仍是「名字 → 参数」，但重复定义另有专门的锁在看。
+WIRE = {name: params for name, params, _ in WIRE_DEFS}
 SPEC_MCP = {s.name for s in tool_schema.TOOL_SPECS if "mcp" in (s.expose or ())}
 
 
 def test_wire_surface_nonempty_and_ast_reader_finds_the_known_tools():
     # 读数器自己也要有锁：它坏了会让下面三条全部「空集=通过」。
     assert len(WIRE) > 50, f"AST 读到的 @mcp.tool() 只有 {len(WIRE)} 个，读数器或装饰器写法变了"
+    # def 条数 == 唯一名条数：当前源码里没有同名重复（重复由下一条锁判红）。
+    assert len(WIRE_DEFS) == len(WIRE), (
+        f"def 条数 {len(WIRE_DEFS)} ≠ 唯一名 {len(WIRE)}，同名注册确实存在于源码")
     for known in ("help", "ask_memory", "read_self_diary", "write_self_diary",
                   "generate_self_diary", "assign_member_device"):
         assert known in WIRE, f"{known} 不在 wire 面上——注册形态变了，请同步更新本测试的判据"
@@ -101,6 +108,18 @@ def test_wire_surface_is_handwritten_plus_generated_and_no_double_registration()
     handwritten_spec = SPEC_MCP - GENERATED_MCP
     assert handwritten_spec <= set(WIRE), (
         f"这些非 generated 工具在 wire 上找不到实现：{sorted(handwritten_spec - set(WIRE))}")
+
+
+def test_no_tool_name_is_defined_twice_on_the_wire():
+    """第一轮 P0-4 的另一半形状：同一个名字在源码里被 `@mcp.tool()` 定义**两遍**。
+
+    `WIRE` 是名字键的读数器，两份定义会塌成一个——所以这里按 def 计数，不看集合。
+    实测（HEAD 复扫）：`_wire_defs_raw()` 读到 85 条 def、85 个唯一名，重复已不在；
+    本锁的存在是为了它回来时当场判红，而不是等 SDK 打印 "Tool already exists"。
+    """
+    counts = collections.Counter(name for name, _, _ in WIRE_DEFS)
+    dups = {k: v for k, v in counts.items() if v > 1}
+    assert not dups, f"这些工具在 wire 上被定义了多次（后一份会被 SDK 丢弃）：{dups}"
 
 
 def test_no_phantom_spec_on_the_wire_surface():
