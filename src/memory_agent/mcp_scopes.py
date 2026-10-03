@@ -84,6 +84,9 @@ REGISTERED_TOOLS = frozenset({
     "route_question",
     "run_analysis_template",
     "search_events",
+    # 自我日记读取：这一族此前只在 wire 上注册、没进准入表，于是 list_tools()
+    # 看得见、调用必吃 NOT_FOUND（实测 scope_of('read_self_diary')=='unknown'）。
+    "read_self_diary",
 })
 
 # 会改变系统状态的工具（写入库 / 改配置 / 触发采集 / 变更记忆状态）
@@ -128,6 +131,9 @@ WRITE_TOOLS = frozenset({
     "flag_rule_false_positive",
     # bug 上报通道
     "report_bug",
+    # 自我日记（写入 agent_memory staging，auto_promote_blocked=1 永不自动晋升）
+    "write_self_diary",
+    "generate_self_diary",
 })
 
 _REPORTED_UNKNOWN: set[str] = set()

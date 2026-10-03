@@ -947,10 +947,12 @@ TOOL_SPECS: list = [
             _p("text", "string", "kind='soft' 时必填：软记忆正文"),
             _p("source_refs", "array", "kind='soft' 时的真实引用列表，如 ['event:xxx']"),
             _p("exclusion_type", "string", "hard 时：exclude(默认)|is_automation|not_automation", default="exclude", enum=["exclude", "is_automation", "not_automation"]),
+            _p("dry_run", "boolean", "true=只校验参数不写入，默认 False", default=False),
             _p("session_id", "string", "会话 ID，默认 'mcp'", default="mcp"),
         ],
         example="teach_signal(entity_id='light.xiaomi_speaker', scope='wake_anchor', kind='hard', reason='定时播报是自动化信号，不是起床')",
-        pitfall="kind='hard' 幂等（同 entity_id+scope 复用一条）；kind='soft' 必须提供 text，且 source_refs 不能是假 id。",
+        pitfall="kind='hard' 幂等（同 entity_id+scope 复用一条）；kind='soft' 必须提供 text，且 source_refs 不能是假 id。"
+                "先探边界用 dry_run=true：它只回「参数校验通过，未写入」，不落任何一行。",
     ),
     ToolSpec(
         name="list_signal_rules",
@@ -1140,12 +1142,562 @@ TOOL_SPECS: list = [
             _p("room", "string", "房间名过滤，如 客厅/书房/卧室"),
             _p("start", "string", "起始时间 ISO8601，如 2026-09-28T00:00:00"),
             _p("end", "string", "结束时间 ISO8601"),
+            _p("days", "integer", "start/end 都留空时的回溯天数，默认 7", default=7),
             _p("source", "string", "来源过滤：device/vision/perception"),
-            _p("limit", "integer", "返回条数上限，默认100，最大500", default=100),
-            _p("order", "string", "排序：desc(默认)/asc", default="desc"),
+            _p("limit", "integer", "返回条数上限，默认 200", default=200),
+            _p("offset", "integer", "分页偏移，默认 0", default=0),
         ],
         example="query_unified_events(room='客厅', days=1) → 客厅最近一天的所有设备+视觉+感知事件",
-        pitfall="这是只读工具，走 read scope。source=vision 只返回 status=ok 的视觉事件，失败行已过滤。",
+        pitfall="这是只读工具，走 read scope。source=vision 只返回 status=ok 的视觉事件，失败行已过滤。"
+                "days 只在 start/end 都留空时生效，且默认窗口按**家庭墙钟**起算（源表的 ts/server_ts 是 +8 墙钟，"
+                "按 UTC 取窗会把最近 tz_offset 小时整段切在窗口外）。排序不可指定：底层 Store 方法有 order 参数，"
+                "MCP 面没有暴露——目录里曾经写着 order，是照着 Store 抄出来的假参数。",
+    ),
+
+    # ── 以下 35 条为 MCP 手写工具的补登记 ────────────────────────────────────
+    # 判据来自实测：容器内 `list_tools()` 返回 90 个工具，`SPEC_BY_NAME` 只覆盖 55 个，
+    # 差的 35 个全是 `@mcp.tool()` 手写函数。它们在 MCP 面上可调、可被 DB/AF 集成，
+    # 但 `help`/`describe` 查不到、presence 的 `caps.tools`（取 TOOL_NAMES）系统性少报
+    # ——探测方照 caps 建集成会打 404。登记口径：`generated=False`（保留手写函数体，
+    # 只有目录元信息同源），`service="static"`（不走内置派发，expose 只有 mcp）。
+    # 参数名与默认值逐条对齐 `list_tools()` 实测的 inputSchema，不做美化。
+
+    # ── 成员与档案 ────────────────────────────────────────────────────────────
+    ToolSpec(
+        name="list_members",
+        summary="列出全部家庭成员（轻量字段：id/name/rooms/devices/tags）。",
+        description="成员名册。返回每个成员的 id、显示名、关联房间、专属设备与习惯标签，"
+                    "头像/人脸/嵌入向量等大字段已剔除；要完整档案用 get_member_persona(member_id)。",
+        group="成员",
+        service="static", method="",
+        expose=("mcp",),
+        params=[],
+        example="list_members() → {ok: true, members: [...], total: N}",
+        pitfall="tags 只保留 label/category/confidence；profile_json、appearance_json、embedding 都不在这里，"
+                "别把本工具当完整档案用。",
+    ),
+    ToolSpec(
+        name="create_member",
+        summary="创建家庭成员（name 必填）。返回新成员行。",
+        description="新建成员档案。id 由服务端生成 UUID，返回行里 rooms/devices/tags 均为空集合，"
+                    "建好后用 assign_member_room / assign_member_device 补关联。",
+        group="成员",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("name", "string", "显示名，必填且不可为空白", required=True),
+            _p("avatar_emoji", "string", "头像 emoji，如 🦉"),
+            _p("avatar_bg", "string", "头像底色，默认 #0EA5E9", default="#0EA5E9"),
+            _p("note", "string", "备注"),
+        ],
+        example="create_member(name='Emily', avatar_emoji='🐰')",
+        pitfall="同名不查重——连调两次会建出两个同名成员，人员归属又确实按姓名匹配 behavior 表，之后很难分辨。"
+                "name 去掉空白后为空返回 INVALID_PARAM。",
+    ),
+    ToolSpec(
+        name="delete_member",
+        summary="删除家庭成员（不可恢复）。member_id 为成员 UUID。",
+        description="按 UUID 删除成员，并级联清掉其关联房间、专属设备与习惯标签行。",
+        group="成员",
+        service="static", method="",
+        expose=("mcp",),
+        params=[_p("member_id", "string", "成员 UUID", required=True)],
+        example="delete_member(member_id='3f2c…')",
+        pitfall="不可恢复，且不会回滚该成员已有的历史行为数据；成员不存在返回 NOT_FOUND（先查后删，不会写空）。"
+                "要并人不要用它。",
+    ),
+    ToolSpec(
+        name="assign_member_room",
+        summary="设置成员关联房间（全量覆盖）。rooms 为房间名数组。",
+        description="覆盖式写入 member_rooms。传 ['主卧','书房'] 就是把该成员的房间集合换成这两间。",
+        group="成员",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("member_id", "string", "成员 UUID", required=True),
+            _p("rooms", "array", "房间名数组，如 ['主卧','书房']；留空 [] 清空"),
+        ],
+        example="assign_member_room(member_id='3f2c…', rooms=['主卧'])",
+        pitfall="全量覆盖不是追加——想保留原房间必须一起传。房间名不与 HA 校验，写错的名字会安静地存着并匹配不到数据。"
+                "成员不存在返回 NOT_FOUND。",
+    ),
+    ToolSpec(
+        name="assign_member_device",
+        summary="设置成员专属设备（全量覆盖）。entity_ids 为 entity_id 数组。",
+        description="覆盖式写入 member_devices，保存的是 HA 的 entity_id 原值。",
+        group="成员",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("member_id", "string", "成员 UUID", required=True),
+            _p("entity_ids", "array", "entity_id 数组，如 ['light.study_desk']；留空 [] 清空"),
+        ],
+        example="assign_member_device(member_id='3f2c…', entity_ids=['media_player.tv_livingroom'])",
+        pitfall="全量覆盖不是追加。存的是 entity_id 字面值，HA 集成重登导致 entity_id 漂移后这里不会自动跟——"
+                "按逻辑设备名取数请用 query_device_usage。成员不存在返回 NOT_FOUND。",
+    ),
+    ToolSpec(
+        name="confirm_member_tag",
+        summary="把推断出的生活习惯标签写回成员档案（仅在用户明确确认后调用）。",
+        description="写入 member_tags：标签名 + 类别 + emoji + 置信度 + 证据列表，来源标记为 agent。"
+                    "属于「人已确认」的落库动作，不是机器建议。",
+        group="成员",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("member_id", "string", "成员 UUID", required=True),
+            _p("tag", "string", "标签名，如 夜猫子", required=True),
+            _p("category", "string", "sleep/diet/activity/media/hygiene/other", default="other"),
+            _p("emoji", "string", "标签 emoji，如 🦉"),
+            _p("confidence", "number", "置信度 0~1", default=0.0),
+            _p("evidence", "array", "证据字符串列表"),
+        ],
+        example="confirm_member_tag(member_id='3f2c…', tag='夜猫子', category='sleep', emoji='🦉', confidence=0.8)",
+        pitfall="受 config.member_tag_agent_writeback 管制：该开关为 false 时直接返回 DENIED 并提示去 WebUI 开启或"
+                "手动加标签，不会静默丢弃。",
+    ),
+
+    # ── 行为分析与异常/漂移/召回 ─────────────────────────────────────────────
+    ToolSpec(
+        name="mine_behavior_process",
+        summary="过程挖掘（只读）：把「房间·天」当轨迹做一致性检验，找异常的一天。",
+        description="以设备标签为步骤挖行为过程模型，返回变体统计、DFG 规模、一致性率与异常清单（含稀有边证据）。"
+                    "某天出现平时几乎不走的转移（如平时只 门→灯→电脑，某天多插了空调）即判为异常。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("days", "integer", "回溯天数，默认 7", default=7),
+            _p("rooms", "string", "逗号分隔的房间白名单，留空=全部"),
+        ],
+        example="mine_behavior_process(days=14, rooms='客厅,书房')",
+        pitfall="只读、不写库；要落库供 WebUI 复核并产出候选规则，用 refresh_behavior_anomalies。"
+                "与序列规则（n-gram 频次）互补：这里做的是一致性检验。",
+    ),
+    ToolSpec(
+        name="refresh_behavior_anomalies",
+        summary="重算并落库行为异常，同时把高频过程变体写成候选规则（写工具）。",
+        description="同 mine_behavior_process 的算法，但把异常写入 behavior_anomalies 供 WebUI 复核，"
+                    "并把「房间高频过程变体」写 candidate_rules（source=process，staging 待人工审核）。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("days", "integer", "回溯天数，默认 7", default=7),
+            _p("rooms", "string", "逗号分隔的房间白名单，留空=全部"),
+        ],
+        example="refresh_behavior_anomalies(days=7) → 落库异常清单 + 候选规则提示",
+        pitfall="需要 read+write 令牌。产出的是 staging 候选，不会自动改动线上规则；"
+                "已人工复核过的异常状态不会被重跑洗掉。",
+    ),
+    ToolSpec(
+        name="list_behavior_anomalies",
+        summary="列出已落库的行为异常（按严重度降序）。",
+        description="读 behavior_anomalies 表，可按复核状态与所属日期过滤。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("status", "string", "new（未复核）| confirmed | ignored；留空=全部"),
+            _p("days", "integer", "只取最近 N 天（按异常所属日期），默认 14", default=14),
+            _p("limit", "integer", "返回上限，默认 50，最大 500", default=50),
+        ],
+        example="list_behavior_anomalies(status='new', days=14)",
+        pitfall="只列已落库的——没跑过 refresh_behavior_anomalies 时这里是空的，空不等于「没有异常」。"
+                "days 按家庭墙钟日期裁窗。",
+    ),
+    ToolSpec(
+        name="review_behavior_anomaly",
+        summary="复核行为异常：confirmed（确属异常）/ ignored（误报）/ new（复位）。",
+        description="把人工结论写回 behavior_anomalies 的 status 字段，供后续重跑与出证使用。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("anomaly_id", "string", "异常 ID", required=True),
+            _p("status", "string", "new / confirmed / ignored", required=True,
+               enum=["new", "confirmed", "ignored"]),
+        ],
+        example="review_behavior_anomaly(anomaly_id='anom_2026_09_30_01', status='ignored')",
+        pitfall="status 只接受这三个值，其他取值直接返回错误（不落库）。异常不存在返回 ok=false 并带上 ID。"
+                "复核结果在重跑挖掘时会被保留。",
+    ),
+    ToolSpec(
+        name="get_behavior_drift",
+        summary="在线异常 + 概念漂移检测（只读）：把每小时行为活跃度当时间序列评估。",
+        description="Half-Space Trees 给无监督异常分（哪些时段不像平时），ADWIN 检测活跃度分布的突变"
+                    "（最近作息/活跃度变了）。适用『最近作息是不是变了』『有没有异常时段』。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[_p("days", "integer", "回溯天数，默认 14（1 小时分桶，14 天≈336 点）", default=14)],
+        example="get_behavior_drift(days=21) → 异常时段 + 突变点",
+        pitfall="只算不落库；要沉淀成记录用 refresh_behavior_drift。与 mine_behavior_process 互补："
+                "后者按天做事后一致性检验，本工具看时序突变。",
+    ),
+    ToolSpec(
+        name="refresh_behavior_drift",
+        summary="重算并落库漂移点/异常时段（写工具）→ behavior_drifts。",
+        description="同 get_behavior_drift 的算法，但把结果写入 behavior_drifts 表供 WebUI 与后续审计读取。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[_p("days", "integer", "回溯天数，默认 14", default=14)],
+        example="refresh_behavior_drift(days=30)",
+        pitfall="需要 read+write 令牌。落库后用 list_behavior_drifts 读，别把两个工具当成同一件事。",
+    ),
+    ToolSpec(
+        name="list_behavior_drifts",
+        summary="列出已落库的漂移/异常时段。",
+        description="读 behavior_drifts，按 kind（drift=活跃度分布突变 / anomaly=异常时段）与最近 N 天过滤。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("days", "integer", "只取最近 N 天，默认 14", default=14),
+            _p("kind", "string", "drift | anomaly；留空=全部"),
+            _p("limit", "integer", "返回上限，默认 50，最大 500", default=50),
+        ],
+        example="list_behavior_drifts(kind='drift', days=30)",
+        pitfall="只读已落库的；refresh_behavior_drift 没跑过时为空。",
+    ),
+    ToolSpec(
+        name="audit_rule_recall",
+        summary="序列规则召回审计（只读）：找出『该判没判』的场景并诊断卡在哪一步。",
+        description="以「房间·天」为单位：当天出现了规则所有步骤所需的标签（eligible）却没命中，记为召回缺口"
+                    "（near_miss），给出第一个匹配不上的步骤（blocker）与估计召回率。"
+                    "适用『就寝识别是不是漏了很多』『房间移动规则为什么很少触发』。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("days", "integer", "回溯天数，默认 14", default=14),
+            _p("rooms", "string", "逗号分隔房间白名单，留空=全部"),
+        ],
+        example="audit_rule_recall(days=30, rooms='卧室') → 就寝规则 near_miss 清单",
+        pitfall="只审计内置序列规则（书房工作/就寝/房间移动），persist=False 不落库；"
+                "要产出放宽建议并落库用 refresh_rule_recall_gaps。",
+    ),
+    ToolSpec(
+        name="refresh_rule_recall_gaps",
+        summary="重算并落库召回放宽建议（写工具），产出 candidate_rules 待人工审核。",
+        description="对反复卡在同一步的缺口，产出「去掉该步骤」的宽松变体，写 candidate_rules"
+                    "（source=recall_gap，staging）。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[_p("days", "integer", "回溯天数，默认 14", default=14)],
+        example="refresh_rule_recall_gaps(days=21)",
+        pitfall="需要 read+write 令牌。不会自动改动线上规则——产出的是 staging 候选，"
+                "确认与晋升另走 confirm_candidate_rule / promote_candidate_rule。",
+    ),
+    ToolSpec(
+        name="counterfactual_query",
+        summary="反事实查询：如果没有这个事件，行为指标会怎样？",
+        description="基于分组比较法，用「无该事件的天」的分布作为反事实估计，返回实际值、反事实预测值、差异、"
+                    "95% 置信区间、因果效应量与显著性。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("person", "string", "成员名称", required=True),
+            _p("event_type", "string", "事件类型，如 tv_on/light_on/aircon_on/door_open/face_known", required=True),
+            _p("metric", "string", "行为指标，默认 arrival_time", default="arrival_time"),
+            _p("days", "integer", "回溯天数，默认 30", default=30),
+            _p("room", "string", "metric=room_distribution 时指定房间"),
+        ],
+        example="counterfactual_query(person='Kevin', event_type='tv_on', metric='arrival_time', days=45)",
+        pitfall="事件数据不足（<14 条）直接返回错误并给出 event_count，不要把它当成「没有影响」。"
+                "这是分组比较的统计估计，不是真值实验。",
+    ),
+    ToolSpec(
+        name="get_behavior_prediction",
+        summary="行为预测：基于历史事件预测某人的到家时间与日常作息。",
+        description="从 behavior_events 统计该人的到家时间分布与逐时段作息，可按星期几筛选。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("person", "string", "人名，如 Kevin/Emily/lidicn", required=True),
+            _p("weekday", "integer", "0=周一…6=周日；-1=用所有日期统计（默认）", default=-1),
+        ],
+        example="get_behavior_prediction(person='Kevin', weekday=0) → 周一的到家时间预测",
+        pitfall="读的是 behavior_events（最近 5000 条）；表里没数据时返回「无历史行为事件数据」。"
+                "人名按事件里记录的人字段匹配，写错名字只会得到空统计而不是报错。",
+    ),
+    ToolSpec(
+        name="infer_behavior_intent",
+        summary="意图推断（无 LLM 快路径）：从最近的行为事件推断用户意图。",
+        description="基于行为规则匹配（开灯+开电视=想看电视），毫秒级响应，返回按置信度排序的意图列表，"
+                    "每个含 intent/label/confidence/evidence/suggestions。",
+        group="洞察",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("person", "string", "限定某人，如 Kevin；留空=不限"),
+            _p("window_min", "integer", "时间窗口（分钟）。给定则只用这一个窗口"),
+            _p("limit", "integer", "返回意图数量，默认 3，最多 5", default=3),
+        ],
+        example="infer_behavior_intent(person='Emily', window_min=15)",
+        pitfall="给了 window_min 就只用这一个窗口、最多返回 1 个意图；不给则按 5/15/30 三窗各试一遍再排序。"
+                "limit 超过 5 会被截到 5。",
+    ),
+    ToolSpec(
+        name="execute_intent_actions",
+        summary="意图→动作执行：推断意图后执行（或预览）建议动作。",
+        description="内置 7 个意图的常识动作映射（看电视/工作/睡觉/出门/回家/吃饭/运动）。"
+                    "默认 dry_run=true 只预览；dry_run=false 时只执行 auto=true 的动作（TTS 播报/告警）。",
+        group="运维",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("intent", "string", "意图名称，如 watch_tv/sleep/arrive_home", required=True),
+            _p("dry_run", "boolean", "True=只预览（默认），False=执行自动动作", default=True),
+            _p("person", "string", "触发意图的人（仅用于日志）"),
+        ],
+        example="execute_intent_actions(intent='watch_tv', dry_run=True)",
+        pitfall="dry_run=false 也只动 auto=true 的动作——灯光/摄像头等待确认类不会被自动执行。"
+                "预览结果和真实执行结果形状相近，别把预览当成已执行。",
+    ),
+
+    # ── 规则生命周期（DCD R3 生效通道）───────────────────────────────────────
+    ToolSpec(
+        name="list_candidate_rules",
+        summary="列出候选规则建议（vMA-1.2.1）。",
+        description="按状态取 candidate_rules：staging（待确认）/ confirmed（已确认）/ rejected（已拒绝）。",
+        group="规则",
+        service="static", method="",
+        expose=("mcp",),
+        params=[_p("status", "string", "staging|confirmed|rejected", default="staging")],
+        example="list_candidate_rules(status='staging')",
+        pitfall="这里看到的是「机器建议」，不是生效规则；生效面看 list_rule_channel。"
+                "晋升前提是 accepted（由 confirm_candidate_rule 落的状态）。",
+    ),
+    ToolSpec(
+        name="confirm_candidate_rule",
+        summary="确认或拒绝一条候选规则（vMA-1.2.1 DCD 红线）。",
+        description="confirmed=true 落 status='accepted' 且 user_confirmed=1（与 WebUI 同一状态字）；"
+                    "false 落 'rejected'，不再出现在建议列表。本步会留生命周期审计记录。",
+        group="规则",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("rule_id", "string", "候选规则 ID", required=True),
+            _p("confirmed", "boolean", "true=接受，false=拒绝", default=True),
+        ],
+        example="confirm_candidate_rule(rule_id='cand_2026_09_30_003', confirmed=True)",
+        pitfall="确认只表示「人已同意」，**不等于已生效**：还需 promote_candidate_rule 过证据门槛才会进引擎，"
+                "且先进试运行。候选不存在返回 ok=false。",
+    ),
+    ToolSpec(
+        name="promote_candidate_rule",
+        summary="把一条 accepted 候选规则晋升进引擎（DCD R3）。",
+        description="过证据门槛后写入 active_rules（mode='dry_run'，只记录不触发），并留审计。",
+        group="规则",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("rule_id", "string", "候选规则 ID", required=True),
+            _p("reason", "string", "晋升理由（写入审计）"),
+        ],
+        example="promote_candidate_rule(rule_id='cand_2026_09_30_003', reason='证据 4 天且人已确认')",
+        pitfall="门槛：accepted + user_confirmed + ≥MA_RULE_MIN_EVIDENCE 个独立证据日 + 事件类型在引擎实时 feed "
+                "词表内；不满足会拒绝并返回 blockers。晋升后一律 dry_run，转正要等观察期满。",
+    ),
+    ToolSpec(
+        name="advance_rule_to_live",
+        summary="试运行规则转正为 live（红线『观察期』）。",
+        description="观察期满且期间零误报才放行，否则拒绝并给出 blockers。",
+        group="规则",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("rule_id", "string", "规则 ID", required=True),
+            _p("reason", "string", "转正理由（写入审计）"),
+        ],
+        example="advance_rule_to_live(rule_id='ar_1', reason='观察 7 天零误报')",
+        pitfall="判据是 MA_RULE_DRY_RUN_DAYS 天 + 误报清零，两者都不满足就会拒绝；"
+                "操作人身份取自调用令牌，不是参数——伪造不了是谁转正的。",
+    ),
+    ToolSpec(
+        name="revoke_active_rule",
+        summary="撤销一条生效规则（红线『可回滚』）。",
+        description="规则置为 mode='revoked'、enabled=0，并删除它经 infer_activity 产生的推断活动，"
+                    "回滚条数写入审计。",
+        group="规则",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("rule_id", "string", "规则 ID", required=True),
+            _p("reason", "string", "撤销理由（写入审计）"),
+            _p("rollback_inferences", "boolean", "是否回滚该规则推断出的活动，默认 True", default=True),
+        ],
+        example="revoke_active_rule(rule_id='ar_1', reason='误报 3 次')",
+        pitfall="rollback_inferences=false 会把历史推断活动留在库里继续影响下游读数——只有在「规则判错但活动要留」时"
+                "才这么传。",
+    ),
+    ToolSpec(
+        name="flag_rule_false_positive",
+        summary="把一条规则触发记录判为误报（观察期的红判据）。",
+        description="对 rule_trigger_history 的单条记录打误报标记，误报未清零时该规则不能转正。",
+        group="规则",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("rule_id", "string", "规则 ID", required=True),
+            _p("trigger_id", "integer", "触发记录 ID（来自 list_rule_channel / list_rule_lifecycle_audit）",
+               required=True),
+            _p("reason", "string", "判误报的理由（写入审计）"),
+        ],
+        example="flag_rule_false_positive(rule_id='ar_1', trigger_id=17, reason='那晚是客人不是本人')",
+        pitfall="trigger_id 必填且指向具体一条触发，不是整条规则；判误报会挡住转正，但不会自动撤销规则。",
+    ),
+    ToolSpec(
+        name="list_rule_channel",
+        summary="DCD R3 生效通道全景（只读）。",
+        description="candidate_id 非空时只返回该候选的门槛判据（eligibility 预演）；否则返回 accepted 候选的晋升预演"
+                    "清单 + 试运行/已转正/已撤销规则与观察读数。",
+        group="规则",
+        service="static", method="",
+        expose=("mcp",),
+        params=[_p("candidate_id", "string", "只看这一条候选的门槛判据；留空返回全景")],
+        example="list_rule_channel(candidate_id='cand_2026_09_30_003') → 还差哪一项",
+        pitfall="纯预演、不改任何状态。判据为 accepted + user_confirmed + 独立证据日数 + 事件类型在实时 feed 词表内。",
+    ),
+    ToolSpec(
+        name="list_rule_lifecycle_audit",
+        summary="列出规则生命周期审计（机器建议→人工确认→生效→转正/撤销全链路留痕）。",
+        description="读 rule_lifecycle 审计表，可按规则 ID 过滤，返回每条动作的时间、操作人与说明。",
+        group="规则",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("rule_id", "string", "只看这条规则的审计轨迹；留空返回全部"),
+            _p("limit", "integer", "返回上限，默认 50", default=50),
+        ],
+        example="list_rule_lifecycle_audit(rule_id='ar_1')",
+        pitfall="ok=false 表示有审计行缺关键字段（rule_id/action/created_at），是留痕质量问题，不是「没有记录」。",
+    ),
+    ToolSpec(
+        name="revoke_signal_rule",
+        summary="撤销一条信号硬排除（标记为 revoked）。",
+        description="把 teach_signal 建出的硬排除置为 revoked，使其不再参与排除判定。",
+        group="学习",
+        service="static", method="",
+        expose=("mcp",),
+        params=[_p("exclusion_id", "string", "排除规则 ID，来自 teach_signal 的返回值", required=True)],
+        example="revoke_signal_rule(exclusion_id='sig_ex_12')",
+        pitfall="是标记 revoked 不是删行（保留可追溯）；软记忆不在这里撤。ID 不存在返回 NOT_FOUND。",
+    ),
+
+    # ── 运维与设备健康 ───────────────────────────────────────────────────────
+    ToolSpec(
+        name="list_device_health",
+        summary="实体健康 / 失效清单（A3）。",
+        description="按身份层健康状态列实体：active（确认在线）/ unknown（短暂失联）/ stale（长期失效），"
+                    "并给出逻辑设备总数。",
+        group="运维",
+        service="static", method="",
+        expose=("mcp",),
+        params=[_p("state", "string", "active|unknown|stale；留空返回全部")],
+        example="list_device_health(state='stale') → 长期失效实体",
+        pitfall="依赖身份层；未启用时返回 ok=false「身份层未启用」。"
+                "referenced=1 表示该实体仍被某个模板引用，它一旦失效就会让洞察失真，应优先处理。",
+    ),
+    ToolSpec(
+        name="report_bug",
+        summary="上报一条 bug（agent 使用 MA 时发现的功能问题）。",
+        description="写入 bug_reports（status=open）：出问题的工具名、描述、期望行为、实际行为与严重度。",
+        group="运维",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("tool_name", "string", "出问题的 MCP 工具名"),
+            _p("description", "string", "问题描述"),
+            _p("expected", "string", "期望行为"),
+            _p("actual", "string", "实际行为"),
+            _p("severity", "string", "minor|major|critical", default="minor"),
+        ],
+        example="report_bug(tool_name='get_device_usage', description='空 entity_id 时报 INTERNAL', severity='major')",
+        pitfall="上报人（reporter）由调用令牌自动带上，不需要也不能自己填；"
+                "落库默认 status=open，处理完由 WebUI 侧改 resolved。",
+    ),
+    ToolSpec(
+        name="list_bug_reports",
+        summary="列出已上报的 bug。",
+        description="读 bug_reports，按状态（open|resolved|all）与条数上限返回，按创建时间倒序。",
+        group="运维",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("status", "string", "open|resolved|all", default="open"),
+            _p("limit", "integer", "返回上限，默认 50", default=50),
+        ],
+        example="list_bug_reports(status='all', limit=100)",
+        pitfall="默认只看 open——统计总量或复盘时必须显式传 status='all'，否则看不到已解决的。",
+    ),
+    ToolSpec(
+        name="query_device_usage",
+        summary="按「逻辑设备名」查询用量 / 时长 / 计数（v0.3 语义工具）。",
+        description="与 get_device_usage 的区别：本工具接受逻辑设备名（如「客厅电视」「游戏机」），"
+                    "由身份层解析为当前 entity_id，因此 HA 集成重登、双集成并存导致 entity_id 漂移后依然稳定。",
+        group="定量",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("logical_device", "string", "逻辑设备名，如 客厅电视（与 entity_id 二选一）"),
+            _p("entity_id", "string", "直接指定 entity_id"),
+            _p("attribute", "string", "属性名，默认 state", default="state"),
+            _p("value", "string", "属性值，如 HDMI 3"),
+            _p("pattern", "string", "匹配方式，默认 equals", default="equals"),
+            _p("metric", "string", "duration（时长）| count（次数）| numeric_sum（数值累计）", default="duration"),
+            _p("days", "integer", "回溯天数，默认 7", default=7),
+            _p("start", "string", "起始时间 ISO8601（与 days 二选一）"),
+            _p("end", "string", "结束时间 ISO8601"),
+            _p("include_timeline", "boolean", "是否附带时间线，默认 False", default=False),
+        ],
+        example="query_device_usage(logical_device='客厅电视', attribute='source', value='HDMI 3', metric='duration', days=2)",
+        pitfall="logical_device 与 entity_id 必须给一个，都不传直接报错。include_timeline 很吃 token，"
+                "只要汇总就别开；只要三个汇总数时用 get_device_usage_summary。",
+    ),
+
+    # ── 自我日记（家庭人格化实验）────────────────────────────────────────────
+    ToolSpec(
+        name="write_self_diary",
+        summary="写一段自我日记（第一人称视角），落入 staging。",
+        description="把正文以 topic_key='self_diary' 写入 agent_memory，state=staging 且 "
+                    "auto_promote_blocked=1（永不自动晋升），TTL 365 天。",
+        group="记忆",
+        service="static", method="",
+        expose=("mcp",),
+        params=[_p("text", "string", "日记正文（第一人称，如「今天晚上客厅很安静…」）", required=True)],
+        example="write_self_diary(text='今天书房到深夜还亮着。')",
+        pitfall="这是人格化实验文本，不是事实记忆：不参与自动晋升，也不该被当成行为证据引用。",
+    ),
+    ToolSpec(
+        name="read_self_diary",
+        summary="读取最近 N 天的自我日记。",
+        description="筛 topic_key='self_diary' 的记忆，按家庭墙钟时间裁窗并升序返回（date + text）。",
+        group="记忆",
+        service="static", method="",
+        expose=("mcp",),
+        params=[_p("days", "integer", "回溯天数，默认 7", default=7)],
+        example="read_self_diary(days=14) → 最近两周的日记",
+        pitfall="底层先取 list_agent_memories(state='all', limit=500) 再筛主题：记忆总量超过 500 条时，"
+                "最早的日记可能不在视野里。days 裁的是家庭墙钟 created_at，不是 UTC。",
+    ),
+    ToolSpec(
+        name="generate_self_diary",
+        summary="自动生成今天的自我日记（调 LLM，写 staging）。",
+        description="读昨天日记作开头引用，从当天 events 提取脱敏摘要（只保留时间+房间+有意义的实体，"
+                    "过滤功率/温湿度等传感器），调 LLM 生成 200-400 字第一人称日记后落 staging。",
+        group="记忆",
+        service="static", method="",
+        expose=("mcp",),
+        params=[],
+        example="generate_self_diary() → {ok: true, memory_id, diary: 前 200 字}",
+        pitfall="会调用付费 LLM。runtime 里已有每天 23:00（家庭墙钟）的常驻生成任务，"
+                "手动再调会多写一条 staging 日记——同一天可能不止一篇。LLM 失败返回 ok=false 且不落库。",
     ),
 ]
 

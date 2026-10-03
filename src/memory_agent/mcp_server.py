@@ -1598,6 +1598,12 @@ def _build_server():
     async def assign_member_device(member_id: str, entity_ids: list = None) -> dict:
         """设置成员专属设备（全量覆盖）。entity_ids 为 entity_id 数组。"""
         rt = get_runtime()
+        # 与 assign_member_room 同一口径：先验成员存在。set_member_devices 是
+        # DELETE+INSERT 且没有外键拦着，成员不存在时照样写进 member_devices，
+        # 却回 ok=True——调用方以为改成功了，实际留下孤儿行。
+        member = await asyncio.to_thread(rt.store.get_member, member_id)
+        if member is None:
+            return {"ok": False, "error": f"NOT_FOUND: 成员 {member_id} 不存在"}
         await asyncio.to_thread(rt.store.set_member_devices, member_id, entity_ids or [])
         return {"ok": True, "message": "专属设备已更新"}
 
