@@ -779,6 +779,83 @@ class Store:
 
         return result
 
+    # ── FTS5 关键词索引：自检 + 彻底重建 ────────────────────────────────────
+
+    _FTS_TRIGGER_SQL = {
+        "agent_memories_fts_ai": """
+            CREATE TRIGGER agent_memories_fts_ai
+            AFTER INSERT ON agent_memories BEGIN
+                INSERT INTO agent_memories_fts(rowid, text, topic_key, tags_json)
+                VALUES (new.rowid, new.text, new.topic_key, new.tags_json);
+            END""",
+        "agent_memories_fts_ad": """
+            CREATE TRIGGER agent_memories_fts_ad
+            AFTER DELETE ON agent_memories BEGIN
+                INSERT INTO agent_memories_fts(agent_memories_fts, rowid, text, topic_key, tags_json)
+                VALUES ('delete', old.rowid, old.text, old.topic_key, old.tags_json);
+            END""",
+        "agent_memories_fts_au": """
+            CREATE TRIGGER agent_memories_fts_au
+            AFTER UPDATE ON agent_memories BEGIN
+                INSERT INTO agent_memories_fts(agent_memories_fts, rowid, text, topic_key, tags_json)
+                VALUES ('delete', old.rowid, old.text, old.topic_key, old.tags_json);
+                INSERT INTO agent_memories_fts(rowid, text, topic_key, tags_json)
+                VALUES (new.rowid, new.text, new.topic_key, new.tags_json);
+            END""",
+    }
+
+    @staticmethod
+    def _fts_index_healthy(conn) -> bool:
+        """FTS5 自己的 integrity-check：索引与内容表一致才算健康（缺表也算不健康）。
+
+        判据不许换成 ``SELECT COUNT(*) FROM agent_memories_fts``：外部内容表的 COUNT(*)
+        走的是内容表，空索引也返回主表行数——旧守卫正是被这一点骗死的。
+        """
+        conn.commit()  # 先落地已执行的迁移：检查失败要回滚，不能连带丢别的语句
+        try:
+            conn.execute(
+                "INSERT INTO agent_memories_fts(agent_memories_fts, rank) "
+                "VALUES('integrity-check', 1)")
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            return False
+
+    def _rebuild_agent_memory_fts(self, conn) -> str:
+        """彻底重建外部内容 FTS5 索引并回填，返回生效分词器；全失败返回 ``""``。
+
+        rebuild 必须无条件执行：新建的 external-content 表索引是空的，不回填就会让写
+        触发器的 'delete' 分支在每一条 UPDATE/DELETE 上抛 malformed。
+        """
+        last_exc: Exception | None = None
+        for _tok in ("trigram", "unicode61"):  # trigram 中文子串友好，不支持则退 unicode61
+            try:
+                for _t in self._FTS_TRIGGER_SQL:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {_t}")
+                conn.execute("DROP TABLE IF EXISTS agent_memories_fts")
+                conn.execute(
+                    f"""CREATE VIRTUAL TABLE agent_memories_fts USING fts5(
+                          text, topic_key, tags_json,
+                          content='agent_memories', content_rowid='rowid',
+                          tokenize='{_tok}')"""
+                )
+                for _sql in self._FTS_TRIGGER_SQL.values():
+                    conn.execute(_sql)
+                conn.execute(
+                    "INSERT INTO agent_memories_fts(agent_memories_fts) VALUES('rebuild')")
+                conn.commit()
+                if not self._fts_index_healthy(conn):
+                    raise RuntimeError("rebuild 之后 integrity-check 仍不通过")
+                return _tok
+            except Exception as exc:
+                last_exc = exc
+                conn.rollback()
+                print(f"[Store] FTS5({_tok}) 重建失败: {exc}")
+        print(f"[Store] ⚠️ FTS5 关键词索引修不起来（{last_exc}）：agent_memories 的 "
+              "UPDATE/DELETE 会持续报 database disk image is malformed，需人工重建库")
+        return ""
+
     def init_schema(self) -> None:
         conn = self.connect()
         with self._lock:
@@ -913,54 +990,22 @@ class Store:
                 if "duplicate column" not in str(_exc).lower():
                     print(f"[Store] behavior_events.scene_graph_json 列迁移异常: {_exc}")
             # v0.8-4 混合检索：FTS5 关键词索引（external content + trigger 自动同步）
-            # 优先 trigram（中文子串/专名友好），不支持则回退 unicode61；均不可用则纯向量
-            for _tok in ("trigram", "unicode61"):
-                try:
-                    for _t in ("agent_memories_fts_ai", "agent_memories_fts_ad",
-                               "agent_memories_fts_au"):
-                        conn.execute(f"DROP TRIGGER IF EXISTS {_t}")
-                    conn.execute("DROP TABLE IF EXISTS agent_memories_fts")
-                    conn.executescript(
-                        f"""
-                        CREATE VIRTUAL TABLE agent_memories_fts USING fts5(
-                            text, topic_key, tags_json,
-                            content='agent_memories', content_rowid='rowid',
-                            tokenize='{_tok}'
-                        );
-                        CREATE TRIGGER agent_memories_fts_ai
-                        AFTER INSERT ON agent_memories BEGIN
-                            INSERT INTO agent_memories_fts(rowid, text, topic_key, tags_json)
-                            VALUES (new.rowid, new.text, new.topic_key, new.tags_json);
-                        END;
-                        CREATE TRIGGER agent_memories_fts_ad
-                        AFTER DELETE ON agent_memories BEGIN
-                            INSERT INTO agent_memories_fts(agent_memories_fts, rowid, text, topic_key, tags_json)
-                            VALUES ('delete', old.rowid, old.text, old.topic_key, old.tags_json);
-                        END;
-                        CREATE TRIGGER agent_memories_fts_au
-                        AFTER UPDATE ON agent_memories BEGIN
-                            INSERT INTO agent_memories_fts(agent_memories_fts, rowid, text, topic_key, tags_json)
-                            VALUES ('delete', old.rowid, old.text, old.topic_key, old.tags_json);
-                            INSERT INTO agent_memories_fts(rowid, text, topic_key, tags_json)
-                            VALUES (new.rowid, new.text, new.topic_key, new.tags_json);
-                        END;
-                        """
-                    )
-                    # 增量审计 20260930 修复：external-content FTS5 的 DROP+CREATE 后索引为空，
-                    # 触发器只同步此后的新写入，不会回填历史行。必须 rebuild 才能检索历史记忆。
-                    # 条件式执行：仅当 FTS 表为空且主表非空时 rebuild（首次建表为空操作，大库避免重复）。
-                    _fts_count = conn.execute("SELECT COUNT(*) FROM agent_memories_fts").fetchone()[0]
-                    _main_count = conn.execute("SELECT COUNT(*) FROM agent_memories").fetchone()[0]
-                    if _fts_count == 0 and _main_count > 0:
-                        print(f"[Store] FTS5 索引为空（主表 {_main_count} 行），执行 rebuild 回填…")
-                        conn.execute("INSERT INTO agent_memories_fts(agent_memories_fts) VALUES('rebuild')")
-                        conn.commit()
-                        _fts_after = conn.execute("SELECT COUNT(*) FROM agent_memories_fts").fetchone()[0]
-                        print(f"[Store] FTS5 rebuild 完成：索引 {_fts_after} 行")
-                    print(f"[Store] FTS5 关键词索引就绪（tokenize={_tok}）")
-                    break
-                except Exception as exc:
-                    print(f"[Store] FTS5({_tok}) 初始化失败: {exc}")
+            #
+            # 这段原来每次启动都 DROP+CREATE 外部内容表，再靠「FTS 表行数为 0 且主表非空」
+            # 决定要不要 rebuild。那道守卫**永不成立**：外部内容 FTS5 的 COUNT(*) 读的是内容表，
+            # 索引整片丢了也照样返回主表行数（生产快照实测 _docsize 0 行、_data 只剩 2 行，
+            # 而 COUNT=247）。于是启动删掉可用索引后从不回填，留下一具空索引配三个写触发器
+            # ——此后每一条 UPDATE/DELETE 都会在触发器的 'delete' 分支上抛
+            # "database disk image is malformed"，agent_memories 整表冻成只读（生产实测
+            # 周期 sweep 连续 59 次必失败 / 48 小时 664 次；自动晋升、TTL 过期、镜像
+            # reconcile 全停），关键词检索则静默返空。
+            # 判据换成 FTS5 自己的 integrity-check，只在坏/缺时彻底重建并无条件 rebuild。
+            if self._fts_index_healthy(conn):
+                print("[Store] FTS5 关键词索引健康（integrity-check）")
+            else:
+                _tok = self._rebuild_agent_memory_fts(conn)
+                if _tok:
+                    print(f"[Store] FTS5 关键词索引已重建（tokenize={_tok}）")
             for col in ("entities_json", "events_json"):
                 try:
                     conn.execute(
