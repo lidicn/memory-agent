@@ -61,6 +61,30 @@ MA 是**记忆中枢（数据权威）**：全生态的记忆、成员、行为�
 | ④ 一实例一令牌（Q3=A）；本次只做"可吊销+使用计数"不做 TTL（Q4=A）；`source` 派生保留（Q5） | 回归锁："旧令牌在到期日前必须仍可用" |
 | ⑤ **不设 expiry 不写死**——到期日由 SP 定 | 代码里无硬编码到期日 |
 
+> **落地状态（2026-10-03）**：①③④⑤ 成立。`src/memory_agent/service_tokens.py`
+> （`ServiceTokenStore`：`generate/revoke/list_tokens/count/verify` + 使用计数写盘节流 15s +
+> `kind="service"` 族别位）；③ 由 `scope_matches()` 逐条比对令牌自带的「方法:路径」清单，
+> **清单为空一律拒绝**（fail-closed），`app.py:202` 中间件对不在清单内的请求 403；
+> ④ 一实例一令牌，只"可吊销 + 使用计数"不做 TTL（Q4=A），`source` 在白名单校验后才采信
+> （Q5，签发侧与读侧都要拦）；⑤ 由 `test_issued_record_has_expiry_field_nowhere` 钉住——
+> 记录里根本没有 expiry 字段，到期日不进代码。回归锁共 20 条（`tests/test_service_tokens.py`）。
+>
+> ② **按实现口径偏离计划卡文字**：不是"启动迁移自动生成记录"，而是**只读导入**
+> （`legacy_records()`）——把 env 单密钥登记成一条可审计记录，带该通道现有授权面与进程内使用
+> 计数，但**不落盘、也不能在这里吊销**（`imported_from="env"`、`persisted=False`）。原因写在
+> 模块 docstring：迁移若写 `config.json`，等于在鉴权热路径上改写生产配置（容器回归也会触发），
+> 代价大于收益。所以下线旧凭据 = **清 env + 重启**，那是 SP 定的到期动作，不是本服务的能力。
+> 遗留通道仍保留各自白名单（`_butler_allowed` 硬编码方法/路径；`_app_allowed` 有 scopes 时用
+> scopes、无则回退 `APP_ENDPOINTS`，是叠加不是替换），"统一到一个 store"目前只到鉴权面收敛，
+> 没有把旧通道的分支删掉。
+>
+> 生产读数（只读探针，RC=0）：`config.service_tokens` **0 条**（尚未对任何外部实例签发），
+> `count()=1` 全来自 env 导入的 butler 记录（13 条作用域、`persisted=False`、`use_count=0`），
+> `BUTLER_TOKEN` 已配置 / `APP_TOKEN` **未配置**（所以 app-env 记录本就不存在），
+> `agent_memory_sources=['ma','butler','vision','manual']`，到期字段在场 = False。
+> 即：**计划卡 ② 的"旧令牌仍可用"在现实里只有一条腿（butler）成立**，DB/AF 真要接入仍需逐实例
+> 签发；30 天双轨的到期日仍未定（任务 #9 in_progress，SP 侧动作）。
+
 ### 第 3 步：设备事件进引擎 feed（裁定：B 独立批量扫描器）
 
 | 子任务 | 验收 |
@@ -80,6 +104,17 @@ MA 是**记忆中枢（数据权威）**：全生态的记忆、成员、行为�
 > 间接测（喂假 store，只证明上限值传下去了），真 SQL 直测补在 `tests/test_rule_trigger_retention.py`
 > （保留期 / 行数上限 / **误报行豁免且不占额度** / 空表读数）。跨事件"先 A 后 B"仍表达不了，
 > `build_condition` 如实记 note，不自造迁移方向。
+>
+> **补充（2026-10-03，`a192c51`）**：② 的 count 门槛此前只有**入场**门槛、没有**吵人**上限——
+> `ActiveRuleEngine` 完全没实现 `cooldown_seconds`（`rule_trigger_history` 只记账不判窗），
+> 晋升出的规则在 feed 里每小时都能重复触发。本次补齐冷却：判定按**家庭墙钟**（与 count 窗口同口径，
+> 不用 monotonic，否则回放和跨进程重启都会错），实时路径以"现在"为基准并从
+> `MAX(triggered_at)` 续窗，批量回放以**事件自身墙钟**为基准（否则一轮历史事件全被判成同一瞬间）；
+> 记账在派发**之前**；半开区间（`>=` 放行）。坏值（空/非数字/负数）一律 fail-open 视为无冷却。
+> 13 条回归锁在 `tests/test_rule_cooldown.py`。⚠️ 三件未裁事项已提
+> `20261003-MA规则冷却默认值与晋升规则吵人上限-决策申请`（Q1 默认 300s 是否该由晋升方显式传、
+> Q2 count×cooldown 叠加后单条设备规则的"吵人上限"≈12 条/小时是否可接受、Q3 dry_run 该不该消耗
+> 冷却窗口——影响 R3 观察期的计数分母），MA 未自主改默认值。
 
 ### 第 4 步：MCP 业务查询工具面（供 DB 消费）
 
