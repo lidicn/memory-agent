@@ -41,6 +41,10 @@ _VOICE_CACHE_MAX = int(os.getenv("MA_VOICE_CACHE_MAX", "2000"))
 # DCD R1：反馈携带的问题/评论文本入库前截断上限（防止用户粘贴整段对话撑爆元数据行）
 _FEEDBACK_TEXT_MAX = int(os.getenv("MA_FEEDBACK_TEXT_MAX", "500"))
 
+# 反馈置信度调整只对这三个枚举值生效；其余入参（含空串与用户自由文本）一律不动置信度。
+# 第七轮审计 P7：调用点曾把自由文本当 outcome 传，形参错位后反馈静默丢失、接口仍回成功。
+_FEEDBACK_OUTCOMES = ("success", "override", "failed")
+
 # 纯遥测域：这些域的实体按固定周期上报（功率、温湿度、电量……），
 # 混进「行为分布」会把小时热力图污染成均匀的「电表节拍」，
 # 因此所有行为类聚合默认排除它们（behavior_only=True）。

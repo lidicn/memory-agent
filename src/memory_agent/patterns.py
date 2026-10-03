@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 import chromadb
 
-from .store import safe_json_loads
+from .store import safe_json_loads, _FEEDBACK_TEXT_MAX, _FEEDBACK_OUTCOMES
 
 logger = logging.getLogger("memory_agent.patterns")
 
@@ -390,26 +390,38 @@ class PatternManager:
         outcome: str,
         details: Optional[str] = None
     ) -> Dict[str, Any]:
-        """记录模板执行反馈"""
+        """记录模板执行反馈。
+
+        ``outcome`` 只认 ``_FEEDBACK_OUTCOMES`` 三个白名单值；其余（含空串与自由文本）
+        **一律不动置信度**，并把 ``outcome_applied=False`` 如实回报——审计 P7 实测过：
+        唯一调用方曾把用户自由文本当第 2 个位置参传进来，于是这条反馈既没改置信度也没被记录，
+        接口却回「反馈已记录」。自由文本的正确落点是 ``details``，且**必须由调用方先脱敏**
+        （这里只做长度收口，不让一段任意长的文本进 Chroma metadata）。
+        """
         existing = self.get_pattern(pattern_id)
         if not existing.get('ok'):
             return {"ok": False, "error": "模板不存在"}
         
         # 更新置信度
         confidence = existing.get('confidence', 0.5)
-        if outcome == 'success':
-            confidence = min(1.0, confidence + 0.05)
-        elif outcome == 'override':
-            confidence = max(0.0, confidence - 0.1)
-        elif outcome == 'failed':
-            confidence = max(0.0, confidence - 0.05)
+        applied = outcome in _FEEDBACK_OUTCOMES
+        if applied:
+            if outcome == 'success':
+                confidence = min(1.0, confidence + 0.05)
+            elif outcome == 'override':
+                confidence = max(0.0, confidence - 0.1)
+            elif outcome == 'failed':
+                confidence = max(0.0, confidence - 0.05)
         
         # 更新模板
         metadata = _clean_metadata(existing)
         metadata['confidence'] = confidence
-        metadata['last_verified'] = datetime.now().isoformat()
-        if details:
-            metadata['last_feedback'] = details
+        # last_verified 语义是「这条模板被真实反馈验证过」，仅存档备注不算验证
+        if applied:
+            metadata['last_verified'] = datetime.now().isoformat()
+        safe_details = "" if details is None else str(details)[:_FEEDBACK_TEXT_MAX]
+        if safe_details:
+            metadata['last_feedback'] = safe_details
         
         # 构建文档
         doc = f"{metadata['person']} {metadata['category']} {metadata.get('description', '')}"
@@ -424,6 +436,8 @@ class PatternManager:
             "ok": True,
             "id": pattern_id,
             "outcome": outcome,
+            "outcome_applied": applied,
+            "details_recorded": bool(safe_details),
             "new_confidence": confidence
         }
     

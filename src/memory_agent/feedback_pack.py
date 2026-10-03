@@ -2,7 +2,7 @@
 
 设计：
 - build_feedback_pack: 把 VLM 快照 + trace 打包成 tar.gz。
-- PII 脱敏：手机号/邮箱/身份证/银行卡/地址等敏感信息替换为 <REDACTED>。
+- PII 脱敏：手机号/邮箱/身份证/银行卡/IP/MAC 网络地址/凭据串替换为 <REDACTED>。
 - fail-closed：脱敏失败宁可丢 trace（"宁可缺 trace 也不泄 PII"）。
 - 快照路径白名单：只允许 /data/ 下的快照，防止任意文件打包。
 """

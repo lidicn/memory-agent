@@ -17,6 +17,7 @@ from starlette.requests import Request
 from starlette.routing import Route
 
 from .deps import error, json_body, ok, require_user, runtime
+from ..store import _FEEDBACK_OUTCOMES
 
 WATER_PURIFIER_ENTITY = "event.chunmi_cn_334432105_600f2_water_out_finish_e_7_1"
 
@@ -56,16 +57,49 @@ async def nr_execute_action(request: Request):
 
 
 async def nr_record_feedback(request: Request):
+    """模板反馈落库。
+
+    审计 P7 / 债务 D2 修正：``feedback`` 字段承载的是用户自由文本，重构前它被当作
+    第 2 个位置参（``outcome``）传进去，结果是置信度不动、文本不落库、异常只 print，
+    接口却回「反馈已记录」。现在枚举值走 ``outcome``，自由文本先脱敏再走 ``details``，
+    失败如实回错，且不再把原文回显到响应里。
+    """
     body = await json_body(request)
     pattern_id = body.get("pattern_id", "")
-    feedback = body.get("feedback", "")
-    pm = runtime(request).patterns
-    if pm is not None and pattern_id:
-        try:
-            await asyncio.to_thread(pm.record_feedback, pattern_id, feedback)
-        except Exception as exc:
-            print(f"[NR] 记录反馈失败: {exc}")
-    return ok({"message": f"反馈已记录: {pattern_id} = {feedback}"})
+    rt = runtime(request)
+    pm = rt.patterns
+    if pm is None:
+        return error("行为模式库（向量库）不可用", 503)
+    if not pattern_id:
+        return error("缺少 pattern_id", 400)
+
+    raw_outcome = str(body.get("outcome") or "").strip().lower()
+    raw_feedback = str(body.get("feedback") or "")
+    if raw_outcome in _FEEDBACK_OUTCOMES:
+        outcome, details = raw_outcome, raw_feedback
+    elif raw_feedback.strip().lower() in _FEEDBACK_OUTCOMES:
+        # 旧调用方把枚举值塞在 feedback 里，保持可用
+        outcome, details = raw_feedback.strip().lower(), ""
+    else:
+        outcome, details = "", raw_feedback
+    safe_details = rt.store.sanitize_feedback_text(details)
+
+    try:
+        res = await asyncio.to_thread(pm.record_feedback, pattern_id, outcome, safe_details)
+    except Exception as exc:
+        return error(f"反馈记录失败: {exc}", 503)
+    if not res.get("ok"):
+        return error(res.get("error", "模板不存在"), 404)
+
+    marks = []
+    if res.get("outcome_applied"):
+        marks.append(f"置信度 -> {res.get('new_confidence')}")
+    elif outcome == "":
+        marks.append("非枚举反馈，仅存档")
+    if res.get("details_recorded"):
+        marks.append("备注已脱敏入库")
+    suffix = f"（{'；'.join(marks)}）" if marks else ""
+    return ok({"message": f"反馈已记录: {pattern_id}{suffix}"})
 
 
 async def nr_get_pending_patterns(request: Request):
