@@ -1,6 +1,7 @@
 """DCD 裁定 20261002 两份（MA 载荷键名七问 / MA 交付面三问）的落地回归锁。
 
 覆盖面（每条都对应裁定里的一句验收，不是我自己想加的字段）：
+- Q1：`ma/presence` 的**闭合键集**（裁定把契约表改成 MA 现有形状，MA 的职责就是别把它改掉）；
 - Q7：`caps.version` = **计划号**，不是包版本；
 - Q2：`ma/device-health` 加契约别名 `device_id`/`status`，**保留** `from`/`to`/`stable_id`；
 - Q3：`ma/insights` 带 `kind` 词表 + `summary` + `evidence[]`，身份走复数 `persons[]`，旧键不删；
@@ -204,3 +205,38 @@ def test_vendored_wheel_matches_the_sha_registered_in_vendor_readme():
     dockerfile = open(_DOCKERFILE, encoding="utf-8").read()
     assert "vendor/homesdk-0.3.1-py3-none-any.whl" in dockerfile
     assert "COPY vendor/" in dockerfile, " wheel 进了仓但没进镜像构建上下文"
+
+
+# ── Q1：ma/presence 的键集是裁定认可的那个形状 ──────────────────────────────
+
+def test_presence_envelope_and_member_keys_are_the_ruled_shape(tmp_path):
+    """裁定 Q1 选 A = **契约表改成 MA/DB 现有形状**，那 MA 这边的责任就是别再改掉它。
+
+    判据取裁定自己给的判例：「键名漂移的失败方式是静默归零——键不存在 → `members=[]`
+    → 返回 0，不抛错不告警」。所以这里钉的是**闭合键集**，不是"含有某个键"：
+    少一个键（改名）或多一个键（偷偷加字段）都必须红。
+    `via_raw` 是 MA 多带的一枚原始 via（归一化前的值），登记在此、不进契约表。
+    """
+    from memory_agent.store import Store
+
+    st = Store(str(tmp_path / "ma.db"))
+    st.init_schema()
+    st.insert_behavior_event({
+        "server_ts": "2026-09-03T18:31:00", "room": "书房", "trigger": "patrol",
+        "persons": [{"name": "Emily", "member_id": "member:abc", "via": "arcface",
+                     "match_confidence": 0.82}],
+        "count": 1, "status": "ok", "day": "2026-09-03",
+    })
+    items = st.recent_presence("2026-09-03T17:00:00")
+    assert len(items) == 1
+    ruled = {"name", "member_id", "room", "via", "confidence", "last_seen", "trigger"}
+    assert ruled <= set(items[0]), f"契约字段缺失：{sorted(ruled - set(items[0]))}"
+    assert set(items[0]) - ruled == {"via_raw"}, \
+        f"成员条目多出/少掉键：{sorted(set(items[0]))}"
+
+    client = _Client()
+    assert _bridge(client).publish_presence(items, "2026-09-03T18:31:00") is True
+    body = json.loads(_last(client, "/presence")["payload"])
+    assert set(body) == {"trace_id", "members", "total", "ts"}
+    assert body["total"] == len(body["members"]) == 1
+    assert body["members"] == items
