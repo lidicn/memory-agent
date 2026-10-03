@@ -855,10 +855,61 @@ def _mcp_response_max_bytes() -> int:
         return 65536
 
 
+def _json_shrink_to_fit(text: str, tool: str, cap: int):
+    """超限 JSON 的**结构降级**：裁记录条数，而不是把 JSON 切在半行上。
+
+    生产实测：`list_device_health` 原始约 650KB > 上限 512KB，旧的字符截断把正文切在
+    `"entity_id": "sensor.x` 处，调用方 `json.loads` 直接报错——「已展示前 512KB」
+    成一句没法消费的话。这里改成：按字节挑最大的列表逐半裁掉，直到连摘要一起装得下，
+    并在 `_truncated` 里写清丢了什么。返回 None 表示切不动（非 JSON / 无列表 / 单条就超限），
+    交回字符截断。
+    """
+    try:
+        data = json.loads(text)
+    except Exception:  # noqa: BLE001 非 JSON 正文走字符截断
+        return None
+    if not isinstance(data, dict):
+        return None
+    list_keys = [k for k, v in data.items() if isinstance(v, list) and v]
+    if not list_keys:
+        return None
+    original_bytes = len(text.encode("utf-8"))
+    original_rows = {k: len(data[k]) for k in list_keys}
+    for _ in range(64):
+        dropped = {k: original_rows[k] - len(data[k]) for k in list_keys}
+        total_dropped = sum(dropped.values())
+        if total_dropped:
+            data["_truncated"] = {
+                "tool": tool,
+                "original_bytes": original_bytes,
+                "cap_bytes": cap,
+                "original_rows": sum(original_rows.values()),
+                "kept_rows": sum(len(data[k]) for k in list_keys),
+                "dropped": total_dropped,
+                "fields": {k: {"kept": len(data[k]), "dropped": dropped[k]} for k in list_keys},
+                "hint": (f"⚠️ [响应已截断] 工具 '{tool}' 原始输出约 "
+                         f"{max(1, original_bytes // 1024)}KB 超过上限 {max(1, cap // 1024)}KB，"
+                         f"已按记录条数裁剪（丢 {total_dropped} 条）。请用更窄的时间窗 / "
+                         f"过滤参数取完整结果。"),
+            }
+        else:
+            data.pop("_truncated", None)
+        payload = json.dumps(data, ensure_ascii=False)
+        if len(payload.encode("utf-8")) <= cap:
+            return payload
+        biggest = max(list_keys,
+                      key=lambda k: len(json.dumps(data[k], ensure_ascii=False).encode("utf-8")))
+        if not data[biggest]:
+            return None          # 全部裁空仍超限：单条记录本身就比上限大
+        del data[biggest][max(1, len(data[biggest]) // 2):]
+    return None
+
+
 def _apply_response_cap(result, tool: str, max_bytes: int = None):
     """v0.9 任务3：单工具响应正文超上限则截断并附摘要，避免巨响应撑爆客户端上下文。
 
     max_bytes 为 None 取运行配置；传值用于单测。错误结果(is_error)截断后保留错误标记。
+    JSON 载荷优先走结构降级（裁条数、保持可解析），切不动才退回字符截断。
     """
     cap = max_bytes if max_bytes is not None else _mcp_response_max_bytes()
     if cap <= 0:
@@ -867,6 +918,9 @@ def _apply_response_cap(result, tool: str, max_bytes: int = None):
     raw = text.encode("utf-8")
     if len(raw) <= cap:
         return result
+    shrunk = _json_shrink_to_fit(text, tool, cap)
+    if shrunk is not None:
+        return _build_tool_result(shrunk, is_error=_is_error(result))
     truncated = raw[:cap].decode("utf-8", "ignore")
     kb_total = max(1, len(raw) // 1024)
     kb_cap = max(1, cap // 1024)

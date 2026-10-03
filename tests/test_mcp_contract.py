@@ -79,6 +79,80 @@ def test_apply_response_cap_preserves_error_flag():
     assert "响应已截断" in _text(out)
 
 
+# ── 1b. JSON 载荷超限：按结构降级，不许把 JSON 腰斩 ────────────────────────────
+# 生产实测（2026-10-03）：`list_device_health` 原始输出约 650KB > 上限 512KB，
+# 字符截断把 JSON 切在半行上（`"entity_id": "sensor.x` 后直接断），
+# 调用方 json.loads 报 `Expecting ',' delimiter: line 14056 column 1`。
+# 摘要那句「请用…分页参数」对该工具也不成立——它根本没有分页参数。
+
+def _rows(n: int) -> list:
+    return [{"entity_id": f"sensor.entity_{i:04d}", "state": "active",
+             "referenced": i % 2, "note": "本轮对账未出现（短暂失联）",
+             "updated_at": "2026-10-03T10:00:06"} for i in range(n)]
+
+
+def test_json_over_cap_stays_parseable_and_reports_what_dropped():
+    import json
+    payload = json.dumps({"ok": True, "state": "all", "health": _rows(400),
+                          "total": 400, "logical_devices": 12}, ensure_ascii=False)
+    assert len(payload.encode("utf-8")) > 4000
+    out = ms._apply_response_cap(_make_result(payload), "list_device_health", max_bytes=4000)
+    text = _text(out)
+    data = json.loads(text)                      # 必须仍然是合法 JSON
+    assert data["ok"] is True
+    assert len(data["health"]) < 400, "超限后行数必须变少"
+    assert data["state"] == "all" and data["logical_devices"] == 12, "标量字段不该被切掉"
+    for row in data["health"]:
+        assert set(row) == {"entity_id", "state", "referenced", "note", "updated_at"}, \
+            "留下的行必须整条在，不许半条记录"
+    notice = data.get("_truncated")
+    assert isinstance(notice, dict), f"缺 _truncated 摘要：{list(data)}"
+    assert notice["dropped"] > 0 and notice["original_rows"] == 400
+    assert notice["kept_rows"] == len(data["health"])
+    assert notice["original_bytes"] > 4000 <= notice["cap_bytes"]
+    assert "响应已截断" in notice["hint"]
+    assert len(text.encode("utf-8")) <= 4000 + 600
+
+
+def test_json_shrink_cuts_the_big_list_not_the_small_one():
+    import json
+    payload = json.dumps({"ok": True, "big": _rows(300), "keep_me": [{"id": 1}]},
+                         ensure_ascii=False)
+    out = ms._apply_response_cap(_make_result(payload), "t", max_bytes=4000)
+    data = json.loads(_text(out))
+    assert data["keep_me"] == [{"id": 1}], "小列表不该被顺手裁掉"
+    assert len(data["big"]) < 300
+
+
+def test_json_without_lists_falls_back_to_char_truncation():
+    """切结构救不了的场景（巨型标量）必须退回旧的字符截断，而不是抛异常或原样返回。"""
+    payload = '{"ok": true, "blob": "' + "x" * 5000 + '"}'
+    out = ms._apply_response_cap(_make_result(payload), "blob_tool", max_bytes=1000)
+    text = _text(out)
+    assert "响应已截断" in text
+    assert "blob_tool" in text
+    assert len(text.encode("utf-8")) <= 1000 + 400
+
+
+def test_json_error_result_keeps_its_error_flag_after_structural_shrink():
+    import json
+    payload = json.dumps({"ok": False, "error": "boom", "items": _rows(300)},
+                         ensure_ascii=False)
+    out = ms._apply_response_cap(_make_result(payload, is_err=True), "t", max_bytes=4000)
+    assert _is_err(out) is True
+    data = json.loads(_text(out))
+    assert data["ok"] is False and data["error"] == "boom"
+
+
+def test_non_json_text_still_uses_the_character_cap():
+    """纯文本（非 JSON）响应不能被结构降级路径吃掉——旧行为要原样保留。"""
+    out = ms._apply_response_cap(_make_result("日" * 3000), "text_tool", max_bytes=1000)
+    text = _text(out)
+    assert text.startswith("日" * 100)
+    assert "响应已截断" in text
+    assert len(text.encode("utf-8")) <= 1000 + 400
+
+
 # ── 2. 错误结果构造动态字段 ──────────────────────────────────────────────────
 def test_build_tool_result_is_error_flag():
     r = ms._build_tool_result("boom", is_error=True)
