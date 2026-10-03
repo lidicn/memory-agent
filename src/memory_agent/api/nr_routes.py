@@ -82,10 +82,13 @@ async def nr_record_feedback(request: Request):
         outcome, details = raw_feedback.strip().lower(), ""
     else:
         outcome, details = "", raw_feedback
-    safe_details = rt.store.sanitize_feedback_text(details)
+    def _sanitize_and_record():
+        # 脱敏要读成员名册（SQLite），整段进线程：事件循环里不许出现同步 DB 调用（路线图 3.2 延伸门禁）
+        safe_details = rt.store.sanitize_feedback_text(details)
+        return pm.record_feedback(pattern_id, outcome, safe_details)
 
     try:
-        res = await asyncio.to_thread(pm.record_feedback, pattern_id, outcome, safe_details)
+        res = await asyncio.to_thread(_sanitize_and_record)
     except Exception as exc:
         return error(f"反馈记录失败: {exc}", 503)
     if not res.get("ok"):
