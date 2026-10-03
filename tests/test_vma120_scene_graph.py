@@ -7,11 +7,12 @@
    降级空列表不抛；scene_graph_enabled=False 时不解析；
 4. api/vision_routes GET /api/vision/scene_graph 端点（含鉴权 401 与各过滤器）。
 
-注：实现落在 behavior_events.scene_graph_json + list_behavior_events +
-/api/vision/scene_graph（无独立 Store.list_scene_graphs 方法），测试按真实路径断言。
+注：实现落在 behavior_events.scene_graph_json + Store.list_scene_graphs +
+/api/vision/scene_graph，测试按真实路径断言（端点用例即穿过 list_scene_graphs）。
 """
 import asyncio
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -159,7 +160,10 @@ def _vs_cfg(**kw):
 
 def _run_analyze(vlm_text, **cfg_kw):
     cap = _CapStore()
+    usage = cfg_kw.pop("_usage", None)
     svc = VisionService(_vs_cfg(**cfg_kw), store=cap, ha=None)
+    if usage is not None:
+        svc._last_vlm_usage = usage
     svc.fetch_frame = lambda stream, *a, **k: (b"fake-frame", 1)
     svc._save_snapshot = lambda room, frame: ""
     calls = {"n": 0}
@@ -315,3 +319,76 @@ def test_scene_graph_endpoint_filters(api_store):
     # latest（limit）过滤
     resp, body = _call(api_store, [("latest", "1")])
     assert body["count"] == 1
+
+
+# ── 5. 卡片 4.3.2 / 4.3.3 的两条验收字面：抽样比例 + token 账单可观察 ──────
+#
+# 这两条此前**只在实现里、没有断言**（全仓 grep ``sample_rate`` 在 tests/ 零命中），
+# 于是"比例写错方向""日志根本没打"都不会有人知道。
+
+_SG_TEXT = json.dumps({
+    "scene": "客厅",
+    "snapshot_quality": "clear",
+    "scene_graph": {"objects": ["沙发"], "relations": []},
+}, ensure_ascii=False)
+
+
+def test_scene_graph_sample_rate_zero_skips_parsing():
+    cap, res, _ = _run_analyze(_SG_TEXT, scene_graph_sample_rate=0.0)
+    assert res["ok"] is True
+    assert cap.inserted[0]["scene_graph_json"] is None
+
+
+def test_scene_graph_sample_rate_one_keeps_every_frame():
+    cap, _, _ = _run_analyze(_SG_TEXT, scene_graph_sample_rate=1.0)
+    assert cap.inserted[0]["scene_graph_json"]["objects"] == [{"name": "沙发", "position": ""}]
+
+
+def test_scene_graph_sample_rate_is_a_probability(monkeypatch):
+    """0.5 抽样：随机数 0.4 抽中、0.6 落空——比例方向不能写反。"""
+    monkeypatch.setattr(vs_mod.random, "random", lambda: 0.4)
+    cap, _, _ = _run_analyze(_SG_TEXT, scene_graph_sample_rate=0.5)
+    assert cap.inserted[0]["scene_graph_json"] is not None
+
+    monkeypatch.setattr(vs_mod.random, "random", lambda: 0.6)
+    cap, _, _ = _run_analyze(_SG_TEXT, scene_graph_sample_rate=0.5)
+    assert cap.inserted[0]["scene_graph_json"] is None
+
+
+def test_scene_graph_bad_sample_rate_fails_open_to_sampling():
+    """坏值（非数字）按 1.0 处理：抽样是省钱的旁路，不该把主流程带崩。"""
+    cap, res, _ = _run_analyze(_SG_TEXT, scene_graph_sample_rate="abc")
+    assert res["ok"] is True
+    assert cap.inserted[0]["scene_graph_json"] is not None
+
+
+def test_scene_graph_manual_frames_never_sample():
+    cfg = _vs_cfg(scene_graph_sample_rate=1.0)
+    svc = VisionService(cfg, store=_CapStore(), ha=None)
+    assert svc._scene_graph_should_sample("manual") is False
+    assert svc._scene_graph_should_sample("motion") is True
+    assert svc._scene_graph_should_sample("") is True   # 缺省 trigger 不挡路
+    assert VisionService(_vs_cfg(scene_graph_enabled=False), store=_CapStore(), ha=None) \
+        ._scene_graph_should_sample("motion") is False
+
+
+def test_scene_graph_token_usage_logged_with_real_usage(caplog):
+    with caplog.at_level(logging.INFO, logger="memory_agent.vision_service"):
+        _run_analyze(_SG_TEXT, _usage={"total_tokens": 1234})
+    lines = [r.getMessage() for r in caplog.records if "scene_graph parsed" in r.getMessage()]
+    assert len(lines) == 1, lines
+    assert "tokens=1234" in lines[0] and "room=客厅" in lines[0]
+
+
+def test_scene_graph_token_usage_falls_back_to_char_estimate(caplog):
+    with caplog.at_level(logging.INFO, logger="memory_agent.vision_service"):
+        _run_analyze(_SG_TEXT)
+    lines = [r.getMessage() for r in caplog.records if "scene_graph parsed" in r.getMessage()]
+    assert len(lines) == 1, lines
+    assert "tokens=~" in lines[0] and "(char/4)" in lines[0]
+
+
+def test_scene_graph_not_logged_when_sampling_skips(caplog):
+    with caplog.at_level(logging.INFO, logger="memory_agent.vision_service"):
+        _run_analyze(_SG_TEXT, scene_graph_sample_rate=0.0)
+    assert not [r for r in caplog.records if "scene_graph parsed" in r.getMessage()]
