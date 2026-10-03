@@ -207,6 +207,20 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 
 与 DB 写面修复窗、AF 镜像重烤窗**合批为一个窗口**。
 
+> **窗口读数（2026-10-03 04:39Z 重启后只读探针，RC=0）**：②③ **本次窗已生效**——
+> `agent_memories.feedback_question/feedback_comment` 两列在场、`rule_lifecycle_audit` 表在场、
+> `active_rules` 18 列（含 `promoted_at`）；采集链路在跑（`events` `MAX(ts)` = 家庭墙钟当前分钟）、
+> `integrity_check=ok`、`mirror_dirty=0`。
+> ① **仍未做，且缺的正是工具那半边**：回填脚本已落地（`scripts/pii_backfill_r2.py` +
+> 7 条回归锁 `tests/test_vma_r2_pii_backfill.py`，三条硬要求逐条对锁，变异三发各自判红），
+> 但**默认只读**：不带 `--window-ok` 直接拒绝写（窗口归 SP 排，脚本不替人判"现在是窗口"）。
+> 生产现况 `agent_memories=247 行`，其中含明文姓名的行数由脚本 dry-run 现算，不写死进文档。
+> ⚠️ 一处**与裁定预估不同**的要紧事：R2 注的"回填触发 Chroma 全量重建（≈12 分钟不可用）"
+> 走的是最贵路径。脚本写回时置 `mirror_dirty=1`，而 `AgentMemoryService.reconcile()`
+> （`agent_memory.py:689`）是**按脏行逐条重刷**（脏行清单来自 `store.list_dirty_agent_mirrors()`，
+> `store.py:4666`）——所以真窗口里大概率不需要 12 分钟冷启动，只需 `--reconcile`。这条差异属对外承诺的时长，**留给窗口执行时实测**，不在此处替它圆场。
+> 探针脚本 `scripts/_probe_post_restart.py`（同一份判据，下次重启后直接复用）。
+
 ---
 
 ## 四、不在本版做（已裁并登记）
