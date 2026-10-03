@@ -1515,7 +1515,8 @@ def _build_server():
 
         name=活动类型名(英文snake_case)；room=房间子串(可选)；tags=需命中的设备标签(可选,如 presence/door/media)；
         start_hour/end_hour=生效时段；min_events=最小触发次数；confidence=置信度；note=人类可读说明。
-        注册后 infer_activities 自动套用，识别出的活动可被 source_refs=insight:<id> 引用写回记忆。
+        规则落库 activity_rules；是否套用由当前 infer_activities 实现决定，以回执 message 为准。
+        识别出的活动可被 source_refs=insight:<id> 引用写回记忆。
         """
         rt = get_runtime()
         return await asyncio.to_thread(
@@ -1661,7 +1662,7 @@ def _build_server():
                 # 原调用多传了 rooms 参数导致 TypeError，被 except:pass 静默吞掉，
                 # room_insights 永远为空。此处对齐签名，按全局行为环比返回。
                 room_insights = await asyncio.to_thread(
-                    rt.insights.get_behavior_insights, days
+                    rt.insights.get_behavior_insights, compare_days=days
                 )
                 result["room_insights"] = room_insights
             except Exception as _exc:

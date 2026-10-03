@@ -22,7 +22,7 @@ from .service import BehaviorService
 
 LOG = logging.getLogger(__name__)
 
-__all__ = ["InsightService", "LEGACY_CONTRACT_MEMBERS"]
+__all__ = ["InsightService", "LEGACY_CONTRACT_MEMBERS", "LEGACY_OUTWARD_METHODS"]
 
 
 #: 生产代码仍在调用、但本门面未自行实现的成员（审计 P0-5，实测 11 个）。
@@ -42,6 +42,21 @@ LEGACY_CONTRACT_MEMBERS = (
     "_count_by_filter",
     "_iter_all_events",
     "_tags_of",
+)
+
+#: 门面「签名按调用点保留、计算交回 legacy」的对外工具（审计 §十六）。
+#: 与上表的差别：上表是门面根本没有的成员（纯转发）；这里是门面**有**新实现，
+#: 但 Phase 4 只换了引擎没重接调用点——MCP handler / HTTP 路由仍按 legacy 的参数形状
+#: 传，且 category/query/domain/state/order/summarize/stale_days 等入参在新实现里
+#: 无处可去。生产实测这 5 条工具线要么外抛、要么把过滤位静默丢掉。
+#: `tests/test_vma_insights_callsite_binding.py` 逐个锁签名与调用点绑定。
+LEGACY_OUTWARD_METHODS = (
+    "entity_catalog",
+    "search_events",
+    "device_usage",
+    "behavior_insights",
+    "device_health",
+    "define_activity",
 )
 
 
@@ -195,13 +210,32 @@ class InsightService:
     # 5.1 实体目录与语义解析
     # ------------------------------------------------------------------
     @_degrade(lambda: Page.build([]).to_dict("entities"))
-    def entity_catalog(self, days: int = 0, room: str = "", category: str = "", query: str = "", limit: int = 100,
-                       only_enabled: bool = True) -> Dict[str, Any]:
-        """获取实体目录（room + category + query 语义定位）。"""
-        items = self.resolver.resolve(room=room, category=category, query=query,
-                                      only_enabled=only_enabled) \
-            if (room or category or query) else self.resolver.all(only_enabled)
-        return Page.build([e.to_dict() for e in items]).to_dict("entities")
+    def entity_catalog(self, room: str = "", category: str = "", domain: str = "",
+                       query: str = "", only_enabled: bool = True,
+                       days: int = 7) -> Dict[str, Any]:
+        """设备目录（room + category + domain + query 语义定位）。
+
+        签名按调用点的既有形状收（mcp_server.py:1116/3044 与 ToolSpec 登记的都是这个顺序）。
+        Phase 4 换的新实现只认 room/category/query，且生产实测 `room` 过滤位被丢掉
+        （传 room=客厅 拿到全屋 501 条，见审计报告 §十六），所以计算交回 legacy；
+        legacy 的载荷按 `rooms` 分组，这里摊平成 `entities` 一并给出，两代键都在，
+        消费方不必做大爆炸切换。
+        """
+        out = self.legacy.entity_catalog(room=room, category=category, domain=domain,
+                                         query=query, only_enabled=only_enabled, days=days)
+        if isinstance(out, dict) and "entities" not in out:
+            rooms = out.get("rooms")
+            flat: list = []
+            if isinstance(rooms, dict):
+                for room_name, payload in rooms.items():
+                    entities = payload.get("entities") if isinstance(payload, dict) else payload
+                    for it in entities or []:
+                        if isinstance(it, dict):
+                            flat.append({**it, "room": it.get("room") or room_name})
+            out["entities"] = flat
+            out.setdefault("total", len(flat))
+            out.setdefault("has_more", False)
+        return out
 
     @_degrade(list)
     def room_names(self, only_enabled: bool = True) -> List[str]:
@@ -233,13 +267,27 @@ class InsightService:
     # 5.2 事件搜索与查询
     # ------------------------------------------------------------------
     @_degrade(lambda: Page.build([]).to_dict("events"))
-    def search_events(self, days: int = 0, start: str = "", end: str = "", entity_id: str = "",
-                      room: str = "", category: str = "", query: str = "",
-                      limit: int = 100, offset: int = 0) -> Dict[str, Any]:
-        """搜索事件（含遥测，原始检索）。"""
-        start, end = self._days_to_range(days, start, end)
-        return self._search(start, end, entity_id, room, category, query,
-                            limit, offset, behavior_only=False)
+    def search_events(self, room: str = "", category: str = "", domain: str = "",
+                      query: str = "", entity_id: str = "", state: str = "",
+                      days: int = 7, start: str = "", end: str = "", limit: int = 200,
+                      offset: int = 0, order: str = "desc", behavior_only: bool = True,
+                      summarize: bool = False) -> Dict[str, Any]:
+        """语义化事件搜索（room/category/domain/query/entity_id/state + 分页 + 摘要）。
+
+        新框架的 `repo.load_events` 只认 entity_ids/rooms/behavior_only，category/query/
+        domain/state/order/summarize 六个声明过的过滤位无处可去（生产实测四个过滤位
+        拿到同一个 30000 上限值，见审计报告 §十六）。这些能力在 legacy 里是完整的，
+        故交回 legacy；同时补上门面 Page 的 `limit`/`time_range` 键，保持向后兼容。
+        """
+        out = self.legacy.search_events(
+            room=room, category=category, domain=domain, query=query, entity_id=entity_id,
+            state=state, days=days, start=start, end=end, limit=limit, offset=offset,
+            order=order, behavior_only=behavior_only, summarize=summarize)
+        if isinstance(out, dict):
+            out.setdefault("limit", limit)
+            if "time_range" not in out and out.get("window"):
+                out["time_range"] = out["window"]
+        return out
 
     @_degrade(lambda: Page.build([]).to_dict("events"))
     def query_behavior_events(self, start: str = "", end: str = "", room: str = "",
@@ -285,13 +333,28 @@ class InsightService:
     # 5.3 设备使用统计
     # ------------------------------------------------------------------
     @_degrade(lambda: Page.build([]).to_dict("items"))
-    def device_usage(self, days: int = 0, start: str = "", end: str = "", room: str = "",
-                     category: str = "", query: str = "",
-                     group_by: str = "entity") -> Dict[str, Any]:
-        """设备使用统计（时长、开关次数均在服务端算好）。"""
-        tr = self._tr(start, end)
-        start, end = self._days_to_range(days, start, end)
-        return self.core.usage(tr, room=room, category=category)
+    def device_usage(self, entity_id: str = "", room: str = "", category: str = "",
+                     query: str = "", days: int = 7, start: str = "", end: str = "",
+                     on_states: str = "", debounce_seconds: Optional[int] = None,
+                     include_timeline: bool = True) -> Dict[str, Any]:
+        """设备用量（状态配对 / 跨窗口截断 / 去抖 / 时间线均在服务端算好）。
+
+        门面原先的 7 参形状不收 entity_id/on_states/debounce_seconds/include_timeline，
+        而 mcp_server.py:1164 与 llm_routes.py:539/544/549 都按 legacy 的 10 参形状调用：
+        前者直接 TypeError（工具整天返回 error），后者把 entity_id 绑进了 `days`
+        （timedelta 收到字符串）。能力在 legacy 侧完整，交回 legacy，并补 Page 键。
+        """
+        if debounce_seconds is None:
+            from ..insights_legacy import DEFAULT_DEBOUNCE_SECONDS
+            debounce_seconds = DEFAULT_DEBOUNCE_SECONDS
+        out = self.legacy.device_usage(
+            entity_id=entity_id, room=room, category=category, query=query, days=days,
+            start=start, end=end, on_states=on_states,
+            debounce_seconds=debounce_seconds, include_timeline=include_timeline)
+        if isinstance(out, dict):
+            out.setdefault("items", out.get("devices") or [])
+            out.setdefault("total", out.get("device_count") or 0)
+        return out
 
     @_degrade(lambda: Page.build([]).to_dict("sessions"))
     def climate_sessions(self, query: str = "", room: str = "", days: int = 7,
@@ -309,12 +372,21 @@ class InsightService:
     # 5.4 行为洞察
     # ------------------------------------------------------------------
     @_degrade(lambda: Page.build([]).to_dict("insights"))
-    def behavior_insights(self, days: int = 0, start: str = "", end: str = "", room: str = "",
-                          category: str = "", query: str = "") -> Dict[str, Any]:
-        """行为洞察（单窗口）。"""
-        tr = self._tr(start, end)
-        start, end = self._days_to_range(days, start, end)
-        return self.core.behavior_insights(tr, room=room, category=category)
+    def behavior_insights(self, days: int = 7, rooms: str = "", behavior_only: bool = True,
+                          start: str = "", end: str = "") -> Dict[str, Any]:
+        """行为洞察（单窗口）：作息节律、房间活跃、跨设备转移、每日量与异常。
+
+        门面原先的签名是 `(days, start, end, room, category, query)`，而两个调用点
+        （mcp_server.py:1137 位置传参、researcher.py:115 关键字 `rooms=`）按 legacy 的
+        `(days, rooms, behavior_only, start, end)` 传：前者的 `rooms` 落进 `start`、
+        `behavior_only` 落进 `end`（本机实测连默认参数都会让窗口解析抛 OSError，生产则
+        "成功"返回一份口径错位的报告），后者压根不认识 `rooms`。报告字段
+        （daily_rhythm / room_transitions / anomalies / daily_totals）在新实现里也没有
+        对应物，所以整条交回 legacy。
+        """
+        return self.legacy.behavior_insights(days=days, rooms=rooms,
+                                             behavior_only=behavior_only,
+                                             start=start, end=end)
 
     @_degrade(lambda: Page.build([]).to_dict("insights"))
     def get_behavior_insights(self, compare_days: int = 7) -> Dict[str, Any]:
@@ -324,16 +396,51 @@ class InsightService:
     @_degrade(lambda: Page.build([]).to_dict("activities"))
     def infer_activities(self, days: int = 7, rooms: str = "", start: str = "",
                          end: str = "", activities: Any = None) -> Dict[str, Any]:
-        """活动推断（洗澡/学习/看电视/睡眠/烹饪 + 自定义）。"""
+        """活动推断（洗澡/学习/看电视/睡眠/烹饪 + 自定义）。
+
+        `activities` 是 ToolSpec 声明的入参，原先收进来就丢——调用方缩小范围的意图
+        被静默吞掉，拿到的仍是全量。
+        """
         tr = self._tr(start, end, days=days or 7)
-        return self.core.infer_activities(tr, rooms=rooms)
+        out = self.core.infer_activities(tr, rooms=rooms)
+        if isinstance(activities, str):
+            allow = {p.strip() for p in activities.split(",") if p.strip()}
+        else:
+            allow = {str(v).strip() for v in (activities or []) if str(v).strip()}
+        if allow and isinstance(out, dict) and isinstance(out.get("activities"), list):
+            out["activities"] = [
+                a for a in out["activities"]
+                if str(a.get("activity") or a.get("name") or "") in allow
+            ]
+        return out
 
     @_degrade(lambda: {"ok": False, "error": "invalid rule", "activity": {}})
-    def define_activity(self, name: str, rule: Any, tags: Any = None,
-                        room: str = None) -> Dict[str, Any]:
-        """定义自定义活动规则。"""
-        return self.core.activities.define_activity(
-            name, rule, tags=tags, room=room or "")
+    def define_activity(self, name: str, room: str = "", tags: Any = None,
+                        start_hour: int = 0, end_hour: int = 23, min_events: int = 1,
+                        confidence: float = 0.6, note: str = "") -> Dict[str, Any]:
+        """定义自定义活动规则。
+
+        门面原先的签名是 `(name, rule, tags, room)`：MCP 按 ToolSpec 登记的 8 个参数
+        位置传参进来先撞 TypeError，签名对上后又撞 `BehaviorService` 没有 `activities`
+        属性——两层异常都被 `_degrade` 吞成 `ok:false`，于是这个工具从来没成功过
+        （`activity_rules` 里一条都没落）。改回与 legacy 一致的签名并显式转发，
+        同 `LEGACY_CONTRACT_MEMBERS` 的处理路子。
+        规则的**套用**落在语义引擎那一侧，口径待 DCD 裁定。
+        """
+        out = self.legacy.define_activity(
+            name, room=room, tags=tags or [], start_hour=start_hour, end_hour=end_hour,
+            min_events=min_events, confidence=confidence, note=note,
+        )
+        # legacy 的回执写着"下次 infer_activities 自动套用"，那是语义引擎时代的话。
+        # 现行门面用的是时段启发式，还没有规则入口——不能把"注册成功"回成"将要生效"，
+        # 那等于把一次失败换成一次静默的过度承诺（套用口径见 DCD 20261003 申请）。
+        if isinstance(out, dict) and out.get("ok"):
+            out["message"] = (
+                "规则已注册进 activity_rules（rule_id=%s）；"
+                "当前活动推断走时段启发式，尚未套用自定义规则，"
+                "套用口径待 DCD 裁定后接通" % (out.get("rule", {}).get("rule_id") or "")
+            )
+        return out
 
     # ------------------------------------------------------------------
     # 5.5 异常检测
@@ -347,12 +454,20 @@ class InsightService:
         return self.core.anomaly_report(tr, room=room, category=category)
 
     @_degrade(lambda: Page.build([]).to_dict("devices"))
-    def device_health(self, days: int = 0, start: str = "", end: str = "", room: str = "",
-                      category: str = "", query: str = "") -> Dict[str, Any]:
-        """设备健康检查。"""
-        tr = self._tr(start, end)
-        start, end = self._days_to_range(days, start, end)
-        return self.core.device_health(tr, room=room, category=category)
+    def device_health(self, room: str = "", category: str = "", query: str = "",
+                      days: int = 7, stale_days: int = 3,
+                      only_enabled: bool = True) -> Dict[str, Any]:
+        """设备健康探测（失联 / 没电 / 长期静默）。
+
+        mcp_server.py:1446 按 legacy 的 `(room, category, query, days, stale_days,
+        only_enabled)` 位置传参，门面签名却是 `(days, start, end, room, category, query)`：
+        生产读数里 `房间名` 落进 `days`、`3`（stale_days）落进 `category`，报
+        `'int' object has no attribute 'strip'`——工具自切换那天起就没成功返回过。
+        stale_days / only_enabled 两个入参在新实现里根本没有对应物，交回 legacy。
+        """
+        return self.legacy.device_health(room=room, category=category, query=query,
+                                         days=days, stale_days=stale_days,
+                                         only_enabled=only_enabled)
 
     @_degrade(lambda: Page.build([]).to_dict("issues"))
     def data_quality_issues(self, start: str = "", end: str = "",

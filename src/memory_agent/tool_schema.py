@@ -473,7 +473,7 @@ TOOL_SPECS: list = [
         summary="注册/更新一条自定义活动识别规则（agent 教系统识别新行为）。",
         description=(
             "注册/更新一条自定义活动识别规则（agent 教系统识别新行为，如午睡/健身）。"
-            "注册后 infer_activities 自动套用。"
+            "规则落库 activity_rules；是否套用由当前 infer_activities 实现决定，以回执 message 为准。"
         ),
         group="沉淀",
         service="insights", method="define_activity",
