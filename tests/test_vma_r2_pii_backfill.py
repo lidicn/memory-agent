@@ -28,22 +28,23 @@ NAME_B = "李四"
 def _seed(db_path: str) -> Store:
     """两个成员（created_at 决定 成员N 序号）+ 4 条记忆：2 条含明文姓名、1 条不含、1 条含手机号。"""
     store = Store(db_path)
+    store.init_schema()
     conn = store.connect()
     conn.executemany(
         "INSERT INTO members (id, name, created_at, updated_at) VALUES (?,?,?,?)",
         [("m1", NAME_A, "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
          ("m2", NAME_B, "2026-02-01T00:00:00", "2026-02-01T00:00:00")])
     rows = [
-        ("a1", "客厅", "张三喜欢在半成品模式下看电影", "live"),
-        ("a2", "卧室", "李四把空调调到 26 度", "staging"),
-        ("a3", "通用", "家里整体偏安静，没有成员相关线索", "live"),
-        ("a4", "联系", "张三的手机号是 13812345678", "staging"),
+        ("a1", "sess-1", "客厅", "张三喜欢在半成品模式下看电影", "live"),
+        ("a2", "sess-2", "卧室", "李四把空调调到 26 度", "staging"),
+        ("a3", "sess-3", "通用", "家里整体偏安静，没有成员相关线索", "live"),
+        ("a4", "sess-4", "联系", "张三的手机号是 13812345678", "staging"),
     ]
     conn.executemany(
         """INSERT INTO agent_memories
            (memory_id, session_id, text, topic_key, state, created_at, updated_at, expires_at)
            VALUES (?,?,?,?,?,'2026-09-01T00:00:00','2026-09-01T00:00:00','9999-12-31')""",
-        [(mid, sess, text, topic, state) for mid, topic, text, state in rows])
+        [(mid, sess, text, topic, state) for mid, sess, topic, text, state in rows])
     conn.commit()
     return store
 

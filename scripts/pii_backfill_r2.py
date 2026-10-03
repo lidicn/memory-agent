@@ -32,8 +32,10 @@ for cand in ("/app/src", os.path.normpath(os.path.join(_HERE, "..", "src"))):
 from memory_agent.store import Store, now_local  # noqa: E402
 
 
-def _sha8(text: str) -> str:
-    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:8]
+def _sha8(payload) -> str:
+    if isinstance(payload, bytes):
+        return hashlib.sha256(payload).hexdigest()[:8]
+    return hashlib.sha256((payload or "").encode("utf-8")).hexdigest()[:8]
 
 
 def roster_names(conn: sqlite3.Connection) -> list:
