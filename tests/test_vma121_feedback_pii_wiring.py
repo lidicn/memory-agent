@@ -29,11 +29,10 @@ from memory_agent.store import Store  # noqa: E402
 # patterns 在模块层 import chromadb（本机无该依赖，容器内有）。这里只为拿到 PatternManager
 # 类本身（用例全程用假 collection，不建真客户端），取完立刻把假模块摘掉，
 # 免得别的用例 `pytest.importorskip("chromadb")` 的语义被污染。
-_REAL_CHROMA = True
-try:
-    import chromadb  # noqa: F401
-except ModuleNotFoundError:
-    _REAL_CHROMA = False
+import importlib.util  # noqa: E402
+
+_REAL_CHROMA = importlib.util.find_spec("chromadb") is not None
+if not _REAL_CHROMA:
     sys.modules["chromadb"] = types.SimpleNamespace(HttpClient=lambda *a, **k: None)
 
 from memory_agent.patterns import PatternManager  # noqa: E402
