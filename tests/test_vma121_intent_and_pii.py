@@ -341,7 +341,11 @@ def test_rule_engine_ignores_staging_candidate_rules():
         _ensure_active_rules_table(st)
         engine = ActiveRuleEngine(st)
         engine.add_rule("陌生人告警", {"kind": "face_unknown", "room": "客厅"},
-                        {"type": "log"}, enabled=True)
+                        {"type": "log"}, enabled=True,
+                        # 本用例锁的是「staging 候选不进引擎」，两次 match_event 打在
+                        # 同一时间窗内；cooldown_seconds 现在有真实判据（默认 300s 会
+                        # 抑制第二次触发），冷却语义由 tests/test_rule_cooldown.py 专测。
+                        cooldown_seconds=0)
         event = {"kind": "face_unknown", "room": "客厅", "person": "陌生人",
                  "confidence": 0.8, "server_ts": datetime.now().isoformat()}
         baseline = [r["rule_id"] for r in engine.match_event(dict(event))]

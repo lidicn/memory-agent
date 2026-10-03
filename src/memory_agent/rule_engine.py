@@ -55,6 +55,8 @@ class ActiveRuleEngine:
         self._kind_index: dict[str, list[str]] = defaultdict(list)
         # 规则缓存
         self._rules_cache: dict[str, dict] = {}
+        # 冷却窗口：rule_id -> 下一次允许触发的墙钟（naive）
+        self._cooldown_until: dict[str, datetime] = {}
         # 索引是否需要重建
         self._index_dirty = True
 
@@ -467,6 +469,7 @@ class ActiveRuleEngine:
         try:
             with self.store.transaction() as conn:
                 conn.execute("DELETE FROM active_rules WHERE rule_id = ?", (rule_id,))
+            self._cooldown_until.pop(rule_id, None)
             self._index_dirty = True  # 标记索引为脏
             return {"ok": True}
         except Exception as exc:
@@ -503,11 +506,19 @@ class ActiveRuleEngine:
         用 ``time.time()``；批量扫描器**必须**传事件自身的时间——否则回放
         一小时的历史时，全部事件都被当成「同一瞬间」发生，``min_count``
         门槛形同不存在（这是 Q1=B「聚合再评估」的核心语义，不是精度优化）。
+
+        冷却期（``cooldown_seconds``）与 count 窗口同一口径：实时路径按「现在」
+        判定并会从 ``rule_trigger_history`` 续上重启前的窗口，批量回放按事件
+        自身的墙钟判定。见 :meth:`_check_cooldown`。
         """
         # 使用倒排索引获取候选规则
         rules = self._get_candidate_rules(event.get("kind", ""))
         triggered = []
         now = time.time() if now_ts is None else float(now_ts)
+        live = now_ts is None
+        # 冷却判定的时钟口径与 count 窗口一致：实时路径按「现在」（告警是此刻发出去的），
+        # 批量回放按事件自身的墙钟（否则一轮历史里的事件全被判成同一瞬间）。
+        cd_now = self._now() if live else self._event_now(event)
         for rule in rules:
             # 只匹配启用的规则
             if not rule.get("enabled", True):
@@ -534,8 +545,11 @@ class ActiveRuleEngine:
                     pass
 
                 # 检查冷却期
-                if self._check_cooldown(rule):
+                if self._check_cooldown(rule, cd_now, live=live):
+                    self._mark_cooldown(rule, cd_now)
                     triggered.append(rule)
+                else:
+                    logger.info("[RuleCooldown] 冷却期内抑制重复触发: %s", rule.get("name"))
         return triggered
 
     def _check_count_trigger(self, rule_id: str, now: float, window_seconds: int, min_count: int) -> bool:
@@ -769,10 +783,84 @@ class ActiveRuleEngine:
             }
         return result, {}
 
-    def _check_cooldown(self, rule: dict) -> bool:
-        """检查冷却期。"""
-        # TODO: 记录最后触发时间，检查是否在冷却期内
-        return True
+    def _check_cooldown(self, rule: dict, now_dt: datetime, *,
+                        live: bool = False) -> bool:
+        """冷却期判定。True = 允许触发，False = 仍在冷却窗口内。
+
+        ``cooldown_seconds`` 此前只写进 ``active_rules`` 列、匹配端从不读它
+        （这里曾是 ``# TODO / return True`` 桩）。结果是规则作者承诺的
+        「5 分钟内不重复」完全不成立：门磁一分钟连开五次，家人就收到五条告警。
+
+        时钟口径：由调用方给的家庭墙钟（实时路径 = 当前墙钟，批量回放 = 事件
+        自身墙钟），不用 ``time.monotonic()``——单调时钟从进程 0 起算，冷却配得
+        比 uptime 大就会永久吞掉首次触发（第一轮审计 P1-1 正是这一类）。墙钟没有
+        uptime 依赖，且与 ``triggered_at`` 同框，重启后能从触发历史直接续上。
+
+        ``live`` 只由实时路径置真（``match_event`` 不传 ``now_ts``）。批量 feed
+        回放的是历史事件，而历史行的 ``triggered_at`` 落的是**当时**的真实墙钟
+        （≥ 事件时刻），拿它判「事件时刻」会把整轮回放误判成冷却中。
+
+        非法/负数 ``cooldown_seconds`` 一律按「不冷却」处理：数值坏了就抑制
+        触发，等于把家里的告警静默丢掉，比多播一次危险。
+        """
+        seconds = self._cooldown_seconds(rule)
+        if seconds <= 0:
+            return True
+        rule_id = rule.get("rule_id", "")
+        until = self._cooldown_until.get(rule_id)
+        if until is None and live:
+            last = self._last_trigger_wall(rule_id)
+            if last is not None:
+                until = last + timedelta(seconds=seconds)
+                self._cooldown_until[rule_id] = until
+        if until is None:
+            return True
+        return now_dt >= until
+
+    def _mark_cooldown(self, rule: dict, now_dt: datetime) -> None:
+        """规则本次决定触发 -> 占用一个冷却窗口。
+
+        在派发**之前**记账（与 ``perception_rules.RuleEngine`` 同口径）：动作执行
+        失败不该让下一条事件立刻重播；试运行同样占用窗口，观察期的触发计数因此
+        与转正后实际会发出的条数一致。
+        """
+        seconds = self._cooldown_seconds(rule)
+        if seconds <= 0:
+            return
+        self._cooldown_until[rule.get("rule_id", "")] = now_dt + timedelta(seconds=seconds)
+
+    @staticmethod
+    def _cooldown_seconds(rule: dict) -> int:
+        try:
+            return max(0, int(float(rule.get("cooldown_seconds") or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def _last_trigger_wall(self, rule_id: str) -> Optional[datetime]:
+        """该规则最后一次触发的墙钟；无历史/读失败返回 ``None``。
+
+        含 ``dry_run`` 行：观察期同样不该重复吵人。
+        """
+        if not rule_id:
+            return None
+        try:
+            # 第六轮审计 CRITICAL-2：共享连接必须在 Store 的锁内使用
+            with self.store._db() as conn:
+                row = conn.execute(
+                    "SELECT MAX(triggered_at) AS last FROM rule_trigger_history"
+                    " WHERE rule_id = ?",
+                    (rule_id,),
+                ).fetchone()
+        except Exception as exc:  # noqa: BLE001 - 读失败退回内存口径，不得打断匹配
+            logger.warning("读取规则 %s 的最后触发时间失败: %s", rule_id, exc)
+            return None
+        raw = str((row["last"] if row else "") or "").strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace(" ", "T")[:19])
+        except ValueError:
+            return None
 
     # ── 执行动作 ──────────────────────────────────────────────────────
 
