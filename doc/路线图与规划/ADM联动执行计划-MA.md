@@ -139,6 +139,21 @@ MA 是**记忆中枢（数据权威）**：全生态的记忆、成员、行为�
 > `generate_self_diary` 等，判据 = `list_tools()` 实际面 − `SPEC_BY_NAME` 里 `expose∋mcp` 的集），
 > `caps` 因此系统性少报：探测方照 caps 建集成会打 404。补齐要逐条定 group/scope/示例文案，
 > 是独立批次，登记而非静默吞。
+>
+> **落地状态（2026-10-03，登记项已清）**：那 35 条已逐条补 `ToolSpec`（全 `service="static"`、
+> `generated=False`，不伪造派发路径），`caps` 从 55 少报变 **90/90 对齐**——broker retained
+> `adm/memory-agent/caps` 实测 `tools_len=90`、`version=1.2.3`。补登记时另测出两件更硬的：
+> ① 自我日记三件套只在 wire 上、没进 `mcp_scopes` 准入表，`list_tools()` 看得见但一发调用必吃
+> `NOT_FOUND`（`scope_of('read_self_diary')=='unknown'`），现 read=只读、write/generate=写工具；
+> ② 超限响应走字符截断会把 JSON 切在半行（`list_device_health` 生产约 650KB > 512KB，调用侧
+> `json.loads` 报 `Expecting ',' delimiter`），现改**结构降级**（裁记录条数 + `_truncated` 交代丢了什么，
+> 非 JSON/无列表才退回字符截断）。顺带修 `assign_member_device` 对不存在成员回 `ok=True` 留孤儿行、
+> `query_unified_events` 目录里的假参数 `order`、`teach_signal` 缺的真参数 `dry_run`。
+> **三面相等不再是靠人记**：`tests/test_mcp_surface_parity.py` 13 条锁用 AST 从源码读 wire 面，
+> 逐条比对目录表与准入表（含手写/generated 交叉、同名重复定义、参数含顺序对齐、双向幽灵名），
+> 判据跟着实现走而不是跟着计数常量走。全链留证见审计 §十八。
+> **仍交 DCD**：`list_device_health` 要不要分页/精简默认投影、超限时裁行还是整条改计数摘要
+> （`inbox/20261003-MA超限响应投影与设备健康分页-决策申请.md`）——三条都改 DB 经 MCP 看得见的返回。
 
 ### 第 5 步：契约测试（与 DB/AF 同步）
 
