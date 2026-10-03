@@ -7,6 +7,7 @@
 """
 
 import os
+import tempfile
 
 import pytest
 
@@ -36,11 +37,28 @@ def ensure_sample():
     （``.gitignore`` 的 ``data/`` 规则会忽略整个 benchmarks/data/）。
     样本缺失时用 ``gen_sample.generate`` 按需重建；其输出是确定性的
     （固定 SEGMENTS + base_date=2016-04-01），故下面的完美基线断言依然成立。
+
+    入库路径**不可写**时（容器里用 ``git archive`` 解出的只读快照属此类）降级到临时目录：
+    原先这里抛 ``PermissionError``，5 条用例崩在 setup 报 error，"全新 clone 也能直接跑"
+    那句自述就不成立。用例运行时读的是模块全局 ``SAMPLE``，所以改名即可生效。
     """
-    if not os.path.exists(SAMPLE):
+    if os.path.exists(SAMPLE):
+        return SAMPLE
+    try:
         os.makedirs(os.path.dirname(SAMPLE), exist_ok=True)
         generate_sample(SAMPLE)
-    return SAMPLE
+        return SAMPLE
+    except OSError:
+        if os.path.exists(SAMPLE):        # 半截文件会让下一次"存在即跳过"用到坏样本
+            try:
+                os.remove(SAMPLE)
+            except OSError:
+                pass
+        fallback = os.path.join(tempfile.mkdtemp(prefix="ma-openshs-"),
+                                os.path.basename(SAMPLE))
+        generate_sample(fallback)
+        globals()["SAMPLE"] = fallback
+        return fallback
 
 
 def test_sensor_map_covers_all_columns():
