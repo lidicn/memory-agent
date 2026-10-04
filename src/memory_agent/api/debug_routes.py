@@ -53,6 +53,20 @@ _CONV: dict[str, list] = {}  # conversation_id -> 完整 messages 上下文
 _MAX_RUNS = 200
 _MAX_CONV = 200  # 稳定性审计缺陷2：_CONV 上限，防止单调增长到 OOM
 _CONV_ORDER: list[str] = []  # FIFO 淘汰顺序
+# A3 P2-6：_CONV 读→await→写回非原子，同 conversation 并发丢失 87.5%。
+# 按 conversation_id 加 asyncio.Lock，保证读-改-写原子性。
+_CONV_LOCKS: dict[str, asyncio.Lock] = {}
+_CONV_LOCKS_GUARD = asyncio.Lock()  # 保护 _CONV_LOCKS 字典本身的创建
+
+
+async def _get_conv_lock(conversation_id: str) -> asyncio.Lock:
+    """按 conversation_id 获取锁（懒创建，线程/协程安全）。"""
+    async with _CONV_LOCKS_GUARD:
+        lock = _CONV_LOCKS.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _CONV_LOCKS[conversation_id] = lock
+        return lock
 
 _TERMINAL = object()  # 内部哨兵：标记流结束（不进 history）
 
@@ -178,7 +192,14 @@ async def _execute_run(rt, run: DebugRun, tools=None, run_tool=None) -> None:
     ``tools`` / ``run_tool`` 为可选覆盖项：ACP server 通过它们注入专属工具表
     （builtin 集 + delegate_to_autoflow），默认行为与内置 LLM 完全一致。
     """
+    # A3 P2-6：同 conversation 的读-await-写回必须加锁，否则并发丢失消息。
+    # 锁持有整个 LLM 循环周期——同一 conversation 本就不应并发修改。
+    conv_lock: asyncio.Lock | None = None
     try:
+        conv_lock = await _get_conv_lock(run.conversation_id) if run.conversation_id else None
+        if conv_lock:
+            await conv_lock.acquire()
+
         # 续轮：加载既有对话上下文并追加本次指令
         if run.conversation_id and run.conversation_id in _CONV:
             messages = list(_CONV[run.conversation_id])
@@ -320,7 +341,6 @@ async def _execute_run(rt, run: DebugRun, tools=None, run_tool=None) -> None:
                 _CONV.pop(oldest, None)
 
         run.finish()
-
     except asyncio.CancelledError:
         run.status = "aborted"
         run.emit("aborted", {"message": "后台任务被取消"})
@@ -330,6 +350,9 @@ async def _execute_run(rt, run: DebugRun, tools=None, run_tool=None) -> None:
         run.error = str(exc)
         run.emit("error", {"message": str(exc)})
         run.finish()
+    finally:
+        if conv_lock and conv_lock.locked():
+            conv_lock.release()
 
 
 # ── HTTP 接口 ────────────────────────────────────────────────────────────────

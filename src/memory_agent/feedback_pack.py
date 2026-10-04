@@ -36,8 +36,9 @@ _BANK_CARD_RE = re.compile(r"(?<!\d)\d{16,19}(?!\d)")
 _IPV4_RE = re.compile(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)")
 # MAC 地址
 _MAC_RE = re.compile(r"(?i)(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
-# JWT token（eyJ...）
-_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+# JWT token（eyJ...）——A5 P3-9：签名段可选，两段式（header.payload）也需脱敏，
+# 因为 payload 段才是敏感信息载体（sub/is_admin/exp 等声明）。
+_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?")
 # API key（sk- 开头）
 _API_KEY_RE = re.compile(r"sk-[A-Za-z0-9]{16,}")
 # Bearer token

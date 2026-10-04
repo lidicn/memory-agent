@@ -240,8 +240,18 @@ def match_device(text: str, insights: Any) -> dict | None:
             return False
         return bool((query_core and query_core in fn) or (fn in text))
 
-    # 1a) 优先匹配可统计用量的 domain，最长 friendly_name 优先
-    matches: list[tuple[int, str, str]] = []
+    # 1a) 优先匹配可统计用量的 domain
+    # A2 P2-9：原实现按 friendly_name 长度降序，导致"电脑"匹配到"电脑插座"（更长）。
+    # 修复：按匹配占比排序（query_core 占 friendly_name 的比例越高越精确），
+    # 精确匹配（fn == query_core）得分最高；占比相同时长的更具体。
+    def _match_score(fn: str) -> tuple:
+        if fn == query_core:
+            return (2.0, len(fn))  # 精确匹配最高
+        if query_core and query_core in fn:
+            return (len(query_core) / len(fn), len(fn))
+        return (0.0, len(fn))
+
+    matches: list[tuple[float, int, str, str]] = []
     for eid, info in name_map.items():
         if not _in_room(info):
             continue
@@ -252,14 +262,15 @@ def match_device(text: str, insights: Any) -> dict | None:
         fn = (info.get("friendly_name") or "").strip()
         if not fn:
             continue
-        matches.append((len(fn), fn, eid))
+        score, fn_len = _match_score(fn)
+        matches.append((score, fn_len, fn, eid))
     if matches:
-        matches.sort(key=lambda x: -x[0])
+        matches.sort(key=lambda x: (-x[0], -x[1]))
         return {
-            "query": matches[0][1],
-            "entity_id": matches[0][2],
+            "query": matches[0][2],
+            "entity_id": matches[0][3],
             "room": "",
-            "_debug_matches": [{"len": m[0], "fn": m[1], "eid": m[2]} for m in matches[:5]],
+            "_debug_matches": [{"score": m[0], "len": m[1], "fn": m[2], "eid": m[3]} for m in matches[:5]],
         }
 
     # 1b) 没有命中开关类设备时，再回退到所有设备
@@ -272,14 +283,15 @@ def match_device(text: str, insights: Any) -> dict | None:
         fn = (info.get("friendly_name") or "").strip()
         if not fn:
             continue
-        matches.append((len(fn), fn, eid))
+        score, fn_len = _match_score(fn)
+        matches.append((score, fn_len, fn, eid))
     if matches:
-        matches.sort(key=lambda x: -x[0])
+        matches.sort(key=lambda x: (-x[0], -x[1]))
         return {
-            "query": matches[0][1],
-            "entity_id": matches[0][2],
+            "query": matches[0][2],
+            "entity_id": matches[0][3],
             "room": "",
-            "_debug_matches": [{"len": m[0], "fn": m[1], "eid": m[2]} for m in matches[:5]],
+            "_debug_matches": [{"score": m[0], "len": m[1], "fn": m[2], "eid": m[3]} for m in matches[:5]],
         }
 
     # 2) entity_id 最后一段命中（常用于 PC/灯/空调等命名）

@@ -21,8 +21,11 @@ def compute_return_time_baseline(
     events: face_known 事件列表，每项含 server_ts、persons。
     返回 {"median_hour": float, "mad": float, "days": int} 或 None（数据不足）。
     """
-    # 提取该人的回家时间（每天第一次出现的小时）
-    daily_hours: dict[str, float] = {}
+    # A2 P1-6：提取该人的回家时间。
+    # 原实现取"每天第一次出现"，ASC 取离家时间、DESC 取睡前时间，都不是到家。
+    # 修复：取当天中午（12:00）之后的首次出现作为到家时间；中午后无出现则取当天最晚兜底。
+    _ARRIVAL_AFTER_HOUR = 12.0
+    daily_all: dict[str, list[float]] = {}
     for ev in events:
         persons = ev.get("persons") or []
         if not any(p.get("name") == person for p in persons):
@@ -32,8 +35,13 @@ def compute_return_time_baseline(
             continue
         day = ts[:10]
         hour = float(ts[11:13]) + float(ts[14:16]) / 60.0 if len(ts) >= 16 else float(ts[11:13])
-        if day not in daily_hours:
-            daily_hours[day] = hour
+        daily_all.setdefault(day, []).append(hour)
+
+    daily_hours: dict[str, float] = {}
+    for day, hrs in daily_all.items():
+        hrs_sorted = sorted(hrs)
+        afternoon = [h for h in hrs_sorted if h >= _ARRIVAL_AFTER_HOUR]
+        daily_hours[day] = afternoon[0] if afternoon else hrs_sorted[-1]
     hours = list(daily_hours.values())
     if len(hours) < min_days:
         return None

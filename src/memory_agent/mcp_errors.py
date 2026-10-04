@@ -103,5 +103,12 @@ def normalize_tool_result(result: Any, tool_name: str = "") -> Any:
         else:
             kwargs["is_error"] = True
         return CallToolResult(**kwargs)
-    except Exception:
-        return result
+    except Exception as e:
+        # A2 P1-1：mcp 包缺失或构造失败时，不能静默返回无 is_error 标记的原对象
+        # 否则调用方无法识别这是错误结果。构造带 is_error 的降级对象 + 日志。
+        import sys
+        print(f"[mcp_errors] normalize_tool_result 构造 CallToolResult 失败（mcp 不可用？），"
+              f"tool={tool_name!r} err={e!r}，降级为 SimpleNamespace(is_error=True)", file=sys.stderr)
+        from types import SimpleNamespace
+        text_content = SimpleNamespace(type="text", text=json.dumps(payload, ensure_ascii=False))
+        return SimpleNamespace(is_error=True, content=[text_content])

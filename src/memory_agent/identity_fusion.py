@@ -297,11 +297,17 @@ def fuse(slot_room: str,
 
     # ── 计算每个候选者的得分 ────────────────────────────────────────
     scores: list[CandidateScore] = []
-    # 只计算出现的信号源的权重之和
+    # A2 P1-5：total_weight 只应包含有匹配候选者的信号源权重。
+    # 原实现把 candidate_id=None（未匹配/陌生人）信号的源也计入分母，
+    # 导致"多一路没认出来的信号"反而稀释已认出候选者的置信度（0.9→0.6）。
+    # 未匹配信号只应影响 stranger_score，不应拉低已匹配者得分。
     active_weights = set()
     for s in sigs:
-        active_weights.add(s.source)
+        if s.candidate_id is not None:
+            active_weights.add(s.source)
     total_weight = sum(W.get(src, 0.1) for src in active_weights)
+    if total_weight <= 0:
+        total_weight = 1.0  # 防除零（无匹配信号时走 stranger 分支）
     for member_id, pairs in candidates.items():
         score_raw = sum(w * c for w, c in pairs) / total_weight
         # 先验修正

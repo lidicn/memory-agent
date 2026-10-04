@@ -23,7 +23,8 @@ _revoked_jtis: Dict[str, float] = {}   # jti -> 过期时间戳（到期即清�
 _revoked_lock = threading.Lock()
 
 # 登录爆破防护（审计 A4）：按 IP 与用户名双维度计数 + 锁定。
-_LOGIN_MAX_FAILS = 5           # 窗口内连续失败阈值
+_LOGIN_MAX_FAILS = 5           # 窗口内连续失败阈值（IP 键）
+_LOGIN_USER_MAX_FAILS = 20     # A4 P3-8：用户名键阈值更高，防止跨 IP 各错 1 次即锁定账号（账号级 DoS）
 _LOGIN_WINDOW_SECONDS = 300    # 失败计数窗口（5 分钟）
 _LOGIN_LOCK_SECONDS = 1800     # 触发阈值后锁定（30 分钟）
 _login_fails: Dict[str, list] = {}    # key -> [失败时间戳]
@@ -242,13 +243,18 @@ class AuthManager:
             return True, 0
 
     def note_login_failure(self, ip: str, username: str) -> None:
-        """记录一次失败；达到阈值则锁定对应 IP 与用户名。"""
+        """记录一次失败；达到阈值则锁定对应 IP 与用户名。
+
+        A4 P3-8：IP 键阈值 5 次（防爆破），用户名键阈值 20 次（防账号级 DoS）。
+        跨 IP 各错 1 次不再能轻易锁定全局账号。
+        """
         now = time.time()
         with _login_guard:
             for k in self._login_keys(ip, username):
+                threshold = _LOGIN_USER_MAX_FAILS if k.startswith("user:") else _LOGIN_MAX_FAILS
                 fails = [t for t in _login_fails.get(k, []) if now - t < _LOGIN_WINDOW_SECONDS]
                 fails.append(now)
-                if len(fails) >= _LOGIN_MAX_FAILS:
+                if len(fails) >= threshold:
                     _login_locked[k] = now + _LOGIN_LOCK_SECONDS
                     _login_fails[k] = []
                 else:

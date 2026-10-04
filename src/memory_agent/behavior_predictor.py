@@ -34,8 +34,12 @@ def predict_arrival_time(
     返回 {"predicted_hour": float, "range": [float, float], "confidence": float}
     或 None（数据不足）。
     """
-    # 提取每天的到家时间（每天第一次出现该人的时间）
-    daily_arrivals: dict[str, float] = {}
+    # A2 P1-4：提取每天的到家时间。
+    # 原实现取"每天第一次出现"，ASC 下取到离家时间（早8点）、DESC 下取到睡前时间（晚11点），都不是到家。
+    # 修复：取当天中午（12:00）之后的首次出现作为到家时间——清晨出现是离家前，不应计入。
+    # 若当天中午后无出现（如全天在家未出门），取当天最晚出现作为兜底。
+    _ARRIVAL_AFTER_HOUR = 12.0
+    daily_all: dict[str, list[float]] = {}
     for ev in events:
         persons_raw = ev.get("persons_json") or "[]"
         try:
@@ -57,8 +61,14 @@ def predict_arrival_time(
             continue
         day = ts[:10]
         hour = dt.hour + dt.minute / 60.0
-        if day not in daily_arrivals:
-            daily_arrivals[day] = hour
+        daily_all.setdefault(day, []).append(hour)
+
+    daily_arrivals: dict[str, float] = {}
+    for day, hrs in daily_all.items():
+        hrs_sorted = sorted(hrs)
+        # 中午后首次出现 = 到家；中午后无出现则取当天最晚（全天在家兜底）
+        afternoon = [h for h in hrs_sorted if h >= _ARRIVAL_AFTER_HOUR]
+        daily_arrivals[day] = afternoon[0] if afternoon else hrs_sorted[-1]
 
     hours = list(daily_arrivals.values())
     if len(hours) < min_days:
@@ -92,8 +102,9 @@ def predict_post_arrival_activities(
     从历史 face_known 事件开始，往后看 window_min 内的 action/scene。
     返回出现频率最高的活动列表。
     """
-    # 先找出每天的到家事件时间点
-    arrival_times: list[tuple[str, datetime]] = []
+    # A2 P1-4：找出每天的到家事件时间点（中午后首次出现，同 predict_arrival_time 口径）
+    _ARRIVAL_AFTER_HOUR = 12.0
+    daily_candidates: dict[str, list[datetime]] = {}
     for ev in events:
         persons_raw = ev.get("persons_json") or "[]"
         try:
@@ -111,9 +122,14 @@ def predict_post_arrival_activities(
         except ValueError:
             continue
         day = ts[:10]
-        # 只记录每天第一次出现
-        if not arrival_times or arrival_times[-1][0] != day:
-            arrival_times.append((day, dt))
+        daily_candidates.setdefault(day, []).append(dt)
+
+    arrival_times: list[tuple[str, datetime]] = []
+    for day, dts in daily_candidates.items():
+        dts_sorted = sorted(dts)
+        afternoon = [d for d in dts_sorted if (d.hour + d.minute / 60.0) >= _ARRIVAL_AFTER_HOUR]
+        arrival_dt = afternoon[0] if afternoon else dts_sorted[-1]
+        arrival_times.append((day, arrival_dt))
 
     if len(arrival_times) < 3:
         return []
