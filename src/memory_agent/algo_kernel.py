@@ -254,7 +254,10 @@ class HmmActivityModel:
         这是把 HMM 结果和既有规则**可比**化的关键一步。
         """
         votes: dict[int, Counter] = {}
-        for h, lab in zip(hidden, ref_labels):
+        # P2-1 实测：hidden 4 个状态配 2 条参照标签时，原写法只投出 2 个状态的票，
+        # 其余状态永远落到 "unknown" 且没有任何留痕——票数是"少数服从多数"，
+        # 但样本被静默削掉了。长度不等即调用方口径错，判红。
+        for h, lab in zip(hidden, ref_labels, strict=True):
             votes.setdefault(int(h), Counter())[str(lab)] += 1
         self.state_labels_ = {
             h: (c.most_common(1)[0][0] if c else "unknown")
@@ -299,7 +302,9 @@ def compare_labelings(pred: Sequence[str], ref: Sequence[str]) -> dict:
     同时给出 **majority baseline**（全猜参照里最多的类）——只有显著超过基线，
     统计路线才算有价值。
     """
-    pairs = [(str(p), str(r)) for p, r in zip(pred, ref)]
+    # P2-1 实测：pred 10 条 / ref 3 条时原写法只比前 3 条，返回 n=3、agreement=1.0
+    # ——一份「样本被削掉 70% 却写着 100% 一致」的读数。长度不等就是对照口径不成立，判红。
+    pairs = [(str(p), str(r)) for p, r in zip(pred, ref, strict=True)]
     n = len(pairs)
     if n == 0:
         return {"n": 0, "agreement": 0.0, "per_class": {}, "confusion": {}}
@@ -360,8 +365,16 @@ def spike_compare_activity(
         return {"ok": False, "error": "HMM 未训练（库缺失或样本不足）",
                 "deps": deps_available()}
     hidden_train = model.predict(train_s)
+    hidden_test = model.predict(test_s)
+    # `predict()` 解码失败时返回 []（内部已打日志）。以前空序列照样喂进 zip，
+    # 于是 map_states 投不出票、compare_labelings 报 n=0/agreement=0.0，
+    # 一份「什么都没算出来」的读数长得像正常结果。P2-1 之后 zip 会判红，
+    # 所以这里先明确失败，不把异常当结论返回。
+    if not hidden_train or not hidden_test:
+        return {"ok": False, "error": "HMM 解码失败（隐状态为空）",
+                "deps": deps_available()}
     model.map_states(hidden_train, map_l)
-    pred = model.predict_labels(model.predict(test_s))
+    pred = model.predict_labels(hidden_test)
     cmp = compare_labelings(pred, test_l)
     return {
         "ok": True,
@@ -656,7 +669,10 @@ def _enrich_with_pm4py(res: dict, cases: Sequence[dict]) -> dict:
     diag = tokenreplay.algorithm.apply(log, net, im, fm)
 
     by_case = {a["case"]: a for a in res.get("anomalies") or []}
-    for c, d in zip(cases, diag):
+    # `diag` 是 token replay 按 log 里 trace 的顺序逐条返回的，与 `cases` 位置对齐
+    # （返回体里没有 case 名可以回查）。P2-1 实测：长度一旦不等，原写法会把 fitness
+    # 记到**另一条 case** 头上——这比丢数据更糟。至少把长度漂移变成判红。
+    for c, d in zip(cases, diag, strict=True):
         if bool(d.get("trace_is_fit", True)):
             continue
         entry = by_case.get(c["case"])

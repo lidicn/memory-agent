@@ -679,7 +679,7 @@ class Store:
         with self._db() as conn:
             cur = conn.execute(sql, params)
             cols = [d[0] for d in cur.description] if cur.description else []
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+            return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
     def check_and_recover(self, mode: str | None = None) -> dict:
         """启动时自检数据库完整性；损坏则从最近备份自动恢复。
@@ -2229,7 +2229,7 @@ class Store:
         if row is None:
             return None
         cols = ("cache_key", "intent", "payload", "hits", "last_used", "created_at")
-        return dict(zip(cols, row))
+        return dict(zip(cols, row, strict=True))
 
     def list_answer_cache(self, limit: int = 100) -> list[dict]:
         conn = self.connect()
@@ -2240,7 +2240,7 @@ class Store:
                 (int(limit),),
             ).fetchall()
         cols = ("cache_key", "intent", "payload", "hits", "last_used", "created_at")
-        return [dict(zip(cols, r)) for r in rows]
+        return [dict(zip(cols, r, strict=True)) for r in rows]
 
     def clear_answer_cache(self, cache_key: str | None = None) -> int:
         """清空缓存。传 cache_key 只删单条，否则全清。返回删除行数。"""
@@ -2694,7 +2694,7 @@ class Store:
             if not row:
                 return None
             cols = [d[0] for d in conn.execute("SELECT * FROM candidate_rules LIMIT 0").description]
-        return dict(zip(cols, row))
+        return dict(zip(cols, row, strict=True))
 
     def add_bug_report(self, tool_name: str, description: str,
                        expected: str = "", actual: str = "",
@@ -2726,7 +2726,7 @@ class Store:
         with self._db() as conn:
             rows = conn.execute(sql, params).fetchall()
             cols = [d[0] for d in conn.execute("SELECT * FROM bug_reports LIMIT 0").description]
-        return [dict(zip(cols, row)) for row in rows]
+        return [dict(zip(cols, row, strict=True)) for row in rows]
 
     def list_candidate_rules(self, status: str | None = None, limit: int = 200) -> list[dict]:
         """列出候选序列规则（默认全部 status），解析 steps/evidence。"""
@@ -4891,7 +4891,8 @@ class Store:
             ).fetchall()
         return [dict(zip(
             ["memory_id", "text", "topic_key", "state", "trust", "feedback_up",
-             "feedback_down", "feedback_question", "feedback_comment", "updated_at"], r
+             "feedback_down", "feedback_question", "feedback_comment", "updated_at"], r,
+            strict=True
         )) for r in rows]
 
     def member_insight_feedback(self, member_id: str, member_name: str = "",

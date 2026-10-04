@@ -84,15 +84,23 @@ class SemanticDeduplicator:
 
     @staticmethod
     def _cosine_similarity(vec1, vec2) -> float:
-        """计算两个向量的余弦相似度（numpy 优先，不可用时回退纯 Python）。"""
+        """计算两个向量的余弦相似度（numpy 优先，不可用时回退纯 Python）。
+
+        A2/A7 P2-1 实测：维度不等时 numpy 路径抛 ValueError，纯 Python 的 `zip` 却
+        **截到短的那条**并给出一个合法数字（3 维 vs 2 维实测 0.5976）——同一输入两条
+        路径两种答案，只在没装 numpy 的环境里出错。故先显式比长度，让两条路径同判。
+        """
+        n1, n2 = len(vec1), len(vec2)
+        if n1 != n2:
+            raise ValueError(f"向量维度不一致: {n1} vs {n2}（不同模型的向量不可比）")
         try:
             import numpy as np
             dot = float(np.dot(vec1, vec2))
             norm1 = float(np.linalg.norm(vec1))
             norm2 = float(np.linalg.norm(vec2))
         except ImportError:
-            # 纯 Python 回退
-            dot = sum(float(a) * float(b) for a, b in zip(vec1, vec2))
+            # 纯 Python 回退（长度已在上面校验过，这里的 zip 不会再悄悄截短）
+            dot = sum(float(a) * float(b) for a, b in zip(vec1, vec2, strict=True))
             norm1 = (sum(float(a) * float(a) for a in vec1)) ** 0.5
             norm2 = (sum(float(b) * float(b) for b in vec2)) ** 0.5
         if norm1 == 0 or norm2 == 0:

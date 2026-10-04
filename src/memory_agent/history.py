@@ -555,8 +555,12 @@ class HistoryManager:
             )
             docs = (res.get("documents") or [[]])[0]
             metas = (res.get("metadatas") or [[]])[0]
+            # A2/A7 P2-1 实测：chroma 返回 ragged（3 条 documents / 2 条 metadatas）时，
+            # 原写法静默只回 2 行 = 少一条命中但零信息量。这里让它判红，由下面的
+            # except 打出「语义检索失败」留痕并回 []（宁缺毋错，不交半份结果当完整）。
             return [
-                {"document": d, "metadata": m or {}} for d, m in zip(docs, metas)
+                {"document": d, "metadata": m or {}}
+                for d, m in zip(docs, metas, strict=True)
             ]
         except Exception as exc:
             print(f"[History] 语义检索失败: {exc}")

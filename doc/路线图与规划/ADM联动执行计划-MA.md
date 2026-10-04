@@ -1002,6 +1002,33 @@ pyflakes `GATE_RC=0`、全量 `SUITE_RC=0` **`1322 passed, 10 skipped in 203.10s
 `.gates-baseline.txt` 一字未改。
 提交：`49c2989`（#50）+ 本批 #51 一条，均已推 GitHub。
 
+### 6.14 审计 A2/A7「13 项仍为静态结论」首批核销（#52，2026-10-05）——P2-1 zip 配对
+
+同一族的第三格口径（细节见审计台账 §三十五）：
+
+1. **审计自己写的"待验证"表就是施工单**。A2 §五 对 P2-1 的原话是"静态可确认，需构造长度不等的真实输入"
+   ——这一句同时给了方法（造 ragged 输入）和验收（要有改前/改后对读数），不必等人派活。
+2. **"给 X 全加上一遍"这类整批建议必须先分诊，否则修复本身交付 6 个必然崩溃点**。
+   全仓 19 个 `zip` 站点里 5 处是滑窗 `zip(x, x[1:])`（长度天生差 1）、1 处是字符串前缀比对
+   （"比到短的尽头即止"就是语义）⇒ 13 处判红、5 处保持滑窗、1 处加 `# zip-pair-ok:` 说明。
+   分诊结果由 `scripts/scan_zip_pairing.py` 强制（`unclassified` 必须为 0，
+   `CONFLICT:window+strict` / `CONFLICT:marked+strict` 双红灯），不靠散文约定。
+3. **"只在缺依赖的机器上错"的分支，加多少用例都抓不到**。`_cosine_similarity` 同输入两条路径两个答案：
+   numpy 在场报 `shapes (3,) and (2,) not aligned`，缺席**静默给 0.5976**。
+   用 `sys.modules["numpy"]=None` 强制走退路才现形 ⇒ 本批把两路统一到口径命名的错误，
+   并把"断言要断到消息"再次验证：M3 第一版只写 `pytest.raises(ValueError)`，
+   删掉自写守卫仍被 numpy 自己的异常和退路 `strict=True` 顶上，`BITTEN=False`；
+   收紧成 `match=r"维度不一致"` 才咬。
+
+权威门（快照 `/tmp/c29snap20261005a`，**360 文件**，基线 HEAD `8a78485`）：
+pyflakes `GATE_RC=0`（`当前 0 / 基线 0 / 新增 0 / 已修 0`，`.gates-baseline.txt` 一字未改）、
+全量 `SUITE_RC=0` **`1339 passed, 10 skipped in 207.54s`**、新锁 `TARGETED_RC=0` `17 passed`、
+被改模块既有锁 `TOUCHED_RC=0` `66 passed, 6 skipped`、容器量具 `SCAN_RC=0`
+（`total_zip=19 marked=1 strict=13 window=5` + `SELFTEST_OK`）、容器探针 `PROBE_RC=0`
+（脚本 sha 前 16 位 `9f681245eb0ac2a9`，与本机同值）；
+本机同批 `1327 passed, 22 skipped` ⇒ 两侧总数都是 **1349**（= 上批 1332 + 本批 17 条新锁）。
+生产仍未重启（镜像重烤未获授权），生效窗口随下一次合并停机窗、与裁3/裁5 同批。
+
 ---
 
 —— 关键决策部 · DCD

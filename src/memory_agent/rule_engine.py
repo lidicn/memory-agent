@@ -214,7 +214,9 @@ class ActiveRuleEngine:
         # 生成所有组合
         for combo in itertools.product(*[grid[k] for k in keys]):
             event = base.copy()
-            event.update(dict(zip(keys, combo)))
+            # product 的维度就是 keys 的顺序，两者长度由构造相等；strict 是给
+            # 将来 grid 与 keys 不同步时兜底的（P2-1 同类：错位会造出假事件）。
+            event.update(dict(zip(keys, combo, strict=True)))
             # 根据 label_rule 标注真值
             # 简单实现：如果 person 是 stranger，就是 positive
             if "stranger" in str(event.get("person", "")):

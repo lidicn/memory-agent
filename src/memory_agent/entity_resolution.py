@@ -61,7 +61,7 @@ def similarity(a: str, b: str) -> float:
 def _common_prefix_len(a: str, b: str) -> int:
     """最长公共前缀长度（按字符计）。"""
     n = 0
-    for ca, cb in zip(a, b):
+    for ca, cb in zip(a, b):  # zip-pair-ok: 两串比对，长度不等是设计（比到短的尽头即止）
         if ca == cb:
             n += 1
         else:
@@ -270,7 +270,10 @@ class ProbabilisticMatcher:
             for f in informative:
                 cnt_m: dict[int, float] = {}
                 cnt_u: dict[int, float] = {}
-                for v, p in zip(vecs, probs):
+                # probs 由同一批 vecs 逐条算出，长度天然相等；strict 是给将来
+                # 有人在中间加过滤/截断时兜底的（P2-1：EM 的样本与概率一旦错位，
+                # m/u 会被静默地按错对象累计）。
+                for v, p in zip(vecs, probs, strict=True):
                     lv = v.get(f, MISSING)
                     if lv == MISSING:
                         continue
