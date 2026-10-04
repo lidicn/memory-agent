@@ -284,6 +284,16 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 > 另两件同窗的执行物已在仓里，不需再准备：`vendor/homesdk-0.3.1-py3-none-any.whl` + `Dockerfile:24`
 > （运行面 `import homesdk` 现读仍是 `ModuleNotFoundError`，RC=1 ⇒ 缺的只有重烤），
 > 以及 R2 回填 `scripts/pii_backfill_r2.py`（窗口门是硬门，不带 `--window-ok` → `RC=2` 且不产生备份）。
+>
+> **窗外观测（2026-10-04 05:59–06:06Z，不是窗口，只是代码上线）**：`bash scripts/deploy_nas.sh --full`
+> 把 `d598dfd`（向量面）连同此前欠发的 `2a418a4`（`_sanitize_pii` 零残留）一起送进生产挂载目录并重启——
+> `DEPLOY_RC=0`，重启前契约门禁 `42 passed in 67.03s`，重启后 `HEALTH 200 {"ok":true,…}`，
+> `/app/src` 与 HEAD 的 158 个 src 文件**逐个 blob 哈希全等**（`ONLY_IN_HEAD=0`）。
+> 生效凭据（不是落码凭据）：探针 `scripts/probe_conflict_scan_error_source.py` part ③ 对 `/app` 复跑
+> `解析到的嵌入函数: _OpenAICompatEmbeddingFunction / query_texts OK ids=3`，与快照读数逐字一致；
+> `scripts/prod_sanitize_zero_residue_check.py` 对 `/app/src` 现读 `PROD_SANITIZE_ZERO_RESIDUE=PASS`（`SAN_RC=0`）。
+> ⚠️ 同一份探针在 prod 现读仍打 `Failed to send telemetry event ClientStartEvent: capture() takes 1 positional argument but 3 were given`
+> ⇒ 上表第 2 件的**状态字仍未消**，它等的还是**重烤**，代码侧无欠账。逐条留证见 `审计核实与修复_20261001.md` §二十四「生产生效复跑」。
 
 ---
 
