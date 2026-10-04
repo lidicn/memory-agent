@@ -151,6 +151,14 @@ class StoreRepository:
     def _scan_limit(self) -> int:
         return int(getattr(self.config, "max_scan", 0) or self.DEFAULT_MAX_SCAN)
 
+    @property
+    def scan_limit(self) -> int:
+        """对外暴露的扫描上限（DCD 20261004 MA-裁5 Q4=A）。
+
+        调用方需要它才能把「`total` 是扫描上限还是全量」说清楚；上限本身仍是
+        `load_events` 的 `LIMIT`，裁定明确**不提高**。"""
+        return self._scan_limit()
+
     def _top_n(self, limit: Any, default: int = 50) -> int:
         ceiling = int(getattr(self.config, "max_limit", 0) or 5000)
         try:

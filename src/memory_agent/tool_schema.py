@@ -417,7 +417,9 @@ TOOL_SPECS: list = [
             _p("insight_id", "string", "洞察 ID，如 insight:2026-...-behavior-insights", required=True),
         ],
         example="解释一下这条洞察 / 这条报告是怎么算的",
-        pitfall="insight_id 来自 get_behavior_insights 等返回的 id 字段；不存在会返回错误。",
+        pitfall="insight_id 只有两类来源：infer_activities 每个活动的 id（detected_activity 行），"
+                "以及 add_semantic_memory 返回的记忆 id；其余 id 查不到，返回 ok=false。"
+                "不存在会返回错误。",
     ),
     ToolSpec(
         name="ask_memory",

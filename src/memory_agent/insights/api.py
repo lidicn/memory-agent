@@ -44,12 +44,27 @@ LEGACY_CONTRACT_MEMBERS = (
     "_tags_of",
 )
 
-#: 门面「签名按调用点保留、计算交回 legacy」的对外工具（审计 §十六）。
+#: 门面「签名按调用点保留、计算交回 legacy」的对外工具（审计 §十六，DCD 20261004 MA-裁5 Q1=A）。
 #: 与上表的差别：上表是门面根本没有的成员（纯转发）；这里是门面**有**新实现，
 #: 但 Phase 4 只换了引擎没重接调用点——MCP handler / HTTP 路由仍按 legacy 的参数形状
 #: 传，且 category/query/domain/state/order/summarize/stale_days 等入参在新实现里
 #: 无处可去。生产实测这 5 条工具线要么外抛、要么把过滤位静默丢掉。
 #: `tests/test_vma_insights_callsite_binding.py` 逐个锁签名与调用点绑定。
+#:
+#: 后两项是裁定落地时按同一条判据补的（不是新裁量，是同一件事的两条漏网工具）：
+#: - `query_behavior_events`：ToolSpec 声明 `member`/`days`，门面签名两个都不收，而
+#:   `dispatch` 会把默认值非 None 的可选参一律补上 ⇒ **每次调用必抛 TypeError**，
+#:   被 `_degrade` 收成空页；更要紧的是它查的是 `events`（HA 状态变化）而不是
+#:   `behavior_events`（VLM 识别记录），工具说明写的「谁在哪个房间」在新引擎里无从实现。
+#: - `get_last_event`：门面体调 `self.core.load_events`，而 `BehaviorService` 根本没有
+#:   这个方法（实测 `hasattr(core, 'load_events') == False`）⇒ 永久降级成
+#:   `{"event": None}`；legacy 有完整实现，MCP handler 的五个位置参本来就按 legacy 顺序传。
+#:
+#: 同一判据（门面体指向 `BehaviorService` 上不存在的成员）扫出的后四条：
+#: `climate_sessions` / `explain_insight` 是对外 MCP 工具，`water_purifier_usage` 是
+#: `templates.py:445` 净水器日报的消费点，三条在 legacy 都有完整实现；
+#: `data_quality_issues` 无 legacy 同名可转（签名要传 store），改读新引擎自己的
+#: `data_quality(tr)["issues"]`。静态扫描器见 `scripts/scan_insights_engine_attrs.py`。
 LEGACY_OUTWARD_METHODS = (
     "entity_catalog",
     "search_events",
@@ -57,11 +72,34 @@ LEGACY_OUTWARD_METHODS = (
     "behavior_insights",
     "device_health",
     "define_activity",
+    "query_behavior_events",
+    "get_last_event",
+    "climate_sessions",
+    "explain_insight",
+    "water_purifier_usage",
 )
 
 
 def _empty() -> Dict[str, Any]:
     return {"items": [], "total": 0, "offset": 0, "limit": 0, "has_more": False}
+
+
+def annotate_scan(payload: Dict[str, Any], scanned: int, scan_limit: int) -> Dict[str, Any]:
+    """把「扫描上限有没有命中」写进返回体（DCD 20261004 MA-裁5 **Q4=A**）。
+
+    `total` 来自 `repo.load_events`，而它的 `LIMIT` 就是 `scan_limit`：命中上限时
+    `total` 是**扫描到的行数**而不是匹配总数——生产实测 30 天窗口 legacy 报 87,404 条，
+    门面报 30,000 条，用户读到的是「30 天只有 3 万条」。裁定选择**如实上报**而不是提高上限。
+
+    边界要说清楚：命中判据是 `scanned >= scan_limit`，**恰好等于上限**的那一类无法与
+    「真的只有这么多个体」区分开，所以这里给的是 `total_exact: false`（不保证是全量），
+    而不是谎称「一定被截了」。`scan_limit` 为 0 表示注入的仓储没有上限。
+    """
+    truncated = bool(scan_limit) and int(scanned) >= int(scan_limit)
+    payload["truncated"] = truncated
+    payload["scan_limit"] = int(scan_limit or 0)
+    payload["total_exact"] = not truncated
+    return payload
 
 
 def _degrade(factory: Callable[[], Any]) -> Callable[[Callable], Callable]:
@@ -289,13 +327,37 @@ class InsightService:
                 out["time_range"] = out["window"]
         return out
 
-    @_degrade(lambda: Page.build([]).to_dict("events"))
-    def query_behavior_events(self, start: str = "", end: str = "", room: str = "",
-                              category: str = "", query: str = "", limit: int = 100,
-                              offset: int = 0) -> Dict[str, Any]:
-        """查询行为事件（默认排除功率/温湿度等纯遥测）。"""
-        return self._search(start, end, "", room, category, query,
-                            limit, offset, behavior_only=True)
+    @_degrade(lambda: {"ok": False, "count": 0, "events": [],
+                       "offset": 0, "limit": 0, "has_more": False})
+    def query_behavior_events(self, room: str = "", member: str = "", days: int = 7,
+                              start: str = "", end: str = "", limit: int = 50) -> Dict[str, Any]:
+        """查 VLM 多模态识别记录（谁在哪个房间、什么时间）——计算跑在 legacy 上（裁5 Q1=A）。
+
+        两件新引擎给不了的事：数据源是 `behavior_events` 表（`load_events` 读的是
+        `events`，HA 状态变化表），而 `member` 过滤要解 `persons_json`。生产实测
+        `events` 表 989,240 行里 `person` 非空 **0 行**，`behavior_events` 4,023 行里
+        3,595 行带人员——按门面原先的实现，这个工具永远答不出「有谁在书房」。
+        形参与 legacy 逐字一致（ToolSpec 的 `member`/`days` 原先一个都不收，而
+        `dispatch` 会把默认值非 None 的可选参全部补上 ⇒ 每次调用必抛 TypeError 后被
+        `_degrade` 收成空页）。
+
+        键集按裁5 Q2=A 并存：legacy 键（`ok/window/room/member_filter/count/events`）是
+        长期承诺键，这里补门面代分页键 `offset`/`limit`/`has_more`/`time_range`。
+        **不补 `total`**：legacy 侧一次只取一页（`limit` 上限 200），库里没有
+        `behavior_events` 的全量计数口径，把 `count` 改名成 `total` 会把「本页条数」
+        谎报成「匹配总数」。取全与否由 `has_more` 如实回答。
+        """
+        page_limit = max(1, min(int(limit or 50), 200))
+        out = self.legacy.query_behavior_events(room=room, member=member, days=days,
+                                                start=start, end=end, limit=page_limit)
+        if isinstance(out, dict):
+            count = int(out.get("count") or 0)
+            out.setdefault("offset", 0)
+            out.setdefault("limit", page_limit)
+            out.setdefault("has_more", count >= page_limit)
+            if "time_range" not in out and out.get("window"):
+                out["time_range"] = out["window"]
+        return out
 
     def _search(self, start: Any, end: Any, entity_id: str, room: str, category: str,
                 query: str, limit: int, offset: int, behavior_only: bool) -> Dict[str, Any]:
@@ -304,30 +366,36 @@ class InsightService:
         events = self.repo.load_events(tr, entity_ids=ids, rooms=[room] if room else None,
                                        behavior_only=behavior_only)
         events.sort(key=lambda e: e.ts)
-        return Page.build(events, offset=offset,
-                          limit=self.config.clamp_limit(limit),
-                          time_range=tr.to_dict()).to_dict("events")
+        out = Page.build(events, offset=offset,
+                         limit=self.config.clamp_limit(limit),
+                         time_range=tr.to_dict()).to_dict("events")
+        # `total` 直接来自上面那次扫描，命中 `max_scan` 时它是扫描行数而非匹配总数（Q4=A）。
+        return annotate_scan(out, len(events), getattr(self.repo, "scan_limit", 0))
 
-    @_degrade(lambda: {"event": None, "total": 0, "offset": 0, "limit": 1,
-                       "has_more": False})
+    @_degrade(lambda: {"ok": False, "event": None, "total": 0,
+                       "offset": 0, "limit": 1, "has_more": False})
     def get_last_event(self, entity_id: Optional[str] = None, domain: Optional[str] = None,
                        room: Optional[str] = None, transition: str = "off",
                        days: int = 30) -> Dict[str, Any]:
-        """获取最后一个事件（可按 on/off 切换过滤）。"""
-        tr = self._tr(days=days or 30)
-        ids = [entity_id] if entity_id else self.resolver.resolve_ids(
-            room=room or "", domain=domain or "")
-        if entity_id is None and domain and not ids:
-            ids = None
-        events = self.core.load_events(tr, entity_ids=ids, behavior_only=False)
-        from .parser.entity import normalize_state
-        if transition and transition != "any":
-            wanted = "on" if transition in ("on", "open", "开") else "off"
-            events = [e for e in events if normalize_state(e.state) == wanted]
-        events.sort(key=lambda e: e.ts)
-        last = events[-1] if events else None
-        return {"event": last.to_dict() if last else None, "total": 1 if last else 0,
-                "offset": 0, "limit": 1, "has_more": False}
+        """某实体/某类设备最近一次状态变化——计算跑在 legacy 上（裁5 Q1=A）。
+
+        门面原先的实现调 `self.core.load_events`，而 `BehaviorService` 没有这个方法
+        （实测 `hasattr(core, "load_events") == False`），于是这个工具从上线第一天起
+        每次调用都被 `_degrade` 收成 `{"event": None}`。legacy 有完整实现，MCP handler
+        的五个位置参本来就是按 legacy 顺序传的。形参与 legacy 逐字一致；键集按 Q2=A
+        并存：legacy 的 `ok/entity_id/friendly_name/ts/old_state/new_state/transition`
+        为承诺键，门面代分页键 `event/total/offset/limit/has_more` 在此补上。
+        """
+        out = self.legacy.get_last_event(entity_id=entity_id, domain=domain, room=room,
+                                         transition=transition, days=days)
+        if isinstance(out, dict):
+            found = bool(out.get("ok"))
+            out.setdefault("event", dict(out) if found else None)
+            out.setdefault("total", 1 if found else 0)
+            out.setdefault("offset", 0)
+            out.setdefault("limit", 1)
+            out.setdefault("has_more", False)
+        return out
 
     # ------------------------------------------------------------------
     # 5.3 设备使用统计
@@ -356,17 +424,40 @@ class InsightService:
             out.setdefault("total", out.get("device_count") or 0)
         return out
 
-    @_degrade(lambda: Page.build([]).to_dict("sessions"))
+    @_degrade(lambda: {"sessions": [], "total": 0, "offset": 0,
+                       "limit": 0, "has_more": False})
     def climate_sessions(self, query: str = "", room: str = "", days: int = 7,
                          start: str = "", end: str = "") -> Dict[str, Any]:
-        """空调会话统计。"""
-        tr = self._tr(start, end, days=days or 7)
-        return self.core.climate_sessions(query=query, room=room, tr=tr, days=days)
+        """空调/暖气会话（设定温度 + 室温 + 运行时长）——计算跑在 legacy 上（裁5 Q1=A）。
 
-    @_degrade(lambda: Page.build([]).to_dict("items"))
+        门面原先调 `self.core.climate_sessions`，`BehaviorService` 没有这个方法
+        （静态扫描实测）⇒ 每次都 AttributeError 被 `_degrade` 收成空 `sessions`。
+        形参与 legacy 逐字一致（MCP handler 的五个位置参本来就按这个顺序传）；
+        legacy 键（`ok/window/total_sessions/events_scanned/…/sessions`）为承诺键，
+        这里补门面代分页键。
+        """
+        out = self.legacy.climate_sessions(query=query, room=room, days=days,
+                                           start=start, end=end)
+        if isinstance(out, dict):
+            sessions = out.get("sessions") or []
+            out.setdefault("total", out.get("total_sessions", len(sessions)))
+            out.setdefault("offset", 0)
+            out.setdefault("limit", len(sessions))
+            out.setdefault("has_more", False)
+            if "time_range" not in out and out.get("window"):
+                out["time_range"] = out["window"]
+        return out
+
+    @_degrade(lambda: {"ok": False, "entity": "", "total_volume_ml": 0,
+                       "total_count": 0, "days": []})
     def water_purifier_usage(self, start: Any, end: Any) -> Dict[str, Any]:
-        """净水器使用统计。"""
-        return self.core.water_purifier_usage(start, end)
+        """净水器用量——计算跑在 legacy 上（裁5 Q1=A）。
+
+        这一条不是 MCP 工具，消费者是仓内的 `templates.py:445`（净水器日报模板），
+        它按 legacy 的 `ok/total_volume_ml/total_count/days[].total_volume_l` 取值。
+        门面原先同样调 `self.core.water_purifier_usage`（不存在）⇒ 模板拿到的永远是空表。
+        """
+        return self.legacy.water_purifier_usage(start, end)
 
     # ------------------------------------------------------------------
     # 5.4 行为洞察
@@ -472,9 +563,15 @@ class InsightService:
     @_degrade(lambda: Page.build([]).to_dict("issues"))
     def data_quality_issues(self, start: str = "", end: str = "",
                             limit: int = 30000) -> Dict[str, Any]:
-        """数据质量问题（缺失 / 单位冲突 / 噪声源）。"""
+        """数据质量问题（缺失 / 单位冲突 / 噪声源）。
+
+        原先调 `self.core.data_quality_issues`——`BehaviorService` 没有这个方法，
+        而它自己的质量问题在 `data_quality(tr)` 的 `issues` 里（`get_data_quality`
+        这条对外工具用的就是它）。这里改成读同一份产出，不再指向不存在的成员。
+        """
         tr = self._tr(start, end)
-        return self.core.data_quality_issues(tr, limit=limit)
+        issues = (self.core.data_quality(tr) or {}).get("issues") or []
+        return Page.build(issues, offset=0, limit=max(0, int(limit or 0))).to_dict("issues")
 
     # ------------------------------------------------------------------
     # 5.6 用户画像
@@ -484,15 +581,28 @@ class InsightService:
         """获取用户画像。"""
         return self.core.user_persona(days=days or 14)
 
-    @_degrade(lambda: {"insight_id": "", "found": False, "total": 0, "offset": 0,
-                       "has_more": False})
+    @_degrade(lambda: {"insight_id": "", "found": False, "ok": False, "total": 0,
+                       "offset": 0, "has_more": False})
     def explain_insight(self, insight_id: str) -> Dict[str, Any]:
-        """解释洞察（含证据链）。"""
-        result = self.core.explain_insight(insight_id)
-        if not result.get("found"):
-            self.get_behavior_insights()          # 未命中时重新计算填充索引
-            result = self.core.explain_insight(insight_id)
-        return result
+        """证据溯源（洞察 id / agent 记忆 id → 底层事件与 source_refs）——跑在 legacy 上（裁5 Q1=A）。
+
+        门面原先调 `self.core.explain_insight`（不存在）⇒ 恒为 `found: False`。
+        新引擎这一侧确实有实现（`PersonaBuilder.explain`），但它要一份
+        `insight_id -> Insight` 索引，而**没有任何地方生产这份索引**，
+        `infer_activities` 也不落 `detected_activity` 行——那正是裁5 Q3 验收单第 5 条
+        要补的东西，补齐之前不切。legacy 走的是库里真实存在的两类 id：
+        `detected_activity.activity_id` 与 agent 记忆 id。
+        legacy 键（`ok/type/activity_id/memory_id/events/resolved`）为承诺键，
+        门面代键 `found/insight_id/total/offset/has_more` 在此补上。
+        """
+        out = self.legacy.explain_insight(insight_id)
+        if isinstance(out, dict):
+            out.setdefault("insight_id", insight_id)
+            out.setdefault("found", bool(out.get("ok")))
+            out.setdefault("total", 1 if out.get("ok") else 0)
+            out.setdefault("offset", 0)
+            out.setdefault("has_more", False)
+        return out
 
     # ------------------------------------------------------------------
     # 5.7 自然语言查询
@@ -517,19 +627,19 @@ class InsightService:
     # ------------------------------------------------------------------
     # 5.8 数据质量
     # ------------------------------------------------------------------
-    @_degrade(lambda: Page.build([]).to_dict("days"))
-
+    @_degrade(lambda: {"events": [], "total": 0, "offset": 0, "limit": 0, "has_more": False})
     def get_events(self, days: int = 7, start: str = "", end: str = "",
                    entity_id: str = "", room: str = "", limit: int = 50,
                    offset: int = 0) -> Dict[str, Any]:
-        """获取事件列表（兼容 legacy）。"""
+        """事件列表（新引擎扫描路径，命中 `max_scan` 时带 truncated/scan_limit/total_exact）。
+
+        原先的实现在切片之后才数 `total`（所以 `total` 永远等于本页条数，翻页翻不出
+        全量），并把未序列化的 `EventRecord` 对象直接放进返回体；两者都交给 `_search`
+        统一处理，降级信封的键名也从误抄的 `days` 改回 `events`。
+        """
         start, end = self._days_to_range(days, start, end)
-        tr = self._tr(start, end, days=days)
-        events = self.repo.load_events(tr, entity_ids=[entity_id] if entity_id else None,
-                                        rooms=[room] if room else None)
-        events = events[offset:offset+limit]
-        return {"events": events, "total": len(events), "offset": offset,
-                "limit": limit, "has_more": len(events) >= limit}
+        return self._search(start, end, entity_id, room, "", "", limit, offset,
+                            behavior_only=False)
 
     def compare_insights(self, compare_days: int = 7, base_days: int = 7) -> Dict[str, Any]:
         """对比洞察（兼容 legacy）。"""

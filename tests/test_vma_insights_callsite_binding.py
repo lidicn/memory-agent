@@ -16,6 +16,14 @@ Phase 4 把 `runtime.insights` 从 `insights_legacy` 换成 `insights/` 包的�
 2. **形状一致**：`LEGACY_OUTWARD_METHODS` 的门面签名必须与 legacy 同名方法逐字一致，
    并与 ToolSpec 登记的参数集合一致——对外形状由 ToolSpec/handler 决定，不由引擎决定。
 3. **handler 槽位**：MCP handler 位置传参时，变量名必须落进同名形参槽（防止再次串位）。
+
+裁5 落地时补另外三条（同一场事故的另一半与它的运行时后果）：
+4. **引擎指向**：门面体里 `self.core/nl/repo/legacy.X(...)` 指向的成员必须存在——
+   `_degrade` 对 `AttributeError` 和对 `TypeError` 一样静默，判据得各查一遍。
+5. **dispatch 形状 + 真库**：按 `dispatch` 的真实补参规则 bind 得上，且在真 Store 上
+   调用后不许以「形状错误」收场（业务上答不出是允许的，炸在半路不允许）。
+6. **登记表规模**：登记 11 条 = 实测「仍跑在 legacy 上的对外 insights 工具」全集，
+   防止用删条目维持绿。
 """
 
 import ast
@@ -133,16 +141,55 @@ def test_outward_methods_keep_the_legacy_parameter_shape():
         assert fac == leg, f"{name}: 门面 {fac} != legacy {leg}"
 
 
-def test_outward_method_params_cover_what_the_toolspec_declares():
-    """ToolSpec 登记的参数（对外可见的入参）必须都能被门面接住。"""
-    by_method = {s.method: s for s in TOOL_SPECS if s.service == "insights" and s.method}
-    for name in LEGACY_OUTWARD_METHODS:
-        spec = by_method.get(name)
-        if spec is None:
-            continue
+def _insights_specs():
+    return [s for s in TOOL_SPECS if s.service == "insights" and s.method]
+
+
+def _dispatch_kwargs(spec):
+    """复刻 `tool_schema.dispatch` 的补参规则（1828-1866）。
+
+    dispatch 会把「可选且默认值不是 None」的入参一律补上——这正是
+    `query_behavior_events` 的死因：门面签名里没有 `days`，而 ToolSpec 有默认值 7，
+    于是每次调用都送出一个门面不收的关键字。锁判据必须按 dispatch 的真实规则来，
+    不能只比 ToolSpec 的名字集合。
+    """
+    kwargs = {}
+    for p in spec.params:
+        if p.required:
+            kwargs[p.name] = "书房" if p.name in ("room", "query") else "x"
+        elif p.default is not None:
+            kwargs[p.name] = p.default
+    kwargs.update(spec.force or {})
+    return kwargs
+
+
+def test_every_insights_toolspec_param_lands_in_a_facade_slot():
+    """全部 insights 工具（不只登记表里那几条）：ToolSpec 声明的入参必须都能被门面接住。
+
+    原先这条只遍历 `LEGACY_OUTWARD_METHODS`，等于「只查已经申报过的」——而 Phase 4
+    的事故恰恰是没申报。改成遍历 ToolSpec 全集：实测 17 个工具，登记表 11 条。
+    """
+    for spec in _insights_specs():
+        member = getattr(InsightService, spec.method, None)
+        assert member is not None, f"{spec.name}: 门面没有 {spec.method}"
         declared = {p.name for p in spec.params}
-        accepted = {p.name for p in inspect.signature(getattr(InsightService, name)).parameters.values()}
-        assert declared <= accepted, f"{name}: ToolSpec 声明但门面不收 {sorted(declared - accepted)}"
+        accepted = {p.name for p in inspect.signature(member).parameters.values()}
+        assert declared <= accepted, \
+            f"{spec.name}（{spec.method}）: ToolSpec 声明但门面不收 {sorted(declared - accepted)}"
+
+
+def test_dispatch_would_bind_every_insights_tool():
+    """按 dispatch 的真实补参形状静态 bind：接不住的工具就是「每次调用必炸」的那一类。"""
+    bad = []
+    for spec in _insights_specs():
+        kwargs = _dispatch_kwargs(spec)
+        try:
+            # bind_partial：只判「送出去的键接不接得住」。门面是未绑定方法，
+            # self 由运行时提供，不该由这条断言补位。
+            inspect.signature(getattr(InsightService, spec.method)).bind_partial(**kwargs)
+        except TypeError as exc:
+            bad.append(f"{spec.name}（{spec.method}）补参 {sorted(kwargs)} -> {exc}")
+    assert not bad, "dispatch 形状接不上门面：\n" + "\n".join(bad)
 
 
 def test_mcp_handlers_do_not_land_in_the_wrong_slot():
@@ -288,6 +335,192 @@ def test_behavior_insights_returns_the_documented_report_fields():
         for field in ("daily_rhythm", "room_transitions", "anomalies", "daily_totals"):
             assert field in out, (field, sorted(out))
         assert out["behavior_only"] is True
+    finally:
+        st.close()
+        os.remove(st.db_path)
+
+
+# ── 门面向外调出去的那一半：引擎成员必须真实存在（裁5 的姊妹判据）──────────────
+#
+# `scan_insights_callsites.py` 判的是「外面调进来」的参数形状；门面体里
+# `self.core.X(...)` 指向一个不存在的成员是同一场事故的另外一半，而且更隐蔽：
+# 参数全绑得上，`_degrade` 照样把 AttributeError 收成空页。对 HEAD 跑扫描器的读数是
+# 「35 个指向 / 6 处空」，其中 `get_climate_sessions`、`explain_insight` 是对外 MCP 工具，
+# `water_purifier_usage` 是 `templates.py` 净水器日报的消费点。
+
+_ENGINE_SCAN = os.path.join(os.path.dirname(__file__), "..", "scripts",
+                            "scan_insights_engine_attrs.py")
+
+
+def _engine_scanner():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("scan_insights_engine_attrs", _ENGINE_SCAN)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_facade_engine_pointers_all_resolve():
+    """门面体里每一个 `self.<引擎>.<成员>(...)` 都必须指向真实存在的成员。"""
+    mod = _engine_scanner()
+    targets = mod.load_targets()
+    hits = mod.collect(os.path.join(ROOT, "insights", "api.py"), targets)
+    missing = [(m, ln, f"self.{o}.{a}") for m, ln, o, a in hits
+               if not hasattr(targets[o], a)]
+    assert not missing, "门面指向不存在的引擎成员（会被 _degrade 静默收成空页）：\n" + \
+        "\n".join(f"{m} (api.py:{ln}) -> {t}" for m, ln, t in missing)
+    assert len(hits) >= 30, f"扫描器没有真的读到位（只找到 {len(hits)} 个指向）"
+
+
+def test_ledger_size_matches_the_measured_outward_surface():
+    """登记表现在有 11 条：ToolSpec 全集 17 个工具里，仍跑在 legacy 上的都必须在表内。
+
+    这条把「登记表有多大」也钉住——裁5 落地时它是 6 条，Q1=A 的判据（过滤器语义是
+    用户可见的正确性）扫出另外 5 条同病工具后必须是 11 条，不能靠删条目维持绿的假象。
+    """
+    assert len(LEGACY_OUTWARD_METHODS) == 11, LEGACY_OUTWARD_METHODS
+    with_toolspec = [n for n in LEGACY_OUTWARD_METHODS
+                     if any(s.method == n for s in _insights_specs())]
+    assert len(with_toolspec) == 10, with_toolspec  # 只有 water_purifier_usage 不是 MCP 工具
+
+
+# ── 工具在目录里、返回永远为空——用真库把「空」和「炸」区分开 ──────────────────
+
+BINDING_ERRORS = ("unexpected keyword argument", "positional arguments",
+                  "has no attribute", "takes from", "required positional")
+
+# 这两条会走 embedding/LLM 链路（dispatch 里也一样），容器里判不了绑定形状以外的东西，
+# 它们的绑定由上面两条静态用例覆盖。
+_NL_TOOLS = ("ask_memory", "route_question")
+
+
+def test_no_insights_tool_dies_on_a_binding_shape():
+    """把 17 个对外工具按 dispatch 形状打在真库上：允许业务上答不出，不许死于形状。"""
+    st, svc = _live()
+    try:
+        bad = []
+        for spec in _insights_specs():
+            if spec.name in _NL_TOOLS:
+                continue
+            try:
+                out = getattr(svc, spec.method)(**_dispatch_kwargs(spec))
+            except (TypeError, AttributeError) as exc:
+                bad.append(f"{spec.name} 直接外抛 {type(exc).__name__}: {exc}")
+                continue
+            err = str(out.get("error")) if isinstance(out, dict) else ""
+            if any(m in err for m in BINDING_ERRORS):
+                bad.append(f"{spec.name} 被降级成形状错误：{err[:90]}")
+        assert not bad, "以下工具仍接不上门面/引擎：\n" + "\n".join(bad)
+    finally:
+        st.close()
+        os.remove(st.db_path)
+
+
+def test_query_behavior_events_reads_the_vision_table_and_honors_member():
+    """`query_behavior_events` 读的是 `behavior_events`（VLM 记录），不是 HA 的 `events`。
+
+    生产实测：`events` 989,240 行里 `person` 非空 **0 行**，`behavior_events` 4,023 行里
+    3,595 行带人员——门面原先的实现（读 events）永远答不出「有谁在书房」。
+    """
+    st, svc = _live()
+    try:
+        st.insert_behavior_event({"server_ts": "2026-01-01T15:10:00", "day": "2026-01-01",
+                                  "room": "书房", "persons": [{"name": "成员甲"}],
+                                  "count": 1, "action": "坐在桌前使用电脑",
+                                  "scene": "书房有人使用电脑"})
+        # 显式窗口：`days=7` 会按「今天往前 7 天」解析，种子里的 2026-01-01 落在窗外。
+        out = svc.query_behavior_events(room="书房", start=W0, end=W1)
+        assert out.get("error") is None, out
+        assert out["ok"] is True and out["count"] == 1, out
+        assert out["events"][0]["persons"] == ["成员甲"], out["events"]
+        assert svc.query_behavior_events(room="书房", member="成员甲", start=W0, end=W1)["count"] == 1
+        assert svc.query_behavior_events(room="书房", member="查无此人", start=W0, end=W1)["count"] == 0
+        # 两代键并存（裁5 Q2=A）：legacy 键 + 门面代分页键
+        for key in ("ok", "window", "room", "member_filter", "count", "events"):
+            assert key in out, (key, sorted(out))
+        for key in ("offset", "limit", "has_more", "time_range"):
+            assert key in out, (key, sorted(out))
+        # 不许把「本页条数」改名成「匹配总数」谎报成全量
+        assert "total" not in out, sorted(out)
+        assert svc.query_behavior_events(room="不存在的房间")["ok"] is False
+    finally:
+        st.close()
+        os.remove(st.db_path)
+
+
+def test_get_last_event_returns_both_key_generations():
+    """`get_last_event` 不再是恒空：legacy 键给全，门面代分页键并存。"""
+    st, svc = _live()
+    try:
+        out = svc.get_last_event("light.shufang_desk", None, None, "off", 3650)
+        assert out.get("error") is None, out
+        assert out["ok"] is True, out
+        assert out["entity_id"] == "light.shufang_desk" and out["new_state"] == "off", out
+        assert out["event"] and out["event"]["entity_id"] == "light.shufang_desk", out
+        assert (out["total"], out["offset"], out["limit"], out["has_more"]) == (1, 0, 1, False), out
+        miss = svc.get_last_event(entity_id="light.shufang_desk", transition="on", days=3650)
+        assert miss["ok"] is False and miss["event"] is None and miss["total"] == 0, miss
+    finally:
+        st.close()
+        os.remove(st.db_path)
+
+
+def test_forwarded_tools_keep_both_key_generations():
+    """裁5 Q2=A（两代键并存为正式口径）：新转 legacy 的四条必须同时给出两代键。
+
+    只查键的存在，不查数据——这些用例跑在种子库里，业务上多半答不出内容；
+    但「下游按哪一代键取值都能拿到」是裁定里的正式口径，必须有实调用做证。
+    """
+    st, svc = _live()
+    try:
+        probes = {
+            "query_behavior_events": (dict(room="书房", start=W0, end=W1),
+                                      ("ok", "window", "count", "events"),
+                                      ("offset", "limit", "has_more", "time_range")),
+            "get_last_event":        (dict(entity_id="light.shufang_desk",
+                                           transition="off", days=3650),
+                                      ("ok", "entity_id", "friendly_name", "ts",
+                                       "old_state", "new_state", "transition"),
+                                      ("event", "total", "offset", "limit", "has_more")),
+            "climate_sessions":      (dict(room="书房", start=W0, end=W1),
+                                      ("ok", "window", "sessions"),
+                                      ("total", "offset", "limit", "has_more", "time_range")),
+            "explain_insight":       (dict(insight_id="不存在"),
+                                      ("ok", "error"),
+                                      ("insight_id", "found", "total", "offset", "has_more")),
+        }
+        for method, (kwargs, legacy_keys, compat_keys) in probes.items():
+            out = getattr(svc, method)(**kwargs)
+            assert isinstance(out, dict), (method, type(out))
+            missing = [k for k in legacy_keys if k not in out]
+            assert not missing, f"{method} 少了 legacy 承诺键 {missing}：{sorted(out)}"
+            missing = [k for k in compat_keys if k not in out]
+            assert not missing, f"{method} 少了门面代兼容键 {missing}：{sorted(out)}"
+            assert not any(m in str(out.get("error")) for m in BINDING_ERRORS), out
+    finally:
+        st.close()
+        os.remove(st.db_path)
+
+
+def test_scan_annotation_tells_whether_total_is_a_scan_cap():
+    """Q4=A：命中 `max_scan` 的返回体必须自己说「这个 total 是扫描行数，不是匹配总数」。"""
+    from memory_agent.insights.models import InsightConfig
+
+    st, svc = _live()
+    try:
+        full = svc.get_events(start=W0, end=W1, limit=2)
+        assert full["total"] == 8 and full["truncated"] is False, full
+        assert full["total_exact"] is True and full["scan_limit"] == 30000, full
+        # 分页翻页时 total 仍是全量（旧实现切片后才数，total 恒等于本页条数）
+        page2 = svc.get_events(start=W0, end=W1, limit=2, offset=2)
+        assert page2["total"] == 8 and page2["offset"] == 2 and page2["has_more"] is True, page2
+        assert isinstance(page2["events"][0], dict), "条目必须是可序列化 dict"
+
+        capped = InsightService(st, InsightConfig(max_scan=4))
+        out = capped.get_events(start=W0, end=W1, limit=2)
+        assert out["total"] == 4 and out["truncated"] is True, out
+        assert out["total_exact"] is False and out["scan_limit"] == 4, out
     finally:
         st.close()
         os.remove(st.db_path)
