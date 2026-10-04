@@ -862,6 +862,9 @@ def _mcp_response_max_bytes() -> int:
 DEVICE_HEALTH_STABLE_ID_MAX_CHARS = 40
 DEVICE_HEALTH_PAGE_LIMIT_DEFAULT = 500
 DEVICE_HEALTH_PAGE_LIMIT_MAX = 2000
+# DCD 20261004 裁1/裁4 Q2=甲：整页投影后 ≤64KB 自动收窄。
+# 旧的 40 字符 stable_id 截断只压掉 12%，页级预算才是硬上限。
+DEVICE_HEALTH_PAGE_MAX_BYTES = 64 * 1024
 
 
 def project_device_health(rows: list[dict], fields: str = "lean") -> list[dict]:
@@ -902,11 +905,29 @@ def device_health_page(rows: list[dict], total: int, *, state: str = "",
     `has_more=true`，`next_offset` 就等于 `offset`——按 ``while has_more`` 翻页的消费端
     就此死循环（offset 小于 total 但数据被清过，正是这种时刻）。
 
+    DCD 20261004 裁1/裁4 Q2=甲：整页投影后 ≤64KB 自动收窄。旧的 40 字符 stable_id 截断
+    只压掉 12%，页级预算才是硬上限。超过 64KB 时逐行收窄直到满足预算，
+    ``next_offset`` 按实际返回行数推进（消费端翻页不受影响）。
+
     这里不写 `ok` 那一位：它由工具本体给，因为只有那边知道"读通了没有"。
     """
+    import json
+
     rows_limit = max(1, min(int(limit), DEVICE_HEALTH_PAGE_LIMIT_MAX))
     rows_offset = max(0, int(offset))
     page = project_device_health(rows, fields)
+
+    # 页级 64KB 自动收窄（DCD Q2=甲）
+    def _page_bytes(p: list[dict]) -> int:
+        return len(json.dumps(p, ensure_ascii=False).encode("utf-8"))
+
+    if page and _page_bytes(page) > DEVICE_HEALTH_PAGE_MAX_BYTES:
+        # 先按比例粗估，再逐行精修（行大小不均，比例估可能不准）
+        est = max(1, int(len(page) * DEVICE_HEALTH_PAGE_MAX_BYTES / _page_bytes(page)))
+        page = page[:est]
+        while len(page) > 1 and _page_bytes(page) > DEVICE_HEALTH_PAGE_MAX_BYTES:
+            page = page[:-1]
+
     consumed = rows_offset + len(page)
     full = int(total)
     has_more = bool(page) and consumed < full
@@ -920,6 +941,7 @@ def device_health_page(rows: list[dict], total: int, *, state: str = "",
         "has_more": has_more,
         "next_offset": consumed if has_more else None,
         "fields": "full" if str(fields or "").strip().lower() == "full" else "lean",
+        "page_bytes": _page_bytes(page),
     }
 
 
