@@ -693,7 +693,9 @@ Q4=认可（每切一个方法留三项对比读数，缺一项判红）**。代
 `detector_report`/`signal_inventory`、`detected_activity` 落库）。
 
 **锁与权威读数**：`tests/test_vma_activity_semantic.py` 新建 **15 个用例**，配套 `test_vma_insights_facade_dead_tools.py` 三条改写；
-定向 `19 passed`、邻近三件 `20 passed`。变异台账 **16 把锁逐条判红**（`MUT_RC=1` + `RESTORED=True`），其中 `split_days` 时区锁
+定向 `19 passed`、邻近三件 `20 passed`（**对 HEAD 重跑后更正**：
+两件同跑 `20 passed`，其中新建文件 `15 passed` / `A_RC=0`、改写文件 `5 passed` / `B_RC=0`；
+邻近三件（openshs_eval + researcher + dead-tools）`26 passed` / `TRIO_RC=0`。先前那两个数是加第 15 把锁前的旧读数）。变异台账 **16 把锁逐条判红**（`MUT_RC=1` + `RESTORED=True`），其中 `split_days` 时区锁
 本机是**等价位**（+8 整小时偏移下 `MUT_RC=0`，诚实登记）、容器（UTC）判红。容器快照 `/tmp/c6snap20261004c`
 （全新唯一名，不复用别人的 `vsNN`；打包 336 文件、含 `.gates/`）：pyflakes `当前 0 / 基线 0 / 新增 0 / 已修 0` / `GATE_RC=0`；
 全量 **`1185 passed, 13 skipped in 177.04s` / `SUITE_RC=0`**；`.gates-baseline.txt` 一字未改。
