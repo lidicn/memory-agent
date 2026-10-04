@@ -1604,10 +1604,20 @@ TOOL_SPECS: list = [
         group="运维",
         service="static", method="",
         expose=("mcp",),
-        params=[_p("state", "string", "active|unknown|stale；留空返回全部")],
-        example="list_device_health(state='stale') → 长期失效实体",
+        params=[
+            _p("state", "string", "active|unknown|stale；留空返回全部"),
+            _p("limit", "integer", "每页行数，默认 500、上限 2000", default=500),
+            _p("offset", "integer", "分页偏移", default=0),
+            _p("fields", "string", "lean（默认，精简投影）| full（全量字段值）",
+               enum=["lean", "full"], default="lean"),
+        ],
+        example="list_device_health(state='stale') → 长期失效实体；"
+                "list_device_health(fields='full', limit=2000) → 要整段中文说明时",
         pitfall="依赖身份层；未启用时返回 ok=false「身份层未启用」。"
-                "referenced=1 表示该实体仍被某个模板引用，它一旦失效就会让洞察失真，应优先处理。",
+                "referenced=1 表示该实体仍被某个模板引用，它一旦失效就会让洞察失真，应优先处理。"
+                "DCD 20261004 MA-裁4：``total`` 是**分页前**的全量条数，取完一页要看 has_more/next_offset，"
+                "别把 count 当 total 做统计；默认 lean 会截 stable_id 到 40 字并把非 referenced 的 note 置空"
+                "（键仍在），要原值传 fields='full'。",
     ),
     ToolSpec(
         name="report_bug",

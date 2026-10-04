@@ -129,10 +129,12 @@ SERVER_INSTRUCTIONS = """Memory Agent —— 家庭行为记忆与洞察中枢�
 并发携带同一 key 时，后到的调用**不会执行工具**，而是返回 `RATE_LIMITED`（提示「正在执行中」），
 稍后用同一 key 重试即可取回首次结果；执行失败的结果不缓存，可直接重试。
 
-## 响应体上限（v0.9 任务3）
+## 响应体上限（v0.9 任务3 / DCD 20261004 MA-裁4）
 单个工具的响应正文超过 `mcp_response_max_bytes`（默认 64KB，可在「系统设置」调整）时会被
-**自动截断并附摘要**，结尾提示「[响应已截断] … 请用更窄的时间窗 / 分页参数 / 专用精简查询接口」。
-这是服务端保护（避免巨响应撑爆客户端上下文），并非错误；缩窄查询范围即可拿到完整数据。
+**自动截断并附摘要**，结尾提示「[响应已截断] … 请换更窄的参数重试」。JSON 载荷走的是
+**结构降级**（按记录条数裁剪并附 `_truncated` 计数，保证仍是合法 JSON）；只有非 JSON /
+无可裁列表的正文才退回字符截断。这是服务端保护（避免巨响应撑爆客户端上下文），并非错误；
+带 `limit/offset` 的工具（如 `list_device_health`、`query_unified_events`）分批取即可拿全。
 
 ## 故障注入矩阵（v0.9 任务3，运维/测试用）
 容器内可调用 `set_mcp_fault(tool, code)` 强制某工具（tool='*' 表示全部）返回指定错误码而
@@ -855,6 +857,72 @@ def _mcp_response_max_bytes() -> int:
         return 65536
 
 
+# DCD 20261004 MA-裁4 Q2：默认投影的精简长度。stable_id 的中文长名是给人看的，
+# 定位实体用 entity_id——生产实测该字段 51,062 字节（占该工具响应的可省大头）。
+DEVICE_HEALTH_STABLE_ID_MAX_CHARS = 40
+DEVICE_HEALTH_PAGE_LIMIT_DEFAULT = 500
+DEVICE_HEALTH_PAGE_LIMIT_MAX = 2000
+
+
+def project_device_health(rows: list[dict], fields: str = "lean") -> list[dict]:
+    """设备健康清单的对外投影（DCD 20261004 MA-裁4 Q2）。
+
+    ``fields='lean'``（默认）：
+    * ``stable_id`` 截到 40 字，被截的那条带 ``stable_id_truncated: true``；
+    * ``note`` 只在 ``referenced=1`` 时给原值，其余置空但**保留键**。
+
+    保留键不是啰嗦：键不存在时消费端的 ``row["note"]`` 会 KeyError，而
+    「键名对不上就静默归零」正是本 ADM 已经栽过的坑（判例见 DCD 20261004 §六.2）。
+    ``fields='full'`` 一行不改——全量开关是裁定给"就是要整段中文说明"的调用方留的。
+    """
+    if str(fields or "").strip().lower() == "full":
+        return rows
+    out: list[dict] = []
+    for row in rows:
+        d = dict(row)
+        stable_id = str(d.get("stable_id") or "")
+        if len(stable_id) > DEVICE_HEALTH_STABLE_ID_MAX_CHARS:
+            d["stable_id"] = stable_id[:DEVICE_HEALTH_STABLE_ID_MAX_CHARS]
+            d["stable_id_truncated"] = True
+        if not int(d.get("referenced") or 0):
+            d["note"] = ""
+        out.append(d)
+    return out
+
+
+def device_health_page(rows: list[dict], total: int, *, state: str = "",
+                       offset: int = 0, limit: int = DEVICE_HEALTH_PAGE_LIMIT_DEFAULT,
+                       fields: str = "lean") -> dict:
+    """`list_device_health` 的分页信封（DCD 20261004 MA-裁4 Q1，与 ``query_unified_events`` 同口径）。
+
+    之所以是纯函数：MCP 工具定义在工厂闭包里，测试压根取不到，判据只能落在这一层。
+    ``total`` 是**分页前**的全量条数，由调用方从 ``count_device_health`` 取。
+
+    翻页收口用「本页必须给出行」判，不单独用 `offset < total` 判：拿到空页时若还回
+    `has_more=true`，`next_offset` 就等于 `offset`——按 ``while has_more`` 翻页的消费端
+    就此死循环（offset 小于 total 但数据被清过，正是这种时刻）。
+
+    这里不写 `ok` 那一位：它由工具本体给，因为只有那边知道"读通了没有"。
+    """
+    rows_limit = max(1, min(int(limit), DEVICE_HEALTH_PAGE_LIMIT_MAX))
+    rows_offset = max(0, int(offset))
+    page = project_device_health(rows, fields)
+    consumed = rows_offset + len(page)
+    full = int(total)
+    has_more = bool(page) and consumed < full
+    return {
+        "state": state or "all",
+        "health": page,
+        "total": full,
+        "count": len(page),
+        "offset": rows_offset,
+        "limit": rows_limit,
+        "has_more": has_more,
+        "next_offset": consumed if has_more else None,
+        "fields": "full" if str(fields or "").strip().lower() == "full" else "lean",
+    }
+
+
 def _json_shrink_to_fit(text: str, tool: str, cap: int):
     """超限 JSON 的**结构降级**：裁记录条数，而不是把 JSON 切在半行上。
 
@@ -926,7 +994,8 @@ def _apply_response_cap(result, tool: str, max_bytes: int = None):
     kb_cap = max(1, cap // 1024)
     summary = (
         f"\n\n⚠️ [响应已截断] 工具 '{tool}' 原始输出约 {kb_total}KB 超过上限 {kb_cap}KB，"
-        f"已展示前 {kb_cap}KB。请用更窄的时间窗 / 分页参数 / 专用精简查询接口获取完整结果。"
+        f"已展示前 {kb_cap}KB。请换更窄的参数重试（时间窗 / 过滤 / limit-offset 等，"
+        f"以该工具在 tools/list 里的参数面为准）。"
     )
     return _build_tool_result(truncated + summary, is_error=_is_error(result))
 
@@ -1338,26 +1407,40 @@ def _build_server():
         )
 
     @mcp.tool()
-    async def list_device_health(state: str = "") -> dict:
+    async def list_device_health(state: str = "", limit: int = DEVICE_HEALTH_PAGE_LIMIT_DEFAULT,
+                                 offset: int = 0, fields: str = "lean") -> dict:
         """实体健康 / 失效清单（A3）。
 
         state 可填 active（确认在线）/ unknown（短暂失联）/ stale（长期失效），
         留空返回全部。``referenced=1`` 表示该实体仍被某个模板引用，
         它一旦失效就会让洞察失真，应优先处理。
+
+        DCD 20261004 MA-裁4：分页与投影都在这条对外面上（与 ``query_unified_events`` 同口径，
+        返回带 ``total/count/offset/limit/has_more/next_offset``）。``limit`` 默认 500、上限 2000；
+        默认投影精简 ``stable_id``（40 字）与 ``note``（仅 ``referenced=1`` 给原值），
+        要全量传 ``fields='full'``。
         """
         rt = get_runtime()
         identity = getattr(rt, "identity", None)
         if identity is None:
             return {"ok": False, "error": "身份层未启用"}
-        rows = await asyncio.to_thread(identity.store.list_device_health, state)
+        rows_limit = max(1, min(int(limit), DEVICE_HEALTH_PAGE_LIMIT_MAX))
+        rows_offset = max(0, int(offset))
+
+        def _read():
+            store = identity.store
+            return (
+                store.list_device_health(state, limit=rows_limit, offset=rows_offset),
+                store.count_device_health(state),
+            )
+
+        rows, total = await asyncio.to_thread(_read)
         devices = await asyncio.to_thread(identity.list_devices)
-        return {
-            "ok": True,
-            "state": state or "all",
-            "health": rows,
-            "total": len(rows),
-            "logical_devices": len(devices),
-        }
+        envelope = device_health_page(rows, total, state=state, offset=rows_offset,
+                                      limit=rows_limit, fields=fields)
+        # `ok` 写成字面量留在调用点：门禁 fake-ok-const 认字典字面量，
+        # 换成 payload["ok"] = True 会让那条基线条目"凭空消失"——债没还，只是扫描器看不见。
+        return {"ok": True, **envelope, "logical_devices": len(devices)}
 
     @mcp.tool()
     async def search_events(

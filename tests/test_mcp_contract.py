@@ -1,7 +1,8 @@
 """v0.9 任务3：MCP 可维护性契约测试（可在容器内 `python -m pytest tests/test_mcp_contract.py` 运行）。
 
 覆盖三块：
-1. 响应体上限与超限摘要（`_apply_response_cap`）；
+1. 响应体上限与超限摘要（`_apply_response_cap`），以及 `list_device_health` 的分页信封与
+   默认精简投影（DCD 20261004 MA-裁4，同属「对外看得见的载荷形状」）；
 2. 错误结果构造动态适配 mcp 1.x/2.x 字段名（`_build_tool_result`）；
 3. 故障注入矩阵（`set_mcp_fault` / `_fault_result` / 分发层短路，不真正执行工具）。
 
@@ -10,6 +11,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 
 import pytest
 
@@ -84,6 +87,8 @@ def test_apply_response_cap_preserves_error_flag():
 # 字符截断把 JSON 切在半行上（`"entity_id": "sensor.x` 后直接断），
 # 调用方 json.loads 报 `Expecting ',' delimiter: line 14056 column 1`。
 # 摘要那句「请用…分页参数」对该工具也不成立——它根本没有分页参数。
+# （这是投递时的事实；MA-裁4 Q1=A 之后该工具确实有了 limit/offset，摘要措辞也不再点名
+#   具体参数，见本文件 §1c 与 test_char_cap_hint_points_at_the_tools_own_parameter_surface。）
 
 def _rows(n: int) -> list:
     return [{"entity_id": f"sensor.entity_{i:04d}", "state": "active",
@@ -150,7 +155,188 @@ def test_non_json_text_still_uses_the_character_cap():
     text = _text(out)
     assert text.startswith("日" * 100)
     assert "响应已截断" in text
+
+
+def test_char_cap_hint_points_at_the_tools_own_parameter_surface():
+    """字符截断的摘要不许点名「分页参数」——它无法知道被点的这个工具有没有那把参数。
+
+    生产现场（2026-10-03）：`list_device_health` 当时根本没有分页参数，摘要却让它
+    「请用…分页参数」，那句话对调用方是死路（投递见 inbox 20261003 超限件 §一 事实表）。
+    """
+    out = ms._apply_response_cap(_make_result("日" * 3000), "text_tool", max_bytes=1000)
+    text = _text(out)
+    assert "参数面" in text
+    assert "请用更窄的时间窗 / 分页参数" not in text
     assert len(text.encode("utf-8")) <= 1000 + 400
+
+
+# ── 1c. DCD 20261004 MA-裁4：设备健康分页 + 默认精简投影 ────────────────────────
+#
+# 生产现场（2026-10-03 实测）：`list_device_health` 不带参数约 650KB > 上限 512KB，
+# 而 `stable_id` 一个字段就占 51,062 字节——那串中文长名是给人看的，Agent 定位用
+# `entity_id`。裁定 Q1=A 分页（默认 500）、Q2=A 默认精简、Q3=维持超限裁行。
+# MCP 工具本体在工厂闭包里、测试取不到，所以判据落在两个模块级纯函数 + Store 真库上。
+
+def _health_row(eid: str = "sensor.a", *, stable_id: str = "", note: str = "",
+                referenced: int = 0, state: str = "active") -> dict:
+    return {"entity_id": eid, "stable_id": stable_id, "state": state,
+            "referenced": referenced, "note": note,
+            "updated_at": "2026-10-04T01:00:00+08:00"}
+
+
+_LONG_STABLE = "sensor__米家智能鱼缸异常卡片触发状态按照bit从低到高位1水草灯时间过长2水泵故障"
+
+
+def test_lean_projection_truncates_only_the_rows_that_need_it():
+    rows = [_health_row("sensor.a", stable_id=_LONG_STABLE),
+            _health_row("sensor.b", stable_id="sensor.short")]
+
+    out = ms.project_device_health(rows)
+    n = ms.DEVICE_HEALTH_STABLE_ID_MAX_CHARS
+    assert out[0]["stable_id"] == _LONG_STABLE[:n]
+    assert out[0]["stable_id_truncated"] is True
+    assert "stable_id_truncated" not in out[1]      # 没被截就不许冒出新键
+    assert out[1]["stable_id"] == "sensor.short"
+    assert rows[0]["stable_id"] == _LONG_STABLE     # 投影不改原行
+
+
+def test_note_is_blanked_but_the_key_stays_when_the_entity_is_unreferenced():
+    """键在、值为空——不是把键删掉。删键会让消费端 `row["note"]` KeyError。"""
+    rows = [_health_row("sensor.a", note="滤网清洗提醒", referenced=0),
+            _health_row("sensor.b", note="滤网清洗提醒", referenced=1)]
+
+    out = ms.project_device_health(rows)
+    assert "note" in out[0] and out[0]["note"] == ""
+    assert out[1]["note"] == "滤网清洗提醒"
+    assert rows[0]["note"] == "滤网清洗提醒"
+
+
+def test_fields_full_leaves_the_rows_exactly_as_stored():
+    rows = [_health_row(stable_id=_LONG_STABLE, note="n", referenced=0)]
+    for value in ("full", "FULL", " full "):
+        assert ms.project_device_health(rows, value) == rows
+    assert rows[0]["stable_id"] == _LONG_STABLE
+
+
+def test_page_walks_every_row_exactly_once_and_total_is_the_pre_page_size():
+    total = 7
+    rows = [_health_row(f"sensor.{i}") for i in range(total)]
+
+    seen: list[str] = []
+    offset, pages = 0, 0
+    while True:
+        page = ms.device_health_page(rows[offset:offset + 3], total, offset=offset, limit=3)
+        assert page["total"] == total               # 全量条数，不随页缩
+        assert page["count"] == len(page["health"])
+        assert page["offset"] == offset and page["limit"] == 3
+        seen.extend(r["entity_id"] for r in page["health"])
+        pages += 1
+        if not page["has_more"]:
+            assert page["next_offset"] is None
+            break
+        offset = page["next_offset"]
+        assert pages < 10                           # 翻不完即 next_offset 错了
+    assert seen == [f"sensor.{i}" for i in range(total)]
+    assert pages == 3
+
+
+def test_an_empty_page_always_ends_the_walk():
+    """空页必须收口，两种空页都要：offset 越过表尾、以及数据被清过后 offset 仍小于 total。
+
+    后一种才咬住判据：按 `offset < total` 判会得到 ``has_more=true`` 且 ``next_offset``
+    原地不动，按 ``while has_more: offset = next_offset`` 翻页的消费端就此死循环。
+    """
+    for off, total in ((99, 5), (3, 5), (0, 0)):
+        page = ms.device_health_page([], total, offset=off, limit=3)
+        assert page["count"] == 0, f"offset={off} total={total}"
+        assert page["has_more"] is False, f"offset={off} total={total}"
+        assert page["next_offset"] is None, f"offset={off} total={total}"
+
+
+def test_page_bounds_are_clamped_into_the_declared_tool_range():
+    assert ms.device_health_page([], 0, limit=0)["limit"] == 1
+    assert ms.device_health_page([], 0, limit=-5)["limit"] == 1
+    assert ms.device_health_page([], 0, limit=10 ** 9)["limit"] == ms.DEVICE_HEALTH_PAGE_LIMIT_MAX
+    assert ms.device_health_page([], 0, offset=-3)["offset"] == 0
+
+
+def test_page_declares_the_field_mode_and_the_default_state_label():
+    assert ms.device_health_page([], 0, fields="full")["fields"] == "full"
+    assert ms.device_health_page([], 0, fields="lean")["fields"] == "lean"
+    assert ms.device_health_page([], 0)["fields"] == "lean"
+    assert ms.device_health_page([], 0)["state"] == "all"
+    assert ms.device_health_page([], 0, state="stale")["state"] == "stale"
+    # 信封不替调用方宣称成功：`ok` 那一位由工具本体在读通之后才写
+    assert "ok" not in ms.device_health_page([], 0)
+
+
+def _store():
+    from memory_agent.store import Store
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.remove(path)              # Store 要自建文件，撞上已存在的空文件会失败
+    st = Store(path, tz_offset_hours=8.0)
+    st.init_schema()
+    return st, path
+
+
+def test_store_pagination_slices_the_same_order_as_the_unbounded_read():
+    st, path = _store()
+    try:
+        for i in range(5):
+            st.upsert_device_health(f"sensor.{i:02d}", state="active" if i % 2 else "stale")
+        full = st.list_device_health("")
+        assert len(full) == 5
+        assert st.list_device_health("", limit=2, offset=0) == full[:2]
+        assert st.list_device_health("", limit=2, offset=2) == full[2:4]
+        assert st.list_device_health("", limit=2, offset=4) == full[4:]
+        # limit=None 仍是无界：身份层重建（identity.py:687）与 HTTP 面板要整张表
+        assert st.list_device_health("") == full
+        assert st.count_device_health("") == 5
+        assert st.count_device_health("stale") == 3
+        assert st.count_device_health("unknown") == 0
+    finally:
+        st.close()
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(path + suffix)
+            except OSError:
+                pass
+
+
+def test_equal_timestamps_still_page_without_overlap_or_gaps():
+    """批量 upsert 打的是同一个 updated_at；排序少一路兜底键就会漏行。
+
+    写入顺序刻意与 entity_id 相反（06→01），这样「没兜底键时按 rowid 返回」与
+    「按 entity_id 定序」给出不同读数——变异掉 ORDER BY 的兜底键，这条必红。
+    """
+    st, path = _store()
+    try:
+        for i in range(6, 0, -1):
+            st.upsert_device_health(f"sensor.{i:02d}", state="active")
+        conn = st.connect()
+        conn.execute("UPDATE device_health SET updated_at=?", ("2026-10-04T00:00:00+08:00",))
+        conn.commit()
+
+        full = [r["entity_id"] for r in st.list_device_health("")]
+        assert full == sorted(full)
+
+        walked, offset = [], 0
+        while offset < 20:
+            page = st.list_device_health("", limit=2, offset=offset)
+            if not page:
+                break
+            walked.extend(r["entity_id"] for r in page)
+            offset += 2
+        assert walked == full
+    finally:
+        st.close()
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(path + suffix)
+            except OSError:
+                pass
 
 
 # ── 2. 错误结果构造动态字段 ──────────────────────────────────────────────────

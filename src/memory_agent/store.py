@@ -1910,19 +1910,40 @@ class Store:
             ).fetchone()
         return dict(row) if row else None
 
-    def list_device_health(self, state: str = "") -> list[dict]:
-        """健康/墓碑清单；state 为空返回全部，否则按状态过滤。"""
+    def list_device_health(self, state: str = "", limit: int | None = None,
+                           offset: int = 0) -> list[dict]:
+        """健康/墓碑清单；state 为空返回全部，否则按状态过滤。
+
+        ``limit=None`` = **无界**，这是进程内既有调用点的语义（身份层重建、HTTP 面板
+        都要整张表）。分页只在对外工具面发生（DCD 20261004 MA-裁4 Q1 由调用方传 500），
+        所以这里不把默认值改成 500——改了会让上面两处静默少读。
+
+        排序必须带 ``entity_id`` 兜底：批量 upsert 给整片行打的是同一个 ``updated_at``，
+        只按时间排的话 LIMIT/OFFSET 相邻两页会重叠并漏行。
+        """
+        sql = "SELECT * FROM device_health"
+        params: list = []
+        if state:
+            sql += " WHERE state=?"
+            params.append(state)
+        sql += " ORDER BY updated_at DESC, entity_id"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([max(0, int(limit)), max(0, int(offset))])
         with self._lock:
-            if state:
-                rows = self._conn.execute(
-                    "SELECT * FROM device_health WHERE state=? ORDER BY updated_at DESC",
-                    (state,),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT * FROM device_health ORDER BY updated_at DESC"
-                ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
+    def count_device_health(self, state: str = "") -> int:
+        """分页前的大小——``total`` 要的是全量条数，不是当前页的行数。"""
+        sql = "SELECT COUNT(*) FROM device_health"
+        params: list = []
+        if state:
+            sql += " WHERE state=?"
+            params.append(state)
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        return int(row[0] or 0)
 
     def close(self) -> None:
         with self._lock:
