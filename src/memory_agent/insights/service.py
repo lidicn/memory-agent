@@ -402,6 +402,26 @@ class BehaviorService:
         return {"room": room, "category": category, "entity_id": entity_id,
                 "rooms": rooms, "domains": domains, "entity_ids": entity_ids}
 
+    def _window_echo(self, tr: Any) -> Dict[str, Any]:
+        """把这批读数所在的时间窗回显成 `window`（裁5 追加 Q-B / Q3-4）。
+
+        legacy 的每个读法都把时间窗放在 `window`（`resolve_range` 给的 meta），新引擎只给
+        自己算出来的数——消费方无从核对「这批数覆盖哪一段」，这与「静默放宽」是同一族缺陷：
+        形状合法、键名对不上、什么也不报。取不到时回**空 dict**而不是抛，也不省略这个键：
+        缺窗要看得见是缺窗，而不是让消费方把「没有 window」读成「窗口无限」。
+        """
+        try:
+            if hasattr(tr, "to_dict"):
+                return dict(tr.to_dict() or {})
+            start_iso, end_iso = self._tr_days(tr)
+            return {"start": start_iso, "end": end_iso}
+        except Exception:      # noqa: BLE001 - 窗户口径取不到不反噬主读数
+            return {}
+
+    def _with_window(self, out: Dict[str, Any], tr: Any) -> Dict[str, Any]:
+        out["window"] = self._window_echo(tr)
+        return out
+
     # ------------------------------------------------------------- coverage
     def coverage(self, tr: Any) -> Dict[str, Any]:
         try:
@@ -460,11 +480,11 @@ class BehaviorService:
         try:
             out = self._usage(tr, room, category, entity_id)
             out["ok"] = True
-            return out
         except Exception as exc:
-            return self._fail("usage", exc, {
+            out = self._fail("usage", exc, {
                 "items": [], "total_events": 0, "total_entities": 0,
                 "by_room": [], "by_domain": [], "filters": {}})
+        return self._with_window(out, tr)
 
     def _usage(self, tr: Any, room: str, category: str, entity_id: str) -> Dict[str, Any]:
         rooms, domains, entity_ids = self._filters(room, category, entity_id)
@@ -520,11 +540,11 @@ class BehaviorService:
         try:
             out = self._device_health(tr, room, category)
             out["ok"] = True
-            return out
         except Exception as exc:
-            return self._fail("device_health", exc, {
+            out = self._fail("device_health", exc, {
                 "items": [], "summary": {"active": 0, "idle": 0, "offline": 0, "total": 0},
                 "filters": {}})
+        return self._with_window(out, tr)
 
     def _device_health(self, tr: Any, room: str, category: str) -> Dict[str, Any]:
         rooms, domains, entity_ids = self._filters(room, category)
@@ -707,12 +727,12 @@ class BehaviorService:
         try:
             out = self._behavior_insights(tr, room, category)
             out["ok"] = True
-            return out
         except Exception as exc:
-            return self._fail("behavior_insights", exc, {
+            out = self._fail("behavior_insights", exc, {
                 "summary": {"behavior_events": 0}, "by_trigger": [], "by_room": [],
                 "top_actions": [], "hourly": [], "days": [], "perception": {"total": 0},
                 "filters": {}})
+        return self._with_window(out, tr)
 
     def _behavior_insights(self, tr: Any, room: str, category: str) -> Dict[str, Any]:
         rooms = _split(room)
