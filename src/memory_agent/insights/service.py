@@ -19,8 +19,9 @@ from datetime import datetime, timedelta
 from statistics import median
 from typing import Any, Dict, List, Optional, Tuple
 
+from .activity import ActivityEngine, ActivityRule, BUILTIN_ACTIVITIES, Signal
+from .models import fmt_ts, house_dt, house_ts
 from .repository import _to_epoch, _to_iso
-from .models import house_ts
 
 __all__ = ["BehaviorService", "CATEGORY_DOMAINS", "WEEKDAY_NAMES", "compute_sessions"]
 
@@ -160,6 +161,54 @@ def _longest_quiet(hourly: Dict[int, int], from_hour: int, to_hour: int) -> Tupl
         else:
             run = 0
     return best, best_at
+
+
+def _safe_hour(value: Any, default: int) -> int:
+    """规则表里的小时列可能是 None/字符串/越界值，取整并夹到 [0, 23]。"""
+    try:
+        hour = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return hour if 0 <= hour <= 23 else int(default)
+
+
+def _day_hour_ts(day: str, hour: int) -> float:
+    """'YYYY-MM-DD' + 小时 -> epoch（家庭墙钟口径，与 `day_key` 一致）。"""
+    try:
+        return house_ts(datetime.strptime("%s %02d:00:00" % (day, int(hour)), "%Y-%m-%d %H:%M:%S"))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _allow_hit(name: Any, activity: Any, allow: List[str]) -> bool:
+    """`activities` 白名单命中判据：中文名 / 英文键 / 标签任一相等（大小写不敏感）。"""
+    wanted = {str(a).strip().lower() for a in allow if str(a).strip()}
+    if not wanted:
+        return True
+    return any(str(v or "").strip().lower() in wanted for v in (name, activity))
+
+
+def _semantic_evidence(match: Any) -> str:
+    """把规则命中写成可核对的证据串（legacy 每条活动都带 evidence，这里补同一口径）。"""
+    parts: List[str] = []
+    for sig in getattr(match, "signals", []) or []:
+        label = sig.get("room") or sig.get("category") or sig.get("query") or "-"
+        detail = str(sig.get("query") or sig.get("category") or "").strip()
+        parts.append("%s%s %.1f 分钟/%d 段%s" % (
+            label, ("「%s」" % detail) if detail else "",
+            float(sig.get("minutes") or 0.0), int(sig.get("count") or 0),
+            "" if sig.get("satisfied") else "（未达标）"))
+    origin = "自定义规则" if getattr(match, "source", "") == "activity_rules" else "内置语义规则"
+    return "%s「%s」命中：%s" % (origin, getattr(match, "name", ""), "；".join(parts) or "无信号")
+
+
+def _window_meta(tr: Any) -> Dict[str, Any]:
+    """窗口回显：优先用 TimeRange 自己的 to_dict，退化到 ISO 串（legacy 的 `window` 键）。"""
+    to_dict = getattr(tr, "to_dict", None)
+    if callable(to_dict):
+        return dict(to_dict() or {})
+    return {"start": str(getattr(tr, "start_iso", "") or ""),
+            "end": str(getattr(tr, "end_iso", "") or "")}
 
 
 class _Window:
@@ -772,18 +821,174 @@ class BehaviorService:
         }
 
     # ------------------------------------------------------- infer_activities
-    def infer_activities(self, tr: Any, rooms: str = "") -> Dict[str, Any]:
+    def infer_activities(self, tr: Any, rooms: str = "",
+                         activities: Any = None) -> Dict[str, Any]:
+        """活动推断：语义规则判定为主，时段启发式为兜底（DCD 20261004 MA-裁6 Q1=A）。
+
+        `activities` 是 ToolSpec/MCP 一直声明、门面原先收下就丢的那个入参：这里真正
+        下发给规则筛选（键名 / 中文名 / 标签都可以），并同时过滤兜底时段的标签名。
+        """
         try:
-            out = self._infer_activities(tr, rooms)
+            out = self._infer_activities(tr, rooms, activities)
             out["ok"] = True
             return out
         except Exception as exc:
             return self._fail("infer_activities", exc, {"activities": [], "summary": {},
-                                                        "filters": {}})
+                                                        "filters": {}, "total_activities": 0,
+                                                        "activity_types": [],
+                                                        "excluded_entities": {}})
 
-    def _infer_activities(self, tr: Any, rooms: str) -> Dict[str, Any]:
+    def _infer_activities(self, tr: Any, rooms: str,
+                          activities: Any = None) -> Dict[str, Any]:
         room_list = _split(rooms)
-        matrix = self.repo.activity_matrix(tr, rooms=room_list)
+        allow = _split(activities)
+        exclusions = self._activity_exclusions()
+        exclude_ids = list(exclusions["entity_ids"])
+
+        semantic, rules_meta = self._semantic_activities(tr, room_list, allow, exclude_ids)
+        heuristic, seg_meta = self._heuristic_segments(tr, room_list, allow, exclude_ids)
+        rows = semantic + heuristic
+        rows.sort(key=lambda a: (str(a.get("day") or ""), float(a.get("start_ts") or 0.0),
+                                 str(a.get("activity") or ""), str(a.get("name") or "")))
+
+        by_name: Dict[str, int] = {}
+        for a in rows:
+            by_name[str(a.get("name") or a.get("activity") or "")] = \
+                by_name.get(str(a.get("name") or a.get("activity") or ""), 0) + 1
+        return {
+            "activities": rows,
+            "summary": {"count": len(rows), "by_name": by_name,
+                        "days": seg_meta["days"],
+                        "semantic": len(semantic), "heuristic": len(heuristic)},
+            "filters": {"rooms": room_list, "activities": allow},
+            # 与 legacy 同名键（裁5 Q2=A「并存为正式口径」）：总数 + 命中的活动类型集合
+            "total_activities": len(rows),
+            "activity_types": sorted({str(a.get("activity")) for a in rows
+                                      if a.get("activity")}),
+            "window": _window_meta(tr),
+            # 裁6 Q3=A：被硬排除的实体必须可见，且这里的 count 就是真正生效的排除数
+            "excluded_entities": exclusions,
+            # 裁6 Q4 三项对比读数的第三项（旁挂依赖：规则表）
+            "rule_sources": rules_meta,
+        }
+
+    # -------------------------------------------------------- 语义规则判定
+    def _activity_exclusions(self) -> Dict[str, Any]:
+        """排除表读数（读不到也要如实报数，不能静默当成"没有排除"）。"""
+        try:
+            data = self.repo.excluded_entity_ids()
+        except Exception as exc:  # noqa: BLE001
+            self.log.exception("excluded_entity_ids 读取失败")
+            return {"entity_ids": [], "count": 0,
+                    "sources": {"error": "%s: %s" % (type(exc).__name__, exc)},
+                    "scopes": {}}
+        ids = [str(e) for e in (data.get("entity_ids") or []) if str(e)]
+        return {"entity_ids": sorted(set(ids)), "count": len(set(ids)),
+                "sources": dict(data.get("sources") or {}),
+                "scopes": dict(data.get("scopes") or {})}
+
+    def _activity_rule_rows(self) -> Tuple[List[Dict[str, Any]], str]:
+        try:
+            return list(self.repo.activity_rules(enabled_only=True) or []), ""
+        except Exception as exc:  # noqa: BLE001
+            # 规则表读不到 ≠ 没有规则：把原因带回返回体，否则"注册了却没生效"无从分辨。
+            self.log.warning("activity_rules 读取失败: %s", exc)
+            return [], "%s: %s" % (type(exc).__name__, exc)
+
+    @staticmethod
+    def _rule_from_row(row: Dict[str, Any]) -> Optional[ActivityRule]:
+        """`activity_rules` 行 -> ActivityRule（legacy 自定义规则的口径搬运）。
+
+        口径差异要说清楚：legacy 数的是**事件条数**，本引擎的 `min_count` 数的是
+        **会话段数**（on→off 配对后）；`min_minutes=0` 表示规则只声明频次、不声明时长，
+        与 legacy 一致。窗口语义取新引擎口径（结束 <= 起始视为跨天）。
+        """
+        name = str(row.get("name") or "").strip()
+        if not name:
+            return None
+        try:
+            min_events = max(1, int(row.get("min_events") or 1))
+        except (TypeError, ValueError):
+            min_events = 1
+        try:
+            declared = float(row.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            declared = 0.0
+        room = str(row.get("room") or "")
+        tags = [str(t) for t in (row.get("tags") or []) if str(t).strip()]
+        return ActivityRule(
+            key=name, name=name, room=room,
+            tags=tags,
+            # tags_json 在 legacy 里是**判定条件**（设备标签任一命中才计事件），
+            # 不是展示标签：不给 require_tags 就会退化成「全屋 + 频次」的假命中。
+            require_tags=tags,
+            window=(_safe_hour(row.get("start_hour"), 0), _safe_hour(row.get("end_hour"), 23)),
+            min_minutes=0.0,
+            requires=[Signal(room=room, min_minutes=0.0, min_count=min_events)],
+            confidence=min(1.0, max(0.0, declared)),
+            source="activity_rules")
+
+    def _semantic_activities(self, tr: Any, room_list: List[str], allow: List[str],
+                             exclude_ids: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """跑 ActivityEngine：内置 5 条语义规则 + `activity_rules` 表里的自定义规则。"""
+        rules, rules_error = self._activity_rule_rows()
+        engine = ActivityEngine(self.resolver, self.config)
+        custom: Dict[str, ActivityRule] = {}
+        for row in rules:
+            rule = self._rule_from_row(row)
+            if rule is not None:
+                custom[rule.key] = rule
+        engine.custom = custom
+
+        events = self.repo.load_events(tr, rooms=room_list, exclude_entity_ids=exclude_ids)
+        # 语义判定吃的是 load_events 的**截断切片**（`max_scan` 上限），兜底一侧走
+        # `activity_matrix`（SQL 聚合，全窗口）。生产库 30 天窗实测：切片只覆盖窗口前 20 小时。
+        # 不把「扫了多少 / 全窗口多少」写进返回体，"语义比兜底少"就说不清是规则不匹配还是被上限饿死。
+        try:
+            events_total = self.repo.count_events(
+                tr, rooms=room_list, exclude_entity_ids=exclude_ids)
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("count_events（活动窗口真值）读取失败: %s", exc)
+            events_total = -1
+        scan_limit = int(getattr(self.repo, "scan_limit", 0) or 0)
+        matches = engine.infer(events, tr, rooms=",".join(room_list),
+                               activities=allow or None)
+        rows: List[Dict[str, Any]] = []
+        for m in matches:
+            item = m.to_dict()
+            item["start_hour"] = house_dt(m.start).hour if m.start else 0
+            item["end_hour"] = house_dt(m.end).hour if m.end else 0
+            item["typical_window"] = "%02d:00-%02d:00" % (int(m.window[0]), int(m.window[1])) \
+                if getattr(m, "window", None) else ""
+            item["evidence"] = _semantic_evidence(m)
+            item["source"] = "semantic"
+            item["custom"] = m.source == "activity_rules"
+            item["rule"] = m.name if m.source == "activity_rules" else ""
+            rows.append(item)
+        meta = {
+            "builtin": len(BUILTIN_ACTIVITIES),
+            "activity_rules_table": len(rules),
+            "custom_applied": len(custom),
+            "activity_rules_error": rules_error,
+            "selected": len(engine.select(activities=allow or None, rooms=",".join(room_list))),
+            "events_scanned": len(events),
+            "events_total": events_total,
+            "scan_limit": scan_limit,
+            # 与裁5 Q4=A 同口径：等于上限时无法与"刚好这么多"区分，所以说"可能被截"
+            "scan_truncated": bool(scan_limit and len(events) >= scan_limit),
+            "excluded_entity_ids": len(exclude_ids),
+        }
+        return rows, meta
+
+    # -------------------------------------------------------- 时段启发式兜底
+    def _heuristic_segments(self, tr: Any, room_list: List[str], allow: List[str],
+                            exclude_ids: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """无标签设备的兜底输出：连续活跃时段贴时段标签（裁6 Q1=A 保留为补充输出）。
+
+        与语义判定的区别写在每条的 `source` 上：这里只证明「这段时间有设备在动」，
+        不证明人在做什么。
+        """
+        matrix = self.repo.activity_matrix(tr, rooms=room_list, exclude_entity_ids=exclude_ids)
         per_day: Dict[str, Dict[int, Dict[str, int]]] = {}
         for r in matrix:
             day = str(r.get("day") or "")
@@ -794,7 +999,7 @@ class BehaviorService:
             bucket = per_day.setdefault(day, {}).setdefault(hour, {})
             bucket[domain] = bucket.get(domain, 0) + int(r.get("count") or 0)
 
-        activities: List[Dict[str, Any]] = []
+        rows: List[Dict[str, Any]] = []
         for day in sorted(per_day.keys()):
             hours = per_day[day]
             hourly_total = {h: sum(dom.values()) for h, dom in hours.items()}
@@ -816,34 +1021,58 @@ class BehaviorService:
                     for d, c in hours.get(h, {}).items():
                         dom_counts[d] = dom_counts.get(d, 0) + c
                 dominant = max(dom_counts, key=lambda d: dom_counts[d]) if dom_counts else ""
-                activities.append({
-                    "name": _label_activity(seg[0], seg[-1], dominant),
+                name = _label_activity(seg[0], seg[-1], dominant)
+                if allow and not _allow_hit(name, "", allow):
+                    continue
+                start_ts = _day_hour_ts(day, seg[0])
+                end_ts = _day_hour_ts(day, seg[-1])
+                rows.append({
+                    "activity": name,
+                    "name": name,
                     "day": day,
+                    "room": ",".join(room_list),
                     "start_hour": seg[0],
                     "end_hour": seg[-1],
+                    "start_ts": start_ts,
+                    "end_ts": end_ts + 3599.0,
+                    "start": fmt_ts(start_ts),
+                    "end": fmt_ts(end_ts + 3599.0),
                     "events": ev,
                     "dominant_domain": dominant,
                     "domains": dom_counts,
                     "confidence": round(min(0.95, 0.40 + ev / 200.0 + (0.10 if len(seg) >= 2 else 0.0)), 3),
+                    "typical_window": "%02d:00-%02d:00" % (seg[0], seg[-1] + 1),
+                    "evidence": "时段启发式：%s %02d:00-%02d:59 有 %d 条事件（主导域 %s），"
+                                "无设备标签可判定具体活动" % (day, seg[0], seg[-1], ev, dominant or "-"),
+                    "source": "heuristic",
+                    "custom": False,
+                    "tags": [],
+                    "signals": [],
                 })
             gap_len, gap_at = _longest_quiet(hourly_total, 9, 18)
             if gap_len >= 3:
-                activities.append({
-                    "name": "可能离家", "day": day,
-                    "start_hour": gap_at, "end_hour": gap_at + gap_len - 1,
-                    "events": 0, "dominant_domain": "", "domains": {},
-                    "confidence": round(min(0.9, 0.45 + gap_len / 24.0), 3),
-                })
+                name = "可能离家"
+                if not allow or _allow_hit(name, "away", allow):
+                    start_ts = _day_hour_ts(day, gap_at)
+                    rows.append({
+                        "activity": "away",
+                        "name": name, "day": day, "room": ",".join(room_list),
+                        "start_hour": gap_at, "end_hour": gap_at + gap_len - 1,
+                        "start_ts": start_ts,
+                        "end_ts": _day_hour_ts(day, gap_at + gap_len - 1) + 3599.0,
+                        "start": fmt_ts(start_ts),
+                        "end": fmt_ts(_day_hour_ts(day, gap_at + gap_len - 1) + 3599.0),
+                        "events": 0, "dominant_domain": "", "domains": {},
+                        "confidence": round(min(0.9, 0.45 + gap_len / 24.0), 3),
+                        "typical_window": "%02d:00-%02d:00" % (gap_at, gap_at + gap_len),
+                        "evidence": "时段启发式：%s %02d:00 起连续 %d 小时无事件" % (day, gap_at, gap_len),
+                        "source": "heuristic",
+                        "custom": False,
+                        "tags": ["away"],
+                        "signals": [],
+                    })
+        return rows, {"days": len(per_day)}
 
-        by_name: Dict[str, int] = {}
-        for a in activities:
-            by_name[a["name"]] = by_name.get(a["name"], 0) + 1
-        return {
-            "activities": activities,
-            "summary": {"count": len(activities), "by_name": by_name,
-                        "days": len(per_day)},
-            "filters": {"rooms": room_list},
-        }
 
     # ---------------------------------------------------------- user_persona
     def user_persona(self, days: int = 14) -> Dict[str, Any]:

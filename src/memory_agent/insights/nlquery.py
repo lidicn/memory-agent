@@ -124,9 +124,13 @@ class NLQueryEngine:
         if route == Intent.ACTIVITY.value:
             data = self.service.infer_activities(
                 tr, rooms=plan.room, activities=[plan.activity] if plan.activity else None)
-            names = [a["name"] for a in data["activities"][:5]]
-            return ("%s 推断到 %d 次活动：%s。" % (
-                data.get("summary", ""), data["total"], "、".join(names) or "无"), data)
+            names = [a["name"] for a in data.get("activities", [])[:5]]
+            # 两处原先必抛/必乱的读数：`total` 在新引擎里不存在（KeyError 被上层兜成
+            # "查询失败"，这条路由从切引擎那天起就没答上来过），`summary` 是 dict，
+            # 直接 %s 会把整份字典打进给用户的话术里。
+            return ("%s~%s 推断到 %d 次活动：%s。" % (
+                fmt_ts(tr.start_ts)[:10], fmt_ts(tr.end_ts)[:10],
+                int(data.get("total_activities") or 0), "、".join(names) or "无"), data)
         if route == Intent.PERSONA.value:
             # P2：尊重用户明确指定的时间窗（如"昨天/上周"），不再强制 max(days,14)；
             # 仅当窗口不足 1 天时回退到默认 14 天画像

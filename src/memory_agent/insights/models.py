@@ -388,13 +388,17 @@ class TimeRange:
         return TimeRange(self.start - delta, self.end - delta, self.label)
 
     def split_days(self) -> List[Tuple[str, float, float]]:
-        """按天切分：[(day, start_ts, end_ts), ...]（已裁剪）。"""
+        """按天切分：[( 'YYYY-MM-DD', start_ts, end_ts ), ...]（已裁剪）。
+
+        日界必须按**家庭墙钟**取。原先用 `datetime.fromtimestamp(ts)`（机器本地时区），
+        容器跑 UTC、家庭墙钟 +8 时，日界落在 UTC 零点 = 家庭 08:00，跨天活动会被
+        劈成两段、`day_key()` 又按家庭墙钟归日，两侧口径不一致。
+        """
         out: List[Tuple[str, float, float]] = []
-        cur = datetime.fromtimestamp(self.start_ts).replace(
-            hour=0, minute=0, second=0, microsecond=0)
-        while cur.timestamp() < self.end_ts:
+        cur = house_dt(self.start_ts).replace(hour=0, minute=0, second=0, microsecond=0)
+        while house_ts(cur) < self.end_ts:
             nxt = cur + timedelta(days=1)
-            s, e = self.clip(cur.timestamp(), nxt.timestamp())
+            s, e = self.clip(house_ts(cur), house_ts(nxt))
             if e > s:
                 out.append((cur.strftime("%Y-%m-%d"), s, e))
             cur = nxt
@@ -572,6 +576,8 @@ class ActivityMatch:
     confidence: float = 0.0
     tags: List[str] = field(default_factory=list)
     signals: List[Dict[str, Any]] = field(default_factory=list)
+    source: str = "builtin"          # builtin | custom | activity_rules
+    window: Tuple[int, int] = (0, 24)  # 规则声明的时段（跨天口径见 ActivityRule.window）
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -588,6 +594,8 @@ class ActivityMatch:
             "confidence": self.confidence,
             "tags": list(self.tags),
             "signals": list(self.signals),
+            "source": self.source,
+            "window": list(self.window),
         }
 
 

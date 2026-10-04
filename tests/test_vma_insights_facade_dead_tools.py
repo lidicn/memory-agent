@@ -7,6 +7,11 @@
   吞成 `ok:false`，工具从来没成功过一次（`activity_rules` 里一条都没落）。
 - `infer_activities(activities=...)` 这个 ToolSpec 声明的入参收进来就丢，调用方
   缩小范围的意图被静默忽略，拿到的仍是全量。
+
+DCD 20261004 §三.6 裁6 Q2=A 之后，签名/入库/套用三段都通了，本文件随之分两层：
+形状与入库（8 参数、ToolSpec 对齐、写进 `activity_rules`）继续锁死；回执文案从
+「尚未套用」改为「下次生效」，并由 `test_registered_rule_is_read_by_the_current_engine`
+核对现行引擎**真的**读了这张表——文案与读数必须同向，否则又是一次过度承诺。
 """
 
 import inspect
@@ -61,16 +66,43 @@ def test_facade_define_activity_signature_matches_the_registered_toolspec():
     assert facade_params == spec_params, (facade_params, spec_params)
 
 
-def test_define_activity_receipt_does_not_promise_application_that_is_not_wired():
-    """注册成功不等于会生效。回执若写"下次自动套用"就是把一次失败换成一次静默过度承诺。"""
+def test_define_activity_receipt_promise_matches_what_the_engine_now_reads():
+    """裁6 Q2=A 之后，回执的两侧都不许过头：
+
+    - 不能退回旧话「自动套用」却不写清套用的是哪张表、按什么口径；
+    - 也不能把 legacy 的覆盖预检告警（`coverage_warning`）从 message 里抹掉——
+      门面代写回执时整段替换 message，曾把「缺实体类型」这句诊断吞掉。
+    """
     st, svc = _svc()
     try:
         out = svc.define_activity("nap", "卧室", ["presence"], 12, 15, 1, 0.6, "")
         msg = out.get("message") or ""
         assert out.get("ok") is True, out
-        assert "自动套用" not in msg, msg
         assert "activity_rules" in msg, msg
-        assert "尚未套用" in msg and "DCD" in msg, msg
+        assert "infer_activities 起生效" in msg, msg
+        assert "自动套用" not in msg, msg
+        assert "尚未套用" not in msg, msg
+        assert out["rule"]["rule_id"] in msg, msg
+
+        # 空库里 presence 无实体 → legacy 给的是诊断，门面必须原样带到 message 末尾
+        assert out.get("coverage_warning"), out
+        assert out["coverage_warning"] in msg, msg
+    finally:
+        st.close()
+        os.remove(st.db_path)
+
+
+def test_registered_rule_is_read_by_the_current_engine():
+    """回执说「下次生效」，就必须真能核对到「现行引擎读了这条规则」。
+
+    这一条是「注册了没人读」那起事故的反向锁：把规则写进 `activity_rules` 后，
+    `infer_activities` 的 `rule_sources.activity_rules_table` 必须把它计进来。
+    """
+    st, svc = _svc()
+    try:
+        svc.define_activity("nap", "卧室", ["presence"], 12, 15, 1, 0.6, "")
+        out = svc.infer_activities(start="2026-01-01T00:00:00", end="2026-01-01T23:59:59")
+        assert out["rule_sources"]["activity_rules_table"] == 1, out
     finally:
         st.close()
         os.remove(st.db_path)

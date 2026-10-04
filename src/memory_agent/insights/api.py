@@ -487,23 +487,17 @@ class InsightService:
     @_degrade(lambda: Page.build([]).to_dict("activities"))
     def infer_activities(self, days: int = 7, rooms: str = "", start: str = "",
                          end: str = "", activities: Any = None) -> Dict[str, Any]:
-        """活动推断（洗澡/学习/看电视/睡眠/烹饪 + 自定义）。
+        """活动推断（洗澡/学习/看电视/睡眠/烹饪 + `activity_rules` 里的自定义规则）。
 
-        `activities` 是 ToolSpec 声明的入参，原先收进来就丢——调用方缩小范围的意图
-        被静默吞掉，拿到的仍是全量。
+        裁6 Q1=A「语义活动回归」：计算交回 `BehaviorService.infer_activities`，那里
+        跑 `ActivityEngine` 的规则判定，时段启发式降级为「无标签设备兜底」的补充输出
+        （每条带 `source`: semantic | heuristic）。
+
+        `activities` 不再在门面里做后置白名单——那只能过滤已经算完的结果；现在直接
+        下发给引擎，规则筛选发生在推断之前。
         """
         tr = self._tr(start, end, days=days or 7)
-        out = self.core.infer_activities(tr, rooms=rooms)
-        if isinstance(activities, str):
-            allow = {p.strip() for p in activities.split(",") if p.strip()}
-        else:
-            allow = {str(v).strip() for v in (activities or []) if str(v).strip()}
-        if allow and isinstance(out, dict) and isinstance(out.get("activities"), list):
-            out["activities"] = [
-                a for a in out["activities"]
-                if str(a.get("activity") or a.get("name") or "") in allow
-            ]
-        return out
+        return self.core.infer_activities(tr, rooms=rooms, activities=activities)
 
     @_degrade(lambda: {"ok": False, "error": "invalid rule", "activity": {}})
     def define_activity(self, name: str, room: str = "", tags: Any = None,
@@ -516,21 +510,25 @@ class InsightService:
         属性——两层异常都被 `_degrade` 吞成 `ok:false`，于是这个工具从来没成功过
         （`activity_rules` 里一条都没落）。改回与 legacy 一致的签名并显式转发，
         同 `LEGACY_CONTRACT_MEMBERS` 的处理路子。
-        规则的**套用**落在语义引擎那一侧，口径待 DCD 裁定。
+
+        规则的**套用**已在裁6 Q2=A 落地：`BehaviorService` 每次推断都从 `activity_rules`
+        读启用中的规则注入引擎（读数见返回体的 `rule_sources.activity_rules_table`），
+        所以这里的回执可以如实写「下次生效」。
         """
         out = self.legacy.define_activity(
             name, room=room, tags=tags or [], start_hour=start_hour, end_hour=end_hour,
             min_events=min_events, confidence=confidence, note=note,
         )
-        # legacy 的回执写着"下次 infer_activities 自动套用"，那是语义引擎时代的话。
-        # 现行门面用的是时段启发式，还没有规则入口——不能把"注册成功"回成"将要生效"，
-        # 那等于把一次失败换成一次静默的过度承诺（套用口径见 DCD 20261003 申请）。
+        # legacy 的原话是「下次 infer_activities 自动套用」——那是语义引擎时代的话。
+        # 门面这条线现在确实又回到语义引擎了，但套用范围只到 `activity_rules` 声明的
+        # 规则（房间/时段/频次/置信度），legacy 的静默间隔检测器仍在 legacy 那一侧。
         if isinstance(out, dict) and out.get("ok"):
+            warn = out.get("coverage_warning") or ""
             out["message"] = (
                 "规则已注册进 activity_rules（rule_id=%s）；"
-                "当前活动推断走时段启发式，尚未套用自定义规则，"
-                "套用口径待 DCD 裁定后接通" % (out.get("rule", {}).get("rule_id") or "")
-            )
+                "下次 infer_activities 起生效：语义引擎按房间/时段/最少事件数套用该规则，"
+                "无标签设备仍由时段启发式兜底" % (out.get("rule", {}).get("rule_id") or "")
+            ) + ((" ⚠️ " + warn) if warn else "")
         return out
 
     # ------------------------------------------------------------------

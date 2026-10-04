@@ -133,6 +133,22 @@ class StoreRepository:
         where.append(column + " IN (" + ",".join(["?"] * len(vals)) + ")")
         params.extend(vals)
 
+    @classmethod
+    def _add_not_in(cls, where: List[str], params: List[Any], column: str,
+                    values: Any) -> None:
+        """硬排除：`column NOT IN (...)`，空排除集不加任何条件（等于不过滤）。
+
+        不补 `OR column IS NULL`：events 的 entity_id/room/domain 都是
+        `NOT NULL DEFAULT ''`（store.py 的建表语句），缺值时入库已被折叠成 `''`，
+        NULL 行不存在，加了是掩盖问题而不是防御。排除集同理由 `_as_tuple` 滤掉
+        `None`/`""`，不会写出 `NOT IN (NULL)` 这种恒为 UNKNOWN 的条件。
+        """
+        vals = cls._as_tuple(values)
+        if not vals:
+            return
+        where.append(column + " NOT IN (" + ",".join(["?"] * len(vals)) + ")")
+        params.extend(vals)
+
     @staticmethod
     def _bounds(tr: Any) -> Tuple[str, str, str, str]:
         """(start_iso, end_iso, start_day, end_day)；tr 只要求 TimeRange 形状。"""
@@ -168,13 +184,19 @@ class StoreRepository:
         return max(1, min(n, ceiling))
 
     def _event_where(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
-                     domains: Any = None, behavior_only: bool = False) -> Tuple[List[str], List[Any]]:
+                     domains: Any = None, behavior_only: bool = False,
+                     exclude_entity_ids: Any = None,
+                     exclude_domains: Any = None) -> Tuple[List[str], List[Any]]:
         start_iso, end_iso, start_day, end_day = self._bounds(tr)
         where = ["day BETWEEN ? AND ?", "ts BETWEEN ? AND ?"]
         params: List[Any] = [start_day, end_day, start_iso, end_iso]
         self._add_in(where, params, "entity_id", entity_ids)
         self._add_in(where, params, "room", rooms)
         self._add_in(where, params, "domain", domains)
+        # 硬排除（DCD 20261004 MA-裁6 Q3=A）：signal_exclusions 里的实体必须从
+        # 事件流和 activity_matrix 两侧同时剔除，只剔一侧会让「已排除」成为空话。
+        self._add_not_in(where, params, "entity_id", exclude_entity_ids)
+        self._add_not_in(where, params, "domain", exclude_domains)
         if behavior_only:
             where.append(self.BEHAVIOR_ONLY_SQL)
         return where, params
@@ -205,12 +227,15 @@ class StoreRepository:
 
     # ------------------------------------------------------------ 事件读取
     def load_events(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
-                    domains: Any = None, behavior_only: bool = False) -> List[EventRecord]:
+                    domains: Any = None, behavior_only: bool = False,
+                    exclude_entity_ids: Any = None,
+                    exclude_domains: Any = None) -> List[EventRecord]:
         """查 events 表，ts BETWEEN start_iso AND end_iso，返回 EventRecord 列表。
 
         上限 config.max_scan（默认 30000），命中截断会记 warning。
         """
-        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only)
+        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only,
+                                          exclude_entity_ids, exclude_domains)
         limit = self._scan_limit()
         sql = ("SELECT id, ts, day, room, entity_id, domain, action, person, old_state, new_state, attrs_json "
                "FROM events WHERE " + " AND ".join(where) + " ORDER BY ts ASC, id ASC LIMIT ?")
@@ -221,21 +246,34 @@ class StoreRepository:
         return [self._to_record(row) for row in rows]
 
     def count_events(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
-                     domains: Any = None, behavior_only: bool = False) -> int:
-        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only)
+                     domains: Any = None, behavior_only: bool = False,
+                     exclude_entity_ids: Any = None,
+                     exclude_domains: Any = None) -> int:
+        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only,
+                                          exclude_entity_ids, exclude_domains)
         rows = self._execute("SELECT COUNT(*) AS c FROM events WHERE " + " AND ".join(where), params)
         return int((rows[0].get("c") if rows else 0) or 0)
 
     def day_counts(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
-                   domains: Any = None, behavior_only: bool = False) -> Dict[str, int]:
-        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only)
+                   domains: Any = None, behavior_only: bool = False,
+                   exclude_entity_ids: Any = None,
+                   exclude_domains: Any = None) -> Dict[str, int]:
+        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only,
+                                          exclude_entity_ids, exclude_domains)
         sql = "SELECT day, COUNT(*) AS c FROM events WHERE " + " AND ".join(where) + " GROUP BY day ORDER BY day"
         return {str(r.get("day") or ""): int(r.get("c") or 0) for r in self._execute(sql, params)}
 
     def activity_matrix(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
-                        domains: Any = None, behavior_only: bool = False) -> List[Dict[str, Any]]:
-        """(day, hour, domain) -> count；hour 由 substr(ts,12,2) 提取（0-23）。"""
-        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only)
+                        domains: Any = None, behavior_only: bool = False,
+                        exclude_entity_ids: Any = None,
+                        exclude_domains: Any = None) -> List[Dict[str, Any]]:
+        """(day, hour, domain) -> count；hour 由 substr(ts,12,2) 提取（0-23）。
+
+        `exclude_entity_ids` 是裁6 Q3 的硬排除落点：时段启发式（兜底输出）就由这张
+        表算出，不排除被点名的实体，「已排除 N 个实体」只会出现在返回体里而不生效。
+        """
+        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only,
+                                          exclude_entity_ids, exclude_domains)
         sql = ("SELECT day, CAST(substr(ts, 12, 2) AS INTEGER) AS hour_value, domain, COUNT(*) AS c "
                "FROM events WHERE " + " AND ".join(where) + " GROUP BY day, hour_value, domain")
         out: List[Dict[str, Any]] = []
@@ -367,6 +405,90 @@ class StoreRepository:
                + " AND ".join(where) + " ORDER BY ts DESC LIMIT ?")
         params.append(self._top_n(limit, 500))
         return self._execute(sql, params)
+
+    # ------------------------------------------------- 旁挂依赖（规则表/排除表）
+    def activity_rules(self, enabled_only: bool = True) -> List[Dict[str, Any]]:
+        """`activity_rules` 表（define_activity 的落库处，裁6 Q2=A 要求引擎真的读它）。
+
+        表不存在/查询失败一律上抛（本层 fail-closed），由 service 层降级并在返回体的
+        `rule_sources.activity_rules_error` 里留痕——静默回退成"没有规则"就是又一次
+        把失败换成空结果。
+        """
+        sql = ("SELECT rule_id, name, room, tags_json, start_hour, end_hour, "
+               "min_events, confidence, note, enabled FROM activity_rules")
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        sql += " ORDER BY name"
+        out: List[Dict[str, Any]] = []
+        for r in self._execute(sql):
+            tags = r.get("tags_json")
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags or "[]")
+                except (TypeError, ValueError):
+                    tags = []
+            out.append({
+                "rule_id": str(r.get("rule_id") or ""),
+                "name": str(r.get("name") or ""),
+                "room": str(r.get("room") or ""),
+                "tags": [str(t) for t in (tags or []) if str(t).strip()],
+                "start_hour": int(r.get("start_hour") or 0),
+                "end_hour": int(r.get("end_hour") or 23),
+                "min_events": int(r.get("min_events") or 1),
+                "confidence": float(r.get("confidence") or 0.0),
+                "note": str(r.get("note") or ""),
+                "enabled": bool(r.get("enabled")),
+            })
+        return out
+
+    def signal_exclusions(self, include_revoked: bool = False) -> List[Dict[str, Any]]:
+        """`signal_exclusions` 表（学习策略 teach_signal kind='hard' 的落库处）。"""
+        sql = ("SELECT exclusion_id, entity_id, scope, exclusion_type, reason, revoked "
+               "FROM signal_exclusions")
+        if not include_revoked:
+            sql += " WHERE revoked=0"
+        sql += " ORDER BY entity_id, scope"
+        return [{
+            "exclusion_id": str(r.get("exclusion_id") or ""),
+            "entity_id": str(r.get("entity_id") or ""),
+            "scope": str(r.get("scope") or "all"),
+            "exclusion_type": str(r.get("exclusion_type") or "exclude"),
+            "reason": str(r.get("reason") or ""),
+            "revoked": bool(r.get("revoked")),
+        } for r in self._execute(sql)]
+
+    def excluded_entity_ids(self) -> Dict[str, Any]:
+        """活动推断要硬排除的实体清单 + 来源计数（裁6 Q3 的「已排除 N 个实体」）。
+
+        两个来源：
+        1. `signal_exclusions` 里生效且 `exclusion_type='exclude'` 的行——
+           `is_automation` / `not_automation` 是**分类标注**（告诉 agent 这实体是不是自动化），
+           不是排除，误当排除会把正常设备从活动里抹掉；
+        2. `config.excluded_entities`（采集侧的显式排除；注入的是原始 app Config 时可见）。
+        """
+        ids: List[str] = []
+        sources: Dict[str, int] = {"signal_exclusions": 0, "config": 0}
+        scopes: Dict[str, int] = {}
+        try:
+            for row in self.signal_exclusions():
+                if row["exclusion_type"] != "exclude":
+                    continue
+                eid = row["entity_id"]
+                if not eid or eid in ids:
+                    continue
+                ids.append(eid)
+                sources["signal_exclusions"] += 1
+                scopes[row["scope"]] = scopes.get(row["scope"], 0) + 1
+        except Exception as exc:  # noqa: BLE001 - 排除表读不到不能让整条查询外抛
+            self.log.warning("signal_exclusions 读取失败，本轮按无硬排除处理: %s", exc)
+            sources["signal_exclusions_error"] = "%s: %s" % (type(exc).__name__, exc)
+        for eid in (getattr(self.config, "excluded_entities", None) or []):
+            text = str(eid or "").strip()
+            if text and text not in ids:
+                ids.append(text)
+                sources["config"] += 1
+        return {"entity_ids": sorted(ids), "count": len(ids),
+                "sources": sources, "scopes": scopes}
 
     # ------------------------------------------------- behavior / perception
     def behavior_summary(self, tr: Any, rooms: Any = None) -> List[Dict[str, Any]]:

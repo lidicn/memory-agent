@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .models import (ActivityMatch, EventRecord, InsightConfig, TimeRange, day_key,
-                      house_dt)
+                      house_dt, house_ts)
 from .parser.entity import EntityResolver
 from .parser.timeframe import split_days
+from .utils import tags_of
 
 __all__ = ["Signal", "ActivityRule", "BUILTIN_ACTIVITIES", "ActivityEngine", "analyze_rhythm"]
+
+
+def _day_midnight(day: str) -> float:
+    """'YYYY-MM-DD' -> 该日家庭墙钟零点的 epoch 秒。"""
+    return house_ts(datetime.strptime(day, "%Y-%m-%d"))
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -77,16 +84,24 @@ class ActivityRule:
     name: str
     room: str = ""
     tags: List[str] = field(default_factory=list)
+    # `activity_rules.tags_json` 的**判定**语义：设备标签任一命中才计入事件（legacy 自定义
+    # 规则分支同口径，insights_legacy.py:2782）。和展示用的 `tags` 不是一回事：丢了它，
+    # 一条「要求 nonexistent_tag」的规则会命中全屋而不是 0 条。
+    require_tags: List[str] = field(default_factory=list)
     window: Tuple[int, int] = (0, 24)          # (起始小时, 结束小时)，可跨天
     min_minutes: float = 5.0
     requires: List[Signal] = field(default_factory=list)
     any_of: List[Signal] = field(default_factory=list)
     source: str = "builtin"
+    # `activity_rules.confidence`：用户在 define_activity 里声明的置信度。
+    # 0 表示未声明，由引擎按覆盖率算；>0 必须原样生效——收进来就丢是缺陷，不是默认值。
+    confidence: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {"key": self.key, "name": self.name, "room": self.room,
-                "tags": list(self.tags), "window": list(self.window),
-                "min_minutes": self.min_minutes,
+                "tags": list(self.tags), "require_tags": list(self.require_tags),
+                "window": list(self.window),
+                "min_minutes": self.min_minutes, "confidence": self.confidence,
                 "requires": [s.to_dict() for s in self.requires],
                 "any_of": [s.to_dict() for s in self.any_of],
                 "source": self.source}
@@ -109,8 +124,11 @@ class ActivityRule:
             window_tuple = (0, 24)
         return cls(key=key, name=name, room=room or str(data.get("room", "")),
                    tags=list(tags or data.get("tags", [])),
+                   require_tags=[str(t) for t in (data.get("require_tags") or [])
+                                 if str(t).strip()],
                    window=window_tuple,
                    min_minutes=_safe_float(data.get("min_minutes", 5.0), 5.0),
+                   confidence=_safe_float(data.get("confidence", 0.0), 0.0),
                    requires=requires, any_of=any_of, source=source)
 
 
@@ -235,8 +253,11 @@ class ActivityEngine:
         for rule in self.select(activities, rooms):
             signals = rule.requires + rule.any_of
             ids = [self._signal_ids(sig, rule) for sig in signals]
-            for day, day_start, _day_end in split_days(tr):
-                start, end = self._window_range(day_start, rule.window)
+            for day, _day_lo, _day_hi in split_days(tr):
+                # 窗口锚在**该日的家庭零点**，不是 split_days 裁剪后的起点：
+                # 查询区间几乎不会正好从零点开始，用裁剪起点当零点会把 (0,24) 这类
+                # 窗口整体平移成「起点 ~ 起点+24h」，同一段活动被相邻两天各判一次。
+                start, end = self._window_range(_day_midnight(day), rule.window)
                 start, end = tr.clip(start, end)
                 if end <= start:
                     continue
@@ -251,6 +272,10 @@ class ActivityEngine:
     def _signal_ids(self, sig: Signal, rule: ActivityRule) -> List[str]:
         info = self.resolver.resolve(room=sig.room or rule.room, query=sig.query,
                                      category=sig.category, domain=sig.domain)
+        wanted = {str(t).strip() for t in (rule.require_tags or []) if str(t).strip()}
+        if wanted:
+            # 任一声明标签命中即计入（legacy 的 `set(rule.tags) & set(e.tags)` 口径）
+            info = [e for e in info if tags_of(e.entity_id, e.label) & wanted]
         return [e.entity_id for e in info]
 
     @staticmethod
@@ -305,7 +330,9 @@ class ActivityEngine:
         last = max((metrics[i]["last"] for i in hit if metrics[i]["last"]), default=end)
         cover = len(hit) / float(max(1, len(signals)))
         extra = min(1.0, minutes / float(max(1.0, rule.min_minutes * 2)))
-        confidence = round(min(1.0, 0.55 + 0.25 * cover + 0.2 * extra), 2)
+        computed = round(min(1.0, 0.55 + 0.25 * cover + 0.2 * extra), 2)
+        # 规则自己声明过置信度就用自己的（define_activity 的 confidence 入参不是装饰）
+        confidence = round(float(rule.confidence), 2) if rule.confidence > 0 else computed
         detail = [{"room": signals[i].room or rule.room, "query": signals[i].query,
                    "category": signals[i].category, "satisfied": ok(i),
                    "minutes": metrics[i]["minutes"], "count": metrics[i]["count"],
@@ -313,7 +340,9 @@ class ActivityEngine:
         return ActivityMatch(activity=rule.key, name=rule.name, room=rule.room,
                              day=day_key(first), start=first, end=last,
                              minutes=minutes, confidence=confidence,
-                             tags=list(rule.tags), signals=detail)
+                             tags=list(rule.tags), signals=detail,
+                             source=rule.source, window=(int(rule.window[0]),
+                                                          int(rule.window[1])))
 
 
 def analyze_rhythm(buckets: List[int], coverage: float = 0.8,

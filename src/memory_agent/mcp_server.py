@@ -1652,7 +1652,8 @@ def _build_server():
 
         name=活动类型名(英文snake_case)；room=房间子串(可选)；tags=需命中的设备标签(可选,如 presence/door/media)；
         start_hour/end_hour=生效时段；min_events=最小触发次数；confidence=置信度；note=人类可读说明。
-        规则落库 activity_rules；是否套用由当前 infer_activities 实现决定，以回执 message 为准。
+        规则落库 activity_rules；infer_activities 每次推断都读取启用中的规则并套用，
+        读数见返回体 rule_sources，无标签设备仍由时段启发式兜底。
         识别出的活动可被 source_refs=insight:<id> 引用写回记忆。
         """
         rt = get_runtime()
