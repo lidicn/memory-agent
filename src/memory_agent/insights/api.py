@@ -85,7 +85,7 @@ def _empty() -> Dict[str, Any]:
 
 
 def annotate_scan(payload: Dict[str, Any], scanned: int, scan_limit: int,
-                  total_exact: Any = None) -> Dict[str, Any]:
+                  total_exact: Any = None, truncated: Any = None) -> Dict[str, Any]:
     """把「扫描上限有没有命中」写进返回体（DCD 20261004 MA-裁5 **Q4=A**）。
 
     `truncated` 说的是**切片**：`repo.load_events` 的 `LIMIT` 就是 `scan_limit`，命中上限时
@@ -99,8 +99,14 @@ def annotate_scan(payload: Dict[str, Any], scanned: int, scan_limit: int,
     裁5 **追加 Q-A** 之后 `total` 可以由不带 LIMIT 的 COUNT 单独给出：那时它是匹配总数，
     与切片有没有被截无关，调用方传 `total_exact=True` 明说这件事；传 `None` 表示 `total`
     仍是切片行数，沿用上面的旧推断。**切片被截与总数精确可以同时成立**。
+
+    裁6 **Q6-2=A** 之后按天分批：旧判据 `scanned >= scan_limit` 失效（总数可能远低于
+    上限但某天已被截）。调用方传 `truncated=repo.last_scan_truncated` 覆盖旧判据。
     """
-    truncated = bool(scan_limit) and int(scanned) >= int(scan_limit)
+    if truncated is not None:
+        truncated = bool(truncated)
+    else:
+        truncated = bool(scan_limit) and int(scanned) >= int(scan_limit)
     payload["truncated"] = truncated
     payload["scan_limit"] = int(scan_limit or 0)
     payload["total_exact"] = (not truncated) if total_exact is None else bool(total_exact)
@@ -408,7 +414,8 @@ class InsightService:
             out["total"] = counted
             out["has_more"] = int(out.get("offset") or 0) + out["count"] < counted
         return annotate_scan(out, len(events), getattr(self.repo, "scan_limit", 0),
-                             total_exact=(counted is not None))
+                             total_exact=(counted is not None),
+                             truncated=getattr(self.repo, "last_scan_truncated", None))
 
     def _events_total(self, tr: Any, ids: Any, rooms: Any, behavior_only: bool) -> Any:
         """事件匹配总数（不带 LIMIT）。取不到返回 `None`，让 `total_exact` 说真话。"""

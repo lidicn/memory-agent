@@ -102,6 +102,9 @@ class StoreRepository:
         # key 含过滤参数，命中即跳过全表扫描。
         self._catalog_cache: dict[tuple, tuple[float, list[dict]]] = {}
         self._catalog_ttl = 60.0
+        # DCD 20261004 裁6 Q6-2=A：按天分批扫描后，记录是否有任一天命中日配额（被截断）。
+        # 旧判据 len(events) >= scan_limit 在分批下失效：总数可能远低于上限但某天已被截。
+        self._last_scan_truncated = False
 
     # ------------------------------------------------------------ 基础出口
     def _execute(self, sql: str, params: Sequence[Any] = ()) -> List[Dict[str, Any]]:
@@ -235,20 +238,74 @@ class StoreRepository:
                     domains: Any = None, behavior_only: bool = False,
                     exclude_entity_ids: Any = None,
                     exclude_domains: Any = None) -> List[EventRecord]:
-        """查 events 表，ts BETWEEN start_iso AND end_iso，返回 EventRecord 列表。
+        """查 events 表，按天分批扫描，返回 EventRecord 列表。
 
-        上限 config.max_scan（默认 30000），命中截断会记 warning。
+        DCD 20261004 裁6 Q6-2=A：旧实现一次性 LIMIT scan_limit，30 天窗只覆盖前 20 小时。
+        按天分摊同一预算（不新增上限），每天配额 = max(1, scan_limit // n_days)，
+        任一天命中日配额即标记 ``_last_scan_truncated=True``（新截断判据）。
+        总读取量硬上限仍为 scan_limit，达到即停止后续天的扫描。
         """
+        from datetime import date, timedelta
+
         where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only,
                                           exclude_entity_ids, exclude_domains)
         limit = self._scan_limit()
-        sql = ("SELECT id, ts, day, room, entity_id, domain, action, person, old_state, new_state, attrs_json "
-               "FROM events WHERE " + " AND ".join(where) + " ORDER BY ts ASC, id ASC LIMIT ?")
-        params.append(limit)
-        rows = self._execute(sql, params)
-        if len(rows) >= limit:
-            self.log.warning("load_events 命中扫描上限 %s，结果可能被截断", limit)
-        return [self._to_record(row) for row in rows]
+        start_iso, end_iso, start_day, end_day = self._bounds(tr)
+
+        # 计算天数（解析失败回退 1 天 = 旧行为）
+        try:
+            d0 = date.fromisoformat(start_day)
+            d1 = date.fromisoformat(end_day)
+            n_days = max(1, (d1 - d0).days + 1)
+        except (ValueError, TypeError):
+            d0 = d1 = None
+            n_days = 1
+
+        daily_limit = max(1, limit // n_days)
+        all_rows: List[Dict[str, Any]] = []
+        truncated = False
+
+        base_sql = ("SELECT id, ts, day, room, entity_id, domain, action, person, "
+                    "old_state, new_state, attrs_json FROM events WHERE ")
+
+        if n_days <= 1 or d0 is None:
+            # 单天窗口：退化为旧的单次查询
+            sql = base_sql + " AND ".join(where) + " ORDER BY ts ASC, id ASC LIMIT ?"
+            rows = self._execute(sql, params + [limit])
+            all_rows = rows
+            truncated = len(rows) >= limit
+        else:
+            # 按天分批：每天追加 day = ? 条件（与已有的 day BETWEEN 叠加等价于精确匹配）
+            current = d0
+            while current <= d1 and len(all_rows) < limit:
+                day_str = current.isoformat()
+                remaining = limit - len(all_rows)
+                day_limit = min(daily_limit, remaining)
+                day_where = where + ["day = ?"]
+                day_params = params + [day_str, day_limit]
+                sql = base_sql + " AND ".join(day_where) + " ORDER BY ts ASC, id ASC LIMIT ?"
+                rows = self._execute(sql, day_params)
+                if len(rows) >= day_limit:
+                    truncated = True
+                all_rows.extend(rows)
+                current += timedelta(days=1)
+
+        self._last_scan_truncated = truncated
+        if truncated:
+            self.log.warning(
+                "load_events 按天分批命中日配额 %s/天（共 %s 天），结果可能被截断",
+                daily_limit, n_days,
+            )
+        return [self._to_record(row) for row in all_rows]
+
+    @property
+    def last_scan_truncated(self) -> bool:
+        """DCD 裁6 Q6-2：按天分批下的截断判据。
+
+        旧判据 ``len(events) >= scan_limit`` 在分批下失效：总数可能远低于上限
+        但某天已被截。新判据：任一天返回条数 >= 日配额即标记为被截断。
+        """
+        return self._last_scan_truncated
 
     def count_events(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
                      domains: Any = None, behavior_only: bool = False,

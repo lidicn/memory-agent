@@ -974,8 +974,9 @@ class BehaviorService:
             "events_scanned": len(events),
             "events_total": events_total,
             "scan_limit": scan_limit,
-            # 与裁5 Q4=A 同口径：等于上限时无法与"刚好这么多"区分，所以说"可能被截"
-            "scan_truncated": bool(scan_limit and len(events) >= scan_limit),
+            # DCD 20261004 裁6 Q6-2：按天分批下截断判据改为 repo.last_scan_truncated
+            # （任一天命中日配额），旧判据 len(events) >= scan_limit 在分批下失效。
+            "scan_truncated": bool(getattr(self.repo, "last_scan_truncated", False)),
             "excluded_entity_ids": len(exclude_ids),
         }
         return rows, meta
