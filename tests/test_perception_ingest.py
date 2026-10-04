@@ -404,7 +404,7 @@ def test_build_feedback_pack(tmp_path):
         snapshot_path="",
         trace="VLM 误识别：把猫认成狗",
         output_dir=str(tmp_path),
-        label="test_case",
+        label="bad_case_basic",
     )
     assert out is not None
     assert out.endswith(".tar.gz")

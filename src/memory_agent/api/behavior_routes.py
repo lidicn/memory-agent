@@ -569,31 +569,65 @@ async def rule_channel_audit(request: Request):
     return ok({"items": rows, "count": len(rows)})
 
 
+def _label_rosters(rt) -> tuple[list, list]:
+    """label 白名单要的两份名册：房间名（config 的区域 ∪ 库里出现过的房间）+ 成员姓名。
+
+    同步函数，调用点用 ``asyncio.to_thread`` 包住（后两句要碰 SQLite）。
+    这里**不吞异常**：``insights.room_names`` 自身已带降级（读失败回空表），剩下的
+    ``distinct_rooms`` / ``list_members`` 一旦出错就该让请求报错——拿着空名册继续走，
+    等于在"认不出姓名"的状态下把校验放行。
+    """
+    rooms = list(rt.insights.room_names() or []) + list(rt.store.distinct_rooms() or [])
+    names = [m.get("name") or "" for m in rt.store.list_members()]
+    return sorted({r for r in rooms if r}, key=len, reverse=True), [n for n in names if n]
+
+
 async def behaviors_feedback_pack(request: Request):
     """Phase 4.3 反馈闭环：导出 VLM 误识别 bad-case 包（tar.gz）。
 
     Body: ``snapshot_path``（可选，VLM 快照路径）、``trace``（可选，trace 文本）、
     ``label``（可选，默认 bad_case）。
     返回打包后的文件路径。脱敏失败宁可丢 trace（fail-closed）。
+
+    DCD 20261004 MA-裁3（分层）：包里同时有 ``trace.txt``（S3 出境口径，姓名可读）
+    与 ``trace_anon.txt``（再叠 S1 入库口径，姓名→成员N），取哪份出境由出境动作决定；
+    ``label`` 会成为文件名，因此走白名单校验（姓名进不来）。
     """
     _, err = require_user(request)
     if err:
         return err
     body = await json_body(request)
-    from ..feedback_pack import build_feedback_pack
+    from ..feedback_pack import build_feedback_pack, validate_label
+    rt = runtime(request)
     output_dir = "/data/feedback_packs"
-    import os
     os.makedirs(output_dir, exist_ok=True)
-    result = build_feedback_pack(
-        snapshot_path=body.get("snapshot_path", ""),
-        trace=body.get("trace", ""),
-        output_dir=output_dir,
-        label=body.get("label", "bad_case"),
-    )
+    label = body.get("label", "bad_case")
+    try:
+        rooms, names = await asyncio.to_thread(_label_rosters, rt)
+    except Exception as exc:
+        # 名册读不到就拒绝导出，而不是拿着空名册悄悄放行校验：缺的那一份恰好是成员名册，
+        # 而这一层要保证的正是「姓名不会长在文件名上」。
+        return error(f"label 名册读取失败，已拒绝导出：{exc}")
+    passed, reason, _safe = validate_label(label, known_rooms=rooms, member_names=names)
+    if not passed:
+        return error(f"label 不符合出境面白名单：{reason}")
+    try:
+        result = await asyncio.to_thread(
+            build_feedback_pack,
+            snapshot_path=body.get("snapshot_path", ""),
+            trace=body.get("trace", ""),
+            output_dir=output_dir,
+            label=label,
+            known_rooms=rooms,
+            member_names=names,
+            anon_sanitizer=rt.store.sanitize_feedback_text,
+        )
+    except Exception as exc:
+        return error(f"反馈包打包异常：{exc}")
     if result is None:
-        return error("反馈包打包失败（脱敏/打包异常，已 fail-closed）")
+        return error("反馈包打包失败（label 不过白名单/脱敏异常，已 fail-closed）")
     size = os.path.getsize(result) if os.path.exists(result) else 0
-    return ok({"path": result, "size_bytes": size, "label": body.get("label", "bad_case")})
+    return ok({"path": result, "size_bytes": size, "label": label})
 
 
 async def behaviors_bad_cases_list(request: Request):
@@ -635,6 +669,9 @@ async def behaviors_bad_case_export(request: Request):
     Body: ``event_id``（必填，行为事件 ID）、``label``（可选，默认 bad_case_{id}）。
     从数据库读取事件的 snapshot_path 和 raw_response，打包成 tar.gz。
     fail-closed：脱敏失败宁可丢 trace。
+
+    DCD 20261004 MA-裁3：与 ``/feedback-pack`` 同一口径——包里两份 trace（出境/入库），
+    label 过白名单（默认值 ``bad_case_{event_id}`` 本身就在白名单结构内）。
     """
     _, err = require_user(request)
     if err:
@@ -644,7 +681,7 @@ async def behaviors_bad_case_export(request: Request):
     if not event_id:
         return error("缺少 event_id")
     rt = runtime(request)
-    from ..feedback_pack import build_feedback_pack
+    from ..feedback_pack import build_feedback_pack, validate_label
     output_dir = "/data/feedback_packs"
     os.makedirs(output_dir, exist_ok=True)
     # 从数据库读取事件
@@ -667,15 +704,30 @@ async def behaviors_bad_case_export(request: Request):
     if event is None:
         return error(f"事件 {event_id} 不存在")
     label = body.get("label") or f"bad_case_{event_id}"
+    try:
+        rooms, names = await asyncio.to_thread(_label_rosters, rt)
+    except Exception as exc:
+        return error(f"label 名册读取失败，已拒绝导出：{exc}")
+    # 事件自己所在的房间一定算"已知房间"：`distinct_rooms` 读的是 events 表，
+    # 只出现在 behavior_events 里的房间不该因为名册少一行就过不了白名单。
+    event_room = str(event.get("room") or "").strip()
+    rooms = sorted({r for r in rooms if r} | ({event_room} if event_room else set()),
+                   key=len, reverse=True)
+    passed, reason, _safe = validate_label(label, known_rooms=rooms, member_names=names)
+    if not passed:
+        return error(f"label 不符合出境面白名单：{reason}")
     result = await asyncio.to_thread(
         build_feedback_pack,
         snapshot_path=event.get("snapshot_path", ""),
         trace=event.get("raw_response", ""),
         output_dir=output_dir,
         label=label,
+        known_rooms=rooms,
+        member_names=names,
+        anon_sanitizer=rt.store.sanitize_feedback_text,
     )
     if result is None:
-        return error("反馈包打包失败（脱敏/打包异常，已 fail-closed）")
+        return error("反馈包打包失败（label 不过白名单/脱敏异常，已 fail-closed）")
     size = os.path.getsize(result) if os.path.exists(result) else 0
     return ok({"path": result, "size_bytes": size, "label": label, "event_id": event_id})
 
