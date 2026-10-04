@@ -2,10 +2,9 @@ import os
 import sys
 import tempfile
 
-import pytest
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from memory_agent.config import Config
 from memory_agent.store import Store
 from memory_agent.agent_memory import AgentMemoryService, make_activity_id
 from memory_agent.signal_learning import SignalLearningService
@@ -147,150 +146,138 @@ def test_signal_learning_service_teach_and_priority():
         os.remove(st.db_path)
 
 
-# ── 检测层：硬排除真正过滤 infer_activities 的判定 ──
-def _build_insights():
+# ── 检测层：硬排除改变判定 / 区间真实性 / 持续占用门槛 ──
+# 任务 #23（P2-5）翻新：下面三条用例原先整段 `pytest.skip("_detect_activities 待适配")`——
+# 那是把「用例还没搬」冻结成「用例不判」，缺陷现场照样绿。现行引擎是
+# `InsightService.infer_activities`（内置语义规则 + 时段启发式兜底），三条判据逐条搬过去，
+# 口径差异写在各自 docstring 里。
+DAY = "2026-01-05"
+DAY_B = "2026-01-06"
+
+
+def _day(day):
+    return {"start": "%sT00:00:00" % day, "end": "%sT23:59:59" % day}
+
+
+def _ev(eid, ts, state, room, name):
+    return {"entity_id": eid, "ts": ts, "new_state": state, "room": room,
+            "domain": eid.split(".")[0], "attrs": {"friendly_name": name}}
+
+
+def _acts(out):
+    return list(out.get("activities") or [])
+
+
+def _kinds(out):
+    return {a.get("activity") for a in _acts(out)}
+
+
+def _build_insights(events):
+    """事件先落库、再建门面：EntityResolver 的设备目录是从 events 聚合出来的。"""
     st = make_store()
-    # P0-1 修复后参数顺序为 (store, config)，旧测试写的是 (config, store)
-    insvc = InsightService(st, FakeConfig())
-    # 让标签/命名可注入，避免依赖完整 config.entities
-    TAGS = {
-        "media.study_tv": ["media"],
-        "computer.study_pc": ["computer"],
-        # 睡眠检测基于「家电/门/电脑」类行为事件的静默间隔；起床锚定用例需给样本补标签，
-        # 否则静默事件为空、睡眠永不命中（用例会误红）。
-        "sensor.a": ["appliance"],
-        "speaker.xiaoai": ["appliance"],
-    }
-    insvc.name_map = staticmethod(lambda: {})
-    insvc._tags_of = staticmethod(lambda eid, disp: TAGS.get(eid, []))
-    insvc._fallback_name = staticmethod(lambda eid: eid)
-    return st, insvc
+    st.insert_events(events)
+    return st, InsightService(st, Config())
 
 
 def test_insights_respects_signal_exclusion():
-    st, insvc = _build_insights()
-    if not hasattr(insvc, "_detect_activities"):
-        pytest.skip("InsightService 已重构，_detect_activities 待适配为新框架 infer_activities")
-    rows = [
-        {"entity_id": "media.study_tv", "ts": "2025-01-01T21:00:00", "new_state": "on", "room": "客厅"},
-        {"entity_id": "computer.study_pc", "ts": "2025-01-01T14:00:00", "new_state": "on", "room": "书房"},
-    ]
+    """硬排除必须改变**判定**，而不只是少几条事件。
+
+    翻新口径：legacy 断言的是 `watching_tv` / `working` 这类英文活动名和"证据里写不予采信"，
+    现行引擎的对照物是内置规则 key（`bath` = 洗澡）。被搬过来的性质是
+    「点名排除的实体不再撑起那条活动」——`tests/test_vma_activity_semantic.py:305` 只锁到
+    「矩阵里少了几条事件」，判定级的影响在这里补上。
+    """
+    st, insvc = _build_insights([
+        _ev("binary_sensor.bath_presence", "%sT21:00:00" % DAY, "on", "卫生间", "卫生间存在传感器"),
+        _ev("binary_sensor.bath_presence", "%sT21:20:00" % DAY, "off", "卫生间", "卫生间存在传感器"),
+        _ev("water_heater.bath_heater", "%sT21:01:00" % DAY, "on", "卫生间", "卫生间热水器"),
+        _ev("water_heater.bath_heater", "%sT21:19:00" % DAY, "off", "卫生间", "卫生间热水器"),
+    ])
     try:
-        # 对照组：无排除时，应检出 watching_tv 与 working
-        r0 = insvc._detect_activities(rows)["activities"]
-        kinds0 = {a["activity"] for a in r0}
-        assert "watching_tv" in kinds0, "对照组应检出 watching_tv"
-        assert "working" in kinds0, "对照组应检出 working"
+        assert "bath" in _kinds(insvc.infer_activities(**_day(DAY))), "对照组应判出洗澡"
 
-        # 写入硬排除
-        st.upsert_signal_exclusion("media.study_tv", "watching_tv", "排除", "user")
-        st.upsert_signal_exclusion("computer.study_pc", "working", "排除", "user")
+        exclusion_id = st.upsert_signal_exclusion(
+            "binary_sensor.bath_presence", "all", "垄断型噪声", "user")
+        out = insvc.infer_activities(**_day(DAY))
+        assert "bath" not in _kinds(out), "必要信号已被排除却仍判出洗澡 ⇒ 排除只是装饰"
+        assert out["excluded_entities"]["count"] == 1, out["excluded_entities"]
 
-        # 实验组：硬排除生效，不再误判
-        r1 = insvc._detect_activities(rows)["activities"]
-        kinds1 = {a["activity"] for a in r1}
-        assert "watching_tv" not in kinds1, "硬排除后不应检出 watching_tv"
-        assert "working" not in kinds1, "硬排除后不应检出 working"
-
-        # 起床锚定：被排除的 b 实体不计入睡眠 entities
-        sleep_rows = [
-            {"entity_id": "sensor.a", "ts": "2025-01-02T23:00:00", "new_state": "on", "room": "卧室"},
-            {"entity_id": "speaker.xiaoai", "ts": "2025-01-03T07:00:00", "new_state": "on", "room": "卧室"},
-        ]
-        st.upsert_signal_exclusion("speaker.xiaoai", "wake_anchor", "定时播报", "user")
-        r2 = insvc._detect_activities(sleep_rows)["activities"]
-        sleep = [a for a in r2 if a["activity"] == "sleeping"]
-        assert sleep, "应检出睡眠"
-        assert "speaker.xiaoai" not in sleep[0]["entities"], "起床锚定实体被硬排除，不应计入 entities"
-        assert "不予采信" in sleep[0]["evidence"], "证据应说明起床锚定已被排除"
+        # 撤销（revoked=1）后判定必须恢复：排除表读的是现行状态，不是一次性缓存
+        st.revoke_signal_exclusion(exclusion_id)
+        restored = insvc.infer_activities(**_day(DAY))
+        assert "bath" in _kinds(restored), "撤销排除后应恢复判定"
+        assert restored["excluded_entities"]["count"] == 0, restored["excluded_entities"]
     finally:
         st.close()
         os.remove(st.db_path)
 
 
 def test_bathing_emits_interval_from_occupancy_pulse():
-    # P0 修复验证：洗澡（占用推断兜底）必须输出真实时间区间 start_ts/end_ts，
-    # 且按「占用脉冲 + 开灯、时长>=20min」重建，而非「全天任一占用即整天」（旧逻辑全天误报）。
-    st, insvc = _build_insights()
-    if not hasattr(insvc, "_detect_activities"):
-        pytest.skip("InsightService 已重构，_detect_activities 待适配为新框架 infer_activities")
-    TAGS = {
-        "binary_sensor.bathroom_occupancy": ["presence"],
-        "light.bathroom": ["light"],
-    }
-    insvc._tags_of = staticmethod(lambda eid, disp: TAGS.get(eid, []))
+    """洗澡必须给真实区间，短脉冲不许胀成整天。
 
-    rows = [
-        # 洗澡样片段：占用 60min + 开灯 -> 应判洗澡且带真实区间
-        {"entity_id": "binary_sensor.bathroom_occupancy", "ts": "2025-01-01T13:00:00",
-         "new_state": "on", "room": "卫生间"},
-        {"entity_id": "light.bathroom", "ts": "2025-01-01T13:00:05",
-         "new_state": "on", "room": "卫生间"},
-        {"entity_id": "binary_sensor.bathroom_occupancy", "ts": "2025-01-01T14:00:00",
-         "new_state": "off", "room": "卫生间"},
-        {"entity_id": "light.bathroom", "ts": "2025-01-01T14:00:05",
-         "new_state": "off", "room": "卫生间"},
-        # 如厕短脉冲：3min、无灯 -> 不应判洗澡
-        {"entity_id": "binary_sensor.bathroom_occupancy", "ts": "2025-01-01T08:00:00",
-         "new_state": "on", "room": "卫生间"},
-        {"entity_id": "binary_sensor.bathroom_occupancy", "ts": "2025-01-01T08:03:00",
-         "new_state": "off", "room": "卫生间"},
-    ]
+    翻新口径：legacy 用「占用脉冲 + 开灯 ≥20min」重建区间；现行 `bath` 规则是
+    「卫生间存在 ≥5min + 热水器」，区间取命中信号会话的首尾
+    （`ActivityMatch.start/end` → `start_ts/end_ts`），分钟级断言照样成立。
+    短脉冲对照放在**另一日**：现行规则按「日窗 + 会话聚合」算指标，同日的两次占用
+    会把 `first` 拉到早间那一次，那是引擎口径，不是缺陷。
+    """
+    st, insvc = _build_insights([
+        # 洗澡样片段：占用 60min + 热水器 -> 应判洗澡且带真实区间
+        _ev("binary_sensor.bath_presence", "%sT13:00:00" % DAY, "on", "卫生间", "卫生间存在传感器"),
+        _ev("water_heater.bath_heater", "%sT13:00:05" % DAY, "on", "卫生间", "卫生间热水器"),
+        _ev("binary_sensor.bath_presence", "%sT14:00:00" % DAY, "off", "卫生间", "卫生间存在传感器"),
+        _ev("water_heater.bath_heater", "%sT14:00:05" % DAY, "off", "卫生间", "卫生间热水器"),
+        # 如厕短脉冲（另一日）：3min、无热水器 -> 不应判洗澡
+        _ev("binary_sensor.bath_presence", "%sT08:00:00" % DAY_B, "on", "卫生间", "卫生间存在传感器"),
+        _ev("binary_sensor.bath_presence", "%sT08:03:00" % DAY_B, "off", "卫生间", "卫生间存在传感器"),
+    ])
     try:
-        acts = insvc._detect_activities(rows)["activities"]
-        bath = [a for a in acts if a["activity"] == "bathing"]
-        assert len(bath) == 1, f"应仅由 60min 开灯片段判出 1 条洗澡，实际: {bath}"
+        bath = [a for a in _acts(insvc.infer_activities(**_day(DAY))) if a["activity"] == "bath"]
+        assert len(bath) == 1, f"应仅由 60min 片段判出 1 条洗澡，实际: {bath}"
         b = bath[0]
-        assert b["start_ts"] == "2025-01-01T13:00:00", b
-        assert b["end_ts"] == "2025-01-01T14:00:00", b
-        assert b["duration_minutes"] == 60, b
+        assert b["start"].endswith("13:00:00"), b
+        assert b["end"].endswith("14:00:05"), b
+        assert b["start_hour"] == 13 and b["end_hour"] == 14, b
+        assert b["duration_minutes"] == 60.0, b
+        # 全天误报的判据：区间长度远小于一日
+        assert b["end_ts"] - b["start_ts"] < 2 * 3600, b
+
+        assert "bath" not in _kinds(insvc.infer_activities(**_day(DAY_B))), \
+            "3 分钟占用脉冲不足以判洗澡"
     finally:
         st.close()
         os.remove(st.db_path)
 
 
-def test_working_requires_sustained_presence_or_computer():
-    # P1 验证：working 不再因书房单 blip 占用而判整天工作；
-    # 需「电脑/工作设备证据」或「书房白天持续占用片段(≥30min)」才触发，且带真实区间。
-    st, insvc = _build_insights()
-    if not hasattr(insvc, "_detect_activities"):
-        pytest.skip("InsightService 已重构，_detect_activities 待适配为新框架 infer_activities")
-    TAGS = {
-        "binary_sensor.office_presence": ["presence"],
-        "computer.study_pc": ["computer"],
-    }
-    insvc._tags_of = staticmethod(lambda eid, disp: TAGS.get(eid, []))
+def test_study_requires_sustained_presence():
+    """学习（书房持续占用）必须过时长门槛，且给真实区间。
 
-    # 1) 单 blip 占用（<1min）不应判 working
-    blip = [
-        {"entity_id": "binary_sensor.office_presence", "ts": "2025-01-01T10:00:00",
-         "new_state": "on", "room": "书房"},
-        {"entity_id": "binary_sensor.office_presence", "ts": "2025-01-01T10:00:30",
-         "new_state": "off", "room": "书房"},
-    ]
-    # 2) 持续占用 45min 应判 working 且带真实区间
-    sustained = [
-        {"entity_id": "binary_sensor.office_presence", "ts": "2025-01-01T10:00:00",
-         "new_state": "on", "room": "书房"},
-        {"entity_id": "binary_sensor.office_presence", "ts": "2025-01-01T10:45:00",
-         "new_state": "off", "room": "书房"},
-    ]
-    # 3) 电脑在线应判 working（即使无持续占用）
-    comp = [
-        {"entity_id": "computer.study_pc", "ts": "2025-01-01T14:00:00",
-         "new_state": "on", "room": "书房"},
-    ]
+    本用例是 legacy `test_working_requires_sustained_presence_or_computer` 的翻新版：
+    现行引擎里没有 `working` 这条内置规则，对应的判据是内置 `study`（学习，书房 ≥30min）。
+    原第三条断言「电脑在线即判工作」**没有对应的现行规则**——那属于规则词表缺口，
+    归任务 #38（裁6 Q6-1，等 SP 本居活动清单后往 `activity_rules` 落覆盖行），
+    这里不悄悄丢掉，也不临时编一条内置规则来凑绿。
+    """
+    st, insvc = _build_insights([
+        # 持续占用 45min -> 应判学习且带真实区间
+        _ev("binary_sensor.office_presence", "%sT10:00:00" % DAY, "on", "书房", "书房存在传感器"),
+        _ev("binary_sensor.office_presence", "%sT10:45:00" % DAY, "off", "书房", "书房存在传感器"),
+        # 单 blip 占用（30 秒）-> 不应判学习（另一日，避免同日会话聚合成同一段落）
+        _ev("binary_sensor.office_presence", "%sT10:00:00" % DAY_B, "on", "书房", "书房存在传感器"),
+        _ev("binary_sensor.office_presence", "%sT10:00:30" % DAY_B, "off", "书房", "书房存在传感器"),
+    ])
     try:
-        a1 = insvc._detect_activities(blip)["activities"]
-        assert not any(x["activity"] == "working" for x in a1), "单 blip 不应判 working"
-        a2 = insvc._detect_activities(sustained)["activities"]
-        wk = [x for x in a2 if x["activity"] == "working"]
+        assert "study" not in _kinds(insvc.infer_activities(**_day(DAY_B))), \
+            "30 秒的单次占用不足以判学习"
+
+        wk = [a for a in _acts(insvc.infer_activities(**_day(DAY))) if a["activity"] == "study"]
         assert len(wk) == 1, wk
-        assert wk[0]["start_ts"] == "2025-01-01T10:00:00"
-        assert wk[0]["end_ts"] == "2025-01-01T10:45:00"
-        assert wk[0]["duration_minutes"] == 45
-        a3 = insvc._detect_activities(comp)["activities"]
-        assert any(x["activity"] == "working" for x in a3), "电脑在线应判 working"
+        s = wk[0]
+        assert s["source"] == "semantic", s
+        assert s["start"].endswith("10:00:00"), s
+        assert s["end"].endswith("10:45:00"), s
+        assert s["duration_minutes"] == 45.0, s
+        assert s["signals"][0]["satisfied"] is True, s
     finally:
         st.close()
         os.remove(st.db_path)
@@ -301,5 +288,5 @@ if __name__ == "__main__":
     test_signal_learning_service_teach_and_priority()
     test_insights_respects_signal_exclusion()
     test_bathing_emits_interval_from_occupancy_pulse()
-    test_working_requires_sustained_presence_or_computer()
+    test_study_requires_sustained_presence()
     print("OK: all signal_learning tests passed")
