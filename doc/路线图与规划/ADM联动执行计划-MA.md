@@ -819,6 +819,104 @@ lean `136,210 → 60,239 字节（省 55.8%，实返 240 行）`、full `152,997
 `page_bytes`——跨仓载荷键名变更须走 DCD 登记（`20261002-AF锁文件源与MA载荷键名-裁定` 立的规则），
 本次如实登记并待裁"留 / 收进 `_meta` / 撤"；`tests/contract/` 未覆盖该信封，故无用例被打破。
 
+### 6.9 裁5 追加 Q-B 的落码读数（2026-10-05，#40 第一格：Q3-1 六个过滤/排序位）
+
+裁定要点：Q3 六条**不切、不下架、不假装补齐**，六条全部有实测读数才允许切换对外面。
+本小节只交 **Q3-1**（`category`/`query`/`domain`/`state`/`order`/`summarize` 六位落到底），commit `160020c`。
+
+- **病根仍是同一族**：`repo.load_events` 形参只有 `entity_ids/rooms/domains/behavior_only/exclude_*`，
+  门面收的六位里后四位在新引擎**无处可去**，`state`/`order` 连落点都没有 ⇒ 表征是「传与不传拿到同一个数」
+  的**静默放宽**，而返回形状仍然合法（与 #24/#46/#47/#48 同族）。改前 HEAD 现读：门面基线
+  `total=144445 count=50 ok=None filters=[]`，同口径旧量具的 `category=climate` 与不传**同为 144143**、
+  `query=灯` 同为 144143。
+- **回声与取数必须同源**：`order` 在 `_search` 里**归一化一次**再下推 repo，否则「回声说 desc、取数按 asc」
+  本身就是这一族的新成员。`total` 由 `_events_total` 用与扫描**逐字同一份**过滤取不带 LIMIT 的 `COUNT(*)`。
+- **`ok` 不是字面量**：项目门禁 `fake-ok-const` 对本行报了 WARN「字面量 `ok=True`，不来自任何实际校验」。
+  处理是**修掉**（`_envelope_ok()` 从四条不变式推出：events 是列表 / `count==len(events)` / `window` 在位 /
+  计数 ≥ 本页条数），`.gates-baseline.txt` 一字未改。
+- **比 legacy 多钉的一格（fail-closed，已如实登记为「extra」）**：语义位传了却既解析不出实体也解析不出
+  domain 时答 **0 条**并回显 `filters.unresolved`，**不回落成全屋**。legacy 在这一格是漏的
+  （`entities or None` + `domains or None` 双双为空 ⇒ 一个查不到的名字反而拿到全屋）。
+  这条不是顺手加的严格性，是「静默放宽」这一族里最容易把错答当对答交出去的那一格。
+- **现读**（容器内对生产库只读探针 `scripts/probe_insights_q3_acceptance.py`；
+  **口径**：`total` = 不带 LIMIT 的 `COUNT(*)` 匹配总数，`count` = 本页条数，「扫描」= 按天分批实读行数）：
+  `category=climate` **19**（domains_resolved 4 个域）、`query=灯` **43**（entities_resolved=14）、
+  `domain=light` **43**（repo 层同域互证 1186）、`state='28'` **3399**、order asc/desc 首末时刻不同且
+  回声 `=(asc,desc)`、`summarize` 有 `summary` 且 `count` 未被 50 条样本冒充、无关设备名 ⇒ `total=0` + `unresolved=True`。
+  Q3-2 单调 `[5395, 32249, 148228]`（legacy 同窗 5395 / 148227）；Q3-3 `total=950362`（= 30 天全量匹配）、
+  `total_exact=True`、`truncated=True`、`count=5` ⇒「切片被截」与「总数精确」同时成立。**六条收口：Q3-1 齐，
+  Q3-4 不齐（缺分页/窗口键），Q3-5 不齐（新引擎无同名实现）——两条按实登记，不折算。**
+  （这批是**单跑**读数。后续 §6.10 把量具改成成对跑 + 冻结绝对窗，同一形状现读为
+  基线 144765 / `category=climate` 19 / `query=灯` 43 / `domain=light` 43 / `state='28'` **3404** /
+  无关设备名 0，Q3-3 `950058 = 前置计数 = 后置计数`。探针收口为 `6c980ff` 后**复跑一遍成对读数**
+  （两侧 `PROBE_RC=0`，`.qoder/tmp-c21-c18{pre,snap}20261005a-q3.log`）：判定与上完全一致，
+  Q3-3 新冻结窗 `03:21:10` 锚点读 `949951/949951/949951` 仍判齐。
+  **漂移分两种，别混**：同一次运行内 `days=30` 滑动右界被采集器推进是 **1–3 行/次**量级（所以 ±1 级差异
+  不能再当口径差解读——此前我把 legacy 少 1 行解释成「窗口右界口径」，那是未验证的归因，已更正）；
+  而**跨运行**的绝对窗每次重新锚定（右界 = 运行时刻），窗口整体平移，行数差可到百级
+  （950362 / 950058 / 949951 是三次不同锚点，不是同窗内的口径差）。
+  同一次运行内「前置计数 = 后置计数 = 门面 total」三读全等这一条，两次运行都成立。）
+- **锁与验证**：`tests/test_vma_insights_search_filters.py` 新建 **13 条**，每条都配「该不响」对偶档
+  （过滤位为空必须等于全量、非空必须不等于全量——只写正向断言的话，一个恒不加条件的实现也能绿）；
+  变异 `.qoder/tmp-c17-mut-filters.py` **BITTEN=12/12**、每步 `RESTORED=True`、基线「什么都不改」档 `13 passed`；
+  本机全量 `1266 passed, 22 skipped` / `LOCAL_RC=0`；容器权威回归（快照 `/tmp/c17snap20261005a`，351 文件）
+  `GATE_RC=0`（pyflakes 当前 0 / 基线 0 / 新增 0）、`SUITE_RC=0`、**`1278 passed, 10 skipped in 214.67s`**。
+- **未做的边界（不藏着）**：对外面**一个都没切**（`search_events`/`get_last_event`/`query_behavior_events`
+  仍按裁5 Q1=A 转 legacy，`LEGACY_OUTWARD_METHODS` 一字未动）；`max_scan=30000` 一个字节没动（裁5 Q4=A）。
+
+### 6.10 裁5 追加 Q-B 的第二格与量具自纠（2026-10-05，#40）
+
+两件 commit：`6470650`（代码：新引擎三条读路径补 `window` 回显）、`6c980ff`（量具：Q3 验收单四处判定形状）。
+**成对读数**（同一支量具跑两遍，改前取 `f22caa3` 快照、改后取工作区快照，两侧 `PROBE_RC=0`）：
+
+| 新引擎路径 | 改前缺 | 改后缺 |
+|---|---|---|
+| `core.usage` | `['window']` | **无** |
+| `core.behavior_insights` | `['window']` | **无** |
+| `core.device_health` | 无（legacy 对它给 `window_days`，不是 `window`） | 无 |
+| `_search` | `['next_offset','ok','window']` | **无** |
+| `repo.entity_catalog` | 无信封可对齐 | 仍无信封可对齐 ⇒ **Q3-4 判「不齐」** |
+
+- **两条不擅自做的边界**：① `coverage`/`data_quality` 不加 `window`——`data_coverage`（`api.py:809`）
+  把 `core.coverage(tr)` 原样发出境，加键就是跨仓载荷变更，要登记不要自落；② `entity_catalog` 不假装补齐——
+  新引擎只有 `repo.entity_catalog` 的原行列表，信封那几个派生键（重复候选、按房聚合）在新引擎里重写一遍
+  等于**再造一个只读引擎**，收益只有切换一致性。
+- **量具自纠四处**（逐条有反例，详见审计 §三十一）：①`sorted(list)-set` 让 Q3-4 整段 `PROBE_RC=1`、
+  一条读数都没出来；②**哨兵值参与判据 ⇒「无处可去」被读成「生效」**（假绿，旧判据给
+  `生效=['domain', room, state]` 而真相是 `TypeError`）→ 改三态判定；③`days=30` 右界随墙钟滑动
+  ⇒ Q3-3 在生产库天然判不齐 → 冻结绝对窗 + 「不可判」第三态；④Q3-5 把 5 个异名同职实现记成
+  「无实现」（漏咬/等价位混记，违 §二.5）→ `NEWENGINE_ALIAS` 三档，现读 **9 真无 / 4 异名待核**。
+- **一处未验证归因已更正**：新引擎与 legacy 差 1 行，此前写成「窗口右界口径差」，按现证据是**采集漂移**
+  （同窗口两次独立 `COUNT(*)` 实测差 1–3 行）。
+- **验证**：新锁 `tests/test_vma_insights_window_echo.py` **10 条**，变异 `.qoder/tmp-c18-mut-window.py`
+  **BITTEN=5/5**（含「只在 ok 时给窗」「降级路径不给窗」两把），基线「什么都不改」档 `10 passed`；
+  本机全量 `1276 passed, 22 skipped` / `LOCAL_RC=0`；容器权威回归（`/tmp/c18snap20261005a`，352 文件）
+  `GATE_RC=0`、`SUITE_RC=0`、**`1288 passed, 10 skipped in 200.80s`**；最终这支量具另跑一次 `GATE_RC=0`。
+- **六条当前判定**：Q3-1/2/3/6 齐，**Q3-4/5 不齐**；不齐的三件事（出境加键、`entity_catalog` 组装法、
+  异名等价的切换口径）**都不是 MA 能自判的**，已投
+  `关键决策部/inbox/20261005-MA-裁5Q-B两格回执与四问-page_bytes漏投补登记.md`（Q-A/B/C/D 四问）。
+  同件补登记 `71d18ee` 的出境键 `page_bytes`——那次是**漏投**，不是等裁。
+
+### 6.11 裁「ma-insights 载荷」的落码口径（#42，`bad9ae4`，2026-10-05 登记）
+
+裁定（`20261004` 系列 §五 Q2）：`insight_id` = MA **应发**的稳定身份，AF 的去重与回灌用它、**不用 `trace_id`**；
+`conf` 可选（报了封顶 0.59）、`intent?` 登记。此前 MA 两个 id 都不发 ⇒ AF 侧无落点。
+
+- **稳定性的来源**：`_insight_id(session_id, alert_type, day)` ——复用 MA **自己已经在用**的告警单飞身份
+  再加日键。同房间同类洞察当天重复投递 ⇒ 同一枚 id，换天 ⇒ 新洞察。**故意不卷** `trace_id`/快照 URL/随机数
+  （卷了就没有稳定身份）；去重键与分发单飞共用同一对变量，避免"被抑制的那条"和"去重的那条"不是同一个洞察。
+- **`trace_id` 保持事件级**（每次现场生成），键序按 DCD 追认 `insight_id → trace_id`。
+- **甲口径的两条「不发」要当决策读，不要当缺项**：`conf` 不发——陌生人告警的置信度没标定过，
+  硬编一个数只会污染 AF 排序；`intent` 不发——当前无结构化意图，**可选字段不得变成消费方硬依赖**。
+- **锁**：`tests/test_vma_dcd_20261004_insight_id.py` 6 条（墙钟已钉死，无跨午夜时刻依赖），
+  其中一把是**载荷键集封闭**：契约行 ∪ 20261002「只加不减」白名单之外的新键即判红。
+  变异 M1 摘 `insight_id` → 3 failed、M2 换 `uuid4().hex` → 1 failed、M3 日键换成 `trace_id` → 1 failed，
+  **BITTEN=3/3**、基线 `6 passed`、`RESTORED=True`；本地定向 `103 passed, 1 skipped`。
+- **这把封闭锁的实际射程（如实记）**：它守的是 `ma/insights` 这一条契约行的信封，
+  **没有拦住** `71d18ee` 在 `list_device_health` 里加的 `page_bytes`——那个信封不在 `tests/contract/`
+  覆盖面内。教训是**防线要连着覆盖面一起算**，否则"有锁"会被读成"有网"。`page_bytes` 的处置已随
+  §6.10 那件申请正式请裁（Q-B）。
+
 ---
 
 —— 关键决策部 · DCD
