@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from starlette.requests import Request
 from starlette.routing import Route
 
@@ -40,6 +42,9 @@ async def register(request: Request):
     # 安全加固（审计 A1）：系统初始化后（已有账号）关闭公开注册，仅管理员可新增用户。
     # 引导期（无任何账号）仍允许匿名注册首个账号并成为管理员，以完成初始化；
     # 可用 INIT_ADMIN_USER / INIT_ADMIN_PASS 预置管理员，进一步关闭初始化窗口。
+    # 本处理器**故意一条都不卸载**：`has_users()` 与下面的 `register()` 是同一条
+    # 「看有没有账号 → 建号」序列，而 AuthManager 对账号文件无锁。实测把 has_users 挪进线程后，
+    # 引导期两个匿名并发注册从"第二个被 403 拦住"变成"两个都建号"——低频路径不值得换这个语义变化。
     if rt.auth.has_users():
         token = _bearer_or_cookie_token(request)
         caller = rt.auth.verify_token(token) if token else None
@@ -84,12 +89,14 @@ async def login(request: Request):
     allowed, retry = rt.auth.login_allowed(ip, username)
     if not allowed:
         return error(f"尝试过于频繁，请在 {max(1, retry // 60 + 1)} 分钟后重试", 429)
-    result = rt.auth.login(username, password)
+    # bcrypt.checkpw 是"刻意慢"函数（百毫秒级），而未鉴权的 /login 在改前直接在协程里调它：
+    # 任何人都能用登录请求把整条事件循环冻住。卸载到线程后循环在此期间照常调度。
+    result = await asyncio.to_thread(rt.auth.login, username, password)
     if not result.get("ok"):
         rt.auth.note_login_failure(ip, username)
         return error(result.get("error", "登录失败"), 401)
     rt.auth.note_login_success(ip, username)
-    user = rt.auth.get_user(username) or {}
+    user = await asyncio.to_thread(rt.auth.get_user, username) or {}
     return ok(
         {
             "token": result.get("token"),
@@ -110,7 +117,9 @@ async def logout(request: Request):
 async def auth_status(request: Request):
     """无需鉴权。前端据此决定展示「登录」还是「首次注册管理员」。"""
     rt = runtime(request)
-    return ok({"initialized": rt.auth.has_users()})
+    # 未鉴权热路径：`has_users()` 每次读一遍账号文件（A3 实测 /api/auth/status P99 49.8ms
+    # vs /health 1.1ms，差的就是这一次同步读）。
+    return ok({"initialized": await asyncio.to_thread(rt.auth.has_users)})
 
 
 async def get_me(request: Request):

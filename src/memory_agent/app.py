@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import ipaddress
@@ -174,7 +175,12 @@ class AuthMiddleware:
             for k, v in scope.get("headers", [])
         }
         client_ip = scope.get("client", (None, None))[0] if scope.get("client") else None
-        user = self._authenticate(headers, client_ip)
+        # A3 §八「未卸载的同步 I/O」的真身在鉴权中间件，不在那两条路由里：`_authenticate` 是同步函数，
+        # JWT 分支的 verify_token 每次 `open()`+`json.load()` 读一遍账号文件，Basic 分支更直接调
+        # bcrypt.checkpw（百毫秒级、刻意慢；容器实测数见审计 §三十四 四）。两者都跑在事件循环上 = 每个非公开请求冻一次循环。
+        # 这里可以卸载而 register 不行：`login`/`verify_token`/`_load_users` 全是只读，
+        # 唯一的写盘是 MCPTokenStore._touch 的节流写，它自带 self._lock——没有「读→改→整份写回」被拆散。
+        user = await asyncio.to_thread(self._authenticate, headers, client_ip)
 
         if not user:
             await self._reject(send, path)
