@@ -380,7 +380,7 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 |----|------|------|------------|
 | 裁1 规则冷却 | Q1=A 显式化 + Q2 确认叠加 + Q3 占冷却 | **✅ 本件落码** | 见 §6.1 |
 | 裁2 行为推断默认规则 | Q1=C 由 SP 给本居活动清单 + Q1a/b/c 收窄 + Q2=C 按域过滤 + Q3 保持 0 等 DB | ⬜ 未落码 | 等 SP 给清单（Q1=C 的输入在 SP 手里，MA 无法自造）；Q2 的按域过滤读取与 Q1a/b/c 的规则改写可在清单到位后同批改 |
-| 裁3 反馈出境面脱敏 | Q1=A 分层 + Q2 label 白名单 + Q3 暂缓 | ⬜ 未落码 | `trace_anon.txt` 产物 + `vlm_failed-{room}-{date}` 白名单校验 |
+| 裁3 反馈出境面脱敏 | Q1=A 分层 + Q2 label 白名单 + Q3 暂缓 | **✅ 本件落码** | 见 §6.3（`trace_anon.txt` 加产物 + `validate_label()` 收紧入参） |
 | 裁4 超限响应 | Q1=A 分页 + Q2=A 默认精简 + Q3 维持裁行 | **✅ 本件落码** | 见 §6.2（含把申请里那句体积估算按实测更正） |
 | 裁5 洞察门面 | Q1=A legacy 为对外只读引擎 + Q2=A 并存 + Q3 验收单全认 + Q4=A 如实上报截断 | ⬜ 未落码 | Q3 的六条**要有实测读数**才算齐；Q4 返回体加 `truncated`/`scan_limit`/`total_exact` |
 | 裁6 活动识别 | Q1=A 语义回归 + Q2=A 回 8 参数 + Q3=A 硬排除生效 + Q4 认可（交付纪律） | ⬜ 未落码 | Q4 那条纪律是**门面每切一个方法必须留三项对比读数**（返回键集合 / 语义枚举值集合 / 旁挂依赖），缺一项判红 |
@@ -500,6 +500,80 @@ DCD 20261004 §六.2）；`fields='full'` 一行不改，输入行也不就地�
 `count_device_health` 与 `device_health_page` 都是新增，进程内旧调用点（`identity.py:687`、
 `api/identity_routes.py:45`）走的仍是无界分支，语义一字未改。代码随下一次重启生效——
 不需要新的窗口事项，与 §三 那批合并窗同批即可。
+
+### 6.3 裁3 的落码读数（2026-10-04）
+
+裁定书 §三 裁3（**Q1=A 分层 / Q2 label 白名单 / Q3 三套收敛暂缓**）。本件的约束是「零破坏」：
+出境包已经交付给消费端，所以**只加产物、不改已有产物的格式**，唯一允许的收紧在**入参**一侧。
+
+**Q1（分层，S1 本体一字不改）**：
+- `feedback_pack.py:195` `build_feedback_pack(..., anon_sanitizer=None, known_rooms=(), member_names=())`。
+  `trace.txt` 的字节形状与 meta 旧四键（`label/snapshot_included/trace_included/trace_sanitized`）**一字未动**；
+  新增的是同内容走过 S1 之后的 `trace_anon.txt`，以及 meta 的 `trace_anon_included` / `trace_anon_sanitizer` 两键。
+- **S1 是注入进来的，不在 pack 里重实现**：路由侧传 `rt.store.sanitize_feedback_text`（`store.py:4786`）。
+  重实现会有两份「入库口径」各自漂移，且 `feedback_pack` 反向 import Store 会成环。
+  Q3 那一问（三套收敛为一）按裁定**不动**——`sanitize_text`（S3）的 docstring 里写死了这条边界：
+  想在这里加姓名脱敏 = 把分层裁掉，先申请裁定。
+- **fail-closed 三档**：注入的 S1 入口缺失 / S1 抛异常 / S1 产出空串 ⇒ **不写** `trace_anon.txt`，
+  meta 如实记 `trace_anon_included:false`。绝不发一个「名字叫 anon、内容仍带姓名」的文件——
+  那比没有这一层更坏。`trace.txt` 与整包照常交付（加的那一层失败不该拖垮原有产物）。
+
+**Q2（label 白名单，收紧入参而非改格式）**：`feedback_pack.py:114` `validate_label()`
+- kind 取自闭集 `LABEL_KINDS`（`:52`）= `vlm_failed` / `low_confidence` / `skipped` / `bad_case`；
+  段落匹配 `:57` 的日期 / 数字 / `a-z` 起头 ASCII 段；CJK 段**必须是名册里的真房间名**。
+- **成员姓名子串检查跑在结构检查之前**，且拒因字符串不回显姓名（`label` 会变成文件名，
+  把姓名抄进错误响应 = 换一个面泄露）。名册来自 `behavior_routes.py:572` `_label_rosters()`：
+  `insights.room_names()` ∪ `store.distinct_rooms()`，成员名取 `store.list_members()`。
+- 分隔符只允许**单个** `-`/`_` 且**不许结尾**（探针实测第一版把 `vlm_failed-` / `vlm_failed-书房-` 放过了）。
+- 段落正则带 `re.ASCII`，这是**承重**的：默认 `\d` 认全角 `１` 与阿拉伯-印度数字，白名单会从字符维被绕过（M4 有红证）。
+- **被拒的 label 不落盘**，直接 `return None`。旧写法是 `re.sub(r"[^\w\-]", "_", label)` 清洗后照落盘
+  ⇒ 结果是拒不了也不干净：目录里留下一个文件名带姓名的包。现在这类入参（含路径穿越 `../../x`）一个文件都不写。
+
+**生产影响面**：两处出口都接了白名单与真实 S1——`api/behavior_routes.py:585`（反馈包）与 `:666`（bad_case 导出）；
+后者额外把事件自身的 room 折进名册，否则「该事件所在房间」这个最自然的写法会被自己的白名单拒掉。
+名册读取**不套 try/except**：缺名册恰恰就是缺成员名单，静默降级等于放宽白名单，宁可让请求报错。
+打包与读名册都走 `asyncio.to_thread`（读名册是同步 SQLite，事件循环门禁零容忍）。
+`build_feedback_pack` 的调用点全仓**只有这两处**（已 grep 确认）。
+
+**产物实测**（本机探针，假名册 `张小山/李四/Tom` + 假电话，非现网数据）：
+
+```
+members: ['trace.txt', 'trace_anon.txt', 'meta.json']
+trace.txt: 张小山在书房，电话 <REDACTED-PHONE>
+trace_anon.txt: 成员1在书房，电话 <REDACTED-PHONE>
+meta.json: …"trace_sanitized": true, "trace_anon_included": true, "trace_anon_sanitizer": "S1"
+no-anon members: ['trace.txt', 'meta.json']        # 不注入 S1 时旧形状原样
+name-label pack: None                              # label 带成员名 ⇒ 整包不落盘
+```
+
+**锁与变异（本机 `Python313`，`PYTHONPATH=src`）**：`tests/test_feedback_pack.py` 用例 **22 → 39**，
+与 `tests/test_perception_ingest.py` 同跑 **`70 passed`**；全量本机 `1149 passed, 25 skipped`（`LOCAL_RC=0`）。
+baseline 先跑绿（`[baseline] RC=0 failed=[]`），九条变异各自咬到自己的锁后立刻还原，全部 `RESTORED=True`，`MUT_RC=0`：
+
+| 变异 | 新红 | 咬住的是哪半句 |
+|------|------|----------------|
+| M1 anon 拿 S3 的结果冒充 | **5** | 分层是不是真过了 S1（含全链那条） |
+| M2 `trace.txt` 也过 S1 | 2 | 已交付产物的口径没被改 |
+| M3 去掉成员姓名这一维校验 | 1 | 白名单拦得住姓名，且拒因不带姓名 |
+| M4 段落正则去掉 `re.ASCII` | 1 | 全角数字过关不了 |
+| M5 段落白名单放宽成任意字符 | 3 | CJK 必须是真房间名 + 全角 + 分隔符 |
+| M6 删掉尾分隔符检查 | 1 | `vlm_failed-书房-` 这类不收 |
+| M7 白名单拒收后照样落盘 | 2 | 拒了就不写文件（含路径穿越那条旧用例） |
+| M8 调用点把真 S1 换成 `None` | 1 | 出口接的是注入的那个 S1 |
+| M9 调用点把打包放回事件循环 | 1 | 同步打包不在事件循环里跑 |
+
+**另登记一条诚实的空档**：M10（去掉 `anon_sanitizer is not None` 判据）跑出 `RC=0 red=0 RESTORED=True`——
+这条**没有锁可咬**，因为去掉判据后行为等价（`None` 本就不是 str，仍会走「不写 anon」分支）。
+按纪律如实记为「不被测试观察」，不给它编一把锁。
+
+**容器权威**（整份工作区快照 `docker cp` 进运行中的容器重跑，`/tmp/vs19`）：
+`PYTEST_RC=0` / **`1162 passed, 12 skipped in 176.84s`**——上一批 `/tmp/vs18` 是 1,145 passed，
+差值 17 恰为本件新增用例数；同快照 pyflakes 门禁 **`当前 0 条，基线 0 条，新增 0，已修 0`** / `GATE_RC=0`。
+**`.gates-baseline.txt` 一字未改**（本件不搬函数、不改名，刻意避开裁4 §判据③ 那两次失配）。
+
+**生效条件与待裁项**：代码随下一次重启生效，不需要新开窗口，与 §三 合并窗同批即可。
+`/data/feedback_packs` 出境时**按收件方选哪一份文件**（`trace.txt` 还是 `trace_anon.txt`）是跨仓约定，
+不在 MA 单方能改的面上（homesdk 契约文档），已在裁3 回执里请 DCD 定口径。
 
 ---
 
