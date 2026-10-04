@@ -3,16 +3,33 @@
 覆盖 P1-4/P1-6：predict_arrival_time 和 compute_return_time_baseline
 都应取"中午后首次出现"作为到家时间，而非首事件(离家8:00)或末事件(睡前23:00)。
 7 条测试：5 条锁缺陷（原实现红）+ 2 条对照（原实现绿）。
+
+末尾 §取数形状 三条是本轮现网实测补上的同一族缺陷（元宝 A2 矩阵键名错配那一行）：
+`daily_profile` 只认 `persons` 的 dict 元素、且按字符串切片读小时，
+现网 `["Kevin"]` 旧格式会抛 AttributeError，`+00:00` 形状会把傍晚到家读成上午。
 """
 
 import sys
 import os
 import json
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from memory_agent.behavior_predictor import predict_arrival_time
-from memory_agent.daily_profile import compute_return_time_baseline
+from memory_agent import house_time  # noqa: E402
+from memory_agent.behavior_predictor import predict_arrival_time  # noqa: E402
+from memory_agent.daily_profile import compute_return_time_baseline  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _house_clock_by_offset(monkeypatch):
+    """把家庭墙钟钉在「按小时偏移折算」这条兜底路径上（见 test_vma_behavior_predictor_shapes 同名夹具）。
+
+    否则这台机器装了 homesdk 且声明了 TZ 时，`+00:00` 那几条的换算依据就不由测试说了算。
+    """
+    monkeypatch.setattr(house_time, "is_active", lambda: False)
+    yield
 
 
 def _make_behavior_events(days=5, person="Kevin"):
@@ -131,3 +148,45 @@ def test_baseline_insufficient_data_returns_none():
     events = _make_face_events(days=2)
     result = compute_return_time_baseline(events, "Kevin", min_days=3)
     assert result is None, "2 天数据 < min_days=3 应返回 None"
+
+
+# ── 取数形状：现网实测的同一族缺陷（原实现红）────────────────────────
+
+def test_baseline_accepts_legacy_string_persons():
+    """旧格式 `["Kevin"]`（字符串元素本身就是姓名）不该把整次调用打成 AttributeError。
+
+    `Store._deserialize_persons`（store.py:586）认这一族，基线原先写死 `p.get("name")`；
+    两个调用点（behavior_routes、livingroom_ai）都没有兜底。
+    """
+    events = _make_face_events(days=5)
+    for e in events:
+        e["persons"] = ["Kevin"]
+    result = compute_return_time_baseline(events, "Kevin", min_days=3)
+    assert result is not None and abs(result["median_hour"] - 19.0) < 0.1, result
+
+
+def test_baseline_accepts_legacy_persons_json_column():
+    """`persons_json`（JSON 字符串列）是门面改造前真实存在的形状，两代都要认。"""
+    events = _make_behavior_events(days=5)
+    result = compute_return_time_baseline(events, "Kevin", min_days=3)
+    assert result is not None and abs(result["median_hour"] - 19.0) < 0.1, result
+
+
+def test_baseline_measures_utc_shaped_rows_on_the_house_clock():
+    """现网 `server_ts` 有 naive 本地与 `+00:00` 两种形状混用（2026-09-18 实测 309 : 44）。
+
+    11:00+00:00 在家里是 19:00；按字符串切片读小时会读成 11.0，掉出午后判据、还把日子切错。
+    """
+    events = []
+    for i in range(5):
+        day = f"2026-09-{15 + i:02d}"
+        events.append({
+            "server_ts": f"{day}T11:00:00+00:00",
+            "persons": [{"name": "Kevin"}],
+        })
+    result = compute_return_time_baseline(events, "Kevin", min_days=3, tz_offset_hours=8.0)
+    assert result is not None, "带偏移的形状被读成无数据"
+    assert abs(result["median_hour"] - 19.0) < 0.1, (
+        f"应按家庭墙钟折算，实得 {result['median_hour']}")
+    assert result["days"] == 5, result
+

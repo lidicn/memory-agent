@@ -2733,8 +2733,10 @@ def _build_server():
         from .behavior_predictor import predict_daily_routine, predict_arrival_time
 
         wd = None if weekday < 0 else weekday
-        arrival = predict_arrival_time(events, person, weekday=wd)
-        routine = predict_daily_routine(events, person)
+        arrival = predict_arrival_time(events, person, weekday=wd,
+                                       tz_offset_hours=rt.config.tz_offset_hours)
+        routine = predict_daily_routine(events, person,
+                                        tz_offset_hours=rt.config.tz_offset_hours)
 
         return {
             "ok": True,

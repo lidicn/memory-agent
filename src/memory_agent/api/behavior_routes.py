@@ -852,8 +852,9 @@ async def behaviors_predictions(request: Request):
 
     from ..behavior_predictor import predict_daily_routine, predict_arrival_time
 
-    arrival = predict_arrival_time(events, person, weekday=weekday)
-    routine = predict_daily_routine(events, person)
+    arrival = predict_arrival_time(events, person, weekday=weekday,
+                                   tz_offset_hours=rt.config.tz_offset_hours)
+    routine = predict_daily_routine(events, person, tz_offset_hours=rt.config.tz_offset_hours)
 
     return ok({
         "person": person,
