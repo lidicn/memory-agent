@@ -382,7 +382,7 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 | 裁2 行为推断默认规则 | Q1=C 由 SP 给本居活动清单 + Q1a/b/c 收窄 + Q2=C 按域过滤 + Q3 保持 0 等 DB | ⬜ 未落码 | 等 SP 给清单（Q1=C 的输入在 SP 手里，MA 无法自造）；Q2 的按域过滤读取与 Q1a/b/c 的规则改写可在清单到位后同批改 |
 | 裁3 反馈出境面脱敏 | Q1=A 分层 + Q2 label 白名单 + Q3 暂缓 | **✅ 本件落码** | 见 §6.3（`trace_anon.txt` 加产物 + `validate_label()` 收紧入参） |
 | 裁4 超限响应 | Q1=A 分页 + Q2=A 默认精简 + Q3 维持裁行 | **✅ 本件落码** | 见 §6.2（含把申请里那句体积估算按实测更正） |
-| 裁5 洞察门面 | Q1=A legacy 为对外只读引擎 + Q2=A 并存 + Q3 验收单全认 + Q4=A 如实上报截断 | ⬜ 未落码 | Q3 的六条**要有实测读数**才算齐；Q4 返回体加 `truncated`/`scan_limit`/`total_exact` |
+| 裁5 洞察门面 | Q1=A legacy 为对外只读引擎 + Q2=A 并存 + Q3 验收单全认 + Q4=A 如实上报截断 | **✅ 本件落码（Q3 判不齐 ⇒ 不切引擎）** | 见 §6.4。Q3 六条实测**三条齐、三条不齐**，切换开关保持关闭；Q4 三键落在新引擎扫描路径上，Q1=A 期间对外不可见 |
 | 裁6 活动识别 | Q1=A 语义回归 + Q2=A 回 8 参数 + Q3=A 硬排除生效 + Q4 认可（交付纪律） | ⬜ 未落码 | Q4 那条纪律是**门面每切一个方法必须留三项对比读数**（返回键集合 / 语义枚举值集合 / 旁挂依赖），缺一项判红 |
 
 **另：`20261003-MA关键词检索短词与整句phrase召回下限` 不在这份裁定书里**（六件里没有 FTS 那件）。
@@ -574,6 +574,67 @@ baseline 先跑绿（`[baseline] RC=0 failed=[]`），九条变异各自咬到�
 **生效条件与待裁项**：代码随下一次重启生效，不需要新开窗口，与 §三 合并窗同批即可。
 `/data/feedback_packs` 出境时**按收件方选哪一份文件**（`trace.txt` 还是 `trace_anon.txt`）是跨仓约定，
 不在 MA 单方能改的面上（homesdk 契约文档），已在裁3 回执里请 DCD 定口径。
+
+### 6.4 裁5 的落码读数（2026-10-04）
+
+裁定书 §三 裁5：**Q1=A（legacy 为对外只读引擎）/ Q2=A（两代键并存）/ Q3 验收单全认 / Q4=A（如实上报截断，不提高上限）**。
+完整判据与红证在 `doc/审计报告/审计核实与修复_20261001.md` §二十七，这里只台账化。
+
+**Q1=A 的落码——对外台账 6 → 11 把**（`LEGACY_OUTWARD_METHODS`）：新增
+`query_behavior_events`、`get_last_event`、`climate_sessions`、`explain_insight`、`water_purifier_usage`。
+其中前四把是「门面调出去」那一半缺陷的宿主——门面体里 `self.core.X(...)` 指向 `BehaviorService` 上
+**不存在**的成员，运行时被 `_degrade` 静默收成空页，调用点扫描器（管「外面调进来」那一半）看不见。
+本件补了第二支扫描器 `scripts/scan_insights_engine_attrs.py`：
+
+| 口径 | 引擎指向 | 空指向 | 退出码 |
+|---|---|---|---|
+| 部署态 `/app/src/…/insights/api.py` | 35 | **6** | `HEAD_RC=1` |
+| 本件工作区快照 | 34 | **0** | `WT_RC=0` |
+
+回归锁**按文件路径 import 这支扫描器**（一份实现，不让测试与脚本漂移）；
+`tests/test_vma_insights_callsite_binding.py` 用例 **9 → 17**，台账规模钉成 `== 11`（10 把有 ToolSpec）。
+
+**形状与语义的三条取向**（都是实测驱动，不是审美）：
+- `query_behavior_events(room, member, days, start, end, limit)`、`get_last_event(entity_id, domain, room, transition, days)`
+  形参**逐字回 legacy**——MCP handler 的位置参本来就是按 legacy 顺序传的。
+- `get_events` 修掉三条真缺陷：`total` 在切片之后才统计（恒等于本页条数）、返回 `EventRecord` 对象而非 dict、
+  降级包用 `days` 键而非 `events/total/offset/limit/has_more`。现走 `_search`，与 `search_events` 同一条扫描路径。
+- **不伪造 `total`**：`query_behavior_events` 只补 `count/offset/limit/has_more/time_range`。legacy 的
+  `store.list_behavior_events` 在 SQL `LIMIT` **之后**才做 `member` 过滤，引擎手里没有可信匹配总数；
+  变异 A6（把 `count` 改名 `total`）由该用例判红。申请里的**附带一问（`total` 语义）裁定书未答**，MA 不替 DCD 定。
+
+**Q4=A 的落点与边界**：`annotate_scan()` 落在 `_search`（`get_events`）上，`StoreRepository.scan_limit` 只读暴露同一上限，
+`_scan_limit()` 本体未动。生产库只读实测：30 天全量匹配 **958,388** ⇒ 门面报 `total=30000` /
+`truncated=True` / `scan_limit=30000` / `total_exact=False`，stderr 同期多条 `load_events 命中扫描上限 30000`（截断路径在现网真被走到）。
+**Q1=A 期间这三键不对外**：对外 `search_events` 跑 legacy，legacy 的 `total` 来自不带 LIMIT 的 `count_events`
+（实测 30 天/客厅 = 149,206，与新引擎被截的 30,000 与 `count_events` 三方互证）。所以 Q4 是**新引擎扫描路径上的承诺**，
+切换之后才随对外工具落地——这一条已在回执里向 DCD 说明，避免"裁5 已交付对外三键"的误读。
+
+**Q3 验收单实测：六条里三条不齐 ⇒ 一个方法都不切**（量具 `scripts/probe_insights_q3_acceptance.py`，生产库只读，`Q3_RC=0`）：
+
+| 条 | 读数摘要 | 判定 |
+|---|---|---|
+| 1 六个过滤/排序位生效 | repo 层 `room`/`domain` 生效；`category`/`query` 门面收下但 `_search` 丢弃（传与不传 `total` 都是 30,000）；`state`/`order`/`summarize`/`domain` 在 `_search` 形参里没有位置 | **不齐** |
+| 2 `days` 按天窗口 | 客厅 1/7/30 天 = 5,447 / 31,012 / 149,206 单调，legacy 同口径一致 | 齐 |
+| 3 `total` 不被悄悄截 | 命中上限即 `truncated=True`、`total_exact=False` | 齐 |
+| 4 legacy 分页/窗口键有对应物 | 五个方法全缺 `count`/`next_offset`；`search_events` 另缺 `window`/`ok`，两代键集交集仅 4/9 | **不齐** |
+| 5 「接收但不生效」要么实现要么下架 | 17 个工具里 **13 个**在新引擎无同名实现 | **不齐** |
+| 6 三项对比读数 | 键集合 / 语义枚举集合（`domain` 6、`state` 271）/ 旁挂依赖（`activity_rules=5`、`signal_exclusions=1`、`config.excluded_entities=0` 项）全部交出 | 齐 |
+
+一处探针自己的错也登记：第一版把 `excluded_entities` 当**表**读 ⇒ `OperationalError: no such table`，
+它是配置键；表侧硬排除落在 `signal_exclusions`。
+
+**门禁与权威读数**：容器快照 `/tmp/cd5s1`（全新目录名，不复用别的会话留在容器 `/tmp` 的 `vsNN`）——
+定向三件 **`30 passed` / `TRIO_RC=0`**；pyflakes **`当前 0 / 基线 0 / 新增 0 / 已修 0` / `GATE_RC=0`**；
+全量 `1 failed, 1168 passed, 13 skipped`，那 1 条红是**打包时漏了 `.gates-baseline.txt`** 导致 208 条存量全被当新增的
+环境伪红，补进同一快照后 `tests/test_quality_gates.py` **`2 passed` / `QG_RC=0`** ⇒ 等效 **1169 passed / 0 failed**；
+本机全量 `1157 passed, 25 skipped` / `LOCAL_RC=0`。七条变异（A1–A7）全部咬到自己的锁，
+baseline 先跑绿（`17 passed FAILED = []`），逐条 `RESTORED=True`、末态 `RESTORED_FINAL = True`。
+**`.gates-baseline.txt` 一字未改**（175 行）。
+
+**生效条件**：与裁3 同批，随下一次重启生效，不需要新开窗口。**仍开着的两问交给 DCD**：
+`total` 的对外语义（原附带一问未答）；三条不齐是「新引擎补齐后再切」还是「把这六个过滤位与两代键正式下架」
+——后者属对外承诺变更，MA 按"不切"执行，不自行动工具面。
 
 ---
 
