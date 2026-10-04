@@ -43,6 +43,7 @@ import os
 import threading
 import time
 
+from .day_bounds import clamp_days
 from .mcp_context import caller as _caller_context
 from .mcp_errors import (
     ALL_CODES,
@@ -612,7 +613,7 @@ def _fetch_attribution_events(store, days: int = 30) -> list[dict]:
     from datetime import timedelta
     # day 列由 Store 按家庭墙钟写入，容器时钟通常是 UTC：用裸 datetime.now() 会在
     # UTC 16:00–24:00 窗口里把窗口整体前移一天（第七轮审计 · 时区关节）。
-    day_from = (now_local(store.tz_offset_hours) - timedelta(days=max(1, int(days)))).strftime("%Y-%m-%d")
+    day_from = (now_local(store.tz_offset_hours) - timedelta(days=clamp_days(days))).strftime("%Y-%m-%d")
     conn = store.connect()
     with store._lock:
         rows = conn.execute(
@@ -1537,7 +1538,7 @@ def _build_server():
         # 且调用方看不出少的是最新那段。与 BUG-TZ1 同源，判据同 rule_engine._now。
         if not start and not end:
             end_dt = now_local(getattr(rt.config, "tz_offset_hours", 8.0))
-            start_dt = end_dt - timedelta(days=max(1, int(days)))
+            start_dt = end_dt - timedelta(days=clamp_days(days))
             start = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
             end = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -1897,7 +1898,7 @@ def _build_server():
 
         rt = get_runtime()
         day_from = (now_local(rt.config.tz_offset_hours)
-                    - timedelta(days=max(1, int(days or 14)))).strftime("%Y-%m-%d")
+                    - timedelta(days=clamp_days(days or 14))).strftime("%Y-%m-%d")
         rows = await asyncio.to_thread(
             rt.store.list_behavior_anomalies, status or None, day_from, None, None,
             max(1, min(int(limit or 50), 500)),
@@ -2017,7 +2018,7 @@ def _build_server():
 
         rt = get_runtime()
         day_from = (now_local(rt.config.tz_offset_hours)
-                    - timedelta(days=max(1, int(days or 14)))).strftime("%Y-%m-%d")
+                    - timedelta(days=clamp_days(days or 14))).strftime("%Y-%m-%d")
         rows = await asyncio.to_thread(
             rt.store.list_behavior_drifts, kind or None, day_from, None,
             max(1, min(int(limit or 50), 500)),
@@ -2392,7 +2393,7 @@ def _build_server():
         diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
         from datetime import timedelta
         # created_at 是家庭墙钟（agent_memory 用 now_local 落盘），cutoff 必须同口径
-        cutoff = (now_local(rt.config.tz_offset_hours) - timedelta(days=days)).isoformat()
+        cutoff = (now_local(rt.config.tz_offset_hours) - timedelta(days=clamp_days(days))).isoformat()
         diaries = [d for d in diaries if d.get("created_at", "") >= cutoff]
         diaries.sort(key=lambda x: x.get("created_at", ""))
         return {

@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import house_time
+from .day_bounds import LONG_WINDOW_MAX, clamp_days
 
 SCHEMA_VERSION = 1
 
@@ -1726,8 +1727,14 @@ class Store:
         return [dict(r) for r in rows]
 
     def purge_mcp_audit(self, keep_days: int = 30) -> int:
-        """清理过期审计（默认保留 30 天，路线图风险的「保留周期上限」要求）。"""
-        cutoff = now_local(self.tz_offset_hours) - timedelta(days=max(1, int(keep_days)))
+        """清理过期审计（默认保留 30 天，路线图风险的「保留周期上限」要求）。
+
+        这是**保留期**不是查询窗口：上界用 `LONG_WINDOW_MAX`，把 3650 套在这里等于
+        让「留 100 年」变成「删掉 10 年前的审计」。下界保持原语义（`<=0` 也当 1 天，
+        调用点 `runtime.py:145` 传的是字面量 30）。
+        """
+        cutoff = now_local(self.tz_offset_hours) - timedelta(
+            days=clamp_days(keep_days, hi=LONG_WINDOW_MAX))
         with self._lock:
             conn = self.connect()
             cur = conn.execute("DELETE FROM mcp_audit WHERE ts < ?", (cutoff.isoformat(),))
@@ -3275,11 +3282,11 @@ class Store:
         elif end:
             try:
                 d = datetime.strptime(end, "%Y-%m-%d")
-                day_from = (d - timedelta(days=max(1, int(days)) - 1)).strftime("%Y-%m-%d")
+                day_from = (d - timedelta(days=clamp_days(days) - 1)).strftime("%Y-%m-%d")
             except Exception:
-                day_from = (today - timedelta(days=max(1, int(days)) - 1)).strftime("%Y-%m-%d")
+                day_from = (today - timedelta(days=clamp_days(days) - 1)).strftime("%Y-%m-%d")
         else:
-            day_from = (today - timedelta(days=max(1, int(days)) - 1)).strftime("%Y-%m-%d")
+            day_from = (today - timedelta(days=clamp_days(days) - 1)).strftime("%Y-%m-%d")
         conn = self.connect()
         with self._lock:
             rows = conn.execute(
@@ -4497,7 +4504,7 @@ class Store:
         if retention_days <= 0:
             return 0
         cutoff = (
-            now_local(self.tz_offset_hours) - timedelta(days=retention_days)
+            now_local(self.tz_offset_hours) - timedelta(days=clamp_days(retention_days, hi=LONG_WINDOW_MAX))
         ).strftime("%Y-%m-%d")
         conn = self.connect()
         step = int(batch_rows or PURGE_BATCH_ROWS)
@@ -4571,7 +4578,7 @@ class Store:
     ) -> str:
         now = now_local(self.tz_offset_hours)
         created_at = created_at or now.isoformat(timespec="seconds")
-        expires_at = (now + timedelta(days=ttl_days)).strftime("%Y-%m-%d")
+        expires_at = (now + timedelta(days=clamp_days(ttl_days, lo=0, hi=LONG_WINDOW_MAX))).strftime("%Y-%m-%d")
         # vMA-1.2.1: 记忆文本入库前统一脱敏（成员姓名→成员N，长数字串→***）
         text = self.sanitize_feedback_text(text)
         memory_id = memory_id or hashlib.sha1(
@@ -4634,7 +4641,7 @@ class Store:
         conn = self.connect()
         with self._lock:
             if ttl_days is not None:
-                expires_at = (now + timedelta(days=ttl_days)).strftime("%Y-%m-%d")
+                expires_at = (now + timedelta(days=clamp_days(ttl_days, lo=0, hi=LONG_WINDOW_MAX))).strftime("%Y-%m-%d")
                 conn.execute(
                     """UPDATE agent_memories SET text=?, tags_json=?, source_refs_json=?,
                        prev_id=?, expires_at=?, updated_at=?, mirror_dirty=1
@@ -4857,9 +4864,9 @@ class Store:
                 trust = max(-1.0, trust - trust_step)
             now = now_local(self.tz_offset_hours)
             if useful:
-                expires_at = (now + timedelta(days=ttl)).strftime("%Y-%m-%d")
+                expires_at = (now + timedelta(days=clamp_days(ttl, lo=0, hi=LONG_WINDOW_MAX))).strftime("%Y-%m-%d")
             else:
-                expires_at = (now + timedelta(days=max(1, ttl // 2))).strftime("%Y-%m-%d")
+                expires_at = (now + timedelta(days=clamp_days(ttl // 2, hi=LONG_WINDOW_MAX))).strftime("%Y-%m-%d")
             conn.execute(
                 """UPDATE agent_memories SET feedback_up=?, feedback_down=?,
                    trust=?, expires_at=?, updated_at=?, mirror_dirty=1,

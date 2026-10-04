@@ -13,6 +13,7 @@ import functools
 import logging
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from ..day_bounds import clamp_days
 from .models import InsightConfig, Page, TimeRange
 from .nlquery import NLQueryEngine
 from .parser.entity import EntityResolver
@@ -113,6 +114,28 @@ def annotate_scan(payload: Dict[str, Any], scanned: int, scan_limit: int,
     return payload
 
 
+class DegradedList(list):
+    """降级出来的列表：形状仍是 `list`，但带着"为什么是空的"（第十四轮 P3-7）。
+
+    `_degrade` 原先只在返回值是 dict 时补 `error`，而 `room_names()` 的工厂是 `list`
+    ⇒ 调用方拿到 `[]`，分不清"这家里真没房间"和"查询失败"。子类不改任何列表行为
+    （迭代/切片/`len`/JSON 序列化同 `list`），只多一个 `degraded_error` 属性。
+    """
+
+    def __init__(self, items=(), error: str = ""):
+        super().__init__(items)
+        self.degraded_error = error
+
+
+def _with_error(result: Any, exc: BaseException) -> Any:
+    """把失败原因挂在降级值上：dict 补 `error` 键，list 换 `DegradedList`。"""
+    if isinstance(result, dict):
+        result["error"] = str(exc)
+    elif isinstance(result, list):
+        return DegradedList(result, str(exc))
+    return result
+
+
 def _degrade(factory: Callable[[], Any]) -> Callable[[Callable], Callable]:
     """异常降级：记录日志并返回空结果（数据库错误不外抛）。"""
     def decorator(func: Callable) -> Callable:
@@ -122,16 +145,10 @@ def _degrade(factory: Callable[[], Any]) -> Callable[[Callable], Callable]:
                 return func(*args, **kwargs)
             except ValueError as exc:      # 参数错误：返回明确错误信息
                 LOG.info("参数错误 %s: %s", func.__name__, exc)
-                result = factory()
-                if isinstance(result, dict):
-                    result["error"] = str(exc)
-                return result
+                return _with_error(factory(), exc)
             except Exception as exc:       # noqa: BLE001 - 其它错误一律降级
                 LOG.exception("执行 %s 失败，返回降级结果", func.__name__)
-                result = factory()
-                if isinstance(result, dict):
-                    result["error"] = str(exc)
-                return result
+                return _with_error(factory(), exc)
         return wrapper
     return decorator
 
@@ -196,7 +213,7 @@ class InsightService:
             from datetime import timedelta
             from .models import house_now
             _end = house_now()
-            _start = _end - timedelta(days=days)
+            _start = _end - timedelta(days=clamp_days(days))
             start = _start.isoformat(timespec="seconds")
             end = _end.isoformat(timespec="seconds")
         return start, end

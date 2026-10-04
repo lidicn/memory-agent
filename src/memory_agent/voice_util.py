@@ -22,6 +22,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
+from .day_bounds import clamp_days
 from .store import now_local
 
 TZ_OFFSET = 8.0
@@ -149,6 +150,7 @@ def resolve_window(text: str, today: datetime | None = None) -> dict | None:
     for word, n in (("大前天", 3), ("前天", 2), ("昨天", 1), ("昨日", 1),
                     ("今天", 0), ("今日", 0)):
         if word in t:
+            # day-ok: n 只从上面的字面量元组取值（0..3），不来自文本
             d0 = today - timedelta(days=n)
             return _win(d0, d0, word)
 
@@ -157,7 +159,7 @@ def resolve_window(text: str, today: datetime | None = None) -> dict | None:
         r"(\d+)\s*天[以之]?内", t
     )
     if m:
-        n = int(m.group(1))
+        n = clamp_days(int(m.group(1)))   # 先收敛再进下面的 `f"最近{n}天"`：报出的口径等于真查的窗口
         end = today.replace(hour=23, minute=59, second=59)
         start = (today - timedelta(days=n - 1)).replace(hour=0, minute=0, second=0)
         return _win(start, end, f"最近{n}天")

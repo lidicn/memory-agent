@@ -13,6 +13,7 @@ import re
 from datetime import datetime, timedelta
 from typing import AsyncIterator
 
+from .day_bounds import clamp_days
 from .store import TELEMETRY_DOMAINS, Store, now_local
 
 CATEGORIES = ("sleep", "media", "lighting", "climate", "appliance", "security", "other")
@@ -74,7 +75,7 @@ class AnalysisService:
         if start_day and end_day:
             return f"{start_day}T00:00:00", f"{end_day}T23:59:59"
         end = now_local(tz)
-        start = end - timedelta(days=max(1, int(days or 7)))
+        start = end - timedelta(days=clamp_days(days or 7))
         return start.isoformat(sep="T"), end.isoformat(sep="T")
 
     def build_digest(

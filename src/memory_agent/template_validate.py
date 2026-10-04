@@ -33,6 +33,7 @@ import threading
 from datetime import datetime, timedelta
 from typing import Any
 
+from .day_bounds import clamp_days
 from .store import now_local
 
 try:  # 复用身份层的相似度（CJK 感知）；万一不可用则回退 difflib
@@ -242,7 +243,7 @@ def _within_window(last_ts: str, days: int, rt) -> bool:
     try:
         lt = datetime.fromisoformat(last_ts)
         now = now_local(_tz(rt)).replace(tzinfo=None)
-        return (now - lt) <= timedelta(days=max(1, int(days)))
+        return (now - lt) <= timedelta(days=clamp_days(days))
     except Exception:
         return True
 

@@ -46,6 +46,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Optional
 
+from .day_bounds import clamp_days
 from .store import TELEMETRY_DOMAINS, Store, now_local, parse_ts, safe_json_loads
 
 # 单实体事件数超过房间事件数该比例即视为「噪声源」，从行为/房间使用率中剔除
@@ -2203,7 +2204,7 @@ class InsightService:
         if not tags:
             return None
         end = now_local(self.tz)
-        start = end - timedelta(days=window_days)
+        start = end - timedelta(days=clamp_days(window_days))
         names = self.name_map()
         present: set = set()
         try:
@@ -3001,6 +3002,7 @@ class InsightService:
                 end_iso = window["end"]
                 window_label = window.get("label", "")
             else:
+                days = clamp_days(days)
                 end = today.replace(hour=23, minute=59, second=59)
                 start = (today - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0)
                 start_iso = start.isoformat()

@@ -112,7 +112,10 @@ def run_learning_cycle(
 ) -> dict[str, Any]:
     """一轮完整学习：收集 → 分析 → 优化（shadow/apply）。"""
     now = now or datetime.now(timezone.utc)
-    start = now - timedelta(days=config.window_days)
+    # 窗口口径 [1, 3650]，与 day_bounds.clamp_days 一致；本模块与包内其它模块的
+    # import 口径尚未统一（flat/relative 混用），所以这里不新增跨模块依赖。
+    window_days = min(3650, max(1, int(config.window_days or 7)))
+    start = now - timedelta(days=window_days)
     signals = store.list_signals(start, now)
     analysis = analyze(signals, now=now, min_samples=config.min_spot_samples)
 
@@ -145,14 +148,15 @@ def run_evaluation_cycle(
 ) -> list[dict[str, Any]]:
     """对到期的参数调整做效果评估，必要时自动回滚。"""
     now = now or datetime.now(timezone.utc)
+    # 同上：评估窗口也是 [1, 3650]，循环外算一次
+    eval_window = timedelta(days=min(3650, max(1, int(config.eval_window_days or 7))))
     results: list[dict[str, Any]] = []
     for adj in store.list_adjustments():
         if adj.verdict is not None:
             continue
         if (now - adj.created_at) < timedelta(hours=config.eval_after_hours):
             continue
-        window = timedelta(days=config.eval_window_days)
-        pre = store.list_signals(adj.created_at - window, adj.created_at)
+        pre = store.list_signals(adj.created_at - eval_window, adj.created_at)
         post = store.list_signals(adj.created_at, now)
         report = evaluate(adj, pre, post, now=now)
         store.mark_evaluated(adj.adjustment_id, report.verdict.value, now)
@@ -180,6 +184,7 @@ def build_router(store: LearningStore, config: LearningConfig) -> APIRouter:
     @router.get("/weak-spots")
     def weak_spots(days: int = Query(default=7, ge=1, le=90)) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
+        # day-ok: 形参已声明收敛——Query(default=7, ge=1, le=90)，越界由 FastAPI 挡在门外
         signals = store.list_signals(now - timedelta(days=days), now)
         return _dump_analysis(analyze(signals, now=now, min_samples=config.min_spot_samples))
 
@@ -207,6 +212,7 @@ def build_router(store: LearningStore, config: LearningConfig) -> APIRouter:
     @router.get("/report")
     def report(days: int = Query(default=7, ge=1, le=90), format: str = Query(default="json")) -> Any:
         now = datetime.now(timezone.utc)
+        # day-ok: 形参已声明收敛——Query(default=7, ge=1, le=90)，越界由 FastAPI 挡在门外
         start = now - timedelta(days=days)
         signals = store.list_signals(start, now)
         analysis = analyze(signals, now=now, min_samples=config.min_spot_samples)

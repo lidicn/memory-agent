@@ -19,6 +19,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, Generic, Iterable, List, Optional, Tuple, TypeVar
 
+from ..day_bounds import DAY_WINDOW_MAX, clamp_days
+
 T = TypeVar("T")
 
 __all__ = [
@@ -385,7 +387,7 @@ class TimeRange:
 
     def shift(self, days: float) -> "TimeRange":
         """整体前移 N 天（用于环比对比窗口）。"""
-        delta = timedelta(days=days)
+        delta = timedelta(days=clamp_days(days, lo=-DAY_WINDOW_MAX, default=0))
         return TimeRange(self.start - delta, self.end - delta, self.label)
 
     def split_days(self) -> List[Tuple[str, float, float]]:

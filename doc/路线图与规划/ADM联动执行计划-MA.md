@@ -1031,4 +1031,112 @@ pyflakes `GATE_RC=0`（`当前 0 / 基线 0 / 新增 0 / 已修 0`，`.gates-bas
 
 ---
 
+### 6.15 A2/A7 静态结论核销第二批（#53，2026-10-05）——days 极值 / 连接池 / 失联路由 / `_degrade` 空列表
+
+细节全在审计台账 §三十六，这里只登记**口径与五条会被复用的规矩**：
+
+1. **"给某个参数收口"的正确单位是站点语义，不是函数名**。同一族 `timedelta(days=…)` 99 个站点，
+   查询窗口收成 `[1, 3650]`，保留期/TTL 收成 `[0, 200000]`（≈547 年，只为把算式留在 `datetime` 域内）。
+   把 3650 套到保留期上 = 把"永久保留"改成"删掉 10 年前的数据"。本批我自己就违反过一次
+   （`store.purge_mcp_audit`），现算的差别是 `cutoff=2016-10-07` 会删掉 2000 年那条审计；
+   生产调用点传字面量 30 所以今天不响——**"今天不响"不是豁免理由，是缺陷的潜伏期**。
+2. **本机绿不等于交付面绿**。`clamp_days` 第一版写了 `int.is_integer()`（3.12+ 才有），
+   而"越界浮点被夹到整数边界"时 `min/max` 交回来的是 int 边界本身 ⇒ 本机 3.13 全绿、
+   容器 3.11 `1 failed`。这条只有容器权威门能抓，因此它不是"多跑一遍"，是**唯一能抓的那一遍**。
+3. **量具替代对表**。`scripts/scan_day_bounds.py`（终树 18 正 11 反自证；run4 时是 8 正 8 反，
+   本批按规矩 5 扩了 13 条覆盖豁免档）与
+   `scripts/scan_route_mount.py`（195 个 handler 形状函数：190 挂载 / 1 别处引用 / 4 失联）。
+   失联那 4 条不是"忘了挂"：`add/update/delete` 直接落 `active_rules`，而唯一生产写入点是
+   R3 通道的 promote（`rule_lifecycle.py:320`）⇒ 挂载等于开一条绕过四条红线的旁路，呈 DCD。
+   量具的红读数就是呈件未结的在盘凭据，不在 CI 里判失败。
+4. **归属标记的判据只能是"值的性质"，不能是"待裁的状态"**。我给 `learning_api.py` 两处写的
+   `# day-ok: 死代码——下架与否见 DCD 呈件` 就是 category error：模块是不是死的是**待裁定**的，
+   而标记一存在，量具就永久判绿——DCD 若裁定"接回去"，缺陷立刻复活且门不会响。
+   正确理由现成在上一行（`Query(default=7, ge=1, le=90)` 已声明收敛）。
+   规矩：**写不出"值为什么不来自外部"，就补 clamp，不要用标记消音。**
+5. **豁免档的前提必须双向可证**。`scan_day_bounds.py` 的 `config` 档原判据是"变量名叫 `config`/`cfg`"，
+   一条前提就放行整格——于是 `vision_snapshot_retention_days`（在 `config_routes.WRITABLE_FIELDS` 里，
+   设置页一个 number 输入框就能写）和一个根本不是应用配置的 dataclass 字段
+   （`LearningConfig.window_days`）一起免检。**"不在可写白名单"≠"不可写"，除非先证明它真是应用配置的字段**。
+   现在两把前提都要过：键 ∈ `config.Config` 注解字段 **且** 键 ∉ `WRITABLE_FIELDS`，
+   两张表都从真源 AST 解析（复制的那份会在下一个人加键时静默失效）；
+   读不到表时按保守档处理（整册 `external`，宁可红），**信息缺失不许自动变成豁免**。
+   规矩：**每加一档豁免，就同时给这一档一条"前提不成立时必须红"的自检样本**（本批 18 正 11 反里
+   `writable/*`、`app-config/*`、`unreadable/*`、`real-source/*` 四组就是干这个的）。
+
+顺带核销：第十四轮 P3-7（`_degrade` 对 `list` 工厂不补 error）改 `DegradedList` 子类留痕，
+变异自证两次各咬 2 条、恢复后字节一致；第一轮 P2-3 六处逐条现读，`mqtt_bridge.py:55` 判假阳性，
+其余四格（`if True:` / `base_days` 死形参 / `test_rule` 与其死参 / 两条 `CAPABILITY_*` 别名）
+连同 `learning_*` 八模块（1526 行、零引用、裸绝对导入）与 `insights/persona.py` 一起呈 DCD
+（`20261005-MA-主动规则CRUD挂载与死代码六处处置-决策申请.md` Q1~Q4，MA 每格给倾向）。
+另登记一件编号陷阱："P2-3"在四份报告里指四件不同的事，此后引用须带"报告+行号"。
+
+**权威门两侧对得上（终树容器快照 `/tmp/c31snap20261005a`，365 文件，基线 HEAD `2ee9d77`，run4）**：
+`GATE_RC=0`（pyflakes 0/0/0/0，`.gates-baseline.txt` 一字未改）/ 容器 `SUITE_RC=0`
+`1375 passed, 10 skipped in 209.45s`（`Python 3.11.16`）/ 本机 `LOCAL_SUITE_RC=0`
+`1363 passed, 22 skipped in 121.72s` ⇒ **两侧总数同为 1385**（上批 1349 + 本批 36）；
+`TARGETED_RC=0` **36 passed**（两套新锁全含）、`TOUCHED_RC=0` 111 passed、
+`DAYSCAN_RC=0`（自证 8 正 8 反；`guard_bounded 3→41`、`guard_lo_only 18→0`、`guard_unguarded 78→58`、
+`marked 0→4`，站点总数 99 不变）、`ROUTESCAN_RC=0`（`195/190/1/4`，其中 `SCAN_RC=1` 是设计：
+DCD 未结前持续判红）、`PROBE_RC=0`（脚本 sha16 `4ff04e5ff1d947a4`，容器内 `sha256sum` 与本机同值）、
+本机 `GATES_REQUIRE=1` 门禁自测 `2 passed`（`QG_RC=0`）。
+**四轮容器的读数不能混着引用**：run1 `SUITE_RC=1`（§6.15 规矩 2 的 3.11 崩溃）、run2 中间态（1369+10）、
+run3 代码终树但定向集只 30 条、**run4 才是交付面**。登记门读数要带 run 号。
+（**注意**：run1~run4 是 §6.15 第一批；同日第二批的交付面是 §6.16 的 run5，两侧总数 1389、TARGETED 40、
+TOUCHED 141。上面这一整段保留作第一批的过程证据，不要拿它当"当前读数"引用。）
+
+**本机覆盖率的实测量推翻了审计自己的优先级**（`coverage 7.16.1`，全量同一轮取的）：
+第十五轮 §九 说 `identity_fusion` / `behavior_predictor` / `api/behavior_routes` 是"0%~10% 覆盖"，
+现读 **84% / 84% / 10%** ⇒ 前两格已被 #46/#48 两批的补测抬起来，第三格仍成立（且失联的 4 条 handler 就在里面）。
+这条的用处不是驳审计，而是**给下一批选靶**：静态扫描的边际产出审计自己已判为最低，
+存量应转向"`behavior_routes` 交付面 + 真实环境长跑"，而不是再开一轮同类扫描。
+
+### 6.16 同族第三处：量具自己的假豁免（#53 第二批，2026-10-05，容器 run5）
+
+细节全在审计台账 §三十六 §九。这里只登记口径，因为这条会被复用的概率最高：
+
+**第五步：豁免档的"前提"必须是可双向证明的，一跳豁免等于没审**。§6.15 立了"值来自外部才收口"之后，
+`scan_day_bounds.py` 把"键名出现在 `config.*` 上"当成"运维受控"的**充分**条件——这一个跳板放过了两处：
+1. **应用配置里有一批键是 HTTP 可写的**（`api/config_routes.py:20` 的 `WRITABLE_FIELDS`，现读 77 键，
+   含 `vision_snapshot_retention_days`），前端对应一个无 `min/max` 的 number 输入框 ⇒
+   周期任务里 `now_local(8) - timedelta(days=10**6)` 直接 `OverflowError`。
+   **"来自 config"≠"运维侧受控"**，这类键的口径与 MCP 形参完全同级。
+2. **叫 `config` 的形参未必是应用配置**（`learning_api.run_learning_cycle(store, config)` 收模块自己的
+   dataclass）⇒ "不在可写白名单"不能当成"不可写"，除非先证明这个键真是 `config.Config` 的字段。
+
+改法（也是往后加任何豁免档的模板）：两张表**都从真源解析、不复制清单**
+（`load_writable_config_keys()` 括号配平取 `WRITABLE_FIELDS`；`load_app_config_keys()` 走 AST 取
+`class Config` 的注解字段）；归属按「可写键 → external」「键不在应用配置字段表 → external」「其余才允许
+config」两跳判；**读不到表时不许自动豁免，整册按 external 判红**（信息缺失不能变成绿灯）；
+每条新豁免档必须配一个"前提不成立时判红"的自证样本（自证由 8 正 8 反扩到 **18 正 11 反**）；
+detail 拆 `attr:`（真键名）/ `var:`（携带键名的局部变量），免得 `keep` 这种变量名被当成配置键。
+
+顺带一条**取数命令自己的规矩**：这批的门新加一格 `SOURCES_RC`（`wc -l` + `grep -c WRITABLE_FIELDS`），
+因为量具现在依赖两张真源表在场——少了这一格，"快照漏文件"会被读成"代码判红"，
+把自己的取数故障当成缺陷（run4 那次 `PROBESCRIPT_SCP_RC=255` 同一类错，那次是 `sed` 整体改名写坏了路径，
+所以 run5 的脚本是手写的、不从旧脚本改名）。
+
+**权威门（终树容器快照 `/tmp/c32snap20261005a`，365 文件，基线 HEAD `2ee9d77`，run5 = 本批交付面）**：
+`SOURCES_RC=0`（`config_routes.py 516` / `config.py 544` / `grep -c WRITABLE_FIELDS=2`）、
+`GATE_RC=0`（pyflakes 0/0/0/0，`.gates-baseline.txt` 一字未改）、容器 `SUITE_RC=0`
+**1379 passed, 10 skipped in 233.86s**（`Python 3.11.16`；skip 清单与 run4 逐字相同 ⇒ 差异仍是环境）、
+本机 `1367 passed, 22 skipped` ⇒ **两侧总数同为 1389**（run4 的 1385 + 本批新锁 4）；
+`TARGETED_RC=0` **40 passed**（36→40）、`TOUCHED_RC=0` **141 passed**
+（**口径**：run5 touched 集 12 个文件、run4 是 8 个，两个数不是同一把尺，不许相减当增量）、
+`DAYSCAN_RC=0`（自证 **18 正 11 反 0 漏咬**；`external 45→48`、`config 5→2`、`bounded 41→44`、
+`unguarded 58→55`、`marked 4`、站点总数 99 不变；**这四个数是一件事**：恰好 3 条由 config 改判 external
+且同一批转 bounded；容器与本机该行逐字相同）、`ROUTESCAN_RC=0`（`195/190/1/4`，`SCAN_RC=1` 仍是设计红，
+四条行号与 run4 相同 ⇒ 本批没碰路由挂载）、`CONTAINER_BATCH_RC=0`。
+**run5 没有 `PROBE` 这一格**（本批唯一运行时改动已被 3 条 vision 新锁按 cutoff 字符串量过，池/淘汰口径未动）
+⇒ 引用 `PROBE_RC=0` 时只能带 run4。
+
+**没做的一件事，理由是它不该由我单方定**：`WRITABLE_FIELDS` 的**写入侧**校验（PUT 时就拒极大值）与
+前端 `min/max` 都没加。消费侧已不可能崩、也不可能悄悄改小；而"保留期的合法区间是多少"
+（0=关闭、极大=永久保留，中间有没有产品意义上的上限）是**口径决定**，已作为 **Q5** 补投进
+`20261005-MA-主动规则CRUD挂载与死代码六处处置-决策申请.md` §八（甲=写入侧按键给区间 / 乙=只夹紧消费侧（当前态）/
+丙=只给"会删数据"的那几把键加区间；**MA 倾向丙，但区间数字请 DCD/SP 给**）。前端 `min/max` 同理——API 直写会绕过它，
+单加只是装饰，要加就随甲/丙一起加。
+
+---
+
 —— 关键决策部 · DCD

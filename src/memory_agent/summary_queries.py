@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from .day_bounds import clamp_days
 from .insights.parser.entity import normalize_state
 from .store import TELEMETRY_DOMAINS, now_local
 
@@ -45,11 +46,11 @@ def _resolve_window(store, start: str, end: str, days: int):
             end = now_local(store.tz_offset_hours).isoformat(timespec="seconds")
         if not start:
             d = _parse_ts(end) or now_local(store.tz_offset_hours)
-            start = (d - timedelta(days=max(1, int(days or 7)))).isoformat(
+            start = (d - timedelta(days=clamp_days(days or 7))).isoformat(
                 timespec="seconds")
         return start, end
     now = now_local(store.tz_offset_hours)
-    d = max(1, int(days or 7))
+    d = clamp_days(days or 7)
     return ((now - timedelta(days=d)).isoformat(timespec="seconds"),
             now.isoformat(timespec="seconds"))
 

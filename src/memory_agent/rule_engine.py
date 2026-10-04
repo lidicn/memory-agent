@@ -16,6 +16,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+from .day_bounds import clamp_days
 from .activity_inference import _is_on
 from .store import now_local
 
@@ -245,7 +246,7 @@ class ActiveRuleEngine:
         # 否则本线程的读会撞进别的线程尚未提交的事务里。
         with self.store._db() as conn:
             # 查询最近 N 天的触发历史（triggered_at 是墙钟 ISO 串，按字典序即可比较）
-            since = (self._now() - timedelta(days=days)).isoformat(sep="T")
+            since = (self._now() - timedelta(days=clamp_days(days))).isoformat(sep="T")
             rows = conn.execute(
                 """
                 SELECT * FROM rule_trigger_history
@@ -264,7 +265,7 @@ class ActiveRuleEngine:
 
         return {
             "rule_id": rule_id,
-            "days": days,
+            "days": clamp_days(days),
             "trigger_count": trigger_count,
             "false_positive": false_positive,
             "false_negative": false_negative,
@@ -298,7 +299,7 @@ class ActiveRuleEngine:
             "total_triggers": total_triggers,
             "total_fp": total_fp,
             "total_fn": total_fn,
-            "days": days
+            "days": clamp_days(days)
         }
 
     # ── 规则 CRUD ──────────────────────────────────────────────────────

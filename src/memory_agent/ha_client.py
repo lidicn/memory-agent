@@ -3,6 +3,7 @@
 """HA客户端"""
 import json
 import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 import httpx
@@ -10,18 +11,38 @@ import httpx
 # 到 HA 的 HTTP 连接按 (地址, 令牌) 复用：每次请求新建 client 的建连固定成本约占单次
 # 耗时 74%（第七轮审计 · HA 客户端每次请求新建连接），而采集是高频路径，跨主机时还要
 # 加 TLS 握手。httpx.Client 的连接池本身线程安全，可以跨 asyncio.to_thread 工作线程共享。
-_CLIENT_POOL: Dict[tuple, httpx.Client] = {}
+#
+# 有界 LRU（A2/A7 · P3-4）：key 含令牌，令牌轮换 / 多地址各占一格，无界池等于连接与
+# fd 只增不减。容量取 8——必须 ≥2，因为「换令牌不复用旧凭证的连接」是锁死的行为
+# （tests/test_vma_r7_seam_fixes.py），新旧两条要能同时在池里。
+_CLIENT_POOL: "OrderedDict[tuple, httpx.Client]" = OrderedDict()
 _POOL_LOCK = threading.Lock()
+POOL_MAX_ENTRIES = 8
 
 
 def _pooled_client(base_url: str, headers: Dict[str, str]) -> httpx.Client:
     key = (base_url, tuple(sorted(headers.items())))
+    evicted = []
     with _POOL_LOCK:
         client = _CLIENT_POOL.get(key)
-        if client is None:
-            client = httpx.Client()
-            _CLIENT_POOL[key] = client
-        return client
+        if client is not None:
+            _CLIENT_POOL.move_to_end(key)
+            return client
+        client = httpx.Client()
+        _CLIENT_POOL[key] = client
+        while len(_CLIENT_POOL) > POOL_MAX_ENTRIES:
+            _, dead = _CLIENT_POOL.popitem(last=False)
+            evicted.append(dead)
+    # close 会在 socket 拆除上阻塞，不能占着 _POOL_LOCK 做——否则一个卡住的旧连接
+    # 能把所有采集线程一起停住。被淘汰的是最久没被回看的那格，正在传输的概率极低；
+    # 真撞上也只是单次 HA 读失败，走各调用点已有的"失败返回 None / 回退逐实体"路径。
+    for dead in evicted:
+        try:
+            dead.close()
+        except Exception as exc:  # noqa: BLE001 - 拆旧连接失败不影响新连接交付，但要留痕
+            # 只印异常类型：httpx 的异常串里会带 URL，池 key 又含令牌头，日志不该抄过去。
+            print(f"[HAClient] 淘汰连接关闭失败（不影响本次请求）: {type(exc).__name__}")
+    return client
 
 
 class HAClient:
@@ -44,7 +65,8 @@ class HAClient:
         """借一条共享连接到 HA。
 
         退出时**不关闭**：连接归 `_CLIENT_POOL` 管，单个请求没有权利拆掉别人正在用的
-        池；配置热更新会换 base_url/令牌，自然落到新的池条目上。
+        池；配置热更新会换 base_url/令牌，自然落到新的池条目上，旧条目等到 LRU 淘汰
+        时才由淘汰方关闭。
         """
         yield _pooled_client(self.base_url, self.headers)
     

@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from . import algo_kernel
+from .day_bounds import clamp_days
 from .store import TELEMETRY_DOMAINS, now_local
 
 
@@ -458,7 +459,7 @@ class ActivityInferenceService:
         end = end or now.isoformat(sep="T")
         if not start:
             start = (now.replace(microsecond=0)
-                     - timedelta(days=max(1, days))).isoformat(sep="T")
+                     - timedelta(days=clamp_days(days))).isoformat(sep="T")
         try:
             events = self.store.query_events(
                 start=start, end=end, rooms=rooms, order="asc", limit=20000
@@ -558,7 +559,7 @@ class ActivityInferenceService:
         end = end or now.isoformat(sep="T")
         if not start:
             start = (now.replace(microsecond=0)
-                     - timedelta(days=max(1, days))).isoformat(sep="T")
+                     - timedelta(days=clamp_days(days))).isoformat(sep="T")
         try:
             events = self._iter_events(start, end, rooms=rooms)
         except Exception as exc:  # pragma: no cover
@@ -782,7 +783,7 @@ class ActivityInferenceService:
         end = end or now.isoformat(sep="T")
         if not start:
             start = (now.replace(microsecond=0)
-                     - timedelta(days=max(1, days))).isoformat(sep="T")
+                     - timedelta(days=clamp_days(days))).isoformat(sep="T")
         try:
             events = self._iter_events(start, end, rooms=rooms, max_rows=max_rows)
         except Exception as exc:  # pragma: no cover
@@ -891,7 +892,7 @@ class ActivityInferenceService:
         end = end or now.isoformat(sep="T")
         if not start:
             start = (now.replace(microsecond=0)
-                     - timedelta(days=max(1, days))).isoformat(sep="T")
+                     - timedelta(days=clamp_days(days))).isoformat(sep="T")
         try:
             events = self._iter_events(start, end, rooms=rooms, max_rows=max_rows)
         except Exception as exc:  # pragma: no cover
@@ -983,7 +984,7 @@ class ActivityInferenceService:
         """
         now = now_local(self.config.tz_offset_hours)
         since = (now.replace(microsecond=0)
-                 - timedelta(days=max(1, days))).isoformat(sep="T")
+                 - timedelta(days=clamp_days(days))).isoformat(sep="T")
         try:
             states = self.store.list_behavior_states(since=since, limit=3000)
         except Exception as exc:  # pragma: no cover

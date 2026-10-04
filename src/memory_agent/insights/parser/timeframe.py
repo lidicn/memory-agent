@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, List, Optional, Tuple
 
+from ...day_bounds import clamp_days
 from ..models import (SECONDS_PER_DAY, TimeRange, house_dt, house_now, house_ts,
                       house_tz)
 
@@ -210,14 +211,14 @@ def resolve_range(start: Any = "", end: Any = "", days: int = 0,
     if s and not e:
         return TimeRange(s, now, label)
     if e and not s:
-        span = timedelta(days=float(days or default_days))
+        span = timedelta(days=clamp_days(days or default_days))
         return TimeRange(e - span, e, label)
     for value in (start, end):
         if isinstance(value, str) and value.strip():
             tf = parse_timeframe(value, now=now, default_days=default_days)
             if tf:
                 return TimeRange(tf.start, tf.end, label or tf.label)
-    span = timedelta(days=float(days or default_days))
+    span = timedelta(days=clamp_days(days or default_days))
     return TimeRange(now - span, now, label)
 
 

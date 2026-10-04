@@ -27,6 +27,7 @@ from typing import Any
 
 import httpx
 
+from .day_bounds import LONG_WINDOW_MAX, clamp_days
 from .face_node_registry import FaceNodeRegistry
 from .store import now_local
 from .task_registry import task_registry
@@ -497,7 +498,11 @@ class VisionService:
             return 0
         from datetime import timedelta
 
-        cutoff = (now_local(self.config.tz_offset_hours) - timedelta(days=days)).strftime("%Y-%m-%d")
+        # 保留期口径（hi=LONG_WINDOW_MAX），不是查询窗口：`vision_snapshot_retention_days`
+        # 在 config_routes.WRITABLE_FIELDS 里——设置页一个 number 输入框就能写，
+        # 所以"来自 config"不等于"运维侧受控"。越界按"什么都不删"处理，而不是删成 10 年前。
+        cutoff = (now_local(self.config.tz_offset_hours) - timedelta(
+            days=clamp_days(days, hi=LONG_WINDOW_MAX))).strftime("%Y-%m-%d")
         removed = 0
         for path in self.store.clear_behavior_snapshots(cutoff):
             try:

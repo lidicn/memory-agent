@@ -10,6 +10,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..day_bounds import clamp_days
 # 统一委托 parser.entity 的状态判定，避免新旧两套常量口径不一致（U-1）
 from .models import house_dt, house_ts
 from .parser.entity import (
@@ -356,6 +357,7 @@ def resolve_nl_window(q: str, default_days: int) -> Tuple[str, str, Dict[str, An
         this_monday = (now - timedelta(days=now.weekday())).replace(
             hour=0, minute=0, second=0, microsecond=0)
         week_offset = -14 if prefix == "上上" else (-7 if prefix == "上" else 0)
+        # day-ok: wd 构造上有界 0..6（正则字符类枚举），week_offset ∈ {-14,-7,0}
         day0 = this_monday + timedelta(days=week_offset + wd)
         if not prefix and day0 > now:  # 「周三」无限定且未到 → 指上一次
             day0 -= timedelta(days=7)
@@ -387,9 +389,10 @@ def resolve_nl_window(q: str, default_days: int) -> Tuple[str, str, Dict[str, An
     if "最近" in q:
         m = re.search(r"(\d+)\s*天", q)
         if m:
-            n = int(m.group(1))
+            n = clamp_days(int(m.group(1)), lo=0)   # note 里报的口径必须等于真查的窗口
             start = (now - timedelta(days=n)).replace(hour=0, minute=0, second=0, microsecond=0)
             return start.isoformat(), now.isoformat(), {"timezone": tz_label, "start": start.isoformat(), "end": now.isoformat(), "note": f"最近{n}天"}
+    default_days = clamp_days(default_days, lo=0)
     start = (now - timedelta(days=default_days)).replace(hour=0, minute=0, second=0, microsecond=0)
     return start.isoformat(), now.isoformat(), {"timezone": tz_label, "start": start.isoformat(), "end": now.isoformat(), "note": f"最近{default_days}天"}
 

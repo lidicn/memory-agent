@@ -14,6 +14,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
+from .day_bounds import clamp_days
+
 EFFECT_SIZE_THRESHOLD: float = 0.5
 SIGNIFICANCE_LEVEL: float = 0.05
 LARGE_EFFECT_THRESHOLD: float = 1.5
@@ -312,7 +314,7 @@ def search_candidate_causes(events, person, change_start_ts, lookback_days=7):
     cdt = _parse_ts(change_start_ts)
     if cdt is None:
         return []
-    delta = timedelta(days=lookback_days)
+    delta = timedelta(days=clamp_days(lookback_days))
     ws, we = cdt - delta, cdt
     bs_lo, bs_hi = cdt - 2 * delta, cdt - delta
     action_counts = defaultdict(lambda: {"c": 0, "b": 0})
@@ -464,7 +466,7 @@ def analyze_conditional_causes(events, person, metric, change_start_ts,
         return {"enabled": False, "reason": "change_start_ts 解析失败", "causes": []}
 
     daily = _daily_values(events, person, metric, room)
-    start_date = (cdt - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    start_date = (cdt - timedelta(days=clamp_days(lookback_days))).strftime("%Y-%m-%d")
     end_date = cdt.strftime("%Y-%m-%d")
     relevant = {d: v for d, v in daily.items() if start_date <= d < end_date}
 
@@ -618,7 +620,7 @@ def counterfactual_query(events, person, metric, event_type, change_start_ts,
         return {"enabled": False, "reason": "change_start_ts 解析失败"}
 
     daily = _daily_values(events, person, metric, room)
-    start_date = (cdt - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    start_date = (cdt - timedelta(days=clamp_days(lookback_days))).strftime("%Y-%m-%d")
     end_date = cdt.strftime("%Y-%m-%d")
     relevant = {d: v for d, v in daily.items() if start_date <= d < end_date}
 

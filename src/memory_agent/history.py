@@ -20,6 +20,7 @@ import time
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from .day_bounds import clamp_days
 from .store import TELEMETRY_DOMAINS, Store, make_event_id, now_local, parse_ts
 
 if TYPE_CHECKING:
@@ -570,7 +571,7 @@ class HistoryManager:
 
     def _range(self, days: int) -> tuple[str, str]:
         end = now_local(self.config.tz_offset_hours)
-        start = end - timedelta(days=max(1, days))
+        start = end - timedelta(days=clamp_days(days))
         return start.isoformat(sep="T"), end.isoformat(sep="T")
 
     @staticmethod
