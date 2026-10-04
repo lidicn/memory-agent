@@ -257,21 +257,30 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 > `store.py:4666`）——所以真窗口里大概率不需要 12 分钟冷启动，只需 `--reconcile`。这条差异属对外承诺的时长，**留给窗口执行时实测**，不在此处替它圆场。
 > 探针脚本 `scripts/_probe_post_restart.py`（同一份判据，下次重启后直接复用）。
 >
-> **窗内必须一起落、且**不允许提前落码**的三件（DCD 20261002《AgentOps 与 MA 交付面》§问 1+2 / 问 3 原文约束）**：
+> **窗内必须一起落的条目**（第 1-3 件按 DCD 20261002《AgentOps 与 MA 交付面》§问 1+2 / 问 3 已裁，
+> **不允许提前落码**；第 4 件 2026-10-04 投递、**待裁**，取哪个值由 DCD 定向）：
 >
 > | # | 改动 | 现读位置 | 裁定口径 | 为什么不能提前 |
 > |---|---|---|---|---|
 > | 1 | 安装行加 `"posthog<3"` | `Dockerfile:19`（`pip install … "chromadb==0.5.23" httpx …`） | 裁 **A**：pin 上界 | 裁定书原话：「pin 上界与关遥测是同一枚硬币的两面，**必须同窗做**」，无裁定单独加 = 不允许 |
 > | 2 | 加 `ANONYMIZED_TELEMETRY=False` | `docker-compose.yml:11`（`environment:` 块）＋同一枚硬币 | 裁 **A**：显式关遥测 | 「用一个 bug 兜住一条隐私红线」是假安全：今天没发出去只因 `capture()` 签名对不上 |
 > | 3 | 删两条 `--ignore` + 去 `-x` | `.github/workflows/ci.yml:38` | **C 打底 + B 下个交付窗** | CI 面属交付面；C 已打底（容器权威全量本来就跑这两文件），B 只能在窗内。缩水面 HEAD 现读 **16 条**（`test_mqtt_bridge.py` 12 + `test_ha_assist.py` 4），与裁定书 §问 3「CI 长期比实际跑的少 16 条」一致 |
+> | 4 | 向量面 MiniLM 退路：可写缓存 or 删掉这行 + 摘 `|| true` | `Dockerfile:27`（预热行）＋ `docker-compose.yml:11`（`environment:`）| **待裁**：2026-10-04 投递 `20261004-MA-向量面MiniLM退路的HOME可写性与Dockerfile预热无效-决策申请.md`（Q1 要不要退路 / Q2 两条互斥落点 / Q3 `|| true` 摘不摘） | 实测是**双重无效**：运行面 `HOME=[/]` ⇒ `/.cache` `PermissionError`；且 root 预热本身没成功（`onnx.tar.gz` 只有 7,432,192 字节、`tar tzf` 报 `Unexpected EOF`、sha256 `f4f66635…` ≠ 期望 `913d7300…`，无解包产物），行尾 `|| true` 把它吞成构建成功已 **15 天**（Sep 19→Oct 4）。⚠️ 决定性论据：MiniLM 384 维 vs 现存两集合 1024 维 ⇒ 修好退路对现有数据仍 `InvalidDimensionException`。与 homesdk 进运行面**同一次重烤**，不许烤两遍 |
 >
-> 三件的**验收读数**（窗后跑，别拿落码当生效）：① 容器内 `python -c "import posthog,httpx,chromadb"` 版本
+> 四件的**验收读数**（窗后跑，别拿落码当生效；第 4 件按其取值二分）：① 容器内 `python -c "import posthog,httpx,chromadb"` 版本
 > 一行现读。**窗前基线已取（2026-10-04，RC=0）：`httpx 0.28.1 / posthog 7.58.0 / chromadb 0.5.23`**；
 > 窗后 `httpx` 读数须与此一致，不一致就是重解析动了传递依赖，要单独报出来（镜像重解析会顺带动 `httpx`，
 > 第七轮的 HA 连接复用压在上面——裁定书 §副作用预警明写「重建后跑容器权威全量，确认 `httpx` 版本读数与
 > 连接池行为不变」）；重烤后 `posthog` 应 <3（当前 7.58.0 是未重烤的证据，不是缺陷）；
 > ② 启动日志里 `Failed to send telemetry event ClientStartEvent` **不再出现**（这条是遥测真关掉的自己的状态字，
-> 不是"看起来没报错"）；③ 窗后立刻重跑容器全量并记 `passed/skipped` 与 `SUITE_RC`。
+> 不是"看起来没报错"）；③ 窗后立刻重跑容器全量并记 `passed/skipped` 与 `SUITE_RC`；
+> ④ 第 4 件按取值各有一个自己的状态字：取 **A（要退路）** ⇒ 容器内 `echo $HOME` 不再是 `/`，
+> 且 `sha256sum …/onnx.tar.gz` 与 `_MODEL_SHA256`（`913d7300…`）**一致**、`onnx/model.onnx` 真在场
+> （本轮实测三样全不成立：`HOME=[/]`、`f4f66635…`、解包产物缺失）；取 **B（不要退路）** ⇒
+> `Dockerfile` 里那行预热与 `|| true` 一起消失，且 `resolve_embedding_function` 未配置端点时打的
+> 是「向量面不可用」而不是「使用本地 MiniLM」（`history.py:115` 在**构造期**就打印这句话，
+> 而缓存要到**首次调用**才撞 `/.cache` ⇒ 现网这条日志是承诺兑现不了的）。两种取值都**不能只删 `|| true` 不动其余**——
+> 那只会把一个静默失效换成构建期随机红。
 > 另两件同窗的执行物已在仓里，不需再准备：`vendor/homesdk-0.3.1-py3-none-any.whl` + `Dockerfile:24`
 > （运行面 `import homesdk` 现读仍是 `ModuleNotFoundError`，RC=1 ⇒ 缺的只有重烤），
 > 以及 R2 回填 `scripts/pii_backfill_r2.py`（窗口门是硬门，不带 `--window-ok` → `RC=2` 且不产生备份）。
@@ -337,6 +346,9 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 >    `agent_memories.feedback_question/feedback_comment` 两列在场、`rule_lifecycle_audit` 表在场、
 >    `active_rules` 18 列含 `promoted_at`（见本卡 §三 窗口读数）。同窗还带过了 `trigger_json` 列（本轮复测在场）。
 >    ⇒ 合并窗真正等的是三件：**R2 存量回填 + service_token 签发 + 镜像重烤（homesdk 进运行面）**。
+>    2026-10-04 追加：重烤那**一件现在装两件事**——homesdk 进运行面 ＋ §三 窗口表第 4 件
+>    （MiniLM 退路按 Q1 取值：补齐可写缓存，或把 `Dockerfile:27` 整行删掉并摘 `|| true`）。
+>    **同一次烤，不许烤两遍**（烤一次要重跑容器权威全量 + `httpx` 版本对账，见 §三 验收读数 ①）。
 > 3. **5.3-2 的「245 条」不写死**：含明文姓名的条数由 `scripts/pii_backfill_r2.py` 默认只读模式现算
 >    （2026-10-03 读到的表行数是 247；两者口径不同，执行时以脚本 dry-run 读数为准）。
 > 4. **5.3-4/5 的四件早已正式投递**（2026-10-03 同一天，均在本仓 inbox）：

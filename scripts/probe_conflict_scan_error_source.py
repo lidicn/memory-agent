@@ -113,7 +113,9 @@ def part2_layers():
             except Exception as exc:
                 print(f"   [{name}] query_embeddings(dim={dim}) -> "
                       f"{type(exc).__name__}: {str(exc)[:120]}")
-        # 生产 conflict_scan 的形状：query_texts 触发**客户端侧**嵌入函数
+        # 生产 conflict_scan 的形状：query_texts 触发**客户端侧**嵌入函数。
+        # 注意这里刻意**不传** embedding_function —— 与 PatternManager 原先的写法一致，
+        # 用来演示"落到 chroma 默认 MiniLM"在本容器的下场；MA 的真实生产路径见 ③。
         try:
             res = col.query(query_texts=["客厅的灯"], n_results=1)
             print(f"   [{name}] query_texts OK ids={len((res.get('ids') or [[]])[0])}")
@@ -123,8 +125,41 @@ def part2_layers():
                 traceback.print_exc()
 
 
+def part3_ma_path():
+    """MA 的真实生产形状：用 `resolve_embedding_function` 解析后再建集合、再 query_texts。
+
+    这条是"修好之后真响过"的凭据：嵌入走配置好的网关（不落 MiniLM 的 `/.cache` 墙），
+    `where={"state": "live"}` 与 `conflict_scan` 完全一致；全程只读。
+    """
+    print("\n== ③ MA 生产形状：嵌入函数同源后再跑 query_texts（只读）==")
+    try:
+        import chromadb
+
+        from memory_agent.config import get_config
+        from memory_agent.history import resolve_embedding_function
+    except Exception as exc:
+        print(f"   依赖不可用，跳过: {type(exc).__name__}: {exc}")
+        return
+    cfg = get_config()
+    fn = resolve_embedding_function(cfg)
+    print(f"   解析到的嵌入函数: {type(fn).__name__}（未配置外部端点时才会是 ONNXMiniLM_L6_V2）")
+    try:
+        client = chromadb.HttpClient(host=cfg.chroma_host, port=cfg.chroma_port)
+        col = client.get_or_create_collection("agent_memory", embedding_function=fn)
+        res = col.query(query_texts=["客厅的灯"], where={"state": "live"}, n_results=3)
+        ids = (res.get("ids") or [[]])[0]
+        dists = (res.get("distances") or [[]])[0]
+        print(f"   query_texts OK ids={len(ids)} 最近距离={round(dists[0], 4) if dists else 'n/a'}"
+              f"（距离读数不外传，只证明确实取回了向量）")
+    except Exception as exc:
+        print(f"   !! MA 生产形状仍然失败 -> {type(exc).__name__}: {str(exc)[:200]}")
+        if "--traceback" in sys.argv:
+            traceback.print_exc()
+
+
 if __name__ == "__main__":
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
     part1_mechanism()
     part2_layers()
+    part3_ma_path()
     print("\nPROBE_RC=0")
