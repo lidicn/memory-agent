@@ -401,8 +401,13 @@ class IdentityReconciler:
                 for cand in dev.get("candidates") or []:
                     if isinstance(cand, dict) and cand.get("entity_id"):
                         pinned.add(cand["entity_id"])
-        except Exception:  # noqa: BLE001
-            return set()
+        except Exception as _exc:  # noqa: BLE001
+            # 元宝第十四轮 P2-10：查询失败返回空集合会让用户手动拆分的实体
+            # 重新进入相似度合并（拆分被静默撤销），且无日志无法追溯。
+            # 保守策略：失败时中止本次聚类（返回 None），调用方需判空后
+            # 退化为"不合并"而非"用空 pinned 合并"。
+            print(f"[Identity] _pinned_entities 查询失败，中止聚类以保护用户拆分: {_exc}")
+            return None
         return pinned
 
     def _cluster(self, entities: list[dict]) -> list[dict]:
@@ -420,6 +425,13 @@ class IdentityReconciler:
         pinned = self._pinned_entities()
         clusters: list[dict] = []
         self._needs_review = []
+        # P2-10 保守降级：pinned 查询失败（None）时，所有实体独立成簇，
+        # 不做自动合并——宁可少合并，不可撤销用户手动拆分。
+        if pinned is None:
+            for e in sorted(entities, key=lambda x: (x["room"], x["domain"], x["entity_id"])):
+                clusters.append({"room": e["room"], "domain": e["domain"],
+                                 "name": e["name"], "members": [e]})
+            return clusters
         for e in sorted(entities, key=lambda x: (x["room"], x["domain"], x["entity_id"])):
             if e["entity_id"] in pinned:
                 clusters.append({"room": e["room"], "domain": e["domain"],

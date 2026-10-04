@@ -17,7 +17,7 @@ from starlette.requests import Request
 from starlette.routing import Route
 
 from .deps import error, json_body, ok, require_user, runtime
-from ..store import _FEEDBACK_OUTCOMES
+from ..store import _FEEDBACK_OUTCOMES, now_local
 
 WATER_PURIFIER_ENTITY = "event.chunmi_cn_334432105_600f2_water_out_finish_e_7_1"
 
@@ -122,7 +122,9 @@ async def analyze_water_purifier(request: Request):
         return err
     try:
         rt = runtime(request)
-        start = (datetime.now() - timedelta(days=7)).isoformat()
+        # 元宝第一轮 P1-3：净水器统计绕过统一家庭时钟，UTC 容器里 datetime.now()
+        # 会让 7 天窗口在凌晨 0–8 点整体前移一天。改用 now_local 对齐家庭墙钟。
+        start = (now_local(rt.store.tz_offset_hours) - timedelta(days=7)).isoformat()
         history_dict = await asyncio.to_thread(
             rt.ha.get_history, [WATER_PURIFIER_ENTITY], start
         )

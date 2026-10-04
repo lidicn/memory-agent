@@ -3133,8 +3133,17 @@ def _build_server():
         """
         if not name:
             return {"ok": False, "error": "name 不能为空"}
+        # 元宝第八轮 P2-7：路径遍历防护。name 来自 MCP 调用方，不得包含 .. 或绝对路径，
+        # 否则 os.path.join 可逃出 skills_dir 读取任意文件。
+        if ".." in name or name.startswith(("/", "\\")) or ":" in name:
+            return {"ok": False, "error": "name 含非法路径字符"}
         rt = get_runtime()
         skill_path = os.path.join(rt.config.skills_dir, name, "SKILL.md")
+        # 二次校验：realpath 必须在 skills_dir 内
+        _real = os.path.realpath(skill_path)
+        _base = os.path.realpath(rt.config.skills_dir)
+        if not _real.startswith(_base + os.sep):
+            return {"ok": False, "error": "skill 路径越界"}
         if not os.path.isfile(skill_path):
             return {"ok": False, "error": f"skill 不存在: {name}"}
         with open(skill_path, "r", encoding="utf-8") as f:
@@ -3157,7 +3166,14 @@ def _build_server():
                   mime_type="text/markdown")
     def res_skill(name: str) -> str:
         rt = get_runtime()
+        # P2-7 路径遍历防护（与 get_skill 同口径）
+        if ".." in name or name.startswith(("/", "\\")) or ":" in name:
+            return "# skill name 含非法路径字符"
         skill_path = os.path.join(rt.config.skills_dir, name, "SKILL.md")
+        _real = os.path.realpath(skill_path)
+        _base = os.path.realpath(rt.config.skills_dir)
+        if not _real.startswith(_base + os.sep):
+            return "# skill 路径越界"
         if not os.path.isfile(skill_path):
             return f"# skill 不存在: {name}"
         with open(skill_path, "r", encoding="utf-8") as f:

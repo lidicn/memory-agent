@@ -97,6 +97,11 @@ class StoreRepository:
         self.store = store
         self.config = config
         self.log = _LOG
+        # 第三轮审计 P0-6：entity_catalog 每次全表 GROUP BY（82 万行实测 621ms），
+        # 且在全局 RLock 内执行 → 慢查询转化为全系统写入阻塞。加 60s TTL 缓存，
+        # key 含过滤参数，命中即跳过全表扫描。
+        self._catalog_cache: dict[tuple, tuple[float, list[dict]]] = {}
+        self._catalog_ttl = 60.0
 
     # ------------------------------------------------------------ 基础出口
     def _execute(self, sql: str, params: Sequence[Any] = ()) -> List[Dict[str, Any]]:
@@ -313,6 +318,16 @@ class StoreRepository:
     def entity_catalog(self, rooms: Any = None, domains: Any = None,
                        limit: Any = None) -> List[Dict[str, Any]]:
         """全量已知实体清单（契约 §五：只能从 events 聚合，不能查 entities 表）。"""
+        import time as _time
+        cache_key = (
+            tuple(sorted(rooms)) if isinstance(rooms, (list, tuple, set)) else (rooms or ""),
+            tuple(sorted(domains)) if isinstance(domains, (list, tuple, set)) else (domains or ""),
+            int(limit) if limit is not None else None,
+        )
+        now = _time.monotonic()
+        cached = self._catalog_cache.get(cache_key)
+        if cached is not None and (now - cached[0]) < self._catalog_ttl:
+            return list(cached[1])
         where: List[str] = []
         params: List[Any] = []
         self._add_in(where, params, "room", rooms)
@@ -332,6 +347,7 @@ class StoreRepository:
                 "last_ts": str(r.get("last_ts") or ""),
                 "total": int(r.get("total") or 0),
             })
+        self._catalog_cache[cache_key] = (now, out)
         return out
 
     def last_seen(self, tr: Any = None, entity_ids: Any = None,

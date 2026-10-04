@@ -738,17 +738,7 @@ ROOM_AGGREGATE_WORDS: tuple[str, ...] = (
 #: 通用房间词（需要消歧的房间名，如"卧室"可能指"主卧室"或"次卧室"）。
 GENERIC_ROOM_WORDS: frozenset[str] = frozenset({"房间", "卧室", "屋子", "房子", "家里"})
 
-#: 关键词 → 域映射（用于从用户查询推断设备类别）。
-KEYWORD_DOMAINS: dict[str, tuple[str, ...]] = {
-    "light": ("light", "switch.light"),
-    "switch": ("switch", "input_boolean"),
-    "climate": ("climate", "humidifier", "fan"),
-    "media": ("media_player", "remote"),
-    "sensor": ("sensor", "binary_sensor"),
-    "tv": ("media_player.tv", "remote.tv"),
-    "ac": ("climate.ac",),
-    "aircon": ("climate.ac",),
-}
+# KEYWORD_DOMAINS 统一定义在文件下方（中英文合并版），避免重复定义覆盖。
 
 
 
@@ -1106,23 +1096,37 @@ CATEGORY_DOMAINS: dict[str, tuple[str, ...]] = {
 }
 
 #: 中文/英文关键词 → domain。用于 query="主卧空调" 这类自由文本解析
+# 元宝第四轮 P2-5：此处原重复定义 KEYWORD_DOMAINS 会覆盖上方 742 行的英文关键词版
+# （switch/climate/media/sensor/tv/aircon 失效）。已合并为单一定义。
 KEYWORD_DOMAINS: dict[str, tuple[str, ...]] = {
+    # 英文关键词（原 742 行）
+    "light": ("light", "switch.light"),
+    "switch": ("switch", "input_boolean"),
+    "climate": ("climate", "humidifier", "fan"),
+    "media": ("media_player", "remote"),
+    "sensor": ("sensor", "binary_sensor"),
+    "tv": ("media_player.tv", "remote.tv"),
+    "ac": ("climate.ac",),
+    "aircon": ("climate.ac",),
+    # 中文关键词（原 1109 行）
     "空调": ("climate",),
     "冷气": ("climate",),
     "制冷": ("climate",),
     "暖气": ("climate",),
     "地暖": ("climate",),
-    "ac": ("climate",),
     "风扇": ("fan",),
     "新风": ("fan",),
     "加湿": ("humidifier",),
     "灯": ("light",),
-    "灯": ("light",),
+    "照明": ("light",),
     "电视": ("media_player",),
     "投影": ("media_player",),
+    "音箱": ("media_player",),
     "扫地": ("vacuum",),
     "门锁": ("lock",),
     "窗帘": ("cover",),
+    "插座": ("switch",),
+    "开关": ("switch",),
 }
 
 
