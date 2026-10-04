@@ -115,10 +115,14 @@ class AgentMemoryService:
         try:
             res = col.query(query_texts=[text], where={"state": "live"}, n_results=5)
         except Exception as exc:  # pragma: no cover
-            # 生产实测：这行只会打出 "HTTPStatusError.__init__() missing 2 required
-            # keyword-only arguments"——chromadb 构造 httpx.HTTPStatusError 的方式与镜像里的
-            # httpx 不匹配，真实状态码在抛异常的路上就丢了。补类型与 cause，至少能定位到
-            # 是哪一层失败（根因是依赖版本错配，另案登记）。
+            # 生产实测：这行曾只打出 "HTTPStatusError.__init__() missing 2 required
+            # keyword-only arguments"。2026-10-04 容器复现拿到全量 traceback：抛点是
+            # chromadb 的兜底包装 `CollectionCommon.py:93`——`raise type(e)(msg)` 用单参重建
+            # 异常，而 httpx≥0.27 的 `HTTPStatusError.__init__` 是关键字专用
+            # `(message, *, request, response)`，于是真实状态码在重新抛出这一步被 TypeError 顶掉。
+            # 根因不是 chromadb×httpx 的接口不兼容，而是**任何**多参构造的异常穿过这层包装都会被吞；
+            # MA 侧已把嵌入端点失败换成单参可构造的 `history.EmbeddingEndpointError`（状态码进消息），
+            # 这一层的可观测性补强保留：仍能打出类型与 cause，供未被 MA 覆盖的第三方异常定位。
             cause = exc.__cause__ or exc.__context__
             detail = f"{type(exc).__name__}: {exc}"
             if cause is not None and cause is not exc:

@@ -26,6 +26,20 @@ if TYPE_CHECKING:
     import numpy as np  # 仅用于 __call__ 的字符串注解；运行时按需在函数内导入
 
 
+class EmbeddingEndpointError(RuntimeError):
+    """嵌入端点调用失败（非 2xx / 不可达）。
+
+    刻意继承 `RuntimeError`（单参构造）而不是往外抛 `httpx.HTTPStatusError`：
+    chromadb 0.5.23 的 `CollectionCommon._validate_and_prepare_*` 兜底包装是
+    `raise type(e)(msg).with_traceback(...)`（`CollectionCommon.py:93`），
+    而 httpx ≥0.27 把 `HTTPStatusError.__init__` 改成关键字专用
+    （`(message, *, request, response)`）——单次参数的重建直接抛
+    `TypeError: HTTPStatusError.__init__() missing 2 required keyword-only arguments`，
+    真实状态码在"重新抛出"这一步就被吞了（生产 `conflict_scan` 只打出这行 TypeError）。
+    换成单参可构造的类，chroma 的包装照常工作，状态码留在消息里。
+    """
+
+
 class _OpenAICompatEmbeddingFunction:
     """OpenAI 兼容 ``/v1/embeddings`` 嵌入函数。
 
@@ -52,13 +66,57 @@ class _OpenAICompatEmbeddingFunction:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         body = {"model": self.model, "input": texts}
-        with httpx.Client(timeout=30) as client:
-            resp = client.post(f"{self.base_url}/embeddings", json=body, headers=headers)
-            resp.raise_for_status()
-            data = resp.json().get("data", [])
+        try:
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(f"{self.base_url}/embeddings", json=body, headers=headers)
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+        except httpx.HTTPStatusError as exc:
+            # 状态码留在消息里，异常类换成单参可构造的（见 EmbeddingEndpointError 文档）；
+            # 端点地址与凭据不进消息，日志可能被反馈包带走。
+            raise EmbeddingEndpointError(
+                f"embedding 端点返回 HTTP {exc.response.status_code}（model={self.model}）"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise EmbeddingEndpointError(
+                f"embedding 端点不可达: {type(exc).__name__}（model={self.model}）"
+            ) from exc
         # 按 index 排序，保证与输入顺序一致（部分网关不保序）
         data = sorted(data, key=lambda d: d.get("index", 0))
         return np.array([d["embedding"] for d in data], dtype=np.float32)
+
+
+def resolve_embedding_function(config):
+    """按配置解析向量嵌入函数；**HistoryManager 与 PatternManager 必须走这一个口子**。
+
+    优先级：配置了外部 embedding 端点（``embedding_base_url``+``embedding_model``）
+    则用 OpenAI 兼容接口；否则回退到 chroma 自带本地 MiniLM。
+
+    为什么要有这个函数（2026-10-04 容器实测）：`patterns.py` 原先自己
+    `get_or_create_collection("behavior_patterns")` **不传 embedding_function**，
+    于是它落进 chroma 默认 MiniLM（384 维），而生产两个集合
+    （`behavior_history` / `agent_memory`）实测都是外部网关的 **1024 维**——
+    同一套 chroma 里两套维度，且 MiniLM 在本容器运行时**不可用**：
+    `onnx_mini_lm_l6_v2.py:219` 走到 `os.makedirs('/.cache')` 直接
+    `PermissionError: [Errno 13] Permission denied: '/.cache'`（运行时用户 10001，HOME 不可写，
+    镜像里 Dockerfile 那次 root 预热落在 root 的缓存目录，运行时读不到）。
+    不同源 = 模式库的语义路一接上就是静默死路。
+
+    ⚠️ 换嵌入模型会改维度，必须配套跑 `scripts/reindex_embeddings.py` 重建集合。
+    """
+    base = (getattr(config, "embedding_base_url", "") or "").strip()
+    model = (getattr(config, "embedding_model", "") or "").strip()
+    if base and model:
+        key = (getattr(config, "embedding_api_key", "") or "").strip()
+        return _OpenAICompatEmbeddingFunction(base, model, key)
+    # 未配置外部端点：回退到 chroma 自带本地 MiniLM（需模型已缓存且 HOME 可写）
+    try:
+        import chromadb.utils.embedding_functions as _efns
+        print("[Vector] 使用本地 MiniLM 作为 embedding 函数")
+        return _efns.DefaultEmbeddingFunction()
+    except Exception as exc:
+        print(f"[Vector] 本地 embedding 函数不可用（缺 MiniLM 模型且无外部端点）: {exc}")
+        return None
 
 
 class HistoryManager:
@@ -82,34 +140,10 @@ class HistoryManager:
     # ── Chroma（可选） ───────────────────────────────────────────────────
 
     def _embedding_function(self):
-        """返回 OpenAI 兼容嵌入函数。
-
-        优先级：配置了外部 embedding 端点（``embedding_base_url``+``embedding_model``）
-        则用 OpenAI 兼容接口；否则回退到 chroma 自带本地 MiniLM。
-
-        重要：chromadb>=0.5 已**移除**内置默认 embedding function，旧代码在未配置时
-        返回 ``None`` 会让 collection 创建后任何 ``query``/``upsert`` 都报错
-        ``You must provide an embedding function``（这正是语义去重/镜像长期静默失效的根因）。
-        因此未配置外部端点时必须显式回退到本地 ``DefaultEmbeddingFunction``。
-        本地 MiniLM 模型需预置到 ``~/.cache/chroma/onnx_models``（部署时已 docker cp 进容器），
-        否则首次使用会联网下载（容器内出网可能极慢/超时）。
-        """
+        """返回嵌入函数（解析逻辑与 PatternManager 同源，见 `resolve_embedding_function`）。"""
         if self._embed_resolved:
             return self._embed_fn_cache
-        base = (getattr(self.config, "embedding_base_url", "") or "").strip()
-        model = (getattr(self.config, "embedding_model", "") or "").strip()
-        if base and model:
-            key = (getattr(self.config, "embedding_api_key", "") or "").strip()
-            self._embed_fn_cache = _OpenAICompatEmbeddingFunction(base, model, key)
-        else:
-            # 未配置外部端点：回退到 chroma 自带本地 MiniLM（需模型已缓存）
-            try:
-                import chromadb.utils.embedding_functions as _efns
-                self._embed_fn_cache = _efns.DefaultEmbeddingFunction()
-                print("[History] 使用本地 MiniLM 作为 embedding 函数")
-            except Exception as exc:
-                print(f"[History] 本地 embedding 函数不可用（缺 MiniLM 模型且无外部端点）: {exc}")
-                self._embed_fn_cache = None
+        self._embed_fn_cache = resolve_embedding_function(self.config)
         self._embed_resolved = True
         return self._embed_fn_cache
 

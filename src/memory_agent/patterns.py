@@ -69,10 +69,21 @@ class PatternManager:
             host=config.chroma_host,
             port=config.chroma_port
         )
-        self.collection = self.client.get_or_create_collection(
-            name="behavior_patterns",
-            metadata={"hnsw:space": "cosine"}
-        )
+        # 嵌入函数与 HistoryManager 同源：原先这里不传 embedding_function，
+        # 集合会落到 chroma 默认 MiniLM（384 维，且本容器运行时不可用 → 写读皆静默失败），
+        # 而 behavior_history / agent_memory 实测是外部网关的 1024 维。判据见
+        # `history.resolve_embedding_function` 文档。
+        _embed = None
+        try:
+            from .history import resolve_embedding_function
+
+            _embed = resolve_embedding_function(config)
+        except Exception as exc:  # pragma: no cover - 解析失败退回 chroma 默认，不阻断构造
+            logger.warning("模式库嵌入函数解析失败，退回 chroma 默认: %s", exc)
+        _kwargs = {"name": "behavior_patterns", "metadata": {"hnsw:space": "cosine"}}
+        if _embed is not None:
+            _kwargs["embedding_function"] = _embed
+        self.collection = self.client.get_or_create_collection(**_kwargs)
         # 确保目录存在
         os.makedirs(config.templates_dir, exist_ok=True)
         os.makedirs(config.imported_dir, exist_ok=True)
