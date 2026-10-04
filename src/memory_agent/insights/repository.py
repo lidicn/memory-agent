@@ -519,7 +519,12 @@ class StoreRepository:
             if isinstance(tags, str):
                 try:
                     tags = json.loads(tags or "[]")
-                except (TypeError, ValueError):
+                except (TypeError, ValueError) as exc:
+                    # 规则仍按"无标签条件"运行（不把一次解析失败升级成整条查询外抛），
+                    # 但标签条件静默消失必须留痕：否则一条规则的匹配面被改小却无人知晓。
+                    self.log.warning("activity_rules rule_id=%s 的 tags_json 解析失败(%s)，"
+                                     "本条规则按无标签运行",
+                                     r.get("rule_id"), type(exc).__name__)
                     tags = []
             out.append({
                 "rule_id": str(r.get("rule_id") or ""),
@@ -682,7 +687,11 @@ class StoreRepository:
                     category="",  # category 由 resolver.resolve 按 domain 推，不在此落库
                     unit=str(unit),
                 ))
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - 单行构造失败不该掀掉整张目录
+                # 但"少了一个实体"必须留痕：静默 continue 会让目录里凭空缺项，
+                # 消费方只会看到实体变少，永远查不到是哪一行、为什么。
+                self.log.warning("list_entities 跳过 entity_id=%s 的行：%s: %s",
+                                 entity_id, type(exc).__name__, exc)
                 continue
         return out
 

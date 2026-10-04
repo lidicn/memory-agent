@@ -275,7 +275,8 @@ class EventRecord:
 
     @property
     def dt(self) -> datetime:
-        return datetime.fromtimestamp(float(self.ts))
+        """家庭墙钟的 naive datetime——与同一条记录的 `day` / `hour` 共用一条时钟。"""
+        return house_dt(float(self.ts))
 
     @property
     def day(self) -> str:
