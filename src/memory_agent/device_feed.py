@@ -271,11 +271,28 @@ class DeviceEventFeed:
         # ok 只能来自实测：本轮吞过异常，或读满上限被截断（窗口没读完），都不算成功。
         stats["ok"] = not stats["errors"] and not stats["truncated"]
 
-        # 走到这里说明这一轮真的读完并处理过了，才推进水位线
-        self._watermark = end_iso
-        logger.info("[DeviceFeed] %s→%s：扫描 %s，二元变化 %s，命中 %s，派发 %s，仅记录 %s（dry_run=%s）",
+        # ── 水位线：只往前推到「这一轮真的读完」的下一秒 ──────────────────
+        # 两个都必须修：
+        # 1) ``query_events`` 的 ``ts BETWEEN ? AND ?`` 两端都是**闭**区间，停在 ``end``
+        #    上就等于下一轮的起点和这一轮的终点重合——正好落在边界那一秒的事件会被喂两遍。
+        #    count 触发（60 秒 3 次）全靠事件计数活着，同一事件数两次就是凭空多一票，
+        #    裁定 §Q2 的门槛被架空（本模块 docstring 自己写过这个风险，代码没跟上）。
+        # 2) 读满 ``QUERY_LIMIT`` 被截断时，窗口尾部还有一整段没读，直接推到 ``end``
+        #    就是静默丢事件；此时推到「最后读到的那条 + 1 秒」，下一轮接着读。
+        # ts 是秒粒度（生产 1,028,140 行全部 len=19、无小数秒，只读实测），+1 秒不留缝隙。
+        if stats["truncated"]:
+            resume_at = parse_wall(str(rows[-1].get("ts") or "")) if rows else None
+            stats["pending_tail"] = True
+        else:
+            resume_at = parse_wall(end_iso)
+            stats["pending_tail"] = False
+        if resume_at is not None:
+            self._watermark = (resume_at + timedelta(seconds=1)).isoformat(
+                timespec="seconds", sep="T")
+        stats["watermark"] = self._watermark
+        logger.info("[DeviceFeed] %s→%s：扫描 %s，二元变化 %s，命中 %s，派发 %s，仅记录 %s（dry_run=%s，水位 %s）",
                     start_iso, end_iso, stats["scanned"], stats["kept"], stats["matched"],
-                    stats["dispatched"], stats["logged_only"], forced_dry)
+                    stats["dispatched"], stats["logged_only"], forced_dry, self._watermark)
         return stats
 
     # ── 配置读取（getattr 兜底：单测可传裸对象）────────────────────────────

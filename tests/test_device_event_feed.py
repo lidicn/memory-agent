@@ -347,16 +347,67 @@ def test_config_env_overrides_are_not_silently_ignored(monkeypatch):
 # ── 水位线：不重复喂、不回捞 ────────────────────────────────────────────────
 
 def test_watermark_advances_so_the_same_events_are_not_fed_twice(store):
-    """重复喂同一批会让 count 虚高——同一个事件被数两次就凑满 3 次/60 秒了。"""
+    """重复喂同一批会让 count 虚高——同一个事件被数两次就凑满 3 次/60 秒了。
+
+    这条原本只在"事件落在窗口正中"时成立：边界那一秒（`ts == end`）从来没被放过事件，
+    于是它一边在 docstring 里写着不重复喂，一边把 `ts BETWEEN` 两端闭区间的重叠
+    整个看不见。这里补上边界事件，判据才与它自己的名字对齐。
+    """
     engine = _NullEngine()
-    store.insert_events([_ev(ts="2026-09-20T19:05:00")])
+    store.insert_events([_ev(ts="2026-09-20T19:05:00"),
+                         _ev(old="on", new="off", ts="2026-09-20T19:30:00")])
     feed = _feed(store, engine)
     first = feed.run_once("2026-09-20T19:00:00", "2026-09-20T19:30:00")
-    assert first["scanned"] == 1
-    assert feed._watermark == "2026-09-20T19:30:00"
+    assert first["scanned"] == 2
+    # 推过终点一秒：下一轮从这里起算，边界那一秒不会二次入账
+    assert feed._watermark == "2026-09-20T19:30:01"
+    assert first["watermark"] == "2026-09-20T19:30:01"
+    assert first["pending_tail"] is False
     second = feed.run_once()                      # 默认窗口 = [水位, now]
     assert second["scanned"] == 0
-    assert len(engine.seen) == 1
+    assert len(engine.seen) == 2
+
+
+def test_window_end_plus_one_second_keeps_the_boundary_event_single(store):
+    """第二轮用**默认窗口**（起点=上一轮水位）：整秒事件既不丢也不重。
+
+    上一轮停在 `end` 一秒（旧形态）→ 这一轮的起点与它重合，19:30 那条被喂两遍；
+    停得太远 → 19:30 或 20:00 会漏。两头都要判，所以既数总账也数单条。
+    """
+    engine = _NullEngine()
+    store.insert_events([
+        _ev(ts="2026-09-20T19:00:00"), _ev(old="on", new="off", ts="2026-09-20T19:30:00"),
+        _ev(ts="2026-09-20T20:00:00")])
+    feed = _feed(store, engine)
+    first = feed.run_once("2026-09-20T19:00:00", "2026-09-20T19:30:00")
+    second = feed.run_once(end="2026-09-20T20:59:59")     # start 取自水位线
+    assert first["scanned"] + second["scanned"] == 3       # 3 条事件、3 次入账
+    fed_ts = [event["ts"] for event, _now in engine.seen]
+    assert fed_ts.count("2026-09-20T19:30:00") == 1
+    assert sorted(fed_ts) == ["2026-09-20T19:00:00", "2026-09-20T19:30:00",
+                              "2026-09-20T20:00:00"]
+
+
+def test_truncated_window_resumes_instead_of_dropping_the_tail(store, monkeypatch):
+    """读满上限时**不能**推到窗口终点：尾部整段没读，推过去就是静默丢事件。
+
+    水位推到「最后读到的那条 + 1 秒」，下一轮接着读；本轮 `ok=False`、
+    `pending_tail=True`，让运维看得见"这条窗口没读完"。
+    """
+    monkeypatch.setattr(df, "QUERY_LIMIT", 2)
+    engine = _NullEngine()
+    store.insert_events([
+        _ev(ts="2026-09-20T19:01:00"), _ev(old="on", new="off", ts="2026-09-20T19:02:00"),
+        _ev(ts="2026-09-20T19:03:00")])
+    feed = _feed(store, engine)
+    first = feed.run_once("2026-09-20T19:00:00", "2026-09-20T19:59:59")
+    assert first["scanned"] == 2 and first["truncated"] is True
+    assert first["ok"] is False and first["pending_tail"] is True
+    assert feed._watermark == "2026-09-20T19:02:01"      # 停在读到的最后一条之后
+    second = feed.run_once()                              # 默认窗口 = [水位, now]
+    assert second["scanned"] == 1 and second["truncated"] is False
+    assert sorted(event["ts"] for event, _now in engine.seen) == [
+        "2026-09-20T19:01:00", "2026-09-20T19:02:00", "2026-09-20T19:03:00"]
 
 
 def test_first_window_starts_one_interval_back(store):
