@@ -395,32 +395,127 @@ class InsightService:
             return None
 
     def _search(self, start: Any, end: Any, entity_id: str, room: str, category: str,
-                query: str, limit: int, offset: int, behavior_only: bool) -> Dict[str, Any]:
+                query: str, limit: int, offset: int, behavior_only: bool,
+                domain: str = "", state: str = "", order: str = "asc",
+                summarize: bool = False) -> Dict[str, Any]:
+        """新引擎扫描路径（裁5 追加 Q-B / Q3-1：六个过滤/排序位全部落到底）。
+
+        这六位过去是「门面收得下、`_search` 里无处可去」：生产实测传 `category=climate`
+        与不传的 `total` 都是 144,143，传 `query=灯` 亦然（`scripts/probe_insights_q3_acceptance.py`
+        Q3-1 读数）。现在逐位接到底：
+        - `entity_id` 显式给出时按逗号拆分直接用，**绕过语义解析**（与 legacy 同规则，
+          否则用户点名的实体会被语义池覆盖掉）；
+        - `room` 走 `events.room` 列；`category`/`domain`/`query` 解析成 `events.domain`
+          白名单 + 语义实体集，两者同时生效；
+        - `state` 下推进 `new_state IN (...)`；
+        - `order` 决定排序方向，也决定按天分批时**日内留哪一段**（asc 留最早、desc 留最晚），
+          日配额与 `max_scan` 总预算都不因此改变（裁5 Q4=A：不提高上限）；
+        - `summarize` 出 `summary` 并把 `events` 缩到前 50 条样本。
+
+        未传的位一律不加条件（`domains_for` 在全空时返回**全部 domain**，若照搬会把
+        目录里没有的域静默排除掉，也让 Q3-3 的全量对账读数对不上）——判空在门面这一层做。
+
+        `total` 仍按裁5 追加 **Q-A**：= 匹配的事件总数（不带 LIMIT 的 `count_events`），
+        `count` = 本页条数，两个键不许互相冒充。
+        """
         tr = self._tr(start, end)
-        ids = [entity_id] if entity_id else None
+        ids = [e.strip() for e in str(entity_id or "").split(",") if e.strip()]
+        if not ids and any([category, domain, query]):
+            ids = self.resolver.resolve_ids(room=room, category=category,
+                                            query=query, domain=domain)
+        entities = ids or None
         rooms = [room] if room else None
-        events = self.repo.load_events(tr, entity_ids=ids, rooms=rooms,
-                                       behavior_only=behavior_only)
-        events.sort(key=lambda e: e.ts)
-        out = Page.build(events, offset=offset,
-                         limit=self.config.clamp_limit(limit),
-                         time_range=tr.to_dict()).to_dict("events")
-        # 裁5 追加 **Q-A**：`total` = 匹配的事件总数，`count` = 本页条数，两个键不许互相冒充。
-        # `Page` 里那份 `total` 是上面那次扫描的行数（命中 `max_scan` 时比真值小），所以用
-        # 不带 LIMIT 的 `count_events` 覆盖它，`has_more` 也按真值重算——切片被截时后续照样有。
-        counted = self._events_total(tr, ids, rooms, behavior_only)
-        out["count"] = len(out.get("events") or [])
+        domains = None
+        if category or domain or query:
+            domains = self.domains_for(category=category, domain=domain, query=query) or None
+        states = [s.strip() for s in str(state or "").split(",") if s.strip()] or None
+        # 归一化一次再把归一化后的值交给 repo：回声里的 `order` 与 SQL 的排序方向
+        # 必须是同一个字符串，否则「filters 说 desc、实际按 asc 取」正是本轮在抓的那族缺陷。
+        direction = "desc" if str(order or "").strip().lower().startswith("desc") else "asc"
+        window = tr.to_dict()
+        filters = {
+            "room": room or "(全部)",
+            "category": category or "(全部)",
+            "domain": domain or "(全部)",
+            "query": query or "(全部)",
+            "entity_id": entity_id or "(全部)",
+            "state": state or "(全部)",
+            "order": direction,
+            "behavior_only": behavior_only,
+            "domains_resolved": sorted(domains) if domains else "(全部)",
+            "entities_resolved": len(ids),
+        }
+
+        if (category or domain or query) and not ids and not domains:
+            # fail-closed：语义位传了却既解析不出实体、也解析不出 domain 时，不回落成
+            # 「不加条件」。legacy 在这一格是漏的（`entities or None` + `domains or None`
+            # 双双为空 ⇒ 一个查不到的名字反而拿到全屋），而「静默放宽」正是本轮在抓的那族
+            # 缺陷——答 0 条并说明原因，比把全屋当成「鱼缸水泵」的记录交出去诚实。
+            filters["unresolved"] = ("语义位（category/domain/query）传了，但既没解析出实体、"
+                                     "也没解析出 domain；按 0 条回答，不回落成全屋")
+            out = {"events": [], "total": 0, "count": 0,
+                   "offset": max(0, int(offset or 0)),
+                   "limit": self.config.clamp_limit(limit),
+                   "has_more": False, "next_offset": None,
+                   "time_range": window, "window": window, "filters": filters}
+            out["ok"] = self._envelope_ok(out, 0)
+            return annotate_scan(out, 0, getattr(self.repo, "scan_limit", 0),
+                                 total_exact=True, truncated=False)
+
+        events = self.repo.load_events(tr, entity_ids=entities, rooms=rooms,
+                                       domains=domains, behavior_only=behavior_only,
+                                       states=states, order=direction)
+        page_limit = self.config.clamp_limit(limit)
+        out = Page.build(events, offset=offset, limit=page_limit,
+                         time_range=window).to_dict("events")
+        counted = self._events_total(tr, entities, rooms, behavior_only, domains, states)
+        count = len(out.get("events") or [])
+        off = int(out.get("offset") or 0)
+        out["count"] = count
+        out["window"] = out.get("time_range") or window
         if counted is not None:
             out["total"] = counted
-            out["has_more"] = int(out.get("offset") or 0) + out["count"] < counted
+            out["has_more"] = off + count < counted
+        out["next_offset"] = (off + count) if out.get("has_more") else None
+        out["ok"] = self._envelope_ok(out, counted)
+        out["filters"] = filters
+        if summarize:
+            from .utils import summarize_events
+            out["summary"] = summarize_events(out.get("events") or [])
+            out["events"] = out["events"][:50]
+            out["note"] = "summarize=true：events 仅保留前 50 条样本，请看 summary"
         return annotate_scan(out, len(events), getattr(self.repo, "scan_limit", 0),
                              total_exact=(counted is not None),
                              truncated=getattr(self.repo, "last_scan_truncated", None))
 
-    def _events_total(self, tr: Any, ids: Any, rooms: Any, behavior_only: bool) -> Any:
-        """事件匹配总数（不带 LIMIT）。取不到返回 `None`，让 `total_exact` 说真话。"""
+    @staticmethod
+    def _envelope_ok(out: Dict[str, Any], counted: Any) -> bool:
+        """分页信封的 `ok` 位由不变式推出，不写字面量（门禁 `fake-ok-const`）。
+
+        三条都得成立，否则这个 `ok` 就是在替一份自相矛盾的载荷背书：
+        ① `events` 是列表，且 `count` 与它逐字对得上（裁5 追加 Q-A 之后 `count` = 本页条数）；
+        ② `window`/`time_range` 至少一个非空——调用方得知道自己查的是哪一段；
+        ③ `total`（不带 LIMIT 的匹配总数，取不到时为 `None`）不小于本页条数。
+        """
+        events = out.get("events")
+        if not isinstance(events, list):
+            return False
+        if int(out.get("count") or 0) != len(events):
+            return False
+        if not (out.get("window") or out.get("time_range")):
+            return False
+        return counted is None or int(counted) >= len(events)
+
+    def _events_total(self, tr: Any, ids: Any, rooms: Any, behavior_only: bool,
+                      domains: Any = None, states: Any = None) -> Any:
+        """事件匹配总数（不带 LIMIT）。取不到返回 `None`，让 `total_exact` 说真话。
+
+        过滤位必须与 `load_events` 那次扫描**逐字同一份**，否则 `total` 与 `count` 描述的
+        就不是同一批行，`total >= count` 不再恒成立。
+        """
         try:
             return int(self.repo.count_events(tr, entity_ids=ids, rooms=rooms,
+                                              domains=domains, states=states,
                                               behavior_only=behavior_only))
         except Exception as exc:  # noqa: BLE001
             LOG.warning("count_events（事件匹配总数）失败: %s", exc)

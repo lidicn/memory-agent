@@ -199,13 +199,17 @@ class StoreRepository:
     def _event_where(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
                      domains: Any = None, behavior_only: bool = False,
                      exclude_entity_ids: Any = None,
-                     exclude_domains: Any = None) -> Tuple[List[str], List[Any]]:
+                     exclude_domains: Any = None,
+                     states: Any = None) -> Tuple[List[str], List[Any]]:
         start_iso, end_iso, start_day, end_day = self._bounds(tr)
         where = ["day BETWEEN ? AND ?", "ts BETWEEN ? AND ?"]
         params: List[Any] = [start_day, end_day, start_iso, end_iso]
         self._add_in(where, params, "entity_id", entity_ids)
         self._add_in(where, params, "room", rooms)
         self._add_in(where, params, "domain", domains)
+        # 状态维（裁5 追加 Q-B / Q3-1 的 `state` 位）：门面收的 `state` 一直是被丢弃的
+        # 六个位之一，落点就是这一列——与 legacy 的 `states` 参逐字同义（new_state 白名单）。
+        self._add_in(where, params, "new_state", states)
         # 硬排除（DCD 20261004 MA-裁6 Q3=A）：signal_exclusions 里的实体必须从
         # 事件流和 activity_matrix 两侧同时剔除，只剔一侧会让「已排除」成为空话。
         self._add_not_in(where, params, "entity_id", exclude_entity_ids)
@@ -242,20 +246,26 @@ class StoreRepository:
     def load_events(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
                     domains: Any = None, behavior_only: bool = False,
                     exclude_entity_ids: Any = None,
-                    exclude_domains: Any = None) -> List[EventRecord]:
+                    exclude_domains: Any = None,
+                    states: Any = None, order: str = "asc") -> List[EventRecord]:
         """查 events 表，按天分批扫描，返回 EventRecord 列表。
 
         DCD 20261004 裁6 Q6-2=A：旧实现一次性 LIMIT scan_limit，30 天窗只覆盖前 20 小时。
         按天分摊同一预算（不新增上限），每天配额 = max(1, scan_limit // n_days)，
         任一天命中日配额即标记 ``last_scan_truncated``（新截断判据，线程局部）。
         总读取量硬上限仍为 scan_limit，达到即停止后续天的扫描。
+
+        `states` / `order` 是裁5 追加 Q-B（Q3-1 六个过滤/排序位）里的两位：
+        前者下推进 `new_state IN (...)`，后者决定**日内取哪一段**——`asc` 留当日最早的
+        N 条、`desc` 留当日最晚的 N 条，日配额与总预算都不因此改变（约束①）。
         """
         from datetime import date, timedelta
 
         where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only,
-                                          exclude_entity_ids, exclude_domains)
+                                          exclude_entity_ids, exclude_domains, states)
         limit = self._scan_limit()
         start_iso, end_iso, start_day, end_day = self._bounds(tr)
+        direction = "DESC" if str(order or "").strip().lower() in ("desc", "descending") else "ASC"
 
         # 计算天数（解析失败回退 1 天 = 旧行为）
         try:
@@ -275,7 +285,8 @@ class StoreRepository:
 
         if n_days <= 1 or d0 is None:
             # 单天窗口：退化为旧的单次查询
-            sql = base_sql + " AND ".join(where) + " ORDER BY ts ASC, id ASC LIMIT ?"
+            sql = (base_sql + " AND ".join(where)
+                   + " ORDER BY ts " + direction + ", id " + direction + " LIMIT ?")
             rows = self._execute(sql, params + [limit])
             all_rows = rows
             truncated = len(rows) >= limit
@@ -288,7 +299,8 @@ class StoreRepository:
                 day_limit = min(daily_limit, remaining)
                 day_where = where + ["day = ?"]
                 day_params = params + [day_str, day_limit]
-                sql = base_sql + " AND ".join(day_where) + " ORDER BY ts ASC, id ASC LIMIT ?"
+                sql = (base_sql + " AND ".join(day_where)
+                       + " ORDER BY ts " + direction + ", id " + direction + " LIMIT ?")
                 rows = self._execute(sql, day_params)
                 if len(rows) >= day_limit:
                     truncated = True
@@ -301,7 +313,9 @@ class StoreRepository:
                 "load_events 按天分批命中日配额 %s/天（共 %s 天），结果可能被截断",
                 daily_limit, n_days,
             )
-        return [self._to_record(row) for row in all_rows]
+        records = [self._to_record(row) for row in all_rows]
+        records.sort(key=lambda e: e.ts, reverse=(direction == "DESC"))
+        return records
 
     @property
     def last_scan_truncated(self) -> bool:
@@ -316,9 +330,10 @@ class StoreRepository:
     def count_events(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
                      domains: Any = None, behavior_only: bool = False,
                      exclude_entity_ids: Any = None,
-                     exclude_domains: Any = None) -> int:
+                     exclude_domains: Any = None,
+                     states: Any = None) -> int:
         where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only,
-                                          exclude_entity_ids, exclude_domains)
+                                          exclude_entity_ids, exclude_domains, states)
         rows = self._execute("SELECT COUNT(*) AS c FROM events WHERE " + " AND ".join(where), params)
         return int((rows[0].get("c") if rows else 0) or 0)
 
