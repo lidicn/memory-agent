@@ -2295,13 +2295,22 @@ class Store:
             conn.commit()
             return int(cur.lastrowid or 0)
 
-    def list_behavior_events(
+    def _behavior_event_where(
         self, room: str | None = None, member: str | None = None,
         day_from: str | None = None, day_to: str | None = None,
-        limit: int = 100, status: str | None = None,
-    ) -> list[dict]:
-        """查询行为事件。member 过滤用 JSON 解析完成（量小，见 spec §7.1）。"""
-        sql = "SELECT * FROM behavior_events"
+        status: str | None = None,
+    ) -> tuple[list[str], list]:
+        """`behavior_events` 的过滤条件——`list_*` 与 `count_*` 共用一份，防止两边口径漂移。
+
+        `member` 必须下推进 SQL（裁5 追加 Q-A 授权的「不带 LIMIT 的计数查询」靠它）。
+        原先它是在 `LIMIT` **之后**用 Python 过滤的：请求 `limit=100` 时先取最近 100 行
+        再筛人，库里真有 800 条也在筛后归零，于是「匹配总数」在这个读取形状下根本不可信。
+
+        判定口径与 `_deserialize_persons` 逐字对齐：非法 JSON / 非数组 ⇒ 无人员（不匹配）；
+        dict 元素比 `name`，旧格式的**字符串元素本身即姓名**。字符串那条要注意 `json_each`
+        给字符串元素的 `type` 是 `text` 而不是 `string`——生产库实测写成 `string` 会漏掉
+        那 1 行旧格式记录（8 个姓名里唯一一个比对不一致，正是它）。
+        """
         conds: list[str] = []
         args: list = []
         if room:
@@ -2316,10 +2325,49 @@ class Store:
         if day_to:
             conds.append("day <= ?")
             args.append(day_to)
+        if member:
+            conds.append(
+                "EXISTS (SELECT 1 FROM json_each("
+                "CASE WHEN json_valid(behavior_events.persons_json)=1 "
+                "AND json_type(behavior_events.persons_json)='array' "
+                "THEN behavior_events.persons_json ELSE '[]' END) j "
+                "WHERE (j.type='object' AND json_extract(j.value,'$.name')=?)"
+                " OR (j.type='text' AND j.value=?))"
+            )
+            args.extend([member, member])
+        return conds, args
+
+    def count_behavior_events(
+        self, room: str | None = None, member: str | None = None,
+        day_from: str | None = None, day_to: str | None = None,
+        status: str | None = None,
+    ) -> int:
+        """匹配的事件总数（不带 LIMIT 的 COUNT）—— 裁5 追加 Q-A 授权的计数查询。
+
+        与 `list_behavior_events` 用同一个 `_behavior_event_where`，所以「总数」与「这一页」
+        是同一批行的两种投影，`total >= len(page)` 恒成立。它不受 `max_scan` 那类扫描上限
+        约束（上限管的是把行读进内存的那条路径），也不参与 `status` 之外的默认过滤。
+        """
+        conds, args = self._behavior_event_where(room, member, day_from, day_to, status)
+        sql = "SELECT COUNT(*) FROM behavior_events"
         if conds:
             sql += " WHERE " + " AND ".join(conds)
-        sql += " ORDER BY server_ts DESC LIMIT ?"
-        args.append(int(limit))
+        conn = self.connect()
+        with self._lock:
+            return int(conn.execute(sql, args).fetchone()[0] or 0)
+
+    def list_behavior_events(
+        self, room: str | None = None, member: str | None = None,
+        day_from: str | None = None, day_to: str | None = None,
+        limit: int = 100, status: str | None = None, offset: int = 0,
+    ) -> list[dict]:
+        """查询行为事件。过滤（含 `member`）全部在 SQL 里完成，`offset` 支持翻页。"""
+        conds, args = self._behavior_event_where(room, member, day_from, day_to, status)
+        sql = "SELECT * FROM behavior_events"
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY server_ts DESC LIMIT ? OFFSET ?"
+        args.extend([int(limit), int(offset)])
         conn = self.connect()
         with self._lock:
             rows = conn.execute(sql, args).fetchall()
@@ -2338,11 +2386,6 @@ class Store:
                 d["appearance"] = None
             d.pop("appearance_json", None)
             out.append(d)
-        if member:
-            out = [
-                d for d in out
-                if any(p.get("name") == member for p in d.get("persons") or [])
-            ]
         return out
 
     def list_scene_graphs(

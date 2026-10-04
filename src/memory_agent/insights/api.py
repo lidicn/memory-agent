@@ -84,21 +84,26 @@ def _empty() -> Dict[str, Any]:
     return {"items": [], "total": 0, "offset": 0, "limit": 0, "has_more": False}
 
 
-def annotate_scan(payload: Dict[str, Any], scanned: int, scan_limit: int) -> Dict[str, Any]:
+def annotate_scan(payload: Dict[str, Any], scanned: int, scan_limit: int,
+                  total_exact: Any = None) -> Dict[str, Any]:
     """把「扫描上限有没有命中」写进返回体（DCD 20261004 MA-裁5 **Q4=A**）。
 
-    `total` 来自 `repo.load_events`，而它的 `LIMIT` 就是 `scan_limit`：命中上限时
-    `total` 是**扫描到的行数**而不是匹配总数——生产实测 30 天窗口 legacy 报 87,404 条，
-    门面报 30,000 条，用户读到的是「30 天只有 3 万条」。裁定选择**如实上报**而不是提高上限。
+    `truncated` 说的是**切片**：`repo.load_events` 的 `LIMIT` 就是 `scan_limit`，命中上限时
+    页面只看得见窗口前段——生产实测 30 天窗口 legacy 报 87,404 条，门面报 30,000 条，
+    用户读到的是「30 天只有 3 万条」。裁定选择**如实上报**而不是提高上限。
 
     边界要说清楚：命中判据是 `scanned >= scan_limit`，**恰好等于上限**的那一类无法与
-    「真的只有这么多个体」区分开，所以这里给的是 `total_exact: false`（不保证是全量），
+    「真的只有这么多个体」区分开，所以默认给的是 `total_exact: false`（不保证是全量），
     而不是谎称「一定被截了」。`scan_limit` 为 0 表示注入的仓储没有上限。
+
+    裁5 **追加 Q-A** 之后 `total` 可以由不带 LIMIT 的 COUNT 单独给出：那时它是匹配总数，
+    与切片有没有被截无关，调用方传 `total_exact=True` 明说这件事；传 `None` 表示 `total`
+    仍是切片行数，沿用上面的旧推断。**切片被截与总数精确可以同时成立**。
     """
     truncated = bool(scan_limit) and int(scanned) >= int(scan_limit)
     payload["truncated"] = truncated
     payload["scan_limit"] = int(scan_limit or 0)
-    payload["total_exact"] = not truncated
+    payload["total_exact"] = (not truncated) if total_exact is None else bool(total_exact)
     return payload
 
 
@@ -343,9 +348,8 @@ class InsightService:
 
         键集按裁5 Q2=A 并存：legacy 键（`ok/window/room/member_filter/count/events`）是
         长期承诺键，这里补门面代分页键 `offset`/`limit`/`has_more`/`time_range`。
-        **不补 `total`**：legacy 侧一次只取一页（`limit` 上限 200），库里没有
-        `behavior_events` 的全量计数口径，把 `count` 改名成 `total` 会把「本页条数」
-        谎报成「匹配总数」。取全与否由 `has_more` 如实回答。
+        `total` 按裁5 **追加 Q-A** 给出：`total` = 匹配的事件总数（不带 LIMIT 的 COUNT，
+        DCD 授权的新计数查询），`count` = 本页条数，两者键名与语义分开、不许改名冒充。
         """
         page_limit = max(1, min(int(limit or 50), 200))
         out = self.legacy.query_behavior_events(room=room, member=member, days=days,
@@ -357,20 +361,63 @@ class InsightService:
             out.setdefault("has_more", count >= page_limit)
             if "time_range" not in out and out.get("window"):
                 out["time_range"] = out["window"]
+            if out.get("ok"):
+                out["total"] = self._behavior_event_total(out)
+                out["total_exact"] = out["total"] is not None
         return out
+
+    def _behavior_event_total(self, out: Dict[str, Any]) -> Any:
+        """`behavior_events` 的匹配总数（裁5 追加 Q-A）。
+
+        窗口与解析后的房间直接从 legacy 的返回里取（`days/start/end` 与房间别名它已经算过），
+        这样 `total` 与 `count` 描述的是同一批行，`total >= count` 恒成立。
+        取不到时返回 `None` 而不是 0 —— 0 是一条「库里没有」的假证词。
+        """
+        win = out.get("window") or {}
+        resolved = str(out.get("room") or "")
+        start_day = str(win.get("start") or "")[:10]
+        end_day = str(win.get("end") or "")[:10]
+        try:
+            return int(self.store.count_behavior_events(
+                room=(resolved if resolved not in ("", "全部") else None),
+                member=(str(out.get("member_filter") or "") or None),
+                day_from=(start_day or None),
+                day_to=(end_day or None),
+            ))
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("count_behavior_events（行为事件总数）失败: %s", exc)
+            return None
 
     def _search(self, start: Any, end: Any, entity_id: str, room: str, category: str,
                 query: str, limit: int, offset: int, behavior_only: bool) -> Dict[str, Any]:
         tr = self._tr(start, end)
         ids = [entity_id] if entity_id else None
-        events = self.repo.load_events(tr, entity_ids=ids, rooms=[room] if room else None,
+        rooms = [room] if room else None
+        events = self.repo.load_events(tr, entity_ids=ids, rooms=rooms,
                                        behavior_only=behavior_only)
         events.sort(key=lambda e: e.ts)
         out = Page.build(events, offset=offset,
                          limit=self.config.clamp_limit(limit),
                          time_range=tr.to_dict()).to_dict("events")
-        # `total` 直接来自上面那次扫描，命中 `max_scan` 时它是扫描行数而非匹配总数（Q4=A）。
-        return annotate_scan(out, len(events), getattr(self.repo, "scan_limit", 0))
+        # 裁5 追加 **Q-A**：`total` = 匹配的事件总数，`count` = 本页条数，两个键不许互相冒充。
+        # `Page` 里那份 `total` 是上面那次扫描的行数（命中 `max_scan` 时比真值小），所以用
+        # 不带 LIMIT 的 `count_events` 覆盖它，`has_more` 也按真值重算——切片被截时后续照样有。
+        counted = self._events_total(tr, ids, rooms, behavior_only)
+        out["count"] = len(out.get("events") or [])
+        if counted is not None:
+            out["total"] = counted
+            out["has_more"] = int(out.get("offset") or 0) + out["count"] < counted
+        return annotate_scan(out, len(events), getattr(self.repo, "scan_limit", 0),
+                             total_exact=(counted is not None))
+
+    def _events_total(self, tr: Any, ids: Any, rooms: Any, behavior_only: bool) -> Any:
+        """事件匹配总数（不带 LIMIT）。取不到返回 `None`，让 `total_exact` 说真话。"""
+        try:
+            return int(self.repo.count_events(tr, entity_ids=ids, rooms=rooms,
+                                              behavior_only=behavior_only))
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("count_events（事件匹配总数）失败: %s", exc)
+            return None
 
     @_degrade(lambda: {"ok": False, "event": None, "total": 0,
                        "offset": 0, "limit": 1, "has_more": False})

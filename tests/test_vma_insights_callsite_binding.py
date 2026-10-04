@@ -441,8 +441,13 @@ def test_query_behavior_events_reads_the_vision_table_and_honors_member():
             assert key in out, (key, sorted(out))
         for key in ("offset", "limit", "has_more", "time_range"):
             assert key in out, (key, sorted(out))
-        # 不许把「本页条数」改名成「匹配总数」谎报成全量
-        assert "total" not in out, sorted(out)
+        # 裁5 **追加 Q-A** 之后的契约：`total` = 匹配总数（不带 LIMIT 的 COUNT），
+        # `count` = 本页条数，两键分家、不许互相冒充。原先这条锁钉的是「没有 total」
+        # （那时 Store 里没有可信的全量口径，改名冒充就是谎报）。
+        assert out["total"] == 1 and out["count"] == 1, out
+        assert out["total_exact"] is True, out
+        empty = svc.query_behavior_events(room="书房", member="查无此人", start=W0, end=W1)
+        assert empty["total"] == 0 and empty["count"] == 0, empty
         assert svc.query_behavior_events(room="不存在的房间")["ok"] is False
     finally:
         st.close()
@@ -504,7 +509,12 @@ def test_forwarded_tools_keep_both_key_generations():
 
 
 def test_scan_annotation_tells_whether_total_is_a_scan_cap():
-    """Q4=A：命中 `max_scan` 的返回体必须自己说「这个 total 是扫描行数，不是匹配总数」。"""
+    """Q4=A：命中 `max_scan` 的返回体必须自己说「这一页只覆盖了窗口前段」。
+
+    裁5 **追加 Q-A** 之后 `total` 改由不带 LIMIT 的 COUNT 给出，所以命中上限时它不再等于
+    扫描行数——期望值从 `total == 4 / total_exact False` 改成 `total == 8 / total_exact True`，
+    `truncated` 仍然如实为 True（它说的是切片，与总数精确不冲突）。
+    """
     from memory_agent.insights.models import InsightConfig
 
     st, svc = _live()
@@ -519,8 +529,10 @@ def test_scan_annotation_tells_whether_total_is_a_scan_cap():
 
         capped = InsightService(st, InsightConfig(max_scan=4))
         out = capped.get_events(start=W0, end=W1, limit=2)
-        assert out["total"] == 4 and out["truncated"] is True, out
-        assert out["total_exact"] is False and out["scan_limit"] == 4, out
+        assert out["total"] == 8 and out["truncated"] is True, out
+        assert out["total_exact"] is True and out["scan_limit"] == 4, out
+        # `count` 是本页条数，与 `total` 分家（Q-A：两键不许互相冒充）
+        assert out["count"] == 2 and len(out["events"]) == 2, out
     finally:
         st.close()
         os.remove(st.db_path)
