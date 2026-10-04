@@ -253,3 +253,136 @@ def test_startup_not_blocked_when_vector_unavailable(tmp_path, monkeypatch):
     # 空集合代理方法不抛异常 = 采集路径未被阻断
     assert pm.collection.count() == 0
     assert pm.list_patterns() is not None
+
+
+# ── 5. 建集合调用点不许留「默认嵌入」落点（DCD 20261004 Q1=B 的字面要求） ──────
+
+def _bare_history_manager(config):
+    """只装 `chroma_selftest` 用到的字段，绕开 Store/真连接。"""
+    import memory_agent.history as hmod
+
+    hm = hmod.HistoryManager.__new__(hmod.HistoryManager)
+    hm.config = config
+    hm._embed_fn_cache = None
+    hm._embed_resolved = False
+    hm._chroma_error = ""
+    hm._collection = None
+    hm._client = None
+    return hm
+
+
+class _FakeCol:
+    def __init__(self):
+        self.stored_id = None
+
+    def count(self):
+        return 3
+
+    def add(self, ids=None, documents=None, metadatas=None):
+        self.stored_id = (ids or [None])[0]
+
+    def query(self, query_texts=None, n_results=3):
+        return {"ids": [[self.stored_id] if self.stored_id else []]}
+
+    def delete(self, ids=None):
+        self.stored_id = None
+
+
+def _fake_chromadb(monkeypatch, captured):
+    class _FakeClient:
+        def get_or_create_collection(self, **kwargs):
+            captured.append(kwargs)
+            return _FakeCol()
+
+    def _http_client(host=None, port=None):
+        captured.append({"_client": (host, port)})
+        return _FakeClient()
+
+    monkeypatch.setitem(
+        sys.modules, "chromadb", types.SimpleNamespace(HttpClient=_http_client)
+    )
+
+
+def test_chroma_selftest_binds_the_resolved_embedding_function(monkeypatch):
+    """配了端点 ⇒ 自检建集合必须显式带上解析出的嵌入函数，不许交给 chroma 默认。"""
+    _fake_chromadb(monkeypatch, captured := [])
+    hm = _bare_history_manager(_app_config())
+    result = hm.chroma_selftest()
+
+    assert result["ok"] is True, result
+    kwargs = [c for c in captured if "name" in c]
+    assert kwargs, "自检没有走到建集合这一步"
+    assert isinstance(kwargs[0].get("embedding_function"), _OpenAICompatEmbeddingFunction), \
+        "自检建集合没绑定外部嵌入函数 ⇒ 会落回 chroma 默认 MiniLM"
+
+
+def test_chroma_selftest_never_creates_collection_without_endpoint(monkeypatch):
+    """未配端点 ⇒ 自检直接判定向量面不可用，且**一次都不建集合**。
+
+    这条锁的是本轮实测到的剩余落点：`chroma_selftest` 原先不传 embedding_function，
+    未配端点时照样建集合，于是落进 chroma 默认 MiniLM ——「没有任何一条路径还能落回
+    chroma 默认 MiniLM」这句证明当时并不成立。
+    """
+    import memory_agent.history as hmod
+
+    _fake_chromadb(monkeypatch, captured := [])
+    hm = _bare_history_manager(_app_config(embedding_base_url="", embedding_model=""))
+    result = hm.chroma_selftest()
+
+    assert result["ok"] is False
+    assert result["error"] == "embedding_endpoint_not_configured", result
+    assert "向量面不可用" in result["summary"], result
+    assert "MiniLM" in result["hint"], result
+    assert [c for c in captured if "name" in c] == [], \
+        "未配端点时仍然建了集合 = 落回 chroma 默认 MiniLM"
+    assert hm._embedding_function() is hmod._EMBEDDING_UNAVAILABLE
+
+
+def test_no_src_call_site_creates_collection_without_embedding_function():
+    """AST 扫 src/：每个 `get_or_create_collection` / `create_collection` 调用点都要绑定嵌入函数。
+
+    注释与文档字符串里的历史描述不算调用点（AST 天然只看真调用）。
+    `**kwargs` 转发也算违规——这条要的是「读代码就能看见嵌入函数被绑上」，
+    转发形状让证明变弱（patterns.py 原先就是 `_kwargs["embedding_function"]` 转发，
+    已改成显式实参）。将来若必须转发，改写本锁并请一并给出等价证明。
+    """
+    import ast
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "memory_agent"))
+    offenders = []
+    for dirpath, _dirs, files in os.walk(root):
+        for name in sorted(files):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, name)
+            with open(path, encoding="utf-8") as f:
+                source = f.read()
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not isinstance(func, ast.Attribute):
+                    continue
+                if func.attr not in ("get_or_create_collection", "create_collection"):
+                    continue
+                kw_names = {kw.arg for kw in node.keywords if kw.arg}
+                segment = ast.get_source_segment(source, node) or ""
+                if "embedding_function" in kw_names or "embedding_function" in segment:
+                    continue
+                offenders.append(
+                    "%s:%d %s" % (
+                        os.path.relpath(path, root).replace(os.sep, "/"),
+                        node.lineno, func.attr,
+                    )
+                )
+    assert offenders == [], "这些建集合调用点没绑定嵌入函数，会落回 chroma 默认 MiniLM：%s" % (offenders,)
+
+
+def test_embedding_status_reason_does_not_claim_default_model():
+    """`embedding_status` 的未配置文案不许再说「使用 chroma 默认模型」——Q1=B 后那是假话。"""
+    hm = _bare_history_manager(_app_config(embedding_base_url="", embedding_model=""))
+    st = hm.embedding_status()
+    assert st["configured"] is False
+    assert "默认模型" not in st["reason"], st
+    assert "MiniLM" in st["reason"], st

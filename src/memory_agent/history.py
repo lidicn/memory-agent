@@ -263,7 +263,7 @@ class HistoryManager:
         if not base or not model:
             return {
                 "configured": False,
-                "reason": "未配置 embedding 端点（使用 chroma 默认模型）",
+                "reason": "未配置 embedding 端点 ⇒ 向量面不可用（不回退本地 MiniLM）",
             }
         try:
             ef = self._embedding_function()
@@ -351,9 +351,36 @@ class HistoryManager:
 
         step("连接向量库", lambda: f"{host}:{port}")
 
+        # DCD 20261004 Q1=B：自检也不许成为 MiniLM 的落点。
+        # 这里原先不传 embedding_function，未配端点时集合会静默落到 chroma 默认
+        # MiniLM（本容器运行时因 `/.cache` 不可写根本用不了），自检于是「因为错误的
+        # 原因失败」。未配端点就直接判定向量面不可用，不再建集合。
+        embed_fn = self._embedding_function()
+        if embed_fn is _EMBEDDING_UNAVAILABLE:
+            steps.append(
+                {
+                    "step": "解析嵌入端点",
+                    "ok": False,
+                    "ms": 0,
+                    "detail": "未配置 embedding_base_url / embedding_model ⇒ 向量面不可用"
+                    "（不回退本地 MiniLM）",
+                }
+            )
+            return {
+                "ok": False,
+                "connected": False,
+                "host": f"{host}:{port}",
+                "error": "embedding_endpoint_not_configured",
+                "steps": steps,
+                "summary": "未配置嵌入端点 ⇒ 向量面不可用，请先填 embedding_base_url 与 embedding_model",
+                "hint": "向量面不再回退本地 MiniLM（DCD 20261004 Q1=B）；配置外部嵌入端点后重试",
+            }
+
         try:
             col = client.get_or_create_collection(
-                name=self.COLLECTION_NAME, metadata={"description": "家庭行为历史摘要"}
+                name=self.COLLECTION_NAME,
+                metadata={"description": "家庭行为历史摘要"},
+                embedding_function=embed_fn,
             )
         except Exception as exc:
             return {

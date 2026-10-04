@@ -113,9 +113,11 @@ class PatternManager:
             logger.warning("未配置嵌入端点 ⇒ 模式库向量面不可用（不回退本地 MiniLM）")
             self.collection = _NullCollection()
         else:
-            _kwargs = {"name": "behavior_patterns", "metadata": {"hnsw:space": "cosine"}}
-            _kwargs["embedding_function"] = _embed
-            self.collection = self.client.get_or_create_collection(**_kwargs)
+            self.collection = self.client.get_or_create_collection(
+                name="behavior_patterns",
+                metadata={"hnsw:space": "cosine"},
+                embedding_function=_embed,
+            )
         # 确保目录存在
         os.makedirs(config.templates_dir, exist_ok=True)
         os.makedirs(config.imported_dir, exist_ok=True)
