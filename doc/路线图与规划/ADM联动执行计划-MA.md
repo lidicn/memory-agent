@@ -256,6 +256,25 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 > （`agent_memory.py:689`）是**按脏行逐条重刷**（脏行清单来自 `store.list_dirty_agent_mirrors()`，
 > `store.py:4666`）——所以真窗口里大概率不需要 12 分钟冷启动，只需 `--reconcile`。这条差异属对外承诺的时长，**留给窗口执行时实测**，不在此处替它圆场。
 > 探针脚本 `scripts/_probe_post_restart.py`（同一份判据，下次重启后直接复用）。
+>
+> **窗内必须一起落、且**不允许提前落码**的三件（DCD 20261002《AgentOps 与 MA 交付面》§问 1+2 / 问 3 原文约束）**：
+>
+> | # | 改动 | 现读位置 | 裁定口径 | 为什么不能提前 |
+> |---|---|---|---|---|
+> | 1 | 安装行加 `"posthog<3"` | `Dockerfile:19`（`pip install … "chromadb==0.5.23" httpx …`） | 裁 **A**：pin 上界 | 裁定书原话：「pin 上界与关遥测是同一枚硬币的两面，**必须同窗做**」，无裁定单独加 = 不允许 |
+> | 2 | 加 `ANONYMIZED_TELEMETRY=False` | `docker-compose.yml:11`（`environment:` 块）＋同一枚硬币 | 裁 **A**：显式关遥测 | 「用一个 bug 兜住一条隐私红线」是假安全：今天没发出去只因 `capture()` 签名对不上 |
+> | 3 | 删两条 `--ignore` + 去 `-x` | `.github/workflows/ci.yml:38` | **C 打底 + B 下个交付窗** | CI 面属交付面；C 已打底（容器权威全量本来就跑这两文件），B 只能在窗内。缩水面 HEAD 现读 **16 条**（`test_mqtt_bridge.py` 12 + `test_ha_assist.py` 4），与裁定书 §问 3「CI 长期比实际跑的少 16 条」一致 |
+>
+> 三件的**验收读数**（窗后跑，别拿落码当生效）：① 容器内 `python -c "import posthog,httpx,chromadb"` 版本
+> 一行现读。**窗前基线已取（2026-10-04，RC=0）：`httpx 0.28.1 / posthog 7.58.0 / chromadb 0.5.23`**；
+> 窗后 `httpx` 读数须与此一致，不一致就是重解析动了传递依赖，要单独报出来（镜像重解析会顺带动 `httpx`，
+> 第七轮的 HA 连接复用压在上面——裁定书 §副作用预警明写「重建后跑容器权威全量，确认 `httpx` 版本读数与
+> 连接池行为不变」）；重烤后 `posthog` 应 <3（当前 7.58.0 是未重烤的证据，不是缺陷）；
+> ② 启动日志里 `Failed to send telemetry event ClientStartEvent` **不再出现**（这条是遥测真关掉的自己的状态字，
+> 不是"看起来没报错"）；③ 窗后立刻重跑容器全量并记 `passed/skipped` 与 `SUITE_RC`。
+> 另两件同窗的执行物已在仓里，不需再准备：`vendor/homesdk-0.3.1-py3-none-any.whl` + `Dockerfile:24`
+> （运行面 `import homesdk` 现读仍是 `ModuleNotFoundError`，RC=1 ⇒ 缺的只有重烤），
+> 以及 R2 回填 `scripts/pii_backfill_r2.py`（窗口门是硬门，不带 `--window-ok` → `RC=2` 且不产生备份）。
 
 ---
 
