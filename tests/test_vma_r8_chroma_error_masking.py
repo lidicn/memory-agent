@@ -173,10 +173,11 @@ def test_resolver_prefers_the_configured_gateway():
     assert isinstance(fn, _OpenAICompatEmbeddingFunction)
 
 
-def test_resolver_without_endpoint_does_not_raise():
-    """未配置外部端点：回退本地 MiniLM 或返回 None，但绝不把构造打断。"""
+def test_resolver_without_endpoint_returns_unavailable_sentinel():
+    """DCD 20261004 Q1=B：未配置外部端点 ⇒ 返回 _EMBEDDING_UNAVAILABLE 哨兵，不回退 MiniLM，不抛异常。"""
+    from memory_agent.history import _EMBEDDING_UNAVAILABLE
     fn = resolve_embedding_function(_app_config(embedding_base_url="", embedding_model=""))
-    assert fn is None or callable(fn)
+    assert fn is _EMBEDDING_UNAVAILABLE, "未配端点应返回不可用哨兵，而非 None 或 MiniLM"
 
 
 def test_pattern_manager_passes_the_shared_embedding_function(tmp_path, monkeypatch):
@@ -207,7 +208,7 @@ def test_pattern_manager_passes_the_shared_embedding_function(tmp_path, monkeypa
 
 
 def test_pattern_manager_still_builds_when_resolver_is_unavailable(tmp_path, monkeypatch):
-    """解析器坏了也不能让 PatternManager 构造失败——它退化成 chroma 默认，仍走原路径。"""
+    """DCD 20261004 Q1=B：解析器坏了也不能让 PatternManager 构造失败——用 _NullCollection 代理，不阻断启动。"""
     try:
         import chromadb  # noqa: F401
     except ImportError:
@@ -215,20 +216,40 @@ def test_pattern_manager_still_builds_when_resolver_is_unavailable(tmp_path, mon
     import memory_agent.history as hmod
     import memory_agent.patterns as pmod
 
-    captured = {}
-
-    class _FakeHttpClient:
-        def __init__(self, host, port):
-            pass
-
-        def get_or_create_collection(self, **kwargs):
-            captured.update(kwargs)
-            return object()
-
-    monkeypatch.setattr(pmod.chromadb, "HttpClient", _FakeHttpClient, raising=False)
+    monkeypatch.setattr(pmod.chromadb, "HttpClient", lambda host, port: object(), raising=False)
     monkeypatch.setattr(hmod, "resolve_embedding_function",
                         lambda config: (_ for _ in ()).throw(RuntimeError("boom")))
     cfg = _app_config(templates_dir=str(tmp_path / "t"), imported_dir=str(tmp_path / "i"))
     pm = pmod.PatternManager(cfg)
     assert pm.collection is not None
-    assert "embedding_function" not in captured   # 退化为 chroma 默认，不伪造一个坏的
+    assert isinstance(pm.collection, pmod._NullCollection), "解析失败应落 _NullCollection，不阻断构造"
+
+
+def test_no_minilm_fallback_when_endpoint_unconfigured(tmp_path, monkeypatch):
+    """DCD Q1=B 判据①：未配端点 ⇒ 判定不可用且不落 MiniLM（grep DefaultEmbeddingFunction 应为 0）。"""
+    import memory_agent.history as hmod
+    src = hmod.__file__
+    with open(src, encoding="utf-8") as f:
+        code = f.read()
+    assert "DefaultEmbeddingFunction" not in code, "history.py 不应引用 DefaultEmbeddingFunction"
+
+
+def test_startup_not_blocked_when_vector_unavailable(tmp_path, monkeypatch):
+    """DCD Q1=B 判据②：向量面不可用时采集/启动未被阻断（PatternManager 构造成功且可调用方法）。"""
+    try:
+        import chromadb  # noqa: F401
+    except ImportError:
+        monkeypatch.setitem(sys.modules, "chromadb", types.SimpleNamespace())
+    import memory_agent.patterns as pmod
+
+    monkeypatch.setattr(pmod.chromadb, "HttpClient", lambda host, port: object(), raising=False)
+    cfg = _app_config(
+        embedding_base_url="", embedding_model="",
+        templates_dir=str(tmp_path / "t"), imported_dir=str(tmp_path / "i"),
+    )
+    pm = pmod.PatternManager(cfg)
+    # 构造不抛异常 = 启动未被阻断
+    assert isinstance(pm.collection, pmod._NullCollection)
+    # 空集合代理方法不抛异常 = 采集路径未被阻断
+    assert pm.collection.count() == 0
+    assert pm.list_patterns() is not None

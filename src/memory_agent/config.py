@@ -53,7 +53,7 @@ class Config:
     llm_backends: List[dict] = field(default_factory=list)
 
     # ── 向量嵌入模型（OpenAI 兼容 /v1/embeddings，可选）──────────────────────
-    # 缺省留空 → 使用 chroma 默认 MiniLM（零配置不破坏现有部署）。
+    # 缺省留空 → 向量面不可用（DCD 20261004 Q1=B：不回退本地 MiniLM）。
     # 配置后，history 三集合注入该嵌入函数，提升中文语义检索质量
     # （SiliconFlow bge-m3 / Qwen3-Embedding / new-api 网关等）。
     # 切换模型后请运行 scripts/reindex_embeddings.py 重建集合（维度会变）。

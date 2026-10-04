@@ -14,6 +14,32 @@ from .store import safe_json_loads, _FEEDBACK_TEXT_MAX, _FEEDBACK_OUTCOMES
 logger = logging.getLogger("memory_agent.patterns")
 
 
+class _NullCollection:
+    """向量面不可用时的空集合代理（DCD 20261004 Q1=B）。
+
+    所有方法返回空结果，不抛异常，保证调用方不崩溃。
+    用于未配置嵌入端点时替代真实 chroma Collection。
+    """
+
+    def query(self, **kwargs):
+        return {"ids": [[]], "metadatas": [[]], "documents": [[]], "distances": [[]]}
+
+    def get(self, **kwargs):
+        return {"ids": [], "metadatas": [], "documents": []}
+
+    def upsert(self, **kwargs):
+        pass
+
+    def update(self, **kwargs):
+        pass
+
+    def delete(self, **kwargs):
+        pass
+
+    def count(self):
+        return 0
+
+
 def _safe_json_loads(raw, default=None):
     """NEW-P1-1：安全解析 JSON，失败返回默认值（委托 store 版本，坏数据留 WARNING）。"""
     return safe_json_loads(raw, default)
@@ -73,17 +99,23 @@ class PatternManager:
         # 集合会落到 chroma 默认 MiniLM（384 维，且本容器运行时不可用 → 写读皆静默失败），
         # 而 behavior_history / agent_memory 实测是外部网关的 1024 维。判据见
         # `history.resolve_embedding_function` 文档。
+        # DCD 20261004 Q1=B：未配端点时 resolve 返回 _EMBEDDING_UNAVAILABLE 哨兵，
+        # 不再回退 MiniLM；检测到哨兵时跳过集合创建，向量面不可用但不阻断构造。
         _embed = None
         try:
-            from .history import resolve_embedding_function
+            from .history import resolve_embedding_function, _EMBEDDING_UNAVAILABLE
 
             _embed = resolve_embedding_function(config)
-        except Exception as exc:  # pragma: no cover - 解析失败退回 chroma 默认，不阻断构造
-            logger.warning("模式库嵌入函数解析失败，退回 chroma 默认: %s", exc)
-        _kwargs = {"name": "behavior_patterns", "metadata": {"hnsw:space": "cosine"}}
-        if _embed is not None:
+        except Exception as exc:  # pragma: no cover - 解析失败标记向量面不可用，不阻断构造
+            logger.warning("模式库嵌入函数解析失败，向量面不可用: %s", exc)
+            _embed = _EMBEDDING_UNAVAILABLE
+        if _embed is _EMBEDDING_UNAVAILABLE:
+            logger.warning("未配置嵌入端点 ⇒ 模式库向量面不可用（不回退本地 MiniLM）")
+            self.collection = _NullCollection()
+        else:
+            _kwargs = {"name": "behavior_patterns", "metadata": {"hnsw:space": "cosine"}}
             _kwargs["embedding_function"] = _embed
-        self.collection = self.client.get_or_create_collection(**_kwargs)
+            self.collection = self.client.get_or_create_collection(**_kwargs)
         # 确保目录存在
         os.makedirs(config.templates_dir, exist_ok=True)
         os.makedirs(config.imported_dir, exist_ok=True)

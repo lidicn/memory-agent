@@ -40,11 +40,18 @@ class EmbeddingEndpointError(RuntimeError):
     """
 
 
+# DCD 20261004 裁 Q1=B：未配置外部嵌入端点时向量面不可用，不回退本地 MiniLM。
+# 用哨兵对象而非 None：None 会被调用方省略 kwarg 静默落到 chroma 默认 MiniLM（384 维），
+# 而生产集合是外部网关 1024 维，且 MiniLM 在容器内运行时 PermissionError（/.cache 不可写）。
+# 哨兵让调用方能显式判定"不可用"并跳过集合创建，同时不阻断进程启动。
+_EMBEDDING_UNAVAILABLE = object()
+
+
 class _OpenAICompatEmbeddingFunction:
     """OpenAI 兼容 ``/v1/embeddings`` 嵌入函数。
 
     用于接入第三方嵌入端点（SiliconFlow bge-m3 / Qwen3-Embedding / new-api 网关），
-    提升中文语义检索质量。未配置时返回 ``None``，chroma 走默认 MiniLM，零配置不破坏现有部署。
+    提升中文语义检索质量。未配置时向量面不可用（DCD 20261004 Q1=B：不回退本地 MiniLM）。
     """
 
     def __init__(self, base_url: str, model: str, api_key: str = ""):
@@ -89,10 +96,11 @@ class _OpenAICompatEmbeddingFunction:
 def resolve_embedding_function(config):
     """按配置解析向量嵌入函数；**HistoryManager 与 PatternManager 必须走这一个口子**。
 
-    优先级：配置了外部 embedding 端点（``embedding_base_url``+``embedding_model``）
-    则用 OpenAI 兼容接口；否则回退到 chroma 自带本地 MiniLM。
+    配置了外部 embedding 端点（``embedding_base_url``+``embedding_model``）
+    则用 OpenAI 兼容接口；否则返回 ``_EMBEDDING_UNAVAILABLE`` 哨兵（DCD 20261004 Q1=B：
+    不回退本地 MiniLM，未配端点时向量面不可用）。
 
-    为什么要有这个函数（2026-10-04 容器实测）：`patterns.py` 原先自己
+    为什么不许回退 MiniLM（2026-10-04 容器实测）：`patterns.py` 原先自己
     `get_or_create_collection("behavior_patterns")` **不传 embedding_function**，
     于是它落进 chroma 默认 MiniLM（384 维），而生产两个集合
     （`behavior_history` / `agent_memory`）实测都是外部网关的 **1024 维**——
@@ -102,6 +110,9 @@ def resolve_embedding_function(config):
     镜像里 Dockerfile 那次 root 预热落在 root 的缓存目录，运行时读不到）。
     不同源 = 模式库的语义路一接上就是静默死路。
 
+    为什么用哨兵而非 None：None 会被调用方省略 kwarg 静默落到 chroma 默认 MiniLM，
+    哨兵让调用方能显式判定"不可用"并跳过集合创建，同时不阻断进程启动。
+
     ⚠️ 换嵌入模型会改维度，必须配套跑 `scripts/reindex_embeddings.py` 重建集合。
     """
     base = (getattr(config, "embedding_base_url", "") or "").strip()
@@ -109,14 +120,9 @@ def resolve_embedding_function(config):
     if base and model:
         key = (getattr(config, "embedding_api_key", "") or "").strip()
         return _OpenAICompatEmbeddingFunction(base, model, key)
-    # 未配置外部端点：回退到 chroma 自带本地 MiniLM（需模型已缓存且 HOME 可写）
-    try:
-        import chromadb.utils.embedding_functions as _efns
-        print("[Vector] 使用本地 MiniLM 作为 embedding 函数")
-        return _efns.DefaultEmbeddingFunction()
-    except Exception as exc:
-        print(f"[Vector] 本地 embedding 函数不可用（缺 MiniLM 模型且无外部端点）: {exc}")
-        return None
+    # DCD 20261004 Q1=B：未配置外部端点 ⇒ 向量面不可用，不回退本地 MiniLM。
+    print("[Vector] 未配置嵌入端点 ⇒ 向量面不可用（不回退本地 MiniLM）")
+    return _EMBEDDING_UNAVAILABLE
 
 
 class HistoryManager:
@@ -160,6 +166,13 @@ class HistoryManager:
             return self._collection
         if self._chroma_error and time.monotonic() < self._chroma_retry_after:
             return None
+        # DCD 20261004 Q1=B：未配置嵌入端点时向量面不可用，跳过集合创建。
+        # 不阻断进程启动——采集主流程走 SQLite，语义检索降级为不可用。
+        embed_fn = self._embedding_function()
+        if embed_fn is _EMBEDDING_UNAVAILABLE:
+            self._chroma_error = "embedding_endpoint_not_configured"
+            self._chroma_retry_after = time.monotonic() + self._CHROMA_RETRY_SECONDS
+            return None
         try:
             import chromadb
 
@@ -169,7 +182,7 @@ class HistoryManager:
             self._collection = self._client.get_or_create_collection(
                 name=self.COLLECTION_NAME,
                 metadata={"description": "家庭行为历史摘要"},
-                embedding_function=self._embedding_function(),
+                embedding_function=embed_fn,
             )
             self._chroma_error = ""
             self._chroma_retry_after = 0.0

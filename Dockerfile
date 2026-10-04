@@ -23,9 +23,6 @@ RUN pip install --no-cache-dir "chromadb==0.5.23" httpx bcrypt "python-jose[cryp
 # 那个键由 DCD 在合并窗写进各仓 compose，装了库不会让时间轴漂移。
 RUN pip install --no-cache-dir ./vendor/homesdk-0.3.1-py3-none-any.whl
 
-# 预下载chromadb ONNX嵌入模型（避免首次运行时超时）
-RUN python -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; ef = DefaultEmbeddingFunction(); ef(['warmup'])" || true
-
 # 创建数据目录并赋予非 root 用户权限（WO-MA-001 / 审计 P0-10）
 RUN mkdir -p /data/exports /data/templates /data/imported /data/skills \
     && chown -R 10001:10001 /data /app
