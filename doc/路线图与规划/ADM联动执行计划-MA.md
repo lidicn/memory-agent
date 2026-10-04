@@ -371,6 +371,67 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 > 5. **5.5 的读数精确化**：日均 **739.6** 条（不是 ≈740 的推演），且"过白名单"一列有独立 SQL 对账
 >    （09-26=1,069 / 10-01=847 / 10-03=133）。留证见 `doc/审计报告/审计核实与修复_20261001.md` §二十二。
 
+## 六、DCD 20261004 六件裁定 · MA 侧执行台账
+
+裁定书：`E:\NAS\关键决策部\decisions\20261004-AF四件与DB一件与MA五件-裁定.md` §三（含 §三.6 活动识别件）。
+**逐件登记"落码/未落码"，不写"已按裁定处理"这类无法复核的话。**
+
+| 件 | 裁定 | 状态 | 落点与判据 |
+|----|------|------|------------|
+| 裁1 规则冷却 | Q1=A 显式化 + Q2 确认叠加 + Q3 占冷却 | **✅ 本件落码** | 见 §6.1 |
+| 裁2 行为推断默认规则 | Q1=C 由 SP 给本居活动清单 + Q1a/b/c 收窄 + Q2=C 按域过滤 + Q3 保持 0 等 DB | ⬜ 未落码 | 等 SP 给清单（Q1=C 的输入在 SP 手里，MA 无法自造）；Q2 的按域过滤读取与 Q1a/b/c 的规则改写可在清单到位后同批改 |
+| 裁3 反馈出境面脱敏 | Q1=A 分层 + Q2 label 白名单 + Q3 暂缓 | ⬜ 未落码 | `trace_anon.txt` 产物 + `vlm_failed-{room}-{date}` 白名单校验 |
+| 裁4 超限响应 | Q1=A 分页 + Q2=A 默认精简 + Q3 维持裁行 | ⬜ 未落码 | `list_device_health` 加 `limit`(默认 500)/`offset`，`stable_id` 截 40 字，`note` 仅 `referenced=1` 给，保留 `fields=full` |
+| 裁5 洞察门面 | Q1=A legacy 为对外只读引擎 + Q2=A 并存 + Q3 验收单全认 + Q4=A 如实上报截断 | ⬜ 未落码 | Q3 的六条**要有实测读数**才算齐；Q4 返回体加 `truncated`/`scan_limit`/`total_exact` |
+| 裁6 活动识别 | Q1=A 语义回归 + Q2=A 回 8 参数 + Q3=A 硬排除生效 + Q4 认可（交付纪律） | ⬜ 未落码 | Q4 那条纪律是**门面每切一个方法必须留三项对比读数**（返回键集合 / 语义枚举值集合 / 旁挂依赖），缺一项判红 |
+
+**另：`20261003-MA关键词检索短词与整句phrase召回下限` 不在这份裁定书里**（六件里没有 FTS 那件）。
+MA 按"未裁不动"处理——`fts` 短词召回下限的门槛数值仍维持现状，等 DCD 单独裁。
+
+### 6.1 裁1 的落码读数（2026-10-04）
+
+**Q1（显式化，缺省即拒）**：
+- `store.py`：`candidate_rules` 加 `cooldown_seconds INTEGER` 列——**可空、无 SQL 默认值**。
+  有默认值就永远走不到拒绝分支，数值又会回到由 `add_rule` 的形参替裁定说话。
+  新写口 `Store.set_candidate_rule_cooldown(rule_id, value)`（传 `None` = 撤回设定）。
+- `rule_lifecycle.py`：`parse_cooldown()` 把「没给」和「给了但读不出数」分成两种拒因；
+  `eligibility(candidate_id, cooldown_seconds=None)` 按 **参数 → 候选列 → 判拒** 的次序取值，
+  blocker 前缀 `cooldown_gate:`；`promote(..., cooldown_seconds=None)` 把定下的值
+  **显式传给 `engine.add_rule`**，并回写候选行（来源是参数时）、连同 `cooldown_source` 进审计 detail。
+- 对外两入口各多一个入参：HTTP `POST /api/behaviors/rule-channel/promote` 的 `cooldown_seconds`、
+  MCP `promote_candidate_rule(cooldown_seconds=None)`（ToolSpec 同步）。两处都**不给默认值**。
+- `pending_promotions` 逐条带 `cooldown_seconds` / `cooldown_source`：差一个数值的候选在预演清单上就看得见。
+- `add_rule(cooldown_seconds=300)` 一个字没动——裁定只挪走晋升端的隐式默认，人工建规则路径维持原语义
+  （`test_manual_rule_path_still_gets_the_default` 锁住这一点）。
+
+**Q2（确认叠加）**：无代码动作。叠加的两道闸各有其锁，且新增一条把两者接在晋升通道上：
+`test_promoted_rule_actually_honours_its_own_window`——晋升出的设备规则先要凑满 60 秒 3 次才响第一次，
+第二次达门槛时被自己那条 1,800 秒冷却压住，满窗后再次响。**count 管够不够格、冷却管够了之后响几次**，
+这条同时是"晋升写进列的数值真的咬住匹配端"的证据（不是只躺在库里）。
+
+**Q3（试运行占冷却）**：上一轮 `a192c51` 已落码，锁 `test_dry_run_also_consumes_the_window` 在册。
+
+**锁与变异红证**：`tests/test_rule_cooldown.py` 从 13 条增至 **22 条**（新增 9 条 = 7 个函数 + 坏值参数化 2 例），
+本机全绿；四条变异各自咬到自己的锁后立刻还原（`RESTORED=True`）：
+
+| 变异 | 新红 |
+|------|------|
+| M1 晋升不再写冷却值（退回 `add_rule` 形参默认） | 3 条（写入值 / 列回退 / 参数覆盖） |
+| M2 取消「缺省即拒」判据 | 2 条（拒绝晋升 / 预演清单可见缺口） |
+| M3 参数值不回写候选行 | 1 条（有据可查那半句） |
+| M4 坏值不再判拒（当成未设定） | 2 条（负数 / 非数） |
+
+**容器权威（把工作区整份快照 `docker cp` 进运行中的容器重跑，不在本机下结论）**：
+`/tmp/vs16` 口径，`PYTEST_RC=0` / **`1135 passed, 12 skipped in 173.01s`**；
+同快照 pyflakes 门禁 **`当前 0 条，基线 0 条，新增 0，已修 0`** / `GATE_RC=0`（2026-10-04）。
+12 条 skip 全部是既有缺口（`hmmlearn`/`pm4by`/`river` 缺依赖 9 条 + `test_signal_learning.py` 门面待适配 3 条），
+不是本件新增。
+
+**本件对生产的影响面**：晋升通道当前在生产上是**空跑**（`active_rules=0`、`candidate_rules=23` 全 `staging`），
+所以"缺省即拒"不会改变任何现网行为；它改变的是**第一次真晋升时写进库的那个数**由谁说了算。
+候选行没有 `cooldown_seconds` 值时晋升会被拒——这是裁定的本意，不是回归。列由 `Store.init_schema`
+的 ADD COLUMN 迁移建，**随下一次重启生效**（与 `trigger_json` 同一批窗口事项，见 §三）。
+
 ---
 
 —— 关键决策部 · DCD
