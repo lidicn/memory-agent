@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -104,7 +105,11 @@ class StoreRepository:
         self._catalog_ttl = 60.0
         # DCD 20261004 裁6 Q6-2=A：按天分批扫描后，记录是否有任一天命中日配额（被截断）。
         # 旧判据 len(events) >= scan_limit 在分批下失效：总数可能远低于上限但某天已被截。
-        self._last_scan_truncated = False
+        # 放线程局部：StoreRepository 是门面级共享实例（`build_repository` 一 facade 一个），
+        # MCP/HTTP 并发与 runtime 周期任务会在不同线程同时调 load_events —— 放实例上
+        # 会让 A 请求读到 B 请求的截断位（对外 `scan_truncated` 就此张冠李戴）。
+        # 读侧与自己的 load_events 在同一调用栈同线程内，故线程局部足够。
+        self._scan_state = threading.local()
 
     # ------------------------------------------------------------ 基础出口
     def _execute(self, sql: str, params: Sequence[Any] = ()) -> List[Dict[str, Any]]:
@@ -242,7 +247,7 @@ class StoreRepository:
 
         DCD 20261004 裁6 Q6-2=A：旧实现一次性 LIMIT scan_limit，30 天窗只覆盖前 20 小时。
         按天分摊同一预算（不新增上限），每天配额 = max(1, scan_limit // n_days)，
-        任一天命中日配额即标记 ``_last_scan_truncated=True``（新截断判据）。
+        任一天命中日配额即标记 ``last_scan_truncated``（新截断判据，线程局部）。
         总读取量硬上限仍为 scan_limit，达到即停止后续天的扫描。
         """
         from datetime import date, timedelta
@@ -290,7 +295,7 @@ class StoreRepository:
                 all_rows.extend(rows)
                 current += timedelta(days=1)
 
-        self._last_scan_truncated = truncated
+        self._scan_state.truncated = truncated
         if truncated:
             self.log.warning(
                 "load_events 按天分批命中日配额 %s/天（共 %s 天），结果可能被截断",
@@ -300,12 +305,13 @@ class StoreRepository:
 
     @property
     def last_scan_truncated(self) -> bool:
-        """DCD 裁6 Q6-2：按天分批下的截断判据。
+        """DCD 裁6 Q6-2：按天分批下的截断判据（线程局部，见 `__init__` 注释）。
 
         旧判据 ``len(events) >= scan_limit`` 在分批下失效：总数可能远低于上限
         但某天已被截。新判据：任一天返回条数 >= 日配额即标记为被截断。
+        还没跑过任何 ``load_events`` 的线程读到 False。
         """
-        return self._last_scan_truncated
+        return bool(getattr(self._scan_state, "truncated", False))
 
     def count_events(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
                      domains: Any = None, behavior_only: bool = False,
