@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -39,6 +40,19 @@ _BACKOFF_MAX_S = 1800
 # 房间灯态查询缓存 TTL（秒），避免高频触发打爆 HA REST
 _LIGHT_CACHE_TTL_S = 10
 _ON_STATES = frozenset({"on", "open", "playing"})
+
+
+def _insight_id(session_id: str, alert_type: str, day: str) -> str:
+    """`ma/insights` 的稳定身份（契约表 §二，DCD 20261004「MA 应发」）。
+
+    键取 MA **自己已经在用**的去重身份 `(session_id, alert_type)` 再加一个日键：
+    同房间的同类洞察当天重复投递 ⇒ 同一个 id（AF 的去重与回灌才有落点），
+    换天 ⇒ 新洞察。故意不含 `trace_id`、不含快照 URL、不含随机数——这几样每次巡检
+    都不一样，把它们卷进哈希就等于没有稳定身份。
+    `trace_id` 仍是事件级、每次现场生成的追踪号，两者不许互相顶替。
+    """
+    raw = f"{session_id}|{alert_type}|{day}".encode("utf-8")
+    return "ma-ins-" + hashlib.sha1(raw).hexdigest()[:16]
 
 # ── 视觉识别提示词预设（供 MCP / 内置 LLM 共用）─────────────────────────────
 # 调优集中在此，避免散落到多处。custom 由调用方自由输入。
@@ -1093,12 +1107,16 @@ class VisionService:
         if not strangers:
             return
         # Phase 4.1：统一分发单飞（同 session 同类型冷却期内只发一次）
+        # 这把 (session, type) 就是 MA 自己的"同一个洞察"判据，稳定身份复用它，
+        # 不另起一套键——两处口径分家的话，"被抑制的那条"和"重投去重的那条"就不是同一个洞察。
+        dedup_session = f"vision:{room}"
+        dedup_type = "stranger"
         dispatcher = getattr(self, "alert_dispatcher", None)
         if dispatcher is not None:
             cooldown = int(getattr(self.config, "vision_alert_cooldown_s", 300) or 300)
             result = dispatcher.should_send(
-                session_id=f"vision:{room}",
-                alert_type="stranger",
+                session_id=dedup_session,
+                alert_type=dedup_type,
                 priority=5,  # 视觉陌生人告警优先级（中，低于离家模式）
                 cooldown_seconds=cooldown,
             )
@@ -1111,6 +1129,10 @@ class VisionService:
         # 同一条告警的两个通道共用一个 trace_id：契约把 trace_id 定为跨仓排障锚点，
         # 各生成一个就串不起来"MA 发了、DB 为什么没说话"。
         trace_id = uuid.uuid4().hex
+        ts_iso = now_local(self.config.tz_offset_hours).isoformat()  # 契约表 §二：ts 必填
+        # DCD 裁定 20261004（AF ma-insights 三问 Q2）：`insight_id` 是稳定身份、MA 应发，
+        # AF 的去重与回灌键用它而不是 trace_id。键序按 DCD 追认的 `insight_id → trace_id`。
+        insight_id = _insight_id(dedup_session, dedup_type, ts_iso[:10])
         message = action or f"{room} 出现未识别人员"
         # DCD 裁定 20261002 Q3：ma/insights 用 `kind` 词表 + `summary` + `evidence[]`，
         # 身份一律走复数 `persons[]`（多人同框是现实，单数 person 装不下）。
@@ -1122,8 +1144,9 @@ class VisionService:
                 "type": "alert",
                 "source": "ma",
                 "kind": "security.stranger",
+                "insight_id": insight_id,
                 "trace_id": trace_id,
-                "ts": now_local(self.config.tz_offset_hours).isoformat(),  # 契约表 §二：ts 必填
+                "ts": ts_iso,
                 "room": room,
                 "alert_type": "stranger",
                 "message": message,
