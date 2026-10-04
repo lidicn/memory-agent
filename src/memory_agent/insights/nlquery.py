@@ -113,9 +113,16 @@ class NLQueryEngine:
         if route == Intent.BEHAVIOR.value:
             return self._answer_behavior(plan, tr)
         if route == Intent.ANOMALY.value:
-            data = self.service.anomaly_report(tr, room=plan.room, query=plan.query)
-            return ("%s，共 %d 条：%s" % (data.get("summary", "异常报告"), data["total"],
-                    "；".join(a["title"] for a in data["anomalies"][:3]) or "无"), data)
+            # 新引擎的 `anomaly_report(tr, room, category)`：没有 `query=` 参数，
+            # 条数在 `summary.count`、正文在每条的 `message`（legacy 的 `data["total"]`
+            # 与 `a["title"]` 都不存在）。
+            data = self.service.anomaly_report(tr, room=plan.room, category=plan.category)
+            count = int((data.get("summary") or {}).get("count") or 0)
+            messages = "；".join(str(a.get("message") or "")
+                                 for a in (data.get("anomalies") or [])[:3])
+            return ("%s~%s 发现 %d 条异常：%s。" % (
+                fmt_ts(tr.start_ts)[:10], fmt_ts(tr.end_ts)[:10],
+                count, messages or "无"), data)
         if route == Intent.RHYTHM.value:
             data = self.service.rhythm(tr, room=plan.room)
             return ("你一般 %s 左右入睡、%s 左右起床（基于 %d 天样本）。" % (
@@ -137,31 +144,57 @@ class NLQueryEngine:
             span_days = int(round((tr.end_ts - tr.start_ts) / 86400.0))
             persona_days = span_days if span_days >= 1 else max(plan.days, 14)
             data = self.service.user_persona(days=persona_days)
-            return (data.get("persona", {}).get("summary", "暂无画像。"), data)
+            return (self._persona_answer(data), data)
         hints = "；".join(plan.hints[:2])
         return ("我还不确定你想问什么。%s" % hints, {"hints": plan.hints})
 
+    @staticmethod
+    def _persona_answer(data: Dict[str, Any]) -> str:
+        """把 `user_persona` 的 `traits` 拼成一句人话。
+
+        新引擎的画像里没有 `persona.summary` 这个键（legacy 才有），原先读它 ⇒
+        这条路由恒答「暂无画像。」。改为直接消费引擎真给的东西：特征列表 + 读数。
+        """
+        traits = {str(t.get("name") or ""): str(t.get("value") or "")
+                  for t in (data.get("traits") or [])}
+        if not traits:
+            return "暂无画像：这段时间没有可用于画像的事件。"
+        total = int(data.get("total_events") or 0)
+        if total <= 0:
+            return "近 %s 天画像：窗口内没有事件，作息类型读作「%s」。" % (
+                data.get("days", "?"), traits.get("作息类型", "无数据"))
+        return "近 %s 天画像：作息类型「%s」，规律度「%s」，最常活动房间「%s」，%s。" % (
+            data.get("days", "?"), traits.get("作息类型", "未知"),
+            traits.get("作息规律度", "未知"), traits.get("最常活动房间", "未知"),
+            traits.get("设备交互强度", "共 %d 条事件" % total))
+
     def _answer_usage(self, plan: QuestionPlan, tr: TimeRange) -> Tuple[str, Dict[str, Any]]:
-        data = self.service.usage(tr, room=plan.room, query=plan.query,
-                                  category=plan.category, group_by="entity")
-        items = data["items"]
+        # 新引擎的 `usage(tr, room, category, entity_id)` 没有 `query=` / `group_by=`：
+        # 文本匹配由规划阶段的 `entity_ids` 承担，分组在返回体的 `by_room`/`by_domain` 里。
+        data = self.service.usage(tr, room=plan.room, category=plan.category,
+                                  entity_id=",".join(plan.entity_ids))
+        items = data.get("items") or []
         if not items:
             return ("这段时间没有匹配到「%s%s」的使用记录。" % (
                 plan.room, plan.query or "设备"), data)
         top = items[0]
-        text = "%s ~ %s，%s 活跃 %.1f 分钟（%d 段会话，%d 天有使用）。" % (
-            fmt_ts(tr.start_ts), fmt_ts(tr.end_ts), top.get("label", ""),
-            top.get("active_minutes", 0.0), top.get("sessions", 0),
-            top.get("days_active", 0))
+        # 口径：引擎只有事件数（`entity_stats`），没有任何时长概念，
+        # 所以不许沿用 legacy 的「活跃 N 分钟」把读数编出来。
+        text = "%s ~ %s，%s 共 %d 条事件（该时段 %s 个实体有使用记录，占比 %.1f%%），分布在 %d 天。" % (
+            fmt_ts(tr.start_ts), fmt_ts(tr.end_ts),
+            top.get("friendly_name") or top.get("entity_id", ""),
+            int(top.get("count") or 0), int(data.get("total_entities") or 0),
+            100.0 * float(top.get("share") or 0.0), int(top.get("active_days") or 0))
         return text, data
 
     def _answer_behavior(self, plan: QuestionPlan, tr: TimeRange) -> Tuple[str, Dict[str, Any]]:
-        data = self.service.usage(tr, room=plan.room, query=plan.query, group_by="room")
-        items = data["items"]
-        if not items:
+        data = self.service.usage(tr, room=plan.room, category=plan.category,
+                                  entity_id=",".join(plan.entity_ids))
+        rows = data.get("by_room") or []
+        if not rows:
             return ("这段时间没有匹配到「%s」的行为记录。" % (plan.room or plan.query), data)
-        top = items[0]
-        minutes = top.get("active_minutes", 0.0)
-        return ("%s 在%s待了约 %.1f 分钟（约 %.1f 小时），分布在 %d 天。" % (
-            fmt_ts(tr.start_ts), top.get("label", "该区域"), minutes, minutes / 60.0,
-            top.get("days_active", 0)), data)
+        wanted = (plan.room or "").strip()
+        row = next((r for r in rows if str(r.get("room") or "") == wanted), rows[0])
+        return ("%s ~ %s，%s共 %d 条事件（口径：事件条数，新引擎不测算停留时长）。" % (
+            fmt_ts(tr.start_ts), fmt_ts(tr.end_ts),
+            row.get("room") or "该区域", int(row.get("count") or 0)), data)

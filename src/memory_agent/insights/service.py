@@ -163,6 +163,61 @@ def _longest_quiet(hourly: Dict[int, int], from_hour: int, to_hour: int) -> Tupl
     return best, best_at
 
 
+def _night_sequence(night_start: int, night_end: int) -> List[int]:
+    """夜窗展开成**线性**小时序列：`night_start`→23，再接 0→`night_end`。
+
+    跨零点的作息不能直接对小时号取中位数（23 与 1 的"中间"会算成 12），
+    所以在展开序列的下标上取中位数，再映射回小时号。
+    """
+    start, end = night_start % 24, night_end % 24
+    return list(range(start, 24)) + list(range(0, end + 1))
+
+
+def _longest_quiet_in_sequence(seq: List[int], hour_counts: Dict[int, int]) -> Tuple[int, int]:
+    """序列内最长连续无事件段，返回 (长度, 起始下标)——与 `_longest_quiet` 同口径，
+    但吃的是展开后的下标，不用线性小时号。"""
+    best, best_at, run, start = 0, 0, 0, 0
+    for idx, hour in enumerate(seq):
+        if int(hour_counts.get(hour, 0)) == 0:
+            if run == 0:
+                start = idx
+            run += 1
+            if run > best:
+                best, best_at = run, start
+        else:
+            run = 0
+    return best, best_at
+
+
+#: 静默段至少这么长才当作"睡了"，否则一天的两次正常空档也会被读成作息。
+_MIN_QUIET_HOURS = 2
+
+
+def _sleep_wake_hours(hours_by_day: Dict[str, Dict[int, int]],
+                      night_start: int, night_end: int) -> Tuple[str, str, int]:
+    """入睡 / 起床的小时级估计：夜窗内最长连续静默段的两侧。
+
+    **这是事件密度推出来的锚点，不是实测的关灯时刻**（legacy 在 §作息 里写的同一句
+    告诫，读数一起回显在 `sleep_wake.method` 里）：
+    入睡 = 静默段前一格（当天夜里最后一次活动），起床 = 静默段后一格（之后的首次活动）；
+    逐天算完在展开序列的下标上取中位数。不足 `night_start`→`night_end` 那段静默的天作废。
+    """
+    seq = _night_sequence(night_start, night_end)
+    sleep_pos: List[int] = []
+    wake_pos: List[int] = []
+    for counts in hours_by_day.values():
+        run, start = _longest_quiet_in_sequence(seq, counts)
+        if run < _MIN_QUIET_HOURS:
+            continue
+        sleep_pos.append(max(0, start - 1))
+        wake_pos.append(min(len(seq) - 1, start + run))
+    if not sleep_pos:
+        return "", "", 0
+    sleep_hour = seq[int(round(median(sleep_pos)))]
+    wake_hour = seq[int(round(median(wake_pos)))]
+    return "%02d:00" % sleep_hour, "%02d:00" % wake_hour, len(sleep_pos)
+
+
 def _safe_hour(value: Any, default: int) -> int:
     """规则表里的小时列可能是 None/字符串/越界值，取整并夹到 [0, 23]。"""
     try:
@@ -776,6 +831,8 @@ class BehaviorService:
             return out
         except Exception as exc:
             return self._fail("rhythm", exc, {"hourly": [], "weekday": [], "peaks": {},
+                                              "sleep": "", "wake": "", "samples": 0,
+                                              "sleep_wake": {},
                                               "total_events": 0, "filters": {}})
 
     def _rhythm(self, tr: Any, room: str) -> Dict[str, Any]:
@@ -783,6 +840,7 @@ class BehaviorService:
         matrix = self.repo.activity_matrix(tr, rooms=rooms)
         hourly = [0] * 24
         weekday = [0] * 7
+        hours_by_day: Dict[str, Dict[int, int]] = {}
         days_seen = set()
         total = 0
         for r in matrix:
@@ -797,6 +855,14 @@ class BehaviorService:
                 idx = _weekday_index(day)
                 if idx is not None:
                     weekday[idx] += cnt
+                if 0 <= hour < 24:
+                    per_day = hours_by_day.setdefault(day, {})
+                    per_day[hour] = per_day.get(hour, 0) + cnt
+
+        sleep, wake, sleep_days = _sleep_wake_hours(
+            hours_by_day,
+            _safe_hour(getattr(self.config, "night_start", 21), 21),
+            _safe_hour(getattr(self.config, "night_end", 11), 11))
 
         order = sorted(range(24), key=lambda h: (-hourly[h], h))
         top_hours = order[:3]
@@ -813,6 +879,19 @@ class BehaviorService:
                 "quiet_hours": [{"hour": h, "count": hourly[h]} for h in quiet_hours],
                 "top3_concentration": _pct(top3_sum, total),
                 "weekend_share": _pct(weekend, total),
+            },
+            # `sleep`/`wake`/`samples` 是 `nlquery` 作息路由与 `persona` 一直在读的键：
+            # 引擎原先只给直方图，那三条读成空 ⇒ 话术恒为「未知…0 天样本」。
+            "sleep": sleep,
+            "wake": wake,
+            "samples": sleep_days,
+            "sleep_wake": {
+                "method": "夜窗内最长连续静默段的两侧（事件密度口径，非实测关灯时刻）",
+                "night_window": [_safe_hour(getattr(self.config, "night_start", 21), 21),
+                                 _safe_hour(getattr(self.config, "night_end", 11), 11)],
+                "min_quiet_hours": _MIN_QUIET_HOURS,
+                "days_used": sleep_days,
+                "days_in_window": len(days_seen),
             },
             "total_events": total,
             "days": len(days_seen),
