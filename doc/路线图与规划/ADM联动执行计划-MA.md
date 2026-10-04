@@ -334,7 +334,7 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 | 1 | homesdk 0.3.1 生产接入（vendored wheel + Dockerfile 一行） | 容器内 `import homesdk` 通 | 合并窗 |
 | 2 | R2 PII 回填执行 | 245 条无明文姓名 + 备份在 | 合并窗（先备份） |
 | 3 | service_token DB 侧协同（3.3.4） | DB 切换后旧 token 到期日由 SP 定 | DB v2.6 |
-| 4 | 规则冷却三问 / FTS 短词召回下限 / `list_device_health` 分页 | 待 DCD 裁定后执行 | 投 inbox |
+| 4 | 规则冷却三问 / FTS 短词召回下限 / `list_device_health` 分页 | 冷却与分页**已按裁定落码**（§六 裁1、裁4）；**FTS 短词那件不在 20261004 裁定书里 ⇒ 仍未裁、未动** | 投 inbox（已投） |
 | 5 | 行为推断默认规则（behavior_states 结构性 0 产出） | 待 DCD 裁定 | 投 inbox |
 
 ### 5.4 别再重投（已裁）
@@ -381,7 +381,7 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 | 裁1 规则冷却 | Q1=A 显式化 + Q2 确认叠加 + Q3 占冷却 | **✅ 本件落码** | 见 §6.1 |
 | 裁2 行为推断默认规则 | Q1=C 由 SP 给本居活动清单 + Q1a/b/c 收窄 + Q2=C 按域过滤 + Q3 保持 0 等 DB | ⬜ 未落码 | 等 SP 给清单（Q1=C 的输入在 SP 手里，MA 无法自造）；Q2 的按域过滤读取与 Q1a/b/c 的规则改写可在清单到位后同批改 |
 | 裁3 反馈出境面脱敏 | Q1=A 分层 + Q2 label 白名单 + Q3 暂缓 | ⬜ 未落码 | `trace_anon.txt` 产物 + `vlm_failed-{room}-{date}` 白名单校验 |
-| 裁4 超限响应 | Q1=A 分页 + Q2=A 默认精简 + Q3 维持裁行 | ⬜ 未落码 | `list_device_health` 加 `limit`(默认 500)/`offset`，`stable_id` 截 40 字，`note` 仅 `referenced=1` 给，保留 `fields=full` |
+| 裁4 超限响应 | Q1=A 分页 + Q2=A 默认精简 + Q3 维持裁行 | **✅ 本件落码** | 见 §6.2（含把申请里那句体积估算按实测更正） |
 | 裁5 洞察门面 | Q1=A legacy 为对外只读引擎 + Q2=A 并存 + Q3 验收单全认 + Q4=A 如实上报截断 | ⬜ 未落码 | Q3 的六条**要有实测读数**才算齐；Q4 返回体加 `truncated`/`scan_limit`/`total_exact` |
 | 裁6 活动识别 | Q1=A 语义回归 + Q2=A 回 8 参数 + Q3=A 硬排除生效 + Q4 认可（交付纪律） | ⬜ 未落码 | Q4 那条纪律是**门面每切一个方法必须留三项对比读数**（返回键集合 / 语义枚举值集合 / 旁挂依赖），缺一项判红 |
 
@@ -431,6 +431,75 @@ MA 按"未裁不动"处理——`fts` 短词召回下限的门槛数值仍维持
 所以"缺省即拒"不会改变任何现网行为；它改变的是**第一次真晋升时写进库的那个数**由谁说了算。
 候选行没有 `cooldown_seconds` 值时晋升会被拒——这是裁定的本意，不是回归。列由 `Store.init_schema`
 的 ADD COLUMN 迁移建，**随下一次重启生效**（与 `trigger_json` 同一批窗口事项，见 §三）。
+
+### 6.2 裁4 的落码读数（2026-10-04）
+
+**Q1（分页，与 `query_unified_events` 同口径）**：
+- `store.py`：`list_device_health(state, limit=None, offset=0)`——**默认仍是无界**。进程内两处调用点
+  （`identity.py:687` 身份层整表重建、`api/identity_routes.py:45` HTTP 面板）语义一字未改；
+  把默认值改成 500 会让这两处静默少读。新增 `count_device_health(state)` 供 `total`（分页前的全量条数）。
+  排序补 `entity_id` 兜底：批量 upsert 给整片行打的是同一个 `updated_at`，少这一路 LIMIT/OFFSET 会重叠漏行。
+- `mcp_server.py`：信封算在**模块级纯函数** `device_health_page()`（MCP 工具本体在 `_build_server` 闭包里，
+  测试取不到，判据只能落在这一层）。工具签名
+  `list_device_health(state, limit=500, offset=0, fields='lean')`，`limit` 夹在 `[1, 2000]`；
+  返回键 `ok/state/health/count/total/offset/limit/has_more/next_offset/fields/logical_devices`。
+- 翻页收口判据：`has_more = 本页确实给了行 且 offset+本页行数 < total`。只按 `offset < total` 判会留下
+  一条死循环——空页时 `next_offset` 与 `offset` 相等，按 `while has_more` 翻页的消费端原地打转。
+- `ok` 那一位**留在工具调用点的字典字面量里**。写成 `payload["ok"] = True` 会让门禁 `fake-ok-const`
+  对 `_build_server.list_device_health` 的那条基线"凭空消失"：债没还，只是扫描器看不见这种写法。
+  `.gates-baseline.txt` 因此**一字未改**（首轮本机全量确实因这条失配报红 2 条，改回字面量后 `active=()`）。
+
+**Q2（默认精简投影）**：`project_device_health(rows, fields)`（同为模块级纯函数）——
+`stable_id` 截 40 字并给被截那条登记 `stable_id_truncated`（没截的不冒这个键）；`note` 仅在
+`referenced=1` 时给原值，其余**置空但保留键**（删键 = 消费端 `row["note"]` KeyError，判例见
+DCD 20261004 §六.2）；`fields='full'` 一行不改，输入行也不就地改。
+
+**把申请里的体积估算按实测更正**（生产库只读探针，`/data/memory_agent.db`，2026-10-04 07:03Z 家庭墙钟）：
+
+| 读数 | 值 |
+|------|-----|
+| `device_health` 行数 | **1,776**（投递申请时是 888，数据已翻倍） |
+| 全量 JSON 体积 | **562,590 字节 > 上限 512KB** ⇒ 不带分页**今天必超限**，比申请写得还硬 |
+| lean 投影后 | **495,219 字节 = 0.880**，即**只省 12%**，**不是申请估的"压到约 1/3"** |
+| `note` 字符量 | 22,555 → **130**（省的全在这一侧；`referenced=1` 只有 10 行） |
+| `stable_id` 字符量 | 48,616 → 47,084（**几乎没动**：现网平均 27 字，40 字阈值够不着） |
+| 默认页 500 行 | 原始 148,983 / lean **132,240 字节 = 上限的 26%** |
+
+⇒ **真正把超限解掉的是分页，不是投影**；投影的收益全部集中在 `note` 一侧
+（22,555 → 130 字，因为 `referenced=1` 只有 10 行）。阈值 40 字是裁定给的数，MA 不自作调整，
+按 Q2=A 原样落码；但这组读数说明 Q2 兑现不了申请里"1/3"的预期——若仍要那个量级的收益，
+得另裁 `stable_id` 的取值口径（例如按字节预算裁、或默认只给 `entity_id` + `state`）。
+**这是 MA 自己的估算被实测推翻，登记，不静默接受。**
+
+**Q3（维持裁行）**：`_json_shrink_to_fit` 一字未动，超限仍是合法 JSON + `_truncated.dropped` 明示。
+顺带修掉申请 §一 里那条"摘要不可用"：字符截断路径的摘要**不再点名"分页参数"**（当时的工具确实没有它），
+改为指向该工具自己的参数面；锁 `test_char_cap_hint_points_at_the_tools_own_parameter_surface`，
+变异 M8 证明它会红。
+
+**锁与变异红证**：`tests/test_mcp_contract.py` 测试函数 **15 → 25**、用例 **20 → 30**，本机 `30 passed`；
+八条变异各自咬到自己的锁后立刻还原（全部 `RESTORED=True`）：
+
+| 变异 | 新红 |
+|------|------|
+| M1 lean 不截 `stable_id` | 1（截断那半句） |
+| M2 截了却不登记 `stable_id_truncated` | 1（同上，反方向） |
+| M3 未引用实体的 `note` **整键删除** | 1（键在值为空那半句） |
+| M4 `fields='full'` 开关失效 | 1 |
+| M5 `has_more` 退回拿 `offset` 判 | **2**（逐行走查 + 空页必须收口） |
+| M7 `has_more` 不看 `total` | 1（末页不该再给 `next_offset`） |
+| M6 分页排序少 `entity_id` 兜底 | 1（同时间戳翻页不漏行） |
+| M8 摘要退回点名「分页参数」 | 1 |
+
+**容器权威（整份工作区快照 `docker cp` 进运行中的容器重跑）**：`/tmp/vs18` 口径，
+`PYTEST_RC=0` / **`1145 passed, 12 skipped in 167.23s`**（上一批 `/tmp/vs16` 是 1,135 passed，
+差值 10 恰是本件新增用例数）；同快照 pyflakes 门禁 **`当前 0 条，基线 0 条，新增 0，已修 0`** /
+`GATE_RC=0`（2026-10-04）。12 条 skip 仍是那批既有缺口（缺依赖 9 + `test_signal_learning.py` 门面待适配 3）。
+
+**本件对生产的影响面**：`list_device_health` 的默认响应从"全量、无界"变成"500 行一页 + lean 投影"。
+这是**对外形状变更**，由裁定 Q1/Q2 授权，MA 侧无可回退项；DB 侧要按 `has_more/next_offset` 翻页取全量。
+`count_device_health` 与 `device_health_page` 都是新增，进程内旧调用点（`identity.py:687`、
+`api/identity_routes.py:45`）走的仍是无界分支，语义一字未改。代码随下一次重启生效——
+不需要新的窗口事项，与 §三 那批合并窗同批即可。
 
 ---
 
