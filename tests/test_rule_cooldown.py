@@ -5,13 +5,16 @@
 匹配端却从不读——规则作者写的「5 分钟内不重复」完全不成立。运行时复现（连投三条
 事件，触发读数 1 1 1）见交付记录。
 
-锁的八条，对着真库真引擎，覆盖三类真会出事的方向：
+锁的十四向，对着真库真引擎，覆盖四类真会出事的方向：
 1. **窗口内抑制、窗口外放行**（冷却的基本语义）；
 2. **首次触发不被长冷却吞**（第一轮审计 P1-1 那一类：单调时钟从进程 0 起算，
    冷却 > uptime 就永久静默——本实现改用家庭墙钟，这条是它的反例锁）；
 3. **重启后续上窗口**（实时路径读 ``rule_trigger_history``），同时**批量回放不读**
    （回放判「事件时刻」，历史行的 ``triggered_at`` 是当时的真实墙钟，读了会把整轮
    误判成冷却中）；外加 count 接缝、试运行占窗口、坏数值不抑制、删规则不留脏键。
+4. **DCD 20261004 MA-裁1 Q1（缺省即拒）**：晋升通道必须显式带冷却上限——参数或
+   候选行 ``cooldown_seconds`` 列，两者都空就拒绝晋升；坏值也拒；晋升写入的数值
+   要真的咬住匹配端。``add_rule`` 的形参默认 300 从此只服务人工建规则那条路径。
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import pytest
 
 from memory_agent.device_feed import wall_to_epoch
 from memory_agent.rule_engine import ActiveRuleEngine
+from memory_agent.rule_lifecycle import RuleLifecycle
 from memory_agent.store import Store, now_local
 
 COND = {"kind": "device", "entity_id": "binary_sensor.door_front", "state": "on"}
@@ -220,3 +224,149 @@ def test_delete_rule_drops_the_in_memory_window(store):
 
     assert engine.delete_rule(rid).get("ok") is True
     assert rid not in engine._cooldown_until
+
+
+# ── 5. DCD 20261004 MA-裁1 Q1：晋升必须显式带冷却上限（缺省即拒）────────────
+
+def _lc(store):
+    return RuleLifecycle(store, ActiveRuleEngine(store), min_evidence=3, dry_run_days=3)
+
+
+def _accepted_candidate(store, *, name="门磁告警", cooldown=300) -> str:
+    """一条过得了其余三条红线的 accepted 候选；``cooldown=None`` 表示列未设定。"""
+    rid, action = store.upsert_candidate_rule(
+        name=name, steps=[{"tag": "door", "state": "on"}], time_window="",
+        infer="", confidence=0.7,
+        evidence=["2026-09-11 门磁 1", "2026-09-12 门磁 2", "2026-09-13 门磁 3"])
+    assert rid, action
+    store.set_candidate_rule_status(rid, "accepted")
+    if cooldown is not None:
+        assert store.set_candidate_rule_cooldown(rid, cooldown)
+    return rid
+
+
+def test_promotion_without_a_cooldown_value_is_refused(store):
+    """列没设定、参数也没给 —— 拒绝晋升，而不是悄悄吃一个从未被裁定的 300。"""
+    lc = _lc(store)
+    rid = _accepted_candidate(store, cooldown=None)
+
+    res = lc.promote(rid, actor="user")
+    assert res["ok"] is False, res
+    assert any(b.startswith("cooldown_gate") for b in res["blockers"]), res["blockers"]
+    assert lc.engine.list_rules(enabled_only=False) == []      # 引擎里一条都没多
+    assert store.get_candidate_rule(rid)["status"] == "accepted"
+    audit = store.list_rule_lifecycle(rid)
+    assert audit[0]["to_state"] == "rejected_by_gate"
+    assert any("cooldown_gate" in b for b in audit[0]["detail"]["blockers"])
+
+
+def test_promotion_writes_the_given_value_not_the_formal_default(store):
+    """裁定值入库：列里存的是这次晋升给的数，不是 ``add_rule`` 的形参默认。"""
+    lc = _lc(store)
+    rid = _accepted_candidate(store, cooldown=None)
+
+    res = lc.promote(rid, actor="user", cooldown_seconds=900)
+    assert res["ok"], res
+    rule = lc.engine.get_rule(res["rule_id"])
+    assert rule["cooldown_seconds"] == 900, rule
+    assert res["cooldown_seconds"] == 900
+    # 数值来源留痕：事后能区分"人这次给的"和"候选行里本来就有"
+    audit = store.list_rule_lifecycle(res["rule_id"])
+    assert audit[0]["detail"]["cooldown_seconds"] == 900
+    assert audit[0]["detail"]["cooldown_source"] == "argument"
+    # 参数值回写候选行，下次读候选就知道当初按多少晋升的
+    assert store.get_candidate_rule(rid)["cooldown_seconds"] == 900
+
+
+def test_candidate_column_is_the_fallback_when_the_call_omits_it(store):
+    lc = _lc(store)
+    rid = _accepted_candidate(store, cooldown=600)
+
+    res = lc.promote(rid, actor="user")
+    assert res["ok"], res
+    assert lc.engine.get_rule(res["rule_id"])["cooldown_seconds"] == 600
+    gate = lc.eligibility(rid)
+    assert gate["cooldown_source"] == "candidate_column"
+    # 已晋升的行重复晋升会被 duplicate 挡住，来源读数仍取列
+    assert store.get_candidate_rule(rid)["cooldown_seconds"] == 600
+
+
+def test_the_argument_overrides_the_column(store):
+    lc = _lc(store)
+    rid = _accepted_candidate(store, cooldown=600)
+
+    res = lc.promote(rid, actor="user", cooldown_seconds=120)
+    assert res["ok"], res
+    assert lc.engine.get_rule(res["rule_id"])["cooldown_seconds"] == 120
+
+
+@pytest.mark.parametrize("bad", [-60, "abc"])
+def test_unusable_cooldown_values_are_refused(store, bad):
+    """列里已是坏值也判拒：引擎端会把负数/读不出数的值当成「不冷却」，
+    一条每次命中都广播的规则不该悄悄进引擎。"""
+    lc = _lc(store)
+    rid = _accepted_candidate(store, cooldown=None)
+    with store.transaction() as conn:
+        conn.execute("UPDATE candidate_rules SET cooldown_seconds=? WHERE rule_id=?",
+                     (bad, rid))
+    assert lc.eligibility(rid)["cooldown_seconds"] is None
+    res = lc.promote(rid, actor="user")
+    assert res["ok"] is False
+    assert any(b.startswith("cooldown_gate") for b in res["blockers"]), res["blockers"]
+    # 拒因要说清是「这个值坏了」，不是「没设定」——两者都推人去补一个数，
+    # 但前者的数本身就不该用。
+    assert any(str(bad) in b for b in res["blockers"]), res["blockers"]
+
+    # 列是好值、参数给坏值，同样判拒——显式给错就是错，不该退回列里那个数
+    rid2 = _accepted_candidate(store, name="门磁告警2", cooldown=600)
+    res2 = lc.promote(rid2, actor="user", cooldown_seconds=bad)
+    assert res2["ok"] is False
+    assert any(b.startswith("cooldown_gate") for b in res2["blockers"]), res2["blockers"]
+    assert any(str(bad) in b for b in res2["blockers"]), res2["blockers"]
+
+
+def test_pending_promotions_show_the_missing_number(store):
+    """预演清单里「差一个数值」要看得见，否则人只能逐条点开才知道被什么挡住。"""
+    lc = _lc(store)
+    rid = _accepted_candidate(store, cooldown=None)
+
+    rows = lc.pending_promotions()
+    assert len(rows) == 1
+    assert rows[0]["candidate_id"] == rid
+    assert rows[0]["eligible"] is False
+    assert rows[0]["cooldown_seconds"] is None
+    assert any(b.startswith("cooldown_gate") for b in rows[0]["blockers"])
+    # 其余三条红线全过——缺的只有数值这一项
+    assert not any(b.startswith("evidence_gate") for b in rows[0]["blockers"])
+
+
+def test_manual_rule_path_still_gets_the_default(store):
+    """裁定只挪走晋升端的隐式默认：人工建规则那条路径维持既有语义。"""
+    engine = ActiveRuleEngine(store)
+    res = engine.add_rule("人工规则", COND, ACTION)
+    assert res["ok"]
+    assert engine.get_rule(res["rule_id"])["cooldown_seconds"] == 300
+
+
+def test_promoted_rule_actually_honours_its_own_window(store):
+    """晋升写入的数值真的会咬住匹配端——不是只躺在列里。
+
+    晋升出的设备规则带 count 触发（60 秒 3 次），所以「够格响」要凑满三帧；
+    冷却判的是够了之后响几次，两条闸门各咬一次才算接上。试运行占窗口（Q3）
+    也在这条里生效。
+    """
+    lc = _lc(store)
+    rid = _accepted_candidate(store, cooldown=None)
+    res = lc.promote(rid, actor="user", cooldown_seconds=1800)
+    assert res["ok"], res
+    rule_id = res["rule_id"]
+    engine = lc.engine
+
+    assert _replay(engine, "2026-01-01T12:00:00") == []
+    assert _replay(engine, "2026-01-01T12:00:20") == []
+    assert _replay(engine, "2026-01-01T12:00:40") == [rule_id]     # count 达标，第一次响
+    assert _replay(engine, "2026-01-01T12:01:00") == []            # 又够格，但冷却中
+    assert _replay(engine, "2026-01-01T12:01:20") == []
+    assert _replay(engine, "2026-01-01T12:31:00") == []            # 窗口刚满，count 还没凑齐
+    assert _replay(engine, "2026-01-01T12:31:20") == []
+    assert _replay(engine, "2026-01-01T12:31:40") == [rule_id]     # 满窗后再次响

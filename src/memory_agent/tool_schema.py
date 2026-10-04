@@ -1499,10 +1499,15 @@ TOOL_SPECS: list = [
         params=[
             _p("rule_id", "string", "候选规则 ID", required=True),
             _p("reason", "string", "晋升理由（写入审计）"),
+            _p("cooldown_seconds", "integer",
+               "这条规则的吵人上限（每 N 秒最多产出一条告警）。这里没有默认值："
+               "不传则取候选行已设定的值，两者都空则拒绝晋升"),
         ],
-        example="promote_candidate_rule(rule_id='cand_2026_09_30_003', reason='证据 4 天且人已确认')",
+        example="promote_candidate_rule(rule_id='cand_2026_09_30_003', reason='证据 4 天且人已确认', "
+                "cooldown_seconds=300)",
         pitfall="门槛：accepted + user_confirmed + ≥MA_RULE_MIN_EVIDENCE 个独立证据日 + 事件类型在引擎实时 feed "
-                "词表内；不满足会拒绝并返回 blockers。晋升后一律 dry_run，转正要等观察期满。",
+                "词表内 + **带冷却上限**（DCD 20261004 MA-裁1 Q1 缺省即拒）；不满足会拒绝并返回 blockers。"
+                "晋升后一律 dry_run，转正要等观察期满；试运行同样占用冷却窗口（同裁定 Q3）。",
     ),
     ToolSpec(
         name="advance_rule_to_live",

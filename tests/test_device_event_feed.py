@@ -540,12 +540,17 @@ def _store_rule():
     return st, path
 
 
-def _accepted(store, steps, name="书房工作序列"):
+def _accepted(store, steps, name="书房工作序列", cooldown=300):
     rid, action = store.upsert_candidate_rule(
         name=name, steps=steps, time_window="", infer="", confidence=0.7,
         evidence=["2026-09-11 一条", "2026-09-12 一条", "2026-09-13 一条"])
     assert rid and action
     store.set_candidate_rule_status(rid, CANDIDATE_ACCEPTED)
+    # DCD 20261004 MA-裁1 Q1：晋升必须带冷却上限，缺值即拒。这些用例测的是
+    # feed/trigger 语义，数值先按裁定值 300 设定好（未设定的路径由
+    # tests/test_rule_cooldown.py §5 专测）。
+    if cooldown is not None:
+        assert store.set_candidate_rule_cooldown(rid, cooldown)
     return rid
 
 

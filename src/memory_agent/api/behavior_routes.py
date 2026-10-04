@@ -479,7 +479,11 @@ async def rule_channel_eligibility(request: Request):
 
 
 async def rule_channel_promote(request: Request):
-    """晋升一条 accepted 候选进引擎（一律先落 dry_run）。"""
+    """晋升一条 accepted 候选进引擎（一律先落 dry_run）。
+
+    ``cooldown_seconds``（DCD 20261004 MA-裁1 Q1）是这条规则对外的吵人上限：
+    这里不传就用候选行里已设定的值，两者都没有则 409 拒绝——不替调用方默认一个数。
+    """
     _, err = require_user(request)
     if err:
         return err
@@ -490,7 +494,7 @@ async def rule_channel_promote(request: Request):
         return error("缺少 candidate_id")
     res = await asyncio.to_thread(
         _lifecycle(rt).promote, candidate_id, "user",
-        str(body.get("reason") or ""))
+        str(body.get("reason") or ""), body.get("cooldown_seconds"))
     if not res.get("ok"):
         return error(res.get("error", "晋升失败"), 409)
     return ok(res)

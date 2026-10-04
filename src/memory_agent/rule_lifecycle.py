@@ -6,6 +6,9 @@
 1. **证据门槛** —— 候选必须 ``status='accepted'`` 且 ``user_confirmed=1``，
    并且证据跨越 ``MA_RULE_MIN_EVIDENCE``（默认 3）个**独立自然日**。
    同一天里的三次重复不算三条独立证据。
+   DCD 20261004 MA-裁1 Q1 在这条红线上加了一个数值判据：晋升必须带**冷却上限**
+   （调用参数或候选行 ``cooldown_seconds`` 列），两者皆空即拒——300 不再由
+   ``add_rule`` 的形参默认值替裁定说话。
 2. **观察期** —— 晋升进来的规则一律 ``mode='dry_run'``：照常匹配、照常写触发历史
    （``dry_run=1``），但不派发任何动作。满 ``MA_RULE_DRY_RUN_DAYS``（默认 3）天
    且观察期内零误报，才允许 ``advance_to_live()`` 转 ``live``。
@@ -85,6 +88,37 @@ ACT_PROMOTE = "promote"
 ACT_ADVANCE = "advance_live"
 ACT_REVOKE = "revoke"
 ACT_FALSE_POSITIVE = "false_positive"
+
+# DCD 20261004 MA-裁1 Q1（显式化）。``add_rule`` 的形参默认值 300 从此只服务人工建规则
+# 的路径；晋升出去的每一条规则，它的「吵人上限」必须来自这次晋升自己给出的数值——
+# 调用方显式传入，或候选行 ``cooldown_seconds`` 列已设定。两者都拿不到就**拒绝晋升**，
+# 而不是悄悄吃一个从未被裁定的数（裁定原文：缺省即拒）。
+#
+# 数值本身不在这里定：Q2 已确认「count 60 秒 3 次」与「每 300 秒最多一条」是**叠加**
+# 关系（单条设备类规则理论上限 12 条/小时），所以 300 是一个可写入的裁定值，
+# 不是一个隐式默认。列刻意**不设 SQL 默认值**——有默认值就永远走不到拒绝分支。
+COOLDOWN_UNSET_BLOCKER = (
+    "cooldown_gate: 候选未设定 cooldown_seconds——晋升的每条规则都要有自己的吵人上限"
+    "（DCD 20261004 MA-裁1 Q1：缺省即拒）")
+
+
+def parse_cooldown(value: Any) -> tuple[Optional[int], str]:
+    """显式冷却值 → ``(非负整数或 None, 拒因)``。
+
+    「没给」与「给了但读不出数」分两种拒因：前者要的是*去设定一个值*，
+    后者要的是*值写坏了*——混成一条会让人去补一个本来就写错的数。
+    冷却语义由 ``rule_engine._cooldown_seconds`` 决定（非法/负数=不冷却），
+    晋升端不接受这类值：一条会广播每一次命中的规则不该悄悄进引擎。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None, ""
+    try:
+        seconds = int(float(value))
+    except (TypeError, ValueError):
+        return None, f"cooldown_gate: 冷却值 {value!r} 不是数"
+    if seconds < 0:
+        return None, f"cooldown_gate: 冷却值 {seconds} 是负数"
+    return seconds, ""
 
 
 def log_confirmation(store: Any, candidate_id: str, status: str,
@@ -207,8 +241,13 @@ class RuleLifecycle:
 
     # ── 红线 1：证据门槛（只读判定，不写库）──────────────────────────────
 
-    def eligibility(self, candidate_id: str) -> dict:
-        """返回候选能否晋升及其全部判据，不产生任何写入。"""
+    def eligibility(self, candidate_id: str, cooldown_seconds: Any = None) -> dict:
+        """返回候选能否晋升及其全部判据，不产生任何写入。
+
+        ``cooldown_seconds`` 是本次晋升想采用的吵人上限；不传则回退到候选行
+        ``cooldown_seconds`` 列（DCD 20261004 MA-裁1 Q1）。两者都空 ⇒ 判拒，
+        缺口写在 blockers 里，让「这条候选还差一个数值」在预演清单上就看得见。
+        """
         cand = self.store.get_candidate_rule(candidate_id)
         if not cand:
             return {"ok": False, "candidate_id": candidate_id,
@@ -226,6 +265,14 @@ class RuleLifecycle:
         if evidence_days < self.min_evidence:
             blockers.append(
                 f"evidence_gate: 独立证据 {evidence_days} 天（口径 {evidence_basis}）< 门槛 {self.min_evidence}")
+        explicit, explicit_why = parse_cooldown(cooldown_seconds)
+        stored, stored_why = parse_cooldown(cand.get("cooldown_seconds"))
+        cooldown = explicit if explicit is not None else stored
+        cooldown_source = "argument" if explicit is not None else ("candidate_column" if stored is not None else "")
+        if explicit_why or stored_why:
+            blockers.append(explicit_why or stored_why)
+        elif cooldown is None:
+            blockers.append(COOLDOWN_UNSET_BLOCKER)
         return {
             # ok = 「通道真的给出了可匹配的触发子」。构造不出条件的候选（device_feed_gap /
             # empty_steps）在这里 condition={}，于是 ok=False，缺口暴露在接口上
@@ -241,12 +288,15 @@ class RuleLifecycle:
             "evidence_basis": evidence_basis,
             "min_evidence": self.min_evidence,
             "condition": condition,
+            "cooldown_seconds": cooldown,
+            "cooldown_source": cooldown_source,
         }
 
     # ── 晋升：accepted → active_rules(dry_run) ──────────────────────────
 
-    def promote(self, candidate_id: str, actor: str = "user", reason: str = "") -> dict:
-        gate = self.eligibility(candidate_id)
+    def promote(self, candidate_id: str, actor: str = "user", reason: str = "",
+                cooldown_seconds: Any = None) -> dict:
+        gate = self.eligibility(candidate_id, cooldown_seconds)
         if not gate.get("eligible"):
             self.store.log_rule_lifecycle(
                 candidate_id, ACT_PROMOTE, source_rule_id=candidate_id, actor=actor,
@@ -280,6 +330,10 @@ class RuleLifecycle:
             mode=MODE_DRY_RUN,
             evidence_count=gate["evidence_days"],
             trigger=trigger,
+            # DCD 20261004 MA-裁1 Q1：冷却值由这次晋升显式给出（见 ``parse_cooldown``）。
+            # ``gate`` 里没有数值时早已判拒，所以这里不可能拿到 None——一旦有人把
+            # 这一行删掉，规则就退回吃 ``add_rule`` 的形参默认 300，那条锁会红。
+            cooldown_seconds=gate["cooldown_seconds"],
         )
         if not res.get("ok"):
             return {"ok": False, "error": res.get("error"), "gate": gate}
@@ -288,6 +342,10 @@ class RuleLifecycle:
         if not rule_id:
             return {"ok": False, "error": "引擎未返回 rule_id，晋升未落库", "gate": gate}
         self.store.set_candidate_rule_status(candidate_id, CANDIDATE_PROMOTED)
+        # 数值来自本次调用参数时回写候选行：下次有人问「这条当初按多少冷却晋升的」，
+        # 候选行自己就答得出来，不必再去翻 active_rules。列里本来就有值时不动它。
+        if gate.get("cooldown_source") == "argument":
+            self.store.set_candidate_rule_cooldown(candidate_id, gate["cooldown_seconds"])
         self.store.log_rule_lifecycle(
             rule_id, ACT_PROMOTE, source_rule_id=candidate_id, actor=actor,
             from_state=CANDIDATE_ACCEPTED, to_state=MODE_DRY_RUN,
@@ -296,10 +354,13 @@ class RuleLifecycle:
                     "evidence_basis": gate["evidence_basis"],
                     "condition": condition, "action": action,
                     "trigger": trigger or {},
+                    "cooldown_seconds": gate["cooldown_seconds"],
+                    "cooldown_source": gate.get("cooldown_source") or "",
                     "dry_run_days": self.dry_run_days,
                     "note": "序列步骤未全部表达，仅首个事件作为触发子"})
         logger.info("[RuleLifecycle] 晋升 %s → %s（试运行）", candidate_id, rule_id)
         return {"ok": bool(rule_id), "rule_id": rule_id, "mode": MODE_DRY_RUN,
+                "cooldown_seconds": gate["cooldown_seconds"],
                 "candidate_id": candidate_id, "gate": gate}
 
     # ── 红线 2：观察期满 + 零误报 → live ────────────────────────────────
@@ -421,6 +482,10 @@ class RuleLifecycle:
                 "eligible": gate["eligible"],
                 "evidence_days": gate["evidence_days"],
                 "blockers": gate["blockers"],
+                # 预演清单里给出冷却上限及其来源：缺数值是这条候选被挡住的常见原因，
+                # 只显示"不 eligible"的话，人得逐条点开才知道差一个数。
+                "cooldown_seconds": gate.get("cooldown_seconds"),
+                "cooldown_source": gate.get("cooldown_source") or "",
             })
         out.sort(key=lambda r: (not r["eligible"], -r["evidence_days"]))
         return out

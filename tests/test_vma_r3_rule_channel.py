@@ -48,7 +48,7 @@ def _lc(store):
 
 
 def _accepted_candidate(store, name="陌生人入户告警", steps=None, evidence=None,
-                        infer="", status="accepted"):
+                        infer="", status="accepted", cooldown=300):
     steps = steps if steps is not None else [{"kind": "face_unknown", "room": "客厅"}]
     if evidence is None:
         evidence = ["2026-09-11 客厅陌生人脸 0.9", "2026-09-12 客厅陌生人脸 0.8",
@@ -59,6 +59,10 @@ def _accepted_candidate(store, name="陌生人入户告警", steps=None, evidenc
     assert rid, action
     if status != "staging":
         store.set_candidate_rule_status(rid, status)
+    # DCD 20261004 MA-裁1 Q1：晋升必须带冷却上限（缺值即拒）。本文件测的是四红线，
+    # 数值按裁定值 300 先设定好；未设定/坏值那条路径见 tests/test_rule_cooldown.py §5。
+    if cooldown is not None:
+        assert store.set_candidate_rule_cooldown(rid, cooldown)
     return rid
 
 

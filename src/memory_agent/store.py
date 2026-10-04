@@ -1197,6 +1197,17 @@ class Store:
             except Exception as _exc:
                 if "duplicate column" not in str(_exc).lower():
                     print(f"[Store] candidate_rules.user_confirmed 列迁移异常: {_exc}")
+            # DCD 20261004 MA-裁1 Q1（显式化）：晋升规则的吵人上限来自候选自己这一列。
+            # **可空、无默认值**是裁定的要点——默认 300 会让「缺省即拒」永远走不到，
+            # 数值就又回到由 ``add_rule`` 的形参替 DCD 说话。未设定的候选读出来是 None，
+            # 晋升端据此拒绝（见 ``rule_lifecycle.promote``）。
+            try:
+                conn.execute(
+                    "ALTER TABLE candidate_rules ADD COLUMN cooldown_seconds INTEGER"
+                )
+            except Exception as _exc:
+                if "duplicate column" not in str(_exc).lower():
+                    print(f"[Store] candidate_rules.cooldown_seconds 列迁移异常: {_exc}")
             # Phase 3.1 / DCD R3：引擎唯一读取的规则表。
             # 这两张表历史上只在生产库里存在、src 里没有 DDL，全新库会把整条
             # 规则链（路线图 §5）直接打死，所以列形状必须与生产保持一致。
@@ -2713,6 +2724,23 @@ class Store:
                 "UPDATE candidate_rules SET status=?, user_confirmed=?, updated_at=? WHERE rule_id=?",
                 (status, 1 if status in (CANDIDATE_ACCEPTED, CANDIDATE_PROMOTED) else 0,
                  now_local(self.tz_offset_hours).isoformat(sep="T"), rule_id),
+            )
+            conn.commit()
+            return bool(cur.rowcount)
+
+    def set_candidate_rule_cooldown(self, rule_id: str,
+                                    cooldown_seconds: int | None) -> bool:
+        """写下这条候选晋升后采用的冷却上限（DCD 20261004 MA-裁1 Q1）。
+
+        传 ``None`` = 撤回设定：列回到未设定状态，晋升端会重新拒绝。数值合法性
+        由晋升端判（那里才有「拒」的动作与审计留痕），这里只做整数化落库。
+        """
+        value = None if cooldown_seconds is None else int(cooldown_seconds)
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                "UPDATE candidate_rules SET cooldown_seconds=?, updated_at=? WHERE rule_id=?",
+                (value, now_local(self.tz_offset_hours).isoformat(sep="T"), rule_id),
             )
             conn.commit()
             return bool(cur.rowcount)

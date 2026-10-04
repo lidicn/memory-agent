@@ -2158,16 +2158,22 @@ def _build_server():
         return await asyncio.to_thread(lc.channel_status)
 
     @mcp.tool()
-    async def promote_candidate_rule(rule_id: str, reason: str = "") -> dict:
+    async def promote_candidate_rule(rule_id: str, reason: str = "",
+                                     cooldown_seconds: int | None = None) -> dict:
         """把一条 accepted 候选规则晋升进引擎（DCD R3）。
 
         必须先过证据门槛，否则拒绝并返回 blockers；晋升成功的规则一律
         ``mode='dry_run'``（只记录不触发），观察期满再 advance_rule_to_live 转正。
+
+        ``cooldown_seconds`` 是这条规则对外的吵人上限（每 N 秒最多产出一条）。
+        DCD 20261004 MA-裁1 Q1 之后这里**没有默认值**：不传就取候选行已设定的值，
+        两者都空则拒绝晋升并把它列进 blockers。
         """
         rt = get_runtime()
         _tok, _scopes, _origin = _caller_context()
         return await asyncio.to_thread(
-            _rule_lifecycle(rt).promote, rule_id, _tok or _origin or "agent", reason)
+            _rule_lifecycle(rt).promote, rule_id, _tok or _origin or "agent", reason,
+            cooldown_seconds)
 
     @mcp.tool()
     async def advance_rule_to_live(rule_id: str, reason: str = "") -> dict:
