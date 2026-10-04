@@ -876,7 +876,9 @@ def project_device_health(rows: list[dict], fields: str = "lean") -> list[dict]:
 
     保留键不是啰嗦：键不存在时消费端的 ``row["note"]`` 会 KeyError，而
     「键名对不上就静默归零」正是本 ADM 已经栽过的坑（判例见 DCD 20261004 §六.2）。
-    ``fields='full'`` 一行不改——全量开关是裁定给"就是要整段中文说明"的调用方留的。
+    ``fields='full'`` **不改单行内容**——但整页预算照样生效：全量行更肥，一页装得下的
+    行数更少（锁见 `tests/test_vma_q2_device_health_64kb.py::test_full_fields_also_respects_byte_budget`）。
+    也就是说"要整段中文说明"要靠翻页拿全，不是靠一次调用拿全。
     """
     if str(fields or "").strip().lower() == "full":
         return rows
