@@ -602,6 +602,8 @@ baseline 先跑绿（`[baseline] RC=0 failed=[]`），九条变异各自咬到�
 - **不伪造 `total`**：`query_behavior_events` 只补 `count/offset/limit/has_more/time_range`。legacy 的
   `store.list_behavior_events` 在 SQL `LIMIT` **之后**才做 `member` 过滤，引擎手里没有可信匹配总数；
   变异 A6（把 `count` 改名 `total`）由该用例判红。申请里的**附带一问（`total` 语义）裁定书未答**，MA 不替 DCD 定。
+  > **本条已被 DCD 20261004 追加裁定 Q-A 取代，落码见 §6.6。** 当时那句"没有可信匹配总数"现在查清是
+  > 症状：不可信的根源是"先取一页再筛人"的读取形状，`total` 与 `count` 两个键都被它带歪。
 
 **Q4=A 的落点与边界**：`annotate_scan()` 落在 `_search`（`get_events`）上，`StoreRepository.scan_limit` 只读暴露同一上限，
 `_scan_limit()` 本体未动。生产库只读实测：30 天全量匹配 **958,388** ⇒ 门面报 `total=30000` /
@@ -635,6 +637,10 @@ baseline 先跑绿（`17 passed FAILED = []`），逐条 `RESTORED=True`、末�
 **生效条件**：与裁3 同批，随下一次重启生效，不需要新开窗口。**仍开着的两问交给 DCD**：
 `total` 的对外语义（原附带一问未答）；三条不齐是「新引擎补齐后再切」还是「把这六个过滤位与两代键正式下架」
 ——后者属对外承诺变更，MA 按"不切"执行，不自行动工具面。
+
+> **这两问已于 2026-10-04 18:35 裁定，本行按 HEAD 复核更正**（DCD 在裁6 补裁 §〇 就指出过：已裁项被挂回"仍待裁"）：
+> `total` → **Q-A**（= 匹配总数，授权新增不带 LIMIT 的计数查询，落码见 §6.6）；
+> 三条不齐 → **Q-B = A**（新引擎补齐六条，不切、不下架、不假装补齐，任务 #40）。
 
 ### 6.5 裁6 的落码读数（2026-10-04）
 
@@ -707,6 +713,72 @@ Q4=认可（每切一个方法留三项对比读数，缺一项判红）**。代
 ② 30 天窗语义判定只见窗口前 20 小时——裁5 明令不提高 `max_scan`，补齐路径只能是**按天分批扫描**（改读取策略），
 还是维持现状、由 `rule_sources.events_total/scan_truncated` 把口径交给消费方判断（不改代码只改承诺）。
 裁5 那句**附带一问（`total` 的对外语义）裁定书仍未答**，本件不替 DCD 定口径。
+
+> **上面这三句全部过期，按 HEAD 复核更正**（`20261004-MA-裁6落码回执与两问-裁定.md`）：
+> ① → **A′**（内置模板字面**不动**，本居清单生成覆盖行入 `activity_rules`；C 驳回；等 SP 给本居活动清单，
+>    给设备补标签由 DCD 同一张单向 SP 提）；② → **A**（按天分批扫描，带三条约束，见 §6.7）；
+>    `total` → **已裁**（Q-A，18:35 那批，落码见 §6.6）。
+> 另更正一处引用：`define_activity` 的 8 参数签名现读在 **`insights/api.py:550-552`**，
+> 我在回执 §1 里引的 `api.py:503-505` 是 `water_purifier_usage` 的 docstring——DCD 的更正成立。
+
+### 6.6 裁5 追加 Q-A 的落码读数（2026-10-04）
+
+裁定：`total` = "匹配的事件总数"，MA 侧授权在 Store 新增**不带 LIMIT** 的计数查询；`count`（本页条数）与
+`total`（匹配总数）**分开，不许改名冒充**。落码与现网少报读数记在审计 §二十九，这里只留台账要点：
+
+- **病根不是"缺一条 COUNT"，是读取形状**：旧 `list_behavior_events` 先 `ORDER BY server_ts DESC LIMIT ?` 取页、
+  **再**在 Python 里按姓名筛 ⇒ 该有人时页面也能是空的。所以修法是把 `member` 下推进 SQL（`json_each` +
+  `EXISTS`，带 `json_valid`/`json_type` 护栏），谓词抽成 `_behavior_event_where`（`store.py:2298`）由
+  `list_*`/`count_*` **共用一份**，`list_*` 加 `offset`、删掉 LIMIT 后的 Python 过滤。
+- **一个靠反例抓出来的错**：`json_each` 给字符串元素的 `type` 是 **`text`**，不是字面的 `string`。
+  写错时现网 8 个姓名里恰好 1 个比对不一致（就是那 1 行旧格式记录）。口径一致性自证现为 **8/8、不一致 0**
+  （`SHAPE_RC=0`：4,023 行 / 空 428 / 非法 JSON 0 / 非数组 0 / object 元素 3,595 / text 元素 1）。
+- **现网少报量级**（只读探针 `scripts/probe_behavior_event_total.py`，`PROBE_RC=0`）：30 天窗、页宽 50 ⇒
+  7 个姓名里 **6 个**读数小于真值，3 个直接归零，最大缺口 **1,635 行**；页宽提到 100 只把最大缺口缩到 1,623
+  ——**加大页宽救不了这个形状**。
+- **`total` 取不到 ⇒ `None` + `total_exact=False`，不是 0**；`annotate_scan` 新增 `total_exact` 入参，
+  于是「切片被截」与「总数精确」可以同时成立（`max_scan` 一个字节没动，裁5 Q4=A 仍生效）。
+- **诚实边界**：`total` 精确的范围 = `_search` 实际施加的过滤（窗口/`entity_id`/`room`/`behavior_only`）；
+  `category`/`query`/`state`/`order` 仍是 Q-B（#40）未补齐项，**不能说 `total` 覆盖全部入参**。
+- **锁与读数**：新建 `tests/test_vma_dcd_20261004b_event_total.py` 6 把（含"截断与总数精确同真"及其对照组）、
+  改写 2 把旧裁5 锁（`assert "total" not in out` 那条锁的是被 Q-A 取代的旧承诺）；本机定向 **`23 passed` / `LOCAL_RC=0`**；
+  变异 **M1–M9 全咬**（`BITTEN=9/9`、基线 `(0, 39)`、`MUT_RC=0`）；容器快照 `/tmp/c7snap20261004a`（338 文件、含 `.gates/`）
+  pyflakes **`GATE_RC=0`**、全量 **`1191 passed, 13 skipped in 249.62s` / `SUITE_RC=0`**；`.gates-baseline.txt` 一字未改。
+
+### 6.7 20261004 同日两批新裁定的 MA 侧台账（裁6 补裁 + 向量面 MiniLM）
+
+**裁6 补裁（`20261004-MA-裁6落码回执与两问-裁定.md`）**：
+
+| 件 | 裁定 | MA 侧动作与状态 |
+|---|---|---|
+| §二.3 老用例冻结缺陷必须当场清掉 | 追加裁定，且列为**本件第一条交付** | **已完成并现读**（见下） |
+| Q6-1 词表缺口 | **A′**：内置模板字面不动，本居清单生成覆盖行入 `activity_rules`；**C 驳回**（改的是规则语义）；B 由 DCD 与活动清单同一张单向 SP 提 | **等 SP 清单**（任务 #38 同一张单）。清单到手后落地 + 交**覆盖率读数**（每活动解析到几个实体、命中几条事件）。**不得**出现"已按现网命名调过内置词表"这类单方改动 |
+| Q6-2 扫描口径 | **A**：按天分批扫描，三条约束——① 分批后**总读取量硬上限按日分摊同一预算**（不得新增预算，否则变相提高上限、绕开裁5）；② 改前/改后**30 天窗耗时要成对交**；③ `scan_truncated` 判据要**重新定义** + 一条可判红锁（防恒 True/恒 False） | 任务 **#44**，**单独 commit**（便于与"提高上限"这类越界改动区分）；与裁5 Q-B（#40）同批，沿用裁5 那条"vMA-1.4 窗口前未补齐就回来重议"的时点，不新设死线 |
+| §二.4 读数必须标口径 | 追认为 **MA 交付纪律**（`COUNT(*)` vs `revoked=0` 那类） | 已并入本计划卡与审计的写法；后续回执量具与读数一律带口径 |
+| §二.5 等价位与漏咬要可区分 | 追认 | 维持：本机 +8 等价位如实登记、容器 UTC 判红 |
+
+§二.3 的现读（对当前工作区重跑，`.qoder/tmp-c7-mut-oldcase.py`，`OLDCASE_RC=0`）：把 `_signal_ids` 的标签判定
+整体摘掉以还原缺陷现场，跑整个 `tests/test_vma_activity_semantic.py` ——
+基线 `15 passed` / `rc=0`；缺陷现场 **`1 failed, 14 passed`**，FAILED 名单只有
+`test_rule_tag_condition_filters_events_instead_of_being_decorative`（新语义锁，`:212`）判红；
+曾被冻结的 `test_disabled_rule_rows_are_not_applied`（`:191`）在缺陷现场**仍然绿** ⇒ 它的"不判"来自
+`enabled=0`（`:202` 直接断言 `list_activity_rules(enabled_only=True)==[]`、`:206` 断言
+`rule_sources.activity_rules_table==0`），不再替旧行为站岗；种子设备已换成 presence 侧
+（`_ev("binary_sensor.bedroom_presence", …)`，`:227`），`bedroom_window` 只留在"禁用规则"那条用例里做噪声行。
+复原自证 `RESTORED=True`、末态 `15 passed` / `FAILED=[]` / `rc=0`。
+
+**向量面 MiniLM（`20261004-MA向量面MiniLM退路-裁定.md`，Q1=B / Q2 不适用 / Q3 整行删除）**：任务 **#43**。
+DCD 现读把 B 的实际面定为 **3 处回退路 + 2 处宣示性注释 + 1 份测试契约 + 1 条契约登记**：
+`history.py:116`（未配端点先打印"使用本地 MiniLM"再构造）、`history.py:172`（显式传 `embedding_function=None`）、
+`patterns.py:84-86` + `:81-82`（结果为 None 时省略 kwarg；异常被 `except` 吞后同样落默认）——**光改 `history.py` 堵不住**；
+`config.py:56` 与 `history.py:47` 两处"零配置走 MiniLM"的承诺同批改；
+`tests/test_vma_r8_chroma_error_masking.py:177` 的旧契约（"回退 MiniLM 或返回 None，但绝不打断构造"）要**被替换**
+而不是被绕过，补两条可判红判据：① 未配端点 ⇒ 向量面**不可用**且**不落 MiniLM**；② 采集/启动**未被阻断**（要保留的属性）。
+`Dockerfile:27` 那行**整行删除**（不是摘 `|| true`），并立通用规则：**构建链里不许用 `|| true` 吞掉本该成功的步骤**。
+两条必须随回执交的证据：容器内对"显式 `embedding_function=None` 是否等价默认 MiniLM"的**现读结论**
+（DCD 本机无 chromadb，未独立证实这一格），以及 `grep -rn "DefaultEmbeddingFunction" src/` / `"使用本地 MiniLM"`
+现读 0 命中、`Dockerfile` 全文无 `|| true`。窗口耦合已确认：删该行与 `vendor/homesdk` 进运行面**同一次镜像重烤**
+——**重烤仍未获授权**，本件只落代码与 Dockerfile 变更，不自行动交付面。
 
 ---
 
