@@ -383,7 +383,7 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 | 裁3 反馈出境面脱敏 | Q1=A 分层 + Q2 label 白名单 + Q3 暂缓 | **✅ 本件落码** | 见 §6.3（`trace_anon.txt` 加产物 + `validate_label()` 收紧入参） |
 | 裁4 超限响应 | Q1=A 分页 + Q2=A 默认精简 + Q3 维持裁行 | **✅ 本件落码** | 见 §6.2（含把申请里那句体积估算按实测更正） |
 | 裁5 洞察门面 | Q1=A legacy 为对外只读引擎 + Q2=A 并存 + Q3 验收单全认 + Q4=A 如实上报截断 | **✅ 本件落码（Q3 判不齐 ⇒ 不切引擎）** | 见 §6.4。Q3 六条实测**三条齐、三条不齐**，切换开关保持关闭；Q4 三键落在新引擎扫描路径上，Q1=A 期间对外不可见 |
-| 裁6 活动识别 | Q1=A 语义回归 + Q2=A 回 8 参数 + Q3=A 硬排除生效 + Q4 认可（交付纪律） | ⬜ 未落码 | Q4 那条纪律是**门面每切一个方法必须留三项对比读数**（返回键集合 / 语义枚举值集合 / 旁挂依赖），缺一项判红 |
+| 裁6 活动识别 | Q1=A 语义回归 + Q2=A 回 8 参数 + Q3=A 硬排除生效 + Q4 认可（交付纪律） | **✅ 本件落码（Q4 三项读数齐；覆盖面两问交 DCD）** | 见 §6.5。Q4 读数②在生产库上抓出一处**假命中**（`tags_json` 被当展示标签），已修并配锁；语义一侧受 `max_scan` 截断现自报 |
 
 **另：`20261003-MA关键词检索短词与整句phrase召回下限` 不在这份裁定书里**（六件里没有 FTS 那件）。
 MA 按"未裁不动"处理——`fts` 短词召回下限的门槛数值仍维持现状，等 DCD 单独裁。
@@ -635,6 +635,76 @@ baseline 先跑绿（`17 passed FAILED = []`），逐条 `RESTORED=True`、末�
 **生效条件**：与裁3 同批，随下一次重启生效，不需要新开窗口。**仍开着的两问交给 DCD**：
 `total` 的对外语义（原附带一问未答）；三条不齐是「新引擎补齐后再切」还是「把这六个过滤位与两代键正式下架」
 ——后者属对外承诺变更，MA 按"不切"执行，不自行动工具面。
+
+### 6.5 裁6 的落码读数（2026-10-04）
+
+裁定书 §三.6：**Q1=A（语义活动回归，时段启发式降为"无标签设备兜底"的补充输出）/ Q2=A（`define_activity` 回 8 参数、
+注册走 `upsert_activity_rule`、现行引擎真正读 `activity_rules`）/ Q3=A（硬排除在 `activity_matrix` 生效 + 返回体可见字段）/
+Q4=认可（每切一个方法留三项对比读数，缺一项判红）**。代码提交 **`0d6ec63`**，
+完整判据与红证在 `doc/审计报告/审计核实与修复_20261001.md` §二十八，这里只台账化。
+`infer_activities` 不在 `LEGACY_OUTWARD_METHODS`（api.py:68-80 那 11 把）里 ⇒ 本件切换与裁5 Q1=A 不冲突。
+
+**Q2=A 的反面不止"注册了没人读"，还有一个是"读了但读错维"**。改前 `activity_rules` 有 5 条 enabled 规则在库里躺着没人读；
+第一版搬运开始读表之后，Q4 读数②在生产库上抓出一处**假命中**——`tags_json` 被当成展示标签，而 legacy 一侧它是判定条件
+（`insights_legacy.py:2782`）。后果：`room=''`、`tags_json=["nonexistent_tag"]`、`min_events=1` 的 `bogus_verify`
+退化成"全屋任一实体 ≥1 次事件即成立"，把整户事件判成一条并不存在的活动。
+
+| 口径 | 新引擎 30 天窗 `activity_types` | 语义行数 |
+|---|---|---|
+| 搬运丢了 tags | `away, **bogus_verify**, cooking, door_verify, notag_verify, study, tv, 夜间/日间/晨间活动` | 11 |
+| 本件修好后 | `away, cooking, door_verify, notag_verify, study, tv, 夜间/日间/晚间/晨间活动` | **9** |
+
+修法把**判定维**与**展示维**分开：`ActivityRule.require_tags`（新增）+ `ActivityEngine._signal_ids` 对解析出的实体按标签取交集
+（任一命中即计入，与 legacy 同口径）+ `_rule_from_row` 把 `tags_json` 同时交给 `require_tags`。
+内置规则只留展示维，不被误当成硬实体过滤器。一处**测试自己的错**同步登记：原种子设备 `binary_sensor.bedroom_window`
+（"卧室窗台"→`door`）配 `tags=["presence"]` 的规则**当时能过正是因为标签被丢了**，已换成 presence 设备并新增独立锁。
+
+**两处"日界"缺陷**：① `ActivityEngine.infer` 把规则窗口锚在 `split_days` **裁剪后**的起点，`(0,24)` 被整体平移成
+「起点~起点+24h」，同一段活动在相邻两天各判一次（改前实测洗澡 2 行）；现锚在该日**家庭零点**（`_day_midnight`）再 `clip()`。
+② `split_days` 的日界落在**机器**零点（容器 UTC ⇒ 家庭 08:00 换日），现走 `house_dt`/`house_ts`。
+
+**Q4 三项读数**（`scripts/probe_activity_semantic_readings.py`，生产库只读，`Q4_RC=0`）：
+
+| 项 | 实测读数 | 判定 |
+|---|---|---|
+| ① 返回键集合 | legacy 8 / 新引擎 9；legacy 独有 `behavior_only`、`detector_report`、`signal_inventory`（未迁）；新增 `filters`、`summary`、`rule_sources`、`excluded_entities`；消费侧要读的 `activities/activity_types/total_activities/window` 四个都在 | 齐 |
+| ② 语义枚举值集合 | legacy 8 类 116 行 vs 新引擎 10 类 45 行（`source` 档位 `heuristic=36 / semantic=9`）；行级键同名 6 个 | 读数已交，**词表与覆盖面不等价** |
+| ③ 旁挂依赖 | 库里 `activity_rules` 启用/全部 = **5/5**、`signal_exclusions` 生效中 **0**（那 1 行 `revoked=1`；§二十七 记的是 `COUNT(*)`，两条口径都对）；自报 `builtin=5, activity_rules_table=5, custom_applied=5, selected=10, excluded_entity_ids=0` ⇒ **与库里真值一致** | 齐 |
+
+**Q3=A 的作用面如实登记**：生产库当前没有生效中的硬排除行，所以带/不带排除读数相同
+（`count_events` 957,153 / 957,153，`activity_matrix` 同）——差值 0 属预期而非失效；
+剔除能力由 `test_not_in_drops_only_the_named_entities`（钉 SQL 形状：空集不加 WHERE）与
+`test_hard_exclusion_drops_events_and_is_visible`（临时库实测排除 1 个实体后事件 6→2，证据文本不再出现该设备）钉住。
+顺带修掉 `_add_not_in` 的空头承诺：`events` 三列全 `NOT NULL DEFAULT ''`（store.py:67-79），那条 `OR col IS NULL` 分支永远走不到，参数与说法一并删。
+
+**语义 9 行 / 兜底 36 行的原因分两层**（`scripts/probe_activity_coverage_gap.py`，生产库只读，`GAP_RC=0`，逐规则逐信号量三段数）：
+① **词表**——`bath` 的 `热水器` 解析到 0 个实体，`sleep` 的 `卧室灯` 只 1 个实体 / 30 天 6 条事件，而 `any_of` 要求
+"至少一个可选信号命中" ⇒ 这类规则永远不开口；② **扫描口径**——30 天窗语义判定只看得见 30,000 / 957,148（**3.1%**）的事件，
+切片只覆盖窗口前 20 小时（09-04 10:02 → 09-05 06:08），而兜底一侧走 `activity_matrix`（SQL 聚合，全窗口）。
+本件只做了一件不该省的事：把截断**自报**出来——`rule_sources` 新增 `events_total=957,153` / `scan_limit=30,000` /
+`scan_truncated=true`，判据逐字对齐裁5 Q4=A（`scanned >= scan_limit` ⇒ "可能被截"），**上限本身一个字没动**。
+锁 `test_rule_sources_reports_the_scan_cap_that_limits_the_semantic_side` 在临时库把上限压到 6（`8/6/6/True`），
+并以 `max_scan=50` 作对照组（`8/8/50/False`），排除"恒 True/恒 False"两种假实现。
+
+**另有三处独立缺陷各有自己的锁**：`define_activity` 回执丢了 legacy 的 `coverage_warning`（现原样拼在 message 末尾，
+且不再出现"自动套用/尚未套用"空头话术）；`nlquery.py` 的 `route=activity` 从切引擎那天起就没答上来过
+（读新引擎没有的 `data["total"]` ⇒ KeyError 被兜成"查询失败"；`summary` 现在是 dict 被 `%s` 进话术），现读 `total_activities`；
+`explain_insight` 维持裁5 的 legacy 路由（未迁清单还在 legacy 一侧：静默间隔睡眠/离家检测器、`_noise_entities`、
+`detector_report`/`signal_inventory`、`detected_activity` 落库）。
+
+**锁与权威读数**：`tests/test_vma_activity_semantic.py` 新建 **15 个用例**，配套 `test_vma_insights_facade_dead_tools.py` 三条改写；
+定向 `19 passed`、邻近三件 `20 passed`。变异台账 **16 把锁逐条判红**（`MUT_RC=1` + `RESTORED=True`），其中 `split_days` 时区锁
+本机是**等价位**（+8 整小时偏移下 `MUT_RC=0`，诚实登记）、容器（UTC）判红。容器快照 `/tmp/c6snap20261004c`
+（全新唯一名，不复用别人的 `vsNN`；打包 336 文件、含 `.gates/`）：pyflakes `当前 0 / 基线 0 / 新增 0 / 已修 0` / `GATE_RC=0`；
+全量 **`1185 passed, 13 skipped in 177.04s` / `SUITE_RC=0`**；`.gates-baseline.txt` 一字未改。
+仍 skip 的三条 `test_signal_learning.py:173/216/257` 属任务 #23（P2-5 用例翻新），本件不冒充收口。
+两个探针全程 SELECT + 内存计算，未对生产库跑任何写测试，载荷读数只到键名与数量层级。
+
+**生效条件**：随下一次合并停机窗生效（与裁3/裁5 同批，不需要新开窗口）。**本件新增两问交 DCD**（都改变判定口径，MA 不擅自动手）：
+① 内置规则的**词表缺口**怎么收——改内置关键词 / 给设备补标签 / 把 `any_of` 从"至少命中一个"降为"命中则加分"（第三种改的是规则语义）；
+② 30 天窗语义判定只见窗口前 20 小时——裁5 明令不提高 `max_scan`，补齐路径只能是**按天分批扫描**（改读取策略），
+还是维持现状、由 `rule_sources.events_total/scan_truncated` 把口径交给消费方判断（不改代码只改承诺）。
+裁5 那句**附带一问（`total` 的对外语义）裁定书仍未答**，本件不替 DCD 定口径。
 
 ---
 
