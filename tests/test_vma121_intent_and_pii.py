@@ -150,6 +150,51 @@ def test_store_sanitize_pii_existing():
         os.remove(st.db_path)
 
 
+# ── 第七轮之后复核：脱敏不留片段（PII 审计 S1 的"结果仍是全掩"当时是错的）──
+# 判据统一用「输出里不残留任何 ≥3 位连续数字」——片段泄漏的形状就是"短于兜底阈值的残段"，
+# 只断言整串不见了会放过它。
+
+def test_sanitize_pii_id_card_leaves_no_residue():
+    # 旧实现的形状：手机号规则在 18 位身份证**内部**咬走 11 位，剩下前 6 位地区码 + 末位
+    assert Store._sanitize_pii("身份证110101199001011234") == "身份证********"
+    assert Store._sanitize_pii("身份证11010119900101123X") == "身份证********"
+    for out in (Store._sanitize_pii("身份证110101199001011234"),
+                Store._sanitize_pii("身份证11010119900101123X")):
+        assert not re.search(r"\d{3,}", out), out
+
+
+def test_sanitize_pii_longer_digit_run_is_not_split():
+    # 19 位银行卡：旧裸 `(\d{6})\d{8}(\d{4})` 会吃掉前 18 位、尾巴留 1 位明文
+    assert Store._sanitize_pii("卡号6222021234567890123") == "卡号***"
+    assert Store._sanitize_pii("13812345678912345") == "***"
+
+
+def test_sanitize_pii_separated_phone_is_masked():
+    assert Store._sanitize_pii("电话138-1234-5678") == "电话****"
+    assert Store._sanitize_pii("电话138 1234 5678") == "电话****"
+
+
+def test_sanitize_pii_plain_shapes_still_masked():
+    # 边界守卫不能把常规形状放过（收紧不是放宽，这条防的是"加了守卫反而漏掩"）
+    s = Store._sanitize_pii("手机13812345678 邮箱someone@mail.com")
+    assert s == "手机**** 邮箱***@mail.com"
+    assert not re.search(r"\d{3,}", s), s
+
+
+def test_sanitize_pii_email_does_not_swallow_adjacent_chinese():
+    # 旧写法 `[\w.]*` 里 `\w` 认中文：邮箱紧贴中文时，中文被当本地名一起吃掉（无空格才复现）
+    assert Store._sanitize_pii("联系邮箱someone@mail.com") == "联系邮箱***@mail.com"
+    # 有空格是对照组：`\w` 不跨空格，旧写法这里恰好没事——所以只测带空格的形状锁不住这个缺陷
+    assert Store._sanitize_pii("联系邮箱 someone@mail.com 谢谢") == "联系邮箱 ***@mail.com 谢谢"
+
+
+def test_sanitize_pii_short_email_local_name_is_masked():
+    # 旧写法要求本地名 ≥2 字符，`a@x.com` 整条放过 —— 那是漏掩，不是"太短不算 PII"
+    assert Store._sanitize_pii("a@x.com") == "***@x.com"
+    # 一行里多个 @ 段：每一段的本地名都要掩掉（宁可多掩，域名留着可归类）
+    assert Store._sanitize_pii("mailto:jo@hn.doe@mail.co.uk") == "mailto:***@***@mail.co.uk"
+
+
 class FakeCollection:
     def __init__(self):
         self._docs = {}
