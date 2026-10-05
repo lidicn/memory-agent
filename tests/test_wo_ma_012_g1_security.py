@@ -1,4 +1,4 @@
-﻿"""WO-MA-012 G1 安全批次回归测试（四条，简化版，直接验证核心逻辑）。
+"""WO-MA-012 G1 安全批次回归测试（四条，简化版，直接验证核心逻辑）。
 
 R-22: dbg_ 令牌只能访问 /api/debug/*
 R-23: 未登记工具默认 DENY（fail-close）；assert_write_tools_complete 发现未登记时 raise

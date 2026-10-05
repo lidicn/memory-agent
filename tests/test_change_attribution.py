@@ -1,4 +1,4 @@
-﻿"""tests/test_change_attribution.py — 行为变化归因单元测试
+"""tests/test_change_attribution.py — 行为变化归因单元测试
 
 覆盖验收标准 §8 全部 14 条：
   5  无变化随机数据        → test_detect_no_change_random

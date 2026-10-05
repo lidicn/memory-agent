@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """切换 embedding 模型后，从 SQLite 权威数据全量重建三个 chroma 集合。
 

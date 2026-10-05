@@ -15,6 +15,8 @@
    `can't compare offset-naive and offset-aware datetimes`。
 4. **`departure` 顺序依赖**：靠"循环里最后一次赋值"取当天最晚，而门面是 DESC ⇒ 报成当天最早。
 5. **`data_days` 拿人名做子串搜索**：短名被长名吃掉（现网实测两名 13 天 vs 1 天）。
+6. **元宝第二轮 P2-4「同日事件不连续时重复计天」**：原实现只跟上一条比日期、不是查重，
+   当前调用方恰好连续才没暴露 ⇒ 现在按输入排列三种形状逐一等值对账。
 
 UTC 那 44 条不是"少 8 小时"这种小偏差：它把傍晚到家折算成上午，直接掉出
 「中午后首次出现 = 到家」的判据窗口。
@@ -197,6 +199,81 @@ def test_utc_event_crossing_midnight_lands_on_the_house_day():
     assert out is not None, out
     assert out["sample_days"] == 3, f"按字符串前缀切日会数出 4 天 ⇒ {out}"
     assert out["predicted_hour"] == 19.0, out
+
+
+# ------------------------------------------------ 6. P2-4 同日交错不许重复计天
+def _pev(ts, persons, action):
+    return {"server_ts": ts, "persons": persons, "action": action, "scene": ""}
+
+
+def _batch(order):
+    """三天 × 每天三行（19:00 到家 / 19:10 活动 / 19:20 又出现）。
+
+    `order` 只改变**行的排列**，不改变集合内容：
+    - "asc"：按天连续（当前调用方的 ASC 形状）
+    - "desc"：整批倒序（现网门面 `ORDER BY server_ts DESC`，store.py:2369）
+    - "interleaved"：元宝第二轮的 repro——同一天的两行被别的日子隔开
+    """
+    days = {
+        "2026-09-16": "看电视",
+        "2026-09-17": "开灯",
+        "2026-09-18": "开灯",
+    }
+    rows = {
+        day: [_pev(f"{day}T19:00:00", [{"name": "K"}], "到家"),
+              _pev(f"{day}T19:10:00", [], act),
+              _pev(f"{day}T19:20:00", [{"name": "K"}], "到家")]
+        for day, act in days.items()
+    }
+    if order == "asc":
+        return [r for day in days for r in rows[day]]
+    if order == "desc":
+        return [r for day in reversed(list(days)) for r in reversed(rows[day])]
+    return [rows[day][i] for i in range(3) for day in days]
+
+
+def test_interleaved_same_day_events_do_not_inflate_day_counts():
+    """元宝第二轮 P2-4：`if arrival_times[-1][0] != day` 只跟**上一条**比，不是查重。
+
+    同日不相邻的两行会被记成两天 ⇒ `activity_counts` 按窗口重复累加、Top-N 排序失真。
+    审计当时的注脚是"当前调用方恰好不触发 ⇒ 属脆弱假设"——这条锁要的就是假设被抽掉之后
+    仍然成立：三种排列必须给出**一字不差**的读数。
+    """
+    expect_acts = [
+        {"activity": "到家", "frequency": 3, "ratio": 1.0},
+        {"activity": "开灯", "frequency": 2, "ratio": 0.67},
+        {"activity": "看电视", "frequency": 1, "ratio": 0.33},
+    ]
+    seen = set()
+    for order in ("asc", "desc", "interleaved"):
+        events = _batch(order)
+        assert len(events) == 9, order
+        acts = predict_post_arrival_activities(events, "K", window_min=30, top_n=5)
+        routine = predict_daily_routine(events, "K")
+        assert acts == expect_acts, f"{order} 形状下到家后活动失真 ⇒ {acts}"
+        assert routine["data_days"] == 3, f"{order} 形状重复计天 ⇒ {routine['data_days']}"
+        assert routine["arrival"]["sample_days"] == 3, routine["arrival"]
+        assert routine["arrival"]["predicted_hour"] == 19.0, routine["arrival"]
+        seen.add((tuple(a["activity"] for a in acts), routine["data_days"]))
+    assert len(seen) == 1, f"读数随输入排列变化：{seen}"
+
+
+def test_foreign_persons_days_do_not_open_extra_windows():
+    """窗口数只由"这个人出现过的自然日"决定，别人家的日子不许进来凑数。
+
+    断言按 frequency 不按列表顺序：同窗口内的标签来自 set，并列名次的先后不保证稳定。
+    """
+    events = _batch("asc") + [
+        _pev(f"2026-09-{d}T19:05:00", [{"name": "其他人"}], "开热水器")
+        for d in ("16", "17", "18", "19", "20")
+    ]
+    acts = {a["activity"]: a
+            for a in predict_post_arrival_activities(events, "K", window_min=30, top_n=5)}
+    # 09-19/09-20 两天 K 没出现 ⇒ 不开窗 ⇒ 那两条 19:05 的事件进不了任何窗口
+    assert acts["开热水器"]["frequency"] == 3, acts
+    assert acts["到家"]["ratio"] == 1.0, acts          # 分母 = 3 个窗口，不是 5 个外来日
+    assert acts["开灯"]["frequency"] == 2, acts
+    assert predict_daily_routine(events, "K")["data_days"] == 3
 
 
 if __name__ == "__main__":
