@@ -15,8 +15,33 @@ from datetime import timedelta
 from starlette.requests import Request
 from starlette.routing import Route
 
+from ..day_bounds import DAY_WINDOW_MAX
 from ..store import now_local
 from .deps import error, json_body, ok, require_user, runtime
+
+
+def _num(raw, *, name: str, cast=int, default=None, lo=None, hi=None):
+    """数字入参的统一口径：没给 → `default`；给了 → 必须转换成功且落在 `[lo, hi]`，否则拒。
+
+    改前同一文件里有两族写法，都错过：裸 `int(request.query_params.get(...))` 遇到
+    `limit=abc` 直接把 handler 打成未捕获 ValueError（Starlette 500），而同一个 handler
+    的 `days` 却有守卫；`int(body.get(k) or 3)` 则把 0/`""`/`False` 静默改成 3
+    ——既替调用方改了值，又把 config 上的同名旋钮（`process_mining_min_variant_support`）
+    顶死在字面量上。这里不替调用方改值：越界与被拒都走 400，错误文案点名参数。
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default, None
+    if isinstance(raw, bool):        # JSON 的 true 不该被读成 1
+        return None, f"{name} 必须是数字"
+    try:
+        val = cast(raw)
+    except (TypeError, ValueError):
+        return None, f"{name} 必须是{'整数' if cast is int else '数字'}"
+    if lo is not None and val < lo:
+        return None, f"{name} 不得小于 {lo}"
+    if hi is not None and val > hi:
+        return None, f"{name} 不得大于 {hi}"
+    return val, None
 
 
 async def behaviors_current(request: Request):
@@ -55,17 +80,34 @@ async def behaviors_states(request: Request):
 
 
 async def behaviors_run(request: Request):
-    """手动触发一次行为推断（调试/补算用）。"""
+    """手动触发一次行为推断（调试/补算用）。
+
+    Body 可选 ``start`` / ``end``（ISO 字面量，给了就不改调用方的边界）、
+    ``window_minutes``（扫描窗口分钟数）。
+
+    `window_minutes` 的落点在 `activity_inference.py:260`——那一行是
+    `int(window_minutes or getattr(config, "activity_window_minutes", 15) or 15)`，
+    与本批 #63 清掉的 `int(x or 3)` 同族：传 `"abc"` 会从没守卫的 `int()` 里抛
+    ValueError 打穿 handler（500），传 `0`/`""`/`False` 被静默换成 config 档，
+    传 10**12 则在 `now - timedelta(minutes=…)` 处 OverflowError。这里不替调用方改值：
+    不给 → 交给引擎自己的 config 默认（那是登记过的落点），给了就必须落在
+    `1..DAY_WINDOW_MAX*1440`（与 day_bounds 的 3650 天上限同口径换算成分钟，
+    再大就会把窗口起点推到 datetime 下界之外）。
+    """
     _, err = require_user(request)
     if err:
         return err
     body = await json_body(request)
     rt = runtime(request)
+    wmin, bad = _num(body.get("window_minutes"), name="window_minutes",
+                     default=None, lo=1, hi=DAY_WINDOW_MAX * 1440)
+    if bad:
+        return error(bad)
     res = await asyncio.to_thread(
         rt.activity.run,
         (body.get("start") or "").strip() or None,
         (body.get("end") or "").strip() or None,
-        body.get("window_minutes"),
+        wmin,
     )
     return ok(res)
 
@@ -144,12 +186,13 @@ async def negative_sample_suggestions(request: Request):
         return err
     rt = runtime(request)
     body = await json_body(request)
-    try:
-        min_count = int(body.get("min_count") or 3)
-    except (TypeError, ValueError):
-        return error("min_count 必须是整数")
+    # `int(body.get("min_count") or 3)` 的两个洞：`min_count=0` 被静默改成 3，
+    # JSON 的 `true` 被读成 1。缺省仍是不给 → 3（`negative_samples` 的成簇门槛）。
+    min_count, bad = _num(body.get("min_count"), name="min_count", default=3, lo=1)
+    if bad:
+        return error(bad)
     from ..negative_samples import run_negative_sample_analysis
-    res = await asyncio.to_thread(run_negative_sample_analysis, rt.store, max(1, min_count))
+    res = await asyncio.to_thread(run_negative_sample_analysis, rt.store, min_count)
     return ok(res)
 
 
@@ -164,27 +207,35 @@ async def behaviors_mine_process(request: Request):
         return err
     body = await json_body(request)
     rt = runtime(request)
-    try:
-        days = int(body.get("days") or 7)
-    except (TypeError, ValueError):
-        return error("days 必须是整数")
+    # 六个数字入参，改前只守了 `days`：其余四条要么裸 `int()`（非数字 → 未捕获
+    # ValueError → 500），要么走 `int(x or 3)`（0/""/False 被静默改成默认档，还把
+    # config 的 `process_mining_min_variant_support` 顶死在字面量 3 上）。
+    # `bucket_sec` 是唯一有合法 0 语义的一档（`algo_kernel.py:413`：0 = 不聚合，逐事件），
+    # 所以下界是 0，不是 1。
+    days, bad = _num(body.get("days"), name="days", default=7, lo=1, hi=90)
+    mvs, bad2 = _num(body.get("min_variant_support"), name="min_variant_support",
+                     default=None, lo=1)
+    bsec, bad3 = _num(body.get("bucket_sec"), name="bucket_sec", default=None, lo=0)
+    mcpr, bad4 = _num(body.get("min_cases_per_room"), name="min_cases_per_room",
+                      default=None, lo=1)
+    mcev, bad5 = _num(body.get("min_case_events"), name="min_case_events",
+                      default=None, lo=1)
+    for msg in (bad, bad2, bad3, bad4, bad5):
+        if msg:
+            return error(msg)
     rooms = body.get("rooms")
     res = await asyncio.to_thread(
         rt.activity.mine_process,
         (body.get("start") or "").strip() or None,
         (body.get("end") or "").strip() or None,
-        max(1, min(days, 90)),
+        days,
         [str(r) for r in rooms] if isinstance(rooms, list) and rooms else None,
         persist=bool(body.get("persist", True)),
         emit_rules=bool(body.get("emit_rules", True)),
-        min_variant_support=int(body.get("min_variant_support") or 3),
-        bucket_sec=(int(body["bucket_sec"]) if body.get("bucket_sec") is not None else None),
-        min_cases_per_room=(
-            int(body["min_cases_per_room"])
-            if body.get("min_cases_per_room") is not None else None),
-        min_case_events=(
-            int(body["min_case_events"])
-            if body.get("min_case_events") is not None else None),
+        min_variant_support=mvs,
+        bucket_sec=bsec,
+        min_cases_per_room=mcpr,
+        min_case_events=mcev,
     )
     return ok(res)
 
@@ -241,15 +292,17 @@ async def behaviors_mine_drift(request: Request):
         return err
     body = await json_body(request)
     rt = runtime(request)
-    try:
-        days = int(body.get("days") or 14)
-    except (TypeError, ValueError):
-        return error("days 必须是整数")
+    days, bad = _num(body.get("days"), name="days", default=14, lo=1, hi=180)
+    bsec, bad2 = _num(body.get("bucket_sec"), name="bucket_sec", default=None, lo=0)
+    wsize, bad3 = _num(body.get("window_size"), name="window_size", default=None, lo=1)
+    mscore, bad4 = _num(body.get("min_score"), name="min_score", cast=float,
+                        default=None, lo=0.0)
+    for msg in (bad, bad2, bad3, bad4):
+        if msg:
+            return error(msg)
     res = await asyncio.to_thread(
-        rt.activity.mine_drift, None, None, max(1, min(days, 180)), None,
-        bucket_sec=(int(body["bucket_sec"]) if body.get("bucket_sec") is not None else None),
-        window_size=(int(body["window_size"]) if body.get("window_size") is not None else None),
-        min_score=(float(body["min_score"]) if body.get("min_score") is not None else None),
+        rt.activity.mine_drift, None, None, days, None,
+        bucket_sec=bsec, window_size=wsize, min_score=mscore,
         persist=bool(body.get("persist", True)),
     )
     return ok(res)
@@ -296,19 +349,20 @@ async def behaviors_audit_rule_recall(request: Request):
         return err
     body = await json_body(request)
     rt = runtime(request)
-    try:
-        days = int(body.get("days") or 14)
-    except (TypeError, ValueError):
-        return error("days 必须是整数")
+    days, bad = _num(body.get("days"), name="days", default=14, lo=1, hi=180)
+    mnm, bad2 = _num(body.get("min_near_miss"), name="min_near_miss", default=2, lo=1)
+    for msg in (bad, bad2):
+        if msg:
+            return error(msg)
     rooms = body.get("rooms")
     res = await asyncio.to_thread(
         rt.activity.audit_rule_recall,
         (body.get("start") or "").strip() or None,
         (body.get("end") or "").strip() or None,
-        max(1, min(days, 180)),
+        days,
         [str(r) for r in rooms] if isinstance(rooms, list) and rooms else None,
         persist=bool(body.get("persist", True)),
-        min_near_miss=int(body.get("min_near_miss") or 2),
+        min_near_miss=mnm,
     )
     return ok(res)
 
@@ -356,11 +410,17 @@ async def behaviors_home_profile(request: Request):
         return error("max_chars 必须是整数")
     write = request.query_params.get("write", "").lower() in ("1", "true", "yes")
     from ..home_profile import build_profile, write_profile_atomic
-    profile_text = build_profile(rt.store, max_chars=max(100, min(max_chars, 20000)))
+    # 改前这两步直接在事件循环里跑：`build_profile` 内部是 `store.list_agent_memories`
+    # （真 SQLite，全局 RLock），`write_profile_atomic` 是文件写。探针读数：handler 里
+    # 塞 50ms 同步占用时，同循环的心跳协程 tick 增量为 **0**，且两个调用都落在 MainThread
+    # —— 现有卸载量具只认 `rt.store.<m>()` 形状，"把 store 当参数传进同步函数"不进统计，
+    # 所以这一格一直没人看见（第五轮审计 CRITICAL-2 的同一族）。
+    profile_text = await asyncio.to_thread(
+        build_profile, rt.store, max_chars=max(100, min(max_chars, 20000)))
     written_path = None
     if write:
         out_path = "/data/home_profile.md"
-        write_profile_atomic(out_path, profile_text)
+        await asyncio.to_thread(write_profile_atomic, out_path, profile_text)
         written_path = out_path
     return ok({"profile": profile_text, "chars": len(profile_text), "written": written_path})
 
@@ -645,11 +705,13 @@ async def rule_channel_false_positive(request: Request):
     rt = runtime(request)
     body = await json_body(request)
     rule_id = (body.get("rule_id") or "").strip()
-    trigger_id = body.get("trigger_id")
-    if not rule_id or trigger_id in (None, ""):
+    trigger_id, bad = _num(body.get("trigger_id"), name="trigger_id", default=None, lo=1)
+    if bad:
+        return error(bad)
+    if not rule_id or trigger_id is None:
         return error("缺少 rule_id / trigger_id")
     res = await asyncio.to_thread(
-        _lifecycle(rt).flag_false_positive, rule_id, int(trigger_id), "user",
+        _lifecycle(rt).flag_false_positive, rule_id, trigger_id, "user",
         str(body.get("reason") or ""))
     if not res.get("ok"):
         return error(res.get("error", "标记失败"), 404)
@@ -663,10 +725,12 @@ async def rule_channel_audit(request: Request):
         return err
     rt = runtime(request)
     rule_id = (request.query_params.get("rule_id") or "").strip()
-    try:
-        limit = max(1, min(500, int(request.query_params.get("limit") or "100")))
-    except ValueError:
-        limit = 100
+    # 改前：`except ValueError: limit = 100` —— 非数字被**静默改成默认档**（仓内门禁
+    # `swallow-and-claim-ok` 的形状），调用方以为自己要的是 5 条、拿回的是 100 条。
+    limit, bad = _num(request.query_params.get("limit"), name="limit",
+                      default=100, lo=1, hi=500)
+    if bad:
+        return error(bad)
     rows = await asyncio.to_thread(rt.store.list_rule_lifecycle, rule_id, limit)
     return ok({"items": rows, "count": len(rows)})
 
@@ -742,7 +806,13 @@ async def behaviors_bad_cases_list(request: Request):
     if err:
         return err
     rt = runtime(request)
-    limit = min(int(request.query_params.get("limit", 20) or 20), 100)
+    # 改前这里是 `min(int(query), 100)`：非数字未捕获（500），而 0/负数原样下推到
+    # `Store.list_behavior_events` 的 `LIMIT ?`。SQLite 里 `LIMIT -1` = **无上限**，
+    # 于是"限 100 条"的接口可以用一个 `?limit=-1` 变成全表返回。
+    limit, bad = _num(request.query_params.get("limit"), name="limit",
+                      default=20, lo=1, hi=100)
+    if bad:
+        return error(bad)
     room = (request.query_params.get("room") or "").strip()
     try:
         events = await asyncio.to_thread(
@@ -954,9 +1024,16 @@ async def behaviors_predictions(request: Request):
 
     from ..behavior_predictor import predict_daily_routine, predict_arrival_time
 
-    arrival = predict_arrival_time(events, person, weekday=weekday,
-                                   tz_offset_hours=rt.config.tz_offset_hours)
-    routine = predict_daily_routine(events, person, tz_offset_hours=rt.config.tz_offset_hours)
+    # 上面那句 `list_behavior_events` 已经进了线程，下面这两步却是纯 CPU 的统计
+    # （最多 5000 行 × 每人每日分桶），改前直接钉在事件循环上：探针读到两个函数
+    # 都落在 MainThread。一起卸载，别把最贵的一段留在循环里。
+    def _predict():
+        return (predict_arrival_time(events, person, weekday=weekday,
+                                     tz_offset_hours=rt.config.tz_offset_hours),
+                predict_daily_routine(events, person,
+                                      tz_offset_hours=rt.config.tz_offset_hours))
+
+    arrival, routine = await asyncio.to_thread(_predict)
 
     return ok({
         "person": person,
@@ -978,21 +1055,26 @@ async def behaviors_intent(request: Request):
         return err
     rt = runtime(request)
     person = (request.query_params.get("person") or "").strip() or None
-    try:
-        limit = int(request.query_params.get("limit") or 3)
-    except (TypeError, ValueError):
-        limit = 3
+    # 改前是 `try: int(...) except: limit = 3`——把 "abc" 悄悄吞成默认档，
+    # 再用 `max(1, min(limit, 5))` 把越界也一起吞掉。改成点名参数的 400。
+    limit, bad = _num(request.query_params.get("limit"), name="limit",
+                      default=3, lo=1, hi=5)
+    if bad:
+        return error(bad)
 
     events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
     if not events:
         return ok({"intents": [], "note": "无历史行为事件数据"})
 
-    from ..intent_inference import infer_intent_sequence, get_intent_suggestions
+    from ..intent_inference import get_intent_suggestions, infer_intent_sequence
 
-    intents = infer_intent_sequence(events, person=person, max_intents=max(1, min(limit, 5)))
-    for intent in intents:
-        intent["suggestions"] = get_intent_suggestions(intent)
+    def _infer():
+        rows = infer_intent_sequence(events, person=person, max_intents=limit)
+        for intent in rows:
+            intent["suggestions"] = get_intent_suggestions(intent)
+        return rows
 
+    intents = await asyncio.to_thread(_infer)
     return ok({"intents": intents, "count": len(intents)})
 
 
@@ -1035,6 +1117,15 @@ async def causal_analyze(request: Request):
         lookback = int(request.query_params.get("lookback_days") or 7)
     except (TypeError, ValueError):
         return error("days / lookback_days 必须是整数")
+    # `change_attribution.search_candidate_causes` 原先对同一个 `lookback_days` 有两个口径：
+    # 扫描窗口走 `clamp_days`、衰减半衰期 `half_life` 用原值，传 10**9 时窗口是 3650 天、
+    # 半衰期是 5e8 天 ⇒ 候选原因的"时间邻近度"一律≈1，confidence 排序静默失效
+    # （第八轮 P3-2 只收了会崩的那一半）。库侧已把出口收成同一个 `window_days`，这里再收
+    # 一道入口门：越界直接拒，不替调用方改数——HTTP 面拿到 400 比拿到一份被悄悄改过窗口的
+    # 归因更有用。
+    for value, name in ((days, "days"), (lookback, "lookback_days")):
+        if not (1 <= value <= DAY_WINDOW_MAX):
+            return error(f"{name} 必须在 1-{DAY_WINDOW_MAX} 之间")
     if not person:
         return error("person 必填")
     from ..mcp_server import _fetch_attribution_events
@@ -1063,6 +1154,11 @@ async def causal_counterfactual(request: Request):
         days = int(request.query_params.get("days") or 30)
     except (TypeError, ValueError):
         return error("days 必须是整数")
+    # 与 causal_analyze 同口径：`counterfactual_query` 的窗口走 `clamp_days(days)`，
+    # 而它回显的 `lookback_days` 用原值——传 10**9 时响应里承诺了 1e9 天的窗口、实际只算了
+    # 3650 天。入口拒绝，不替调用方改数。
+    if not (1 <= days <= DAY_WINDOW_MAX):
+        return error(f"days 必须在 1-{DAY_WINDOW_MAX} 之间")
     if not person or not event_type:
         return error("person 和 event_type 必填")
     from ..mcp_server import _fetch_attribution_events

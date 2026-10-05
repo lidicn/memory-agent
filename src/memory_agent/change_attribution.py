@@ -314,7 +314,13 @@ def search_candidate_causes(events, person, change_start_ts, lookback_days=7):
     cdt = _parse_ts(change_start_ts)
     if cdt is None:
         return []
-    delta = timedelta(days=clamp_days(lookback_days))
+    window_days = clamp_days(lookback_days)
+    # `lookback_days` 在这条函数里有三个出口：窗口跨度、衰减半衰期、给读者看的描述文案。
+    # 改前只有第一个走 `clamp_days`，另两个用**原值**——传 10**9 时窗口被夹成 3650 天、
+    # 半衰期却是 5e8 天 ⇒ `_temporal_proximity` 对所有事件年龄一律给 ≈1.0，
+    # 末尾按 confidence 的排序静默失效（不崩，只是算错；第八轮 P3-2 只收了会崩的那一半），
+    # 而 description 还写着"变化前 1000000000 天内"。三个出口同一个口径。
+    delta = timedelta(days=window_days)
     ws, we = cdt - delta, cdt
     bs_lo, bs_hi = cdt - 2 * delta, cdt - delta
     action_counts = defaultdict(lambda: {"c": 0, "b": 0})
@@ -322,7 +328,7 @@ def search_candidate_causes(events, person, change_start_ts, lookback_days=7):
     person_days_c = set()
     person_days_b = set()
     holiday_dates = set()
-    half_life = lookback_days / 2.0
+    half_life = window_days / 2.0
     for ev in events:
         dt = _parse_ts(ev.get("server_ts", ""))
         if dt is None:
@@ -366,7 +372,7 @@ def search_candidate_causes(events, person, change_start_ts, lookback_days=7):
         candidates.append({"cause_type": ctype, "event_type": action, "count": c,
                            "baseline_count": b, "correlation": round(corr, 2),
                            "temporal_proximity": round(prox, 2), "confidence": round(conf, 2),
-                           "description": _description(action, c, b, lookback_days)})
+                           "description": _description(action, c, b, window_days)})
     for sched in ("weekday", "weekend", "holiday"):
         if sched == "weekday":
             c_dates = [d for d in person_days_c if _is_weekday(d) and d not in holiday_dates]
@@ -387,7 +393,7 @@ def search_candidate_causes(events, person, change_start_ts, lookback_days=7):
         candidates.append({"cause_type": "schedule_change", "event_type": sched, "count": c,
                            "baseline_count": b, "correlation": round(corr, 2),
                            "temporal_proximity": round(prox, 2), "confidence": round(conf, 2),
-                           "description": _description(sched, c, b, lookback_days)})
+                           "description": _description(sched, c, b, window_days)})
     candidates.sort(key=lambda x: -x["confidence"])
     return candidates
 
