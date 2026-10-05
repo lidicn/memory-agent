@@ -109,6 +109,20 @@ _CONFIDENCE_CAP = 0.95
 _SG_CORROBORATION_BONUS = 0.04
 
 
+def _event_dt(raw) -> datetime | None:
+    """解析单条事件的 `server_ts`；非字符串 / 畸形一律只废它自己，绝不抛。
+
+    第十三轮 P4-3 的 `now` 兜底不给回来：一条坏行就能让整句 `max()` 抛异常把基准
+    换成容器墙钟，历史事件全落窗外 ⇒ `/api/behaviors/intents` 静默返回空。
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
 def _match_time_window(rule: dict, ref: datetime) -> bool:
     """规则声明了 time_window 时，判断 ref 时刻是否落在窗口内（支持跨午夜）。"""
     tw = rule.get("time_window")
@@ -223,47 +237,37 @@ def infer_intent(
     if not events:
         return None
 
-    # 取最近的事件时间作为基准
-    now = datetime.now()
-    try:
-        latest_ts = max(
-            datetime.fromisoformat(ev.get("server_ts", ""))
-            for ev in events
-            if ev.get("server_ts")
-        )
-    except (ValueError, TypeError):
-        latest_ts = now
+    # 基准取库内 max(server_ts)：解析不出来的行只废它自己，不牵动整批基准
+    stamped = [(_event_dt(ev.get("server_ts")), ev) for ev in events]
+    stamps = [dt for dt, _ in stamped if dt is not None]
+    if not stamps:
+        return None
+    latest_ts = max(stamps)
 
     window_start = latest_ts - timedelta(minutes=window_min)
 
     # 过滤时间窗口内的事件
     recent_events = []
-    for ev in events:
-        ts_str = ev.get("server_ts", "")
-        if not ts_str:
+    for ev_dt, ev in stamped:
+        if ev_dt is None or ev_dt < window_start:
             continue
-        try:
-            ev_dt = datetime.fromisoformat(ts_str)
-        except ValueError:
-            continue
-        if ev_dt >= window_start:
-            # 如果限定了 person，只看该人的事件
-            if person:
-                persons_raw = ev.get("persons_json")
-                if persons_raw is None:
-                    # list_behavior_events 已把 persons_json 反序列化成 persons
-                    persons_raw = ev.get("persons") or "[]"
-                try:
-                    import json
-                    persons = json.loads(persons_raw) if isinstance(persons_raw, str) else persons_raw
-                except (ValueError, TypeError):
-                    persons = []
-                if not any(
-                    p.get("name") == person or p.get("member_id") == person
-                    for p in persons if isinstance(p, dict)
-                ):
-                    continue
-            recent_events.append(ev)
+        # 如果限定了 person，只看该人的事件
+        if person:
+            persons_raw = ev.get("persons_json")
+            if persons_raw is None:
+                # list_behavior_events 已把 persons_json 反序列化成 persons
+                persons_raw = ev.get("persons") or "[]"
+            try:
+                import json
+                persons = json.loads(persons_raw) if isinstance(persons_raw, str) else persons_raw
+            except (ValueError, TypeError):
+                persons = []
+            if not any(
+                p.get("name") == person or p.get("member_id") == person
+                for p in persons if isinstance(p, dict)
+            ):
+                continue
+        recent_events.append(ev)
 
     if not recent_events:
         return None

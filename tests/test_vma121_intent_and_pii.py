@@ -536,5 +536,60 @@ def test_infer_intent_sequence_window_min_is_honored():
         "给了 10 分钟窗口就不该看到 20 分钟前的证据"
 
 
+# ── 1c. 元宝第十三轮 P4-3：窗口基准只用库内时间，坏行不许把基准推到墙钟 ──────
+#
+# 审计报告的原话是「`now` **只**在所有事件 ts 都解析失败时兜底，影响极有限，定 P4」。
+# 这句不成立：`max()` 里那条生成式遇到**任意一条**坏 ts 就整句抛 ValueError，
+# 捕获后 `latest_ts = datetime.now()` ⇒ 窗口锚到容器墙钟 ⇒ 一屋子历史事件全部落在
+# 窗外 ⇒ `/api/behaviors/intents` 静默返回 `{"intents": []}`（现网实测：
+# 1 条好行 → 有结果；1 好 + 1 条 "0000-00-00 00:00:00" → 空）。
+# 另一头：`server_ts` 是非字符串（int）时，过滤循环只 `except ValueError` ⇒ TypeError
+# 直接飞出，两个调用点（behavior_routes.py:990、mcp_server.py:2770）都没有 try/except。
+
+_HIST = "2026-03-05T21:00:00"      # 远早于任何"当前时刻"：基准一旦落到墙钟必然空
+
+
+def _hist_ev(ts=_HIST, action="客厅清空"):
+    return {"server_ts": ts, "action": action, "scene": "", "room": "客厅",
+            "persons_json": "[]"}
+
+
+class _NoClock(datetime):
+    """把 `datetime.now()` 钉成硬失败：意图推断没有任何一条路径该读容器墙钟。"""
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: ARG003
+        raise AssertionError("意图推断读了容器墙钟当窗口基准")
+
+
+def test_intent_window_anchor_is_clock_independent(monkeypatch):
+    monkeypatch.setattr(imod, "INTENT_RULES", [_SG_RULE])
+    monkeypatch.setattr(imod, "datetime", _NoClock)
+    out = infer_intent([_hist_ev()], window_min=10)
+    assert out is not None and out["intent"] == "exercise", out
+    assert out["events_in_window"] == 1, out
+
+
+def test_one_malformed_ts_does_not_blank_the_batch(monkeypatch):
+    """坏行只废它自己：可解析的历史行仍要出结果，且窗口内事件数不含坏行。"""
+    monkeypatch.setattr(imod, "INTENT_RULES", [_SG_RULE])
+    monkeypatch.setattr(imod, "datetime", _NoClock)
+    for poison in ("0000-00-00 00:00:00", "not-a-ts", "", None, 1700000000, {"x": 1}):
+        events = [_hist_ev(), _hist_ev(poison)] if poison is not None \
+            else [_hist_ev(), {"server_ts": None, "action": "客厅清空", "scene": "",
+                               "room": "客厅"}]
+        out = infer_intent(events, window_min=10)
+        assert out is not None, f"一条 poison={poison!r} 就把整批打成空"
+        assert out["events_in_window"] == 1, (poison, out)
+
+
+def test_no_parseable_ts_returns_none_instead_of_500(monkeypatch):
+    """整批都定不了位 ⇒ None（不猜基准），且绝不许抛出去。"""
+    monkeypatch.setattr(imod, "INTENT_RULES", [_SG_RULE])
+    monkeypatch.setattr(imod, "datetime", _NoClock)
+    assert infer_intent([_hist_ev(1700000000), _hist_ev("bad")], window_min=10) is None
+    assert imod.infer_intent_sequence([_hist_ev(1700000000)], window_min=10) == []
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
