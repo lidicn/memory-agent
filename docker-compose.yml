@@ -58,8 +58,10 @@ services:
     container_name: memory-caddy
     restart: unless-stopped
     ports:
-      # 80 端口被 NAS 宿主服务占用，只绑 443 做 HTTPS 反代
-      - "192.168.2.200:443:443"
+      # DCD 20261005 Q3=A：NAS 宿主 80/443 被孤儿端点占用，8443 被 homelab-dashboard 占用
+      # caddy 换端口 9080/9443，PWA 访问地址改为 https://192.168.2.200:9443
+      - "192.168.2.200:9080:80"
+      - "192.168.2.200:9443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./certs:/certs:ro
