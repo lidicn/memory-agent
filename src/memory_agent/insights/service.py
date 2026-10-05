@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .activity import ActivityEngine, ActivityRule, BUILTIN_ACTIVITIES, Signal
 from .models import fmt_ts, house_dt, house_ts
+from .report import ReportBuilder
 from .repository import _to_epoch, _to_iso
 
 __all__ = ["BehaviorService", "CATEGORY_DOMAINS", "WEEKDAY_NAMES", "compute_sessions"]
@@ -370,6 +371,9 @@ class BehaviorService:
         self.config = config
         self.log = _LOG
         self._adapter = _ResolverAdapter(resolver)
+        # api.py 的四条 `self.core.reports.<x>_report(...)` 文本面此前指向一个从未挂载的
+        # 成员（`hasattr(BehaviorService, 'reports') == False`，调用即 AttributeError）。
+        self.reports = ReportBuilder()
 
     # ------------------------------------------------------------- 公共骨架
     def _now(self) -> float:
@@ -612,9 +616,10 @@ class BehaviorService:
         }
 
     # -------------------------------------------------------- anomaly_report
-    def anomaly_report(self, tr: Any, room: str = "", category: str = "") -> Dict[str, Any]:
+    def anomaly_report(self, tr: Any, room: str = "", category: str = "",
+                       entity_id: Any = "") -> Dict[str, Any]:
         try:
-            out = self._anomaly_report(tr, room, category)
+            out = self._anomaly_report(tr, room, category, entity_id)
             out["ok"] = True
             return out
         except Exception as exc:
@@ -622,8 +627,9 @@ class BehaviorService:
                 "anomalies": [], "summary": {"count": 0, "by_type": {}, "by_severity": {}},
                 "filters": {}})
 
-    def _anomaly_report(self, tr: Any, room: str, category: str) -> Dict[str, Any]:
-        rooms, domains, entity_ids = self._filters(room, category)
+    def _anomaly_report(self, tr: Any, room: str, category: str,
+                        entity_id: Any = "") -> Dict[str, Any]:
+        rooms, domains, entity_ids = self._filters(room, category, entity_id)
         start_day, end_day = self._tr_days(tr)
         all_days = list(_iter_days(start_day, end_day))
         day_counts = self.repo.day_counts(tr, entity_ids=entity_ids, rooms=rooms, domains=domains)
@@ -719,7 +725,8 @@ class BehaviorService:
             "summary": {"count": len(anomalies), "by_type": by_type, "by_severity": by_sev,
                         "total_events": total_events, "days": len(all_days),
                         "median_daily": round(med, 2), "threshold": round(threshold, 2)},
-            "filters": self._filter_echo(room, category, "", rooms, domains, entity_ids),
+            "filters": self._filter_echo(room, category, ",".join(entity_ids),
+                                         rooms, domains, entity_ids),
         }
 
     # ----------------------------------------------------- behavior_insights

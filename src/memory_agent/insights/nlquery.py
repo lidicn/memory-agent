@@ -113,10 +113,12 @@ class NLQueryEngine:
         if route == Intent.BEHAVIOR.value:
             return self._answer_behavior(plan, tr)
         if route == Intent.ANOMALY.value:
-            # 新引擎的 `anomaly_report(tr, room, category)`：没有 `query=` 参数，
             # 条数在 `summary.count`、正文在每条的 `message`（legacy 的 `data["total"]`
-            # 与 `a["title"]` 都不存在）。
-            data = self.service.anomaly_report(tr, room=plan.room, category=plan.category)
+            # 与 `a["title"]` 都不存在）。实体集走 `_answer_usage` 同一套口径：文本匹配
+            # 由规划阶段的 `entity_ids` 承担，这里只负责把它转成引擎收的 `entity_id`
+            # ——改前这一跳漏了，问「鱼缸水泵有什么异常」拿到的是**全屋**异常。
+            data = self.service.anomaly_report(tr, room=plan.room, category=plan.category,
+                                               entity_id=",".join(plan.entity_ids))
             count = int((data.get("summary") or {}).get("count") or 0)
             messages = "；".join(str(a.get("message") or "")
                                  for a in (data.get("anomalies") or [])[:3])

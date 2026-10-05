@@ -509,6 +509,25 @@ class InsightService:
                              truncated=getattr(self.repo, "last_scan_truncated", None))
 
     @staticmethod
+    def _closed_ok(anomalies: Any, summary: Dict[str, Any],
+                   filters: Dict[str, Any]) -> bool:
+        """fail-closed 那一格的 `ok` 位由不变式推出，不写字面量（门禁 `fake-ok-const`，
+        与 `_envelope_ok` 同一套做法）。
+
+        「0 条」要配得上 ok，必须同时**自洽**且**带原因**，三条缺一就翻 False：
+        ① `summary.count` 与 `anomalies` 逐字对得上；
+        ② 回显的实体集是空的——既然答 0 条，就不许同时声称扫了某些设备；
+        ③ `filters.unresolved` 非空——静默的 0 条正是这轮审计要消灭的形状。
+        """
+        if not isinstance(anomalies, list):
+            return False
+        if int(summary.get("count") or 0) != len(anomalies):
+            return False
+        if filters.get("entity_ids"):
+            return False
+        return bool(filters.get("unresolved"))
+
+    @staticmethod
     def _envelope_ok(out: Dict[str, Any], counted: Any) -> bool:
         """分页信封的 `ok` 位由不变式推出，不写字面量（门禁 `fake-ok-const`）。
 
@@ -706,10 +725,34 @@ class InsightService:
     @_degrade(lambda: Page.build([]).to_dict("anomalies"))
     def anomaly_report(self, days: int = 0, start: str = "", end: str = "", room: str = "",
                        category: str = "", query: str = "") -> Dict[str, Any]:
-        """异常报告（设备异常 + 数据质量 + 噪声源）。"""
-        tr = self._tr(start, end)
-        start, end = self._days_to_range(days, start, end)
-        return self.core.anomaly_report(tr, room=room, category=category)
+        """异常报告（设备异常 + 数据质量 + 噪声源）。
+
+        任务表 #40 ⑤ / #58 Q-D 现场（量具 `scripts/scan_qb_param_landing.py`，
+        判据 = DCD 20261005 §三 Q2「每个入参必须有落点或显式不支持，不允许静默忽略」）：
+        改前体是 `tr = self._tr(start, end)` 紧跟 `start, end = self._days_to_range(days, …)`
+        ——后一条的返回值没人读，`days` 等于进了死赋值，窗口悄悄退回 `default_days`
+        （`anomaly_report_text(days=14)` 因此一直出 7 天的报告），`query` 更是全函数从未引用。
+        现在两位都落到底：`days` 交给 `resolve_range`（优先级 显式 start/end > days > default_days），
+        `query` 按 `_search` 同一套语义解析成实体集后下推 `core.anomaly_report(entity_id=…)`；
+        解析不出实体时 fail-closed 答 0 条并写明原因——用户点名的设备查不到，
+        不能把全屋异常当成"这台设备的异常"交出去（legacy 在这一格同样是漏的）。
+        """
+        tr = self._tr(start, end, days=days)
+        ids = self.resolver.resolve_ids(room=room, category=category, query=query) if query else []
+        if query and not ids:
+            anomalies: List[Dict[str, Any]] = []
+            summary = {"count": len(anomalies), "by_type": {}, "by_severity": {},
+                       "total_events": 0, "days": 0, "median_daily": 0.0, "threshold": 0.0}
+            filters = {"room": room or "(全部)", "category": category or "(全部)",
+                       "query": query, "entity_id": "(全部)", "rooms": [],
+                       "domains": [], "entity_ids": [],
+                       "unresolved": ("query 传了但解析不出实体；按 0 条回答，"
+                                      "不回落成全屋异常")}
+            return {"anomalies": anomalies,
+                    "ok": self._closed_ok(anomalies, summary, filters),
+                    "summary": summary, "filters": filters}
+        return self.core.anomaly_report(tr, room=room, category=category,
+                                        entity_id=",".join(ids))
 
     @_degrade(lambda: Page.build([]).to_dict("devices"))
     def device_health(self, room: str = "", category: str = "", query: str = "",
