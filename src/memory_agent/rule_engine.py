@@ -142,45 +142,116 @@ class ActiveRuleEngine:
 
     # ── 规则测试 ──────────────────────────────────────────────────────
 
-    def test_rule(self, rule: dict, events: list[dict], ignore_trigger: bool = False) -> dict:
-        """测试规则：用历史事件或模拟事件测试规则。
+    def test_rule(self, rule: dict, events: list[dict],
+                  ignore_trigger: bool = False) -> dict:
+        """测试规则：用历史事件或模拟事件测试规则（DCD 20261005 §二.2 Q4=乙）。
 
         返回：
         {
             "total": 总事件数,
-            "matched": 匹配数,
+            "matched": 条件命中数,
             "false_positive": 误触发数,
             "false_negative": 漏触发数,
             "precision": 精确率,
             "recall": 召回率,
+            "triggered": 判定链会吵几次（只测条件时为 ``None``）,
+            "suppressed_cooldown": 被冷却期压掉的次数（同上 ``None``）,
+            "trigger_check": 判定链口径与参数回显,
             "items": [测试详情]
         }
+
+        ``ignore_trigger`` 从此真的有语义。此前函数体注释写死「不检查触发策略」，
+        参数无人读——默认档（``False``=不忽略触发）跑的却是条件层，于是「这条规则
+        会吵几次」这个问题它答不了，只会给出一个看起来像答案的数。
+
+        * ``False``（默认）——按**生产同口径**跑完整判定链（触发策略 + 冷却期），
+          回的是「把这批历史事件喂进去，这条规则会吵几次」。R3 观察期要的正是
+          这个预演：候选规则在进引擎之前先看它有多吵。
+        * ``True``——只测条件本身，``triggered``/``suppressed_cooldown`` 给
+          ``None`` 而不是 0：0 会被读成「一次都不会吵」。逐条的 ``would_trigger``
+          同理分三种：``False``=条件没命中（谈不上吵），``None``=判不了
+          （只测条件，或这条事件没有可用时间戳），``True``=会吵。
+
+        层级要说清：``matched``/``precision``/``recall``/``false_positive``/
+        ``false_negative`` 是**条件层**读数（真值标签 ``expected`` 标注的是条件），
+        ``triggered``/``suppressed_cooldown`` 是**判定链层**。拿 precision 当
+        「会不会吵人」读会读出反义。
+
+        两种模式都跑在**独立的回放状态**上：既不碰 ``self._event_windows`` /
+        ``self._cooldown_until``，也不读 ``rule_trigger_history``。测一条候选规则
+        不该把线上规则的冷却窗口一起占掉，也不该被线上规则的历史触发反向污染。
+
+        时间口径与 ``match_event(now_ts=...)`` 一致：count 窗口与冷却期按事件
+        **自身的墙钟**推进，不用「现在」——回放一小时历史时把全部事件当成同一
+        瞬间，``min_count`` 门槛就形同不存在（Q1=B 的同一条语义）。事件没带可解析
+        时间戳时**不猜**：它进不了窗口判定，如实计入 ``trigger_check``。
+
+        ``trigger`` 分支与匹配端逐字对齐：``count`` 读 ``window_seconds``/
+        ``min_count``（60 秒 3 次是 DCD Q2 的**裁定值**），``absence`` 在匹配路径
+        永不触发（由后台扫描器处理），其余按 ``single``。冷却与 ``match_event``
+        同为「策略门槛在前、冷却在后，决定触发才占窗口」。
         """
         total = 0
         matched = 0
         false_positive = 0
         false_negative = 0
+        triggered = 0
+        suppressed = 0
         items = []
+
+        trigger = rule.get("trigger") or {}
+        trigger_type = str(trigger.get("type") or "single")
+        # 只在 count 分支落数值：single/absence 报 window_seconds 会让人以为
+        # 「这条规则有窗，只是没到」，而它根本没有窗。
+        window_seconds = int(trigger.get("window_seconds", 60)) \
+            if trigger_type == "count" else None
+        min_count = int(trigger.get("min_count", 3)) if trigger_type == "count" else None
+        cooldown_seconds = self._cooldown_seconds(rule)
+
+        hits: deque = deque()          # 本轮回放自己的 count 窗口，不落 self._event_windows
+        last_fired: Optional[datetime] = None   # 本轮回放自己的冷却锚点，不落 _cooldown_until
+        events_without_ts = 0
 
         for event in events:
             total += 1
             expected = event.get("expected", "unknown")
-            # 匹配条件（不检查触发策略，只测试条件本身）
             result, trace = self._match_condition(rule["condition"], event, trace=True)
             if result:
                 matched += 1
-            # 判断是否误触发或漏触发
             if expected == "positive" and not result:
                 false_negative += 1
             elif expected == "negative" and result:
                 false_positive += 1
-            # 记录详情
+
+            would: Optional[bool] = None if ignore_trigger else False
+            if result and not ignore_trigger and trigger_type != "absence":
+                now_dt = self._replay_time(event)
+                if now_dt is None:
+                    events_without_ts += 1
+                    would = None      # 判不了，不是"不会吵"
+                else:
+                    if trigger_type == "count":
+                        hits.append(now_dt)
+                        while hits and (now_dt - hits[0]).total_seconds() > window_seconds:
+                            hits.popleft()
+                        would = len(hits) >= min_count
+                    else:
+                        would = True
+                    if would and cooldown_seconds > 0 and last_fired is not None \
+                            and (now_dt - last_fired).total_seconds() < cooldown_seconds:
+                        would = False
+                        suppressed += 1
+                    if would:
+                        last_fired = now_dt
+                        triggered += 1
+
             items.append({
                 "event": event,
                 "matched": result,
                 "expected": expected,
-                "verdict": "OK" if result == (expected == "positive") else ("FP" if expected == "negative" else "FN"),
-                "trace": trace
+                "would_trigger": would,
+                "verdict": self._replay_verdict(result, expected),
+                "trace": trace,
             })
 
         # 计算 precision 和 recall
@@ -194,8 +265,49 @@ class ActiveRuleEngine:
             "false_negative": false_negative,
             "precision": precision,
             "recall": recall,
+            "triggered": None if ignore_trigger else triggered,
+            "suppressed_cooldown": None if ignore_trigger else suppressed,
+            "trigger_check": {
+                "mode": "condition_only" if ignore_trigger else "full_chain",
+                "trigger_type": trigger_type,
+                "window_seconds": window_seconds,
+                "min_count": min_count,
+                "cooldown_seconds": cooldown_seconds,
+                "events_without_ts": events_without_ts,
+                "absence_never_fires": trigger_type == "absence",
+            },
             "items": items
         }
+
+    @staticmethod
+    def _replay_verdict(matched: bool, expected: Any) -> str:
+        """逐条判定字。没有真值标签的事件不配被判成 FN。
+
+        原式 ``"OK" if result == (expected == "positive") else ("FP" if ... else "FN")``
+        会把「未标注（``unknown``）但条件命中」写成 FN，而 FN 计数并没有加它——
+        同一个读数里两个字段互相打脸。未标注就如实写 UNLABELED。
+        """
+        if expected not in ("positive", "negative"):
+            return "UNLABELED"
+        if matched == (expected == "positive"):
+            return "OK"
+        return "FP" if expected == "negative" else "FN"
+
+    def _replay_time(self, event: dict) -> Optional[datetime]:
+        """回放判定链可用的事件墙钟；没有可解析时间戳时返回 ``None``（不猜）。
+
+        :meth:`_event_now` 的兜底是「拿当前墙钟顶上」，在线判 ``time_range`` 时合理，
+        判窗口时却会把一条没有时间的事件塞进「此刻」的 count/冷却状态里，预演读数
+        因此凭空多出或凭空少掉几次触发。这里要的是「这条判不了」这句真话，
+        由 ``trigger_check.events_without_ts`` 如实报数。
+        """
+        raw = str(event.get("ts") or event.get("server_ts") or "").strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace(" ", "T")[:19])
+        except ValueError:
+            return None
 
     def simulate_events(self, spec: dict) -> list[dict]:
         """模拟事件：根据规格生成模拟事件。

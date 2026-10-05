@@ -313,10 +313,6 @@ class InsightService:
         from .insights.utils import fallback_name
         return fallback_name(entity_id)
 
-    # Phase 3 迁移：_CAPABILITY_KEYWORDS 和 _CAPABILITY_ALIASES 已迁移到新版 insights.utils
-    from .insights.utils import CAPABILITY_KEYWORDS as _CAPABILITY_KEYWORDS
-    from .insights.utils import CAPABILITY_ALIASES as _CAPABILITY_ALIASES
-
     @classmethod
     def _capability_of(cls, entity_id: str) -> str:
         """[已迁移] 从 entity_id 提取归一化的能力后缀。

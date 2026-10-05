@@ -16,6 +16,14 @@
    （按 ``detected_activities.source_rule_id`` 定位），回滚条数进审计。
 4. **审计** —— 建议/确认/晋升/转正/撤销每一步都写 ``rule_lifecycle_audit``。
 
+## 人工录入（DCD 20261005 §二.2 Q1 = 乙 + 丁分两步）
+
+写侧 CRUD 不直接写 ``active_rules``：人工录入走 ``manual_add`` / ``manual_edit`` /
+``manual_withdraw``，落点是 ``candidate_rules``（``source='manual'``），此后与机器建议
+同一条通道、同一套四红线。人工身份只改「建议是谁提的」，不改门槛——红线 1 要求
+的独立证据日数对人工候选同样生效，证据不足就按 blocker 拒晋升（响应里当场给出
+``gate``，不留到三个月后）。规则的下架仍然只有 ``revoke`` 一条路（红线 3）。
+
 ## 已知结构限制（不掩盖）
 
 ``active_rules`` 的实时事件源原先只有客厅感知链路（``livingroom_ai.py`` 把
@@ -55,7 +63,8 @@ from typing import Any, Optional
 
 from .device_feed import BINARY_STATES, DEVICE_TRIGGER, FEED_TAGS
 from .rule_engine import DEVICE_EVENT_KIND
-from .store import CANDIDATE_ACCEPTED, CANDIDATE_PROMOTED
+from .store import (CANDIDATE_ACCEPTED, CANDIDATE_PRE_ENGINE, CANDIDATE_PROMOTED,
+                    CANDIDATE_SOURCE_MANUAL)
 
 logger = logging.getLogger("memory_agent.rule_lifecycle")
 
@@ -67,6 +76,11 @@ DRY_RUN_DAYS = float(os.getenv("MA_RULE_DRY_RUN_DAYS", "3"))
 MODE_DRY_RUN = "dry_run"
 MODE_LIVE = "live"
 MODE_REVOKED = "revoked"
+
+# 「这个入参没传」与「传了 None」在候选编辑上是两件事：前者不动那一列，后者是
+# 主动撤回设定（冷却上限清空后，晋升端会重新按「缺省即拒」挡住）。用 None 当
+# 缺省值就把这两件事压成一件，编辑接口因此需要一个独立的哨兵。
+_KEEP = object()
 
 # 引擎**感知** feed 能见到的 kind 词表（口径见 store.py 感知总线 perception_events.kind 注释）。
 # 设备侧不在这张表里：它走 ``device_feed`` 的 ``kind="device"`` + tag 条件，
@@ -88,6 +102,11 @@ ACT_PROMOTE = "promote"
 ACT_ADVANCE = "advance_live"
 ACT_REVOKE = "revoke"
 ACT_FALSE_POSITIVE = "false_positive"
+# 人工录入这条分支的三个动作（DCD 20261005 §二.2 Q1=乙+丁）。审计里必须和机器
+# 建议分得开：「谁写的」决定出了问题该找哪条链路，混成一个 confirm 就查不出来了。
+ACT_MANUAL_ADD = "manual_add"
+ACT_MANUAL_EDIT = "manual_edit"
+ACT_MANUAL_WITHDRAW = "manual_withdraw"
 
 # DCD 20261004 MA-裁1 Q1（显式化）。``add_rule`` 的形参默认值 300 从此只服务人工建规则
 # 的路径；晋升出去的每一条规则，它的「吵人上限」必须来自这次晋升自己给出的数值——
@@ -462,6 +481,157 @@ class RuleLifecycle:
             rule_id, ACT_FALSE_POSITIVE, actor=actor, to_state="false_positive",
             reason=reason, detail={"trigger_id": int(trigger_id)})
         return {"ok": marked, "rule_id": rule_id, "trigger_id": int(trigger_id)}
+
+    # ── 人工录入：写侧挂进通道（四条红线一条不放宽）─────────────────────
+
+    def manual_add(self, *, name: str, steps: list, time_window: str = "",
+                   infer: str = "", confidence: float = 0.6,
+                   evidence: list | None = None,
+                   cooldown_seconds: Any = _KEEP, actor: str = "user") -> dict:
+        """人工录一条候选规则：落 ``candidate_rules``，**不落** ``active_rules``。
+
+        DCD 20261005 §二.2 Q1 = 乙 + 丁分两步：只读面先挂上，写 CRUD 挂进 R3 通道。
+        于是这条路径录进来的东西与机器建议同类同规——一样要 ``accepted`` +
+        ``user_confirmed=1``、一样要跨 ``MIN_EVIDENCE`` 个独立自然日、一样先
+        ``dry_run`` 满观察期、一样逐步进 ``rule_lifecycle_audit``。人工身份只改变
+        「建议是谁提的」这一格，不换取红线豁免。
+
+        返回值里永远带着 ``gate``（红线 1 的逐条判据）：录一条规则时最坑的不是
+        被拒，而是「录成功了，三个月后才发现它永远晋升不了」。缺独立证据、
+        缺冷却上限这类缺口在这里就摆在响应上。
+
+        冷却上限沿用 DCD 20261004 MA-裁1 Q1 的口径：不传就等于不设定，晋升端
+        按「缺省即拒」处理；这里不吃 ``add_rule`` 的形参默认 300。
+        """
+        if not isinstance(steps, list) or not steps:
+            return {"ok": False, "error": "steps 必须是非空数组（通道按首个事件构造触发子）"}
+        existing = self.store.get_candidate_rule_by_name(name)
+        if existing and (existing.get("source") or "") != CANDIDATE_SOURCE_MANUAL:
+            # ``upsert_candidate_rule`` 按 name 判重。不拦这一条，人工录一条同名规则
+            # 就会把机器建议的 steps/evidence 原地洗掉，而审计里那条还是"机器建议"。
+            return {"ok": False,
+                    "error": f"同名候选已存在且来自机器建议（{existing['rule_id']}）——"
+                             f"请改名录入，或先驳回那条建议"}
+        seconds, why = parse_cooldown(None if cooldown_seconds is _KEEP else cooldown_seconds)
+        if why:
+            return {"ok": False, "error": why}
+        rid, action = self.store.upsert_candidate_rule(
+            name, steps, time_window=time_window, infer=infer,
+            confidence=confidence, source=CANDIDATE_SOURCE_MANUAL,
+            evidence=evidence or [])
+        if not rid:
+            return {"ok": False, "error": f"候选质量闸门拒绝录入: {action}"}
+        if seconds is not None:
+            self.store.set_candidate_rule_cooldown(rid, seconds)
+        cand = self.store.get_candidate_rule(rid) or {}
+        # ok 位来自回读，不是字面量（门禁 fake-ok-const）：写了没读回来就是没写。
+        # 回读为空时连审计都不记——留痕里那条"已录入"会比真相更误导人。
+        persisted = cand.get("rule_id") == rid
+        if not persisted:
+            return {"ok": False, "rule_id": rid,
+                    "error": f"候选 {rid} 写入后回读为空（未落盘），未记审计"}
+        self.store.log_rule_lifecycle(
+            rid, ACT_MANUAL_ADD if action == "added" else ACT_MANUAL_EDIT,
+            source_rule_id=rid, actor=actor,
+            to_state=str(cand.get("status") or ""),
+            reason=f"人工录入（{action}）",
+            detail={"steps": steps, "time_window": time_window, "infer": infer,
+                    "confidence": confidence, "cooldown_seconds": seconds,
+                    "source": CANDIDATE_SOURCE_MANUAL})
+        gate = self.eligibility(rid)
+        return {"ok": persisted, "rule_id": rid, "candidate_action": action,
+                "status": cand.get("status") or "", "gate": gate}
+
+    def manual_edit(self, rule_id: str, *, steps: list | None = _KEEP,
+                    time_window: str | None = _KEEP, infer: str | None = _KEEP,
+                    confidence: float | None = _KEEP,
+                    evidence: list | None = _KEEP,
+                    cooldown_seconds: Any = _KEEP,
+                    actor: str = "user", reason: str = "") -> dict:
+        """改**自己录的**那条候选，且只在她还没进引擎之前。
+
+        两道拒绝都不是保守，是链路的形状：
+
+        * ``source != manual`` ——机器建议的 steps/evidence 是「机器看到了什么」的
+          原始记录，人改了就再也不能拿它复盘建议质量；要否掉它走
+          ``candidate-rules/update``（驳回/采纳），要自己那条走 ``manual_add``。
+        * ``status == promoted`` ——候选已经译成 ``active_rules`` 里的一行，改候选
+          行不会改引擎行，两头就此分叉。要改已晋升的规则：先 ``revoke`` 再重录重晋升。
+        """
+        cand = self.store.get_candidate_rule(rule_id)
+        if not cand:
+            return {"ok": False, "error": f"候选规则 {rule_id} 不存在"}
+        if (cand.get("source") or "") != CANDIDATE_SOURCE_MANUAL:
+            return {"ok": False,
+                    "error": "只改人工录入的候选；机器建议请走驳回/采纳，不要改写它的 steps"}
+        if cand.get("status") == CANDIDATE_PROMOTED:
+            return {"ok": False,
+                    "error": "该候选已晋升进引擎，请先撤销（revoke）再重新录入，"
+                             "直接改候选会让候选行与引擎行分叉"}
+        fields = {k: v for k, v in {
+            "steps": steps, "time_window": time_window, "infer": infer,
+            "confidence": confidence, "evidence": evidence}.items()
+            if v is not _KEEP}
+        seconds, why = parse_cooldown(None if cooldown_seconds is _KEEP else cooldown_seconds)
+        if why:
+            return {"ok": False, "error": why}
+        if not fields and cooldown_seconds is _KEEP:
+            return {"ok": False, "error": "没有要更新的字段"}
+        if fields.get("steps") is not None and not fields["steps"]:
+            return {"ok": False, "error": "steps 必须是非空数组"}
+        if fields:
+            if not self.store.update_candidate_rule(rule_id, **fields):
+                return {"ok": False, "rule_id": rule_id,
+                        "error": f"候选 {rule_id} 更新未命中行（可能已被撤回）"}
+        if cooldown_seconds is not _KEEP:
+            # 传 None 是**撤回设定**（列回到未设定），与"没传"是两件事：
+            # 前者让人能把一个写错的数值清掉，让晋升端重新按缺省即拒处理。
+            if not self.store.set_candidate_rule_cooldown(rule_id, seconds):
+                return {"ok": False, "rule_id": rule_id,
+                        "error": f"候选 {rule_id} 冷却上限未命中行（可能已被撤回）"}
+        updated = self.store.get_candidate_rule(rule_id) or {}
+        persisted = updated.get("rule_id") == rule_id
+        if not persisted:
+            return {"ok": False, "rule_id": rule_id,
+                    "error": f"候选 {rule_id} 更新后回读为空，未记审计"}
+        self.store.log_rule_lifecycle(
+            rule_id, ACT_MANUAL_EDIT, source_rule_id=rule_id, actor=actor,
+            from_state=str(cand.get("status") or ""), to_state=str(updated.get("status") or ""),
+            reason=reason,
+            detail={"changed": sorted(fields), "cooldown_seconds": seconds})
+        return {"ok": persisted, "rule_id": rule_id, "gate": self.eligibility(rule_id)}
+
+    def manual_withdraw(self, rule_id: str, *, actor: str = "user",
+                        reason: str = "") -> dict:
+        """撤回并删除**自己录的、还没进引擎的**候选。
+
+        已晋升的不在这一格的射程内：那条候选是引擎里那行的上游依据，删了它
+        「谁建议的、按什么证据晋升」就查不回来了；下架规则本身请走 ``revoke``
+        （红线 3：连带回滚它产生的推断，并留审计）。
+        """
+        cand = self.store.get_candidate_rule(rule_id)
+        if not cand:
+            return {"ok": False, "error": f"候选规则 {rule_id} 不存在"}
+        if (cand.get("source") or "") != CANDIDATE_SOURCE_MANUAL:
+            return {"ok": False, "error": "只能撤回人工录入的候选；"
+                                          "机器建议请驳回（rejected），保留原始记录"}
+        if cand.get("status") == CANDIDATE_PROMOTED:
+            return {"ok": False, "error": "已晋升的候选不能删——请撤销规则（revoke），"
+                                          "它会关闭引擎里的规则并回滚推断"}
+        deleted = self.store.delete_candidate_rule(rule_id, CANDIDATE_PRE_ENGINE)
+        if not deleted:
+            return {"ok": False, "error": f"候选状态 {cand.get('status')} 不在可删词表内"}
+        # 删没删掉由回读说了算，不写字面量（门禁 fake-ok-const）：
+        # 留痕里那条 withdrawn 会长期充当"这条曾经存在过"的依据。
+        gone = self.store.get_candidate_rule(rule_id) is None
+        if not gone:
+            return {"ok": False, "rule_id": rule_id,
+                    "error": f"候选 {rule_id} 删除后仍能读回，未记审计"}
+        self.store.log_rule_lifecycle(
+            rule_id, ACT_MANUAL_WITHDRAW, source_rule_id=rule_id, actor=actor,
+            from_state=str(cand.get("status") or ""), to_state="withdrawn",
+            reason=reason, detail={"name": cand.get("name") or ""})
+        return {"ok": gone, "rule_id": rule_id, "withdrawn": gone}
 
     # ── 读侧：通道全景 ─────────────────────────────────────────────────
 

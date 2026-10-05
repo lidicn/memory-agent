@@ -805,8 +805,13 @@ class InsightService:
         return self._search(start, end, entity_id, room, "", "", limit, offset,
                             behavior_only=False)
 
-    def compare_insights(self, compare_days: int = 7, base_days: int = 7) -> Dict[str, Any]:
-        """对比洞察（兼容 legacy）。"""
+    def compare_insights(self, compare_days: int = 7) -> Dict[str, Any]:
+        """对比洞察（兼容 legacy）。
+
+        `base_days` 死形参已删（DCD 20261005 §二.2 Q4）：`core.compare_insights` 的签名里
+        只有 `compare_days/room/category`，没有"基线窗口"这个入参，留着它只会让人以为
+        传了就走基线对比。要做基线语义按新需求提。
+        """
         try:
             return self.core.compare_insights(compare_days=compare_days)
         except Exception as exc:

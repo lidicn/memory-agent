@@ -169,55 +169,54 @@ async def llm_chat(request: Request):
     else:
         messages.insert(0, {"role": "system", "content": skill_prompt})
 
-    # 仅当疑似数据查询时启用 Function Calling，否则直接流式对话。
+    # 始终携带工具，由模型自行决定是否调用（消除与 MCP 的能力割裂）。
     # agent loop 支持多轮工具调用：LLM 可能先查目录，再查用量，最后总结。
     final_response: dict | None = None
-    if True:  # 始终携带工具，由模型自行决定是否调用（消除与 MCP 的能力割裂）
-        for _round in range(MAX_TOOL_ROUNDS):
+    for _round in range(MAX_TOOL_ROUNDS):
+        try:
+            response = await rt.llm.chat(
+                messages, model=model, temperature=temperature, tools=MEMORY_TOOLS
+            )
+        except Exception as exc:
+            # 工具调用阶段异常时回退到普通流式生成，由 LLM 直接回答或道歉
+            _log.warning("Tool-call chat failed: %s", exc)
+            final_response = None
+            break
+
+        tool_calls = response.get("tool_calls") or []
+        if not tool_calls:
+            # 模型不再调用工具，拿到最终回答
+            final_response = response
+            break
+
+        messages.append({
+            "role": "assistant",
+            "content": response.get("content") or "",
+            "tool_calls": tool_calls,
+        })
+        for tc in tool_calls:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
             try:
-                response = await rt.llm.chat(
-                    messages, model=model, temperature=temperature, tools=MEMORY_TOOLS
-                )
-            except Exception as exc:
-                # 工具调用阶段异常时回退到普通流式生成，由 LLM 直接回答或道歉
-                _log.warning("Tool-call chat failed: %s", exc)
-                final_response = None
-                break
-
-            tool_calls = response.get("tool_calls") or []
-            if not tool_calls:
-                # 模型不再调用工具，拿到最终回答
-                final_response = response
-                break
-
+                args = json.loads(fn.get("arguments", "{}") or "{}")
+            except Exception:
+                args = {}
+            result = await _run_memory_tool(rt, name, args)
+            result_str = json.dumps(result, ensure_ascii=False, default=str)
+            if len(result_str) > MAX_TOOL_RESULT_CHARS:
+                result_str = result_str[:MAX_TOOL_RESULT_CHARS] + "\n...(结果过长已截断)"
             messages.append({
-                "role": "assistant",
-                "content": response.get("content") or "",
-                "tool_calls": tool_calls,
+                "role": "tool",
+                "tool_call_id": tc.get("id", ""),
+                "name": name,
+                "content": result_str,
             })
-            for tc in tool_calls:
-                fn = tc.get("function", {})
-                name = fn.get("name", "")
-                try:
-                    args = json.loads(fn.get("arguments", "{}") or "{}")
-                except Exception:
-                    args = {}
-                result = await _run_memory_tool(rt, name, args)
-                result_str = json.dumps(result, ensure_ascii=False, default=str)
-                if len(result_str) > MAX_TOOL_RESULT_CHARS:
-                    result_str = result_str[:MAX_TOOL_RESULT_CHARS] + "\n...(结果过长已截断)"
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "name": name,
-                    "content": result_str,
-                })
-        else:
-            # 达到最大轮数仍未收敛，提示模型直接作答
-            messages.append({
-                "role": "system",
-                "content": "工具调用已达到最大轮数，请基于已有信息直接回答用户问题。",
-            })
+    else:
+        # 达到最大轮数仍未收敛，提示模型直接作答
+        messages.append({
+            "role": "system",
+            "content": "工具调用已达到最大轮数，请基于已有信息直接回答用户问题。",
+        })
 
     async def generator() -> AsyncIterator[str]:
         yield sse_pack("start", {"model": model or rt.llm.primary_model})

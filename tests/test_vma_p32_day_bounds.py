@@ -13,7 +13,7 @@
 | 「最近 0 天」 | start>end 反向窗口 | `note=最近0天`，同一天 |
 | `ask_memory(days=10**6)`（真 MCP 工具面） | 本机 `mcp_sdk_unavailable`，容器侧另取 | 同左 |
 
-`days` 一共 99 个站点（改后读数 `label_literal=41 / config=2 / date_math=6 / local=2 /
+`days` 一共 99 个站点（run5 读数 `label_literal=41 / config=2 / date_math=6 / local=2 /
 external=48`，`guard_bounded=44 / lo_only=0 / unguarded=55`，`SCAN_RC=0`）。
 **48 处 external 全部收敛（44 处真带界 + 4 处带 `# day-ok:` 理由），51 处刻意不动**：
 `days=1`、`now.weekday()`
@@ -23,6 +23,14 @@ external=48`，`guard_bounded=44 / lo_only=0 / unguarded=55`，`SCAN_RC=0`）。
 查询窗口走 `DAY_WINDOW_MAX=3650`。下面 `test_two_dispositions_are_not_interchangeable`
 就是这条区分的锁。
 
+⚠️ **DCD 20261005 §二.2 Q2 走乙之后，`learning_*` 八模块已移出 `src/` 存进 `attic/learning/`**
+⇒ 上面那份 99 是 run5 的历史读数，现在的 src 侧册是 **95 站点**
+（`external 44 / bounded 42 / unguarded 53 / marked 2`，`config/date_math/literal/local` 不变；
+账要能对得上：**移走 4 处 = 2 处已带界（`learning_api` 的两个 dataclass 窗口）+ 2 处带 `# day-ok:` 标记**）。
+`attic` 侧单独量一次是 `total=4 external=4 bounded=2 marked=2`——**它不在门禁口径里**
+（`.gates.toml source_roots=["src"]`、pyflakes 只扫 `src/memory_agent`、Dockerfile 只 `COPY src/`），
+所以**不许把 95 与 99 混成同一个数引用**，也不许因为 attic 有读数就说"册里还有裸用"。
+
 **`config` 档在本批被收得过窄了**（同族第三处，见 `test_config_exemption_is_two_hops_not_one`）：
 量具原先只要变量名叫 `config`/`cfg` 就划成"运维受控"，于是一批 HTTP 可写的键
 （`vision_snapshot_retention_days`）和一个根本不是应用配置的 dataclass
@@ -31,7 +39,9 @@ external=48`，`guard_bounded=44 / lo_only=0 / unguarded=55`，`SCAN_RC=0`）。
 
 `learning_api` 那两处只有**静态**收口、没有运行时锁：该模块与 `learning_*` 一族
 作为 `memory_agent` 包成员根本 import 不进来（裸绝对导入，见下一段），运行时读数锁在
-DCD 接线裁定之后。
+DCD 接线裁定之后。**裁定已回（20261005 §二.2 Q2=乙）**：整族移出 `src/` 存档，
+所以这两处连"静态锁在 src 册里"都不成立了——它们在 attic，门禁不看，接回去时按 `attic/learning/README.md`
+的三问重开。
 
 **P3-4**：`D1 rot=30 → entries=8`（改前 entries=30 且只增不减）；`D2 同令牌 entries=1 reused=yes`
 （第七轮买回来的收益没被弄坏）；`D3 created=31 → evicted=23 evicted_closed=23 keep_closed=False`
@@ -539,8 +549,6 @@ def test_config_exemption_is_two_hops_not_one():
                         for r in rows
                         if r["detail"].startswith(("writable-config:", "not-app-config:"))))
     assert by_detail == [
-        ("learning_api.py", 118, "external", "bounded", "not-app-config"),   # 外来键（dataclass 默认值）
-        ("learning_api.py", 152, "external", "bounded", "not-app-config"),
         ("vision_service.py", 504, "external", "bounded", "writable-config"),  # 可写键，已按保留期收口
     ], by_detail
     # 残余的 `config` 站点必须逐条是真·应用配置字段，且不在可写白名单里
@@ -556,24 +564,70 @@ def test_config_exemption_is_two_hops_not_one():
     assert len(dayscan.WRITABLE_CONFIG_KEYS) > 50             # 清单没被解析成空集/半集
 
 
+def test_learning_sites_moved_to_attic_not_vanished():
+    """DCD 20261005 Q2=乙 之后：那两处 `not-app-config` 是**移走**，不是**消失**。
+
+    门禁不扫 attic，所以这条必须由测试自己拿读数证明"存档里那两处仍是
+    external+bounded"，否则下一次有人把"src 册少了两条"读成"缺陷被消音"就无从对照。
+    """
+    attic = os.path.join(_ROOT, "attic", "learning")
+    if not os.path.isdir(attic):
+        pytest.skip("attic/learning 不在场（精简检出），存档形状无从比对")
+    rows = dayscan.scan_root(attic)
+    counts = dayscan.counts_of(rows)
+    assert counts["total_timedelta_days"] == 4, counts
+    assert counts["label_external"] == 4 and counts["label_config"] == 0, counts
+    assert counts["guard_bounded"] == 2 and counts["marked"] == 2, counts
+    assert dayscan.problems_of(rows) == [], dayscan.problems_of(rows)
+    not_app = sorted((r["file"].split("/")[-1], r["line"]) for r in rows
+                     if r["detail"].startswith("not-app-config:"))
+    assert not_app == [("learning_api.py", 118), ("learning_api.py", 152)], not_app
+
+
 def test_route_mount_instrument_self_test_passes():
     assert mtscan.self_test() == 0
 
 
-def test_unmounted_behaviors_routes_are_the_only_known_gap():
-    """P3-1 挂不挂由 DCD 裁；这条锁的是「范围没有扩散」。
+def test_all_rule_writes_are_mounted_through_the_channel():
+    """DCD 20261005 §二.2 Q1=乙+丁 落地后：P3-1 那 4 条缺口收口，未挂载归零。
 
-    审计报 4 处未挂载。全仓 195 个 handler 形似函数里，除这 4 条以外都必须
-    要么进了 `Route(...)`，要么被别的代码真引用——新增一条就判红。
+    两向都锁：① 未挂载清单为空（再冒出一条就是范围扩散）；② 收口必须是「挂进
+    R3 通道」这一种形状——路径与方法逐字核对。只锁 ① 的话，有人把
+    ``behaviors_add_rule`` 挪回一条直写 ``active_rules`` 的路径上，量具照样绿，
+    四条红线却已经被绕过。
     """
     rows = mtscan.scan(os.path.join(_ROOT, "src"))
     counts = mtscan.counts_of(rows)
-    assert counts["handler_shaped"] >= 190
-    assert counts["mounted"] >= 185
+    assert counts["handler_shaped"] >= 195
+    assert counts["mounted"] >= 195
     assert counts["parse_fail"] == 0
-    names = sorted(p.split()[-1] for p in mtscan.problems_of(rows))
-    assert names == ["behaviors_add_rule", "behaviors_delete_rule",
-                     "behaviors_list_rules", "behaviors_update_rule"], names
-    assert counts["unmounted"] == len(names)              # 红条数 == 登记在册的缺口数
-    assert all(r["file"].replace(os.sep, "/").endswith("api/behavior_routes.py")
-               for r in rows if r["state"] == "UNMOUNTED")
+    assert counts["unmounted"] == 0
+    assert mtscan.problems_of(rows) == []
+
+    from memory_agent.api import behavior_routes
+    mounted = {(r.path, m) for r in behavior_routes.ROUTES for m in r.methods}
+    assert {
+        ("/api/behaviors/active-rules", "GET"),          # 只读面
+        ("/api/behaviors/candidate-rules/add", "POST"),   # 写侧落候选
+        ("/api/behaviors/candidate-rules/{rule_id}", "PUT"),
+        ("/api/behaviors/candidate-rules/{rule_id}", "DELETE"),
+        ("/api/behaviors/rule-channel/test-rule", "POST"),  # Q4=乙 的可达入口
+    } <= mounted, sorted({
+        ("/api/behaviors/active-rules", "GET"),
+        ("/api/behaviors/candidate-rules/add", "POST"),
+        ("/api/behaviors/candidate-rules/{rule_id}", "PUT"),
+        ("/api/behaviors/candidate-rules/{rule_id}", "DELETE"),
+        ("/api/behaviors/rule-channel/test-rule", "POST"),
+    } - mounted)
+
+    # 裁定原文给只读面的路径字面是 ``/api/behaviors/rules``，但那条早就被读 STATIC
+    # 常量表的 ``behaviors_rules`` 占着——两个数据源不是一条路径装得下的。差异已登记，
+    # 这条锁挡的是"为了对齐裁定字面"把引擎只读面盖上去，让常量表读数悄悄换成库表读数。
+    static_route = [r for r in behavior_routes.ROUTES
+                    if getattr(r, "path", "") == "/api/behaviors/rules"]
+    assert len(static_route) == 1, [getattr(r, "path", "") for r in static_route]
+    methods = set(static_route[0].methods)
+    # Starlette 给 GET 自动带上 HEAD；除此以外必须是只读——这条路径一旦能吃写请求，
+    # 常量表那一格就变成了可写面。
+    assert "GET" in methods and methods <= {"GET", "HEAD"}, methods
+    assert getattr(static_route[0].endpoint, "__name__", "") == "behaviors_rules"

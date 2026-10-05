@@ -35,6 +35,18 @@ SCHEMA_VERSION = 1
 CANDIDATE_ACCEPTED = "accepted"
 # DCD R3：已进引擎的候选规则改此状态，避免同一候选被重复晋升
 CANDIDATE_PROMOTED = "promoted"
+# 候选词表的另两档。HTTP 审核、手动录入的放行判定、挖掘链路的 TTL 归零都用同一套字
+# 面量——此前只有 accepted/promoted 有名字，staging/rejected 在各调用点各写一遍，
+# 少写一个字母不会报错，只会让那一行状态既进不了列表也删不掉。
+CANDIDATE_STAGING = "staging"
+CANDIDATE_REJECTED = "rejected"
+# 「还没进引擎」的那三档：可以改内容、可以真删。**不含 promoted**——晋升之后
+# 候选行是 ``active_rules`` 那一行的上游依据，改它或删它都会让链路两头分叉。
+CANDIDATE_PRE_ENGINE = (CANDIDATE_STAGING, CANDIDATE_ACCEPTED, CANDIDATE_REJECTED)
+# 候选来源。'inference' 是挖掘链路产的建议（默认值），'manual' 是人工录入
+# （DCD 20261005 §二.2 Q1=乙+丁：写 CRUD 挂进 R3 通道，add 落 candidate_rules）。
+CANDIDATE_SOURCE_INFERENCE = "inference"
+CANDIDATE_SOURCE_MANUAL = "manual"
 
 # 审计 S8：语音问答缓存软上限，超过则按创建时间淘汰最旧 10% 防止无限增长
 _VOICE_CACHE_MAX = int(os.getenv("MA_VOICE_CACHE_MAX", "2000"))
@@ -2782,6 +2794,81 @@ class Store:
         except Exception:
             d["evidence"] = []
         return d
+
+    def get_candidate_rule_by_name(self, name: str) -> dict | None:
+        """按名字取候选（解析形状与 :meth:`get_candidate_rule` 同一把尺）。
+
+        手动录入这条路径需要先看「这个名字是不是已经被机器建议占用了」——
+        ``upsert_candidate_rule`` 判重就是按 name，读侧也必须按同一个键，
+        否则查重与写入各按一套口径，撞名那条会静默覆盖。
+        """
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT rule_id FROM candidate_rules WHERE name=?", (name,)
+            ).fetchone()
+        return self.get_candidate_rule(str(row["rule_id"])) if row else None
+
+    def update_candidate_rule(self, rule_id: str, *, steps: list | None = None,
+                              time_window: str | None = None, infer: str | None = None,
+                              confidence: float | None = None,
+                              evidence: list | None = None) -> bool:
+        """按 ``rule_id`` 刷新候选内容（只改传进来的字段）。
+
+        与 ``upsert_candidate_rule`` 的分工：那条按 name 去重、给挖掘链路刷新建议；
+        这条给人改**自己那条**草稿，所以按主键定位，不靠名字找。name 不可改——
+        它是判重键，改名等于删一条再建一条，语义该由撤回+重录承担。
+        """
+        updates: list[str] = []
+        params: list = []
+        if steps is not None:
+            updates.append("steps_json=?")
+            params.append(json.dumps(steps, ensure_ascii=False))
+        if time_window is not None:
+            updates.append("time_window=?")
+            params.append(str(time_window))
+        if infer is not None:
+            updates.append("infer=?")
+            params.append(str(infer))
+        if confidence is not None:
+            updates.append("confidence=?")
+            params.append(float(confidence))
+        if evidence is not None:
+            updates.append("evidence_json=?")
+            params.append(json.dumps(evidence, ensure_ascii=False))
+        if not updates:
+            return False
+        updates.append("updated_at=?")
+        params.append(now_local(self.tz_offset_hours).isoformat(sep="T"))
+        params.append(rule_id)
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                f"UPDATE candidate_rules SET {', '.join(updates)} WHERE rule_id=?",
+                params,
+            )
+            conn.commit()
+            return bool(cur.rowcount)
+
+    def delete_candidate_rule(self, rule_id: str,
+                              allow_statuses: tuple[str, ...]) -> bool:
+        """按状态放行删除候选；不在白名单里的状态一律不删（返回 False）。
+
+        刻意把 ``allow_statuses`` 交给调用方并写进 SQL 的 WHERE：已晋升
+        （``promoted``）的候选对应着 ``active_rules`` 里的一行，删候选行会把这条
+        链路的上游抹掉，而那条规则还在跑——下架它的路径是
+        ``rule_lifecycle.revoke()``（红线 3：连带回滚推断、留审计）。
+        """
+        if not allow_statuses:
+            return False
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                f"DELETE FROM candidate_rules WHERE rule_id=? "
+                f"AND status IN ({', '.join('?' * len(allow_statuses))})",
+                (rule_id, *allow_statuses),
+            )
+            conn.commit()
+            return bool(cur.rowcount)
 
     def set_candidate_rule_status(self, rule_id: str, status: str) -> bool:
         """更新候选规则状态（staging | accepted | rejected | promoted），并同步 user_confirmed 红线位。

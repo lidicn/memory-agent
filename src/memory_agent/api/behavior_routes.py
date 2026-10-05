@@ -368,77 +368,179 @@ async def behaviors_home_profile(request: Request):
 # ── Phase 3.1 主动规则引擎 ──────────────────────────────────────────────
 
 async def behaviors_list_rules(request: Request):
-    """列出所有主动规则。"""
+    """列出引擎里的主动规则（只读面，DCD 20261005 §二.2 Q1=乙 第一步）。
+
+    裁定原文给的路径字面是 ``GET /api/behaviors/rules``，但那条已经被
+    :func:`behaviors_rules` 占着，而且它读的是**另一个数据源**——
+    ``perception_rules.STATIC_RULES``（编译期常量表），不是 ``active_rules`` 表。
+    把两个源塞进同一条路径必然要挑一个覆盖另一个，所以这里按表名换一条
+    ``/api/behaviors/active-rules``：路径 = 数据来源，读的人不用先猜哪条才是引擎。
+    这一格与裁定原文的字面差异已登记进审计台账。
+    """
     _, err = require_user(request)
     if err:
         return err
     rt = runtime(request)
     from ..rule_engine import get_rule_engine
     engine = get_rule_engine(rt.store, rt.alert_dispatcher)
-    rules = engine.list_rules()
+    rules = await asyncio.to_thread(engine.list_rules)
     return ok({"rules": rules, "count": len(rules)})
 
 
 async def behaviors_add_rule(request: Request):
-    """添加主动规则。"""
+    """人工录入主动规则：**落 ``candidate_rules``，不落 ``active_rules``**。
+
+    DCD 20261005 §二.2 Q1 = 乙 + 丁分两步的第二步。原先这个 handler 直接调
+    ``engine.add_rule``——挂载它等于给 R3 四条红线开一条旁路（证据门槛 / 观察期 /
+    可回滚 / 审计，判据文本见 ``rule_lifecycle.py`` 头部）。现在它挂进通道的人工
+    录入格：录进来的是一条 ``source='manual'`` 的候选，此后与机器建议同规同门。
+
+    响应里固定带 ``gate``（红线 1 的逐条判据）：最坑的不是被拒，而是"录成功了，
+    三个月后才发现它永远晋升不了"。想让这条候选走得动，``evidence`` 里要带上
+    日期字面量（``YYYY-MM-DD``）——独立证据日数按它数，``cooldown_seconds``
+    不设则按「缺省即拒」挡在晋升门外。
+    """
     _, err = require_user(request)
     if err:
         return err
     rt = runtime(request)
+    body = await json_body(request)
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return error("缺少必填字段: name")
     try:
-        body = await request.json()
-    except Exception:
-        return error("请求体必须是 JSON")
-    name = body.get("name")
-    condition = body.get("condition")
-    action = body.get("action")
-    if not name or not condition or not action:
-        return error("缺少必填字段: name, condition, action")
-    from ..rule_engine import get_rule_engine
-    engine = get_rule_engine(rt.store, rt.alert_dispatcher)
-    result = engine.add_rule(
+        confidence = float(body.get("confidence", 0.6))
+    except (TypeError, ValueError):
+        return error("confidence 必须是数字")
+    res = await asyncio.to_thread(
+        _lifecycle(rt).manual_add,
         name=name,
-        condition=condition,
-        action=action,
-        description=body.get("description", ""),
-        enabled=body.get("enabled", True),
-        cooldown_seconds=body.get("cooldown_seconds", 300),
+        steps=body.get("steps"),
+        time_window=str(body.get("time_window") or ""),
+        infer=str(body.get("infer") or ""),
+        confidence=confidence,
+        evidence=body.get("evidence") if isinstance(body.get("evidence"), list) else None,
+        cooldown_seconds=body.get("cooldown_seconds"),
     )
-    if not result.get("ok"):
-        return error(result.get("error", "添加失败"))
-    return ok(result)
+    if not res.get("ok"):
+        return error(res.get("error", "录入失败"))
+    return ok(res)
 
 
 async def behaviors_update_rule(request: Request, rule_id: str):
-    """更新主动规则。"""
+    """改人工录入的候选（仅限还没进引擎的那几条）。
+
+    已晋升的候选请走 ``POST /api/behaviors/rule-channel/revoke`` 撤销后重录：
+    直接改候选行不会改 ``active_rules`` 里那一行，两头就此分叉。机器建议的
+    steps/evidence 也不可改——那是"机器看到了什么"的原始记录，要否掉它走
+    ``POST /api/behaviors/candidate-rules/update``。
+    """
     _, err = require_user(request)
     if err:
         return err
     rt = runtime(request)
-    try:
-        body = await request.json()
-    except Exception:
-        return error("请求体必须是 JSON")
-    from ..rule_engine import get_rule_engine
-    engine = get_rule_engine(rt.store, rt.alert_dispatcher)
-    result = engine.update_rule(rule_id, **body)
-    if not result.get("ok"):
-        return error(result.get("error", "更新失败"))
-    return ok(result)
+    body = await json_body(request)
+    kwargs: dict = {}
+    for key in ("steps", "time_window", "infer", "evidence", "cooldown_seconds"):
+        if key in body:
+            kwargs[key] = body[key]
+    if "confidence" in body:
+        try:
+            kwargs["confidence"] = float(body["confidence"])
+        except (TypeError, ValueError):
+            return error("confidence 必须是数字")
+    if "evidence" in kwargs and not isinstance(kwargs["evidence"], list):
+        return error("evidence 必须是数组")
+    if "steps" in kwargs and not isinstance(kwargs["steps"], list):
+        return error("steps 必须是数组")
+    if not kwargs:
+        return error("没有要更新的字段")
+    res = await asyncio.to_thread(
+        _lifecycle(rt).manual_edit, rule_id,
+        actor="user", reason=str(body.get("reason") or ""), **kwargs)
+    if not res.get("ok"):
+        return error(res.get("error", "更新失败"))
+    return ok(res)
 
 
 async def behaviors_delete_rule(request: Request, rule_id: str):
-    """删除主动规则。"""
+    """撤回并删除人工录入、且尚未进引擎的候选。
+
+    硬删 ``active_rules`` 那一行是红线 3 明令不许做的事（撤销要连带回滚它产生的
+    推断并留审计），那条路径是 ``POST /api/behaviors/rule-channel/revoke``；
+    机器建议也不在这里删，驳回（``rejected``）才保留得住原始记录。
+    """
     _, err = require_user(request)
     if err:
         return err
     rt = runtime(request)
+    body = await json_body(request)
+    res = await asyncio.to_thread(
+        _lifecycle(rt).manual_withdraw, rule_id,
+        actor="user", reason=str(body.get("reason") or ""))
+    if not res.get("ok"):
+        return error(res.get("error", "撤回失败"))
+    return ok(res)
+
+
+async def behaviors_test_rule(request: Request):
+    """用历史 / 模拟事件预演一条规则会吵几次（DCD 20261005 §二.2 Q4=乙 的入口）。
+
+    ``test_rule`` 此前零调用方，且 ``ignore_trigger`` 参数从不被读——函数体注释
+    写死"不检查触发策略"，默认档跑的却是条件层，于是「这条规则有多吵」这个问题
+    它答不了。现在 ``ignore_trigger=False`` 按生产同口径跑完整判定链（触发策略 +
+    冷却期），``True`` 才只测条件。
+
+    **只算不写**：跑在独立回放状态上，既不落 ``active_rules``，也不占线上规则的
+    冷却窗口，也不读 ``rule_trigger_history``。R3 观察期要的正是这个预演——候选
+    规则在进引擎之前先看它有多吵。
+
+    三种入参形状（择一）：``rule_id``（引擎里已有的规则）、``candidate_id``
+    （候选，条件由通道按 ``build_condition`` 译，译不出来就把拒因原样给出）、
+    或直接给 ``condition`` + ``trigger`` + ``cooldown_seconds``（临时试一条还没录的想法）。
+    """
+    _, err = require_user(request)
+    if err:
+        return err
+    rt = runtime(request)
+    body = await json_body(request)
+    events = body.get("events")
+    if not isinstance(events, list):
+        return error("events 必须是数组（历史事件或模拟事件，由调用方给出）")
+    rule_id = str(body.get("rule_id") or "").strip()
+    candidate_id = str(body.get("candidate_id") or "").strip()
     from ..rule_engine import get_rule_engine
     engine = get_rule_engine(rt.store, rt.alert_dispatcher)
-    result = engine.delete_rule(rule_id)
-    if not result.get("ok"):
-        return error(result.get("error", "删除失败"))
-    return ok(result)
+    rule: dict | None = None
+    if rule_id:
+        rule = await asyncio.to_thread(engine.get_rule, rule_id)
+        if not rule:
+            return error(f"规则 {rule_id} 不存在", 404)
+    elif candidate_id:
+        from ..rule_lifecycle import build_condition
+        cand = await asyncio.to_thread(rt.store.get_candidate_rule, candidate_id)
+        if not cand:
+            return error(f"候选规则 {candidate_id} 不存在", 404)
+        condition, blockers = build_condition(cand)
+        if not condition:
+            # 构造不出触发子的候选不是"匹配不到"，是"根本判不了"——把拒因原样返回，
+            # 别让一份 matched=0/precision=1.0 的空读数冒充结论。
+            return ok({"candidate_id": candidate_id, "blockers": blockers,
+                       "total": 0, "matched": 0, "triggered": None,
+                       "trigger_check": {"mode": "not_evaluated",
+                                         "reason": "condition_unbuildable"}})
+        rule = {"rule_id": "", "condition": condition,
+                "trigger": {}, "cooldown_seconds": cand.get("cooldown_seconds")}
+    else:
+        condition = body.get("condition")
+        if not isinstance(condition, dict) or not condition:
+            return error("需要 rule_id、candidate_id 或非空 condition 三者之一")
+        rule = {"rule_id": "", "condition": condition,
+                "trigger": body.get("trigger") or {},
+                "cooldown_seconds": body.get("cooldown_seconds")}
+    res = await asyncio.to_thread(
+        engine.test_rule, rule, events, bool(body.get("ignore_trigger", False)))
+    return ok(res)
 
 
 # ── DCD R3 生效通道：accepted → active_rules（试运行 → 转正 / 撤销）─────────
@@ -987,6 +1089,13 @@ ROUTES = [
     Route("/api/behaviors/candidate-rules", candidate_rules_list, methods=["GET"]),
     Route("/api/behaviors/candidate-rules/update", candidate_rule_update, methods=["POST"]),
     Route("/api/behaviors/candidate-rules/export", candidate_rules_export, methods=["GET"]),
+    # DCD 20261005 §二.2 Q1=乙+丁：人工写侧挂进 R3 通道（落 candidate_rules，
+    # 永不直写 active_rules）。路径按"表名"排，读的人不用猜哪条才是引擎。
+    Route("/api/behaviors/candidate-rules/add", behaviors_add_rule, methods=["POST"]),
+    Route("/api/behaviors/candidate-rules/{rule_id}", behaviors_update_rule,
+          methods=["PUT"]),
+    Route("/api/behaviors/candidate-rules/{rule_id}", behaviors_delete_rule,
+          methods=["DELETE"]),
     Route("/api/behaviors/negative-samples/suggestions", negative_sample_suggestions, methods=["POST"]),
     Route("/api/behaviors/mine-process", behaviors_mine_process, methods=["POST"]),
     Route("/api/behaviors/anomalies", behaviors_anomalies, methods=["GET"]),
@@ -1002,6 +1111,10 @@ ROUTES = [
     Route("/api/behaviors/bad-cases/export", behaviors_bad_case_export, methods=["POST"]),
     Route("/api/behaviors/home-profile", behaviors_home_profile, methods=["GET"]),
     Route("/api/behaviors/rules", behaviors_rules, methods=["GET"]),
+    # 引擎表（active_rules）的只读面。与上一条不是一个数据源：那条读编译期常量
+    # STATIC_RULES，这条读库里的规则行，所以各占一条路径（裁定原文的字面路径已被
+    # 上一条占用，差异已登记）。
+    Route("/api/behaviors/active-rules", behaviors_list_rules, methods=["GET"]),
     Route("/api/behaviors/rule-channel", rule_channel_status, methods=["GET"]),
     Route("/api/behaviors/rule-channel/pending", rule_channel_pending, methods=["GET"]),
     Route("/api/behaviors/rule-channel/eligibility", rule_channel_eligibility, methods=["GET"]),
@@ -1010,6 +1123,8 @@ ROUTES = [
     Route("/api/behaviors/rule-channel/revoke", rule_channel_revoke, methods=["POST"]),
     Route("/api/behaviors/rule-channel/false-positive", rule_channel_false_positive, methods=["POST"]),
     Route("/api/behaviors/rule-channel/audit", rule_channel_audit, methods=["GET"]),
+    # DCD 20261005 §二.2 Q4=乙：历史事件预演（只算不写，独立回放状态）
+    Route("/api/behaviors/rule-channel/test-rule", behaviors_test_rule, methods=["POST"]),
     Route("/api/alerts/stats", alerts_stats, methods=["GET"]),
     Route("/api/behaviors/causal/analyze", causal_analyze, methods=["GET"]),
     Route("/api/behaviors/causal/counterfactual", causal_counterfactual, methods=["GET"]),

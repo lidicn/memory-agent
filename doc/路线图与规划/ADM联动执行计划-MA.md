@@ -1137,6 +1137,79 @@ detail 拆 `attr:`（真键名）/ `var:`（携带键名的局部变量），免
 丙=只给"会删数据"的那几把键加区间；**MA 倾向丙，但区间数字请 DCD/SP 给**）。前端 `min/max` 同理——API 直写会绕过它，
 单加只是装饰，要加就随甲/丙一起加。
 
+### 6.17 DCD 20261005 §二.2 四件落码（2026-10-05，容器 run6，#55 / #56）
+
+裁定原文（`关键决策部/decisions/20261005-AF用户WebUI与MA四件与CVE-裁定.md`，按新纪律一律「报告+行号」引用）：
+Q1=**:53**（乙+丁分两步：只读面先挂，写 CRUD 挂进 R3 通道，`add` 落 `candidate_rules` 而非 `active_rules`）、
+Q2=**:54**（乙：`learning_*` 八模块移出 `src/` 存档 `attic/learning/`）、Q3=**:55**（乙：`insights/persona.py`
+保留 + 标 `deprecated` + 随 Q-B 接回）、Q4=**:56**（乙：实现 `ignore_trigger` 语义并给可达入口；`base_days` 死参删；
+`if True:` 与两条 `CAPABILITY_*` 授权 MA 机械自办）。
+
+**Q1 的路径 deviation（先登记，别让人以为裁定没执行）**：裁定给的字面是 `GET /api/behaviors/rules`，
+但那条已经被 `behaviors_rules` 占着，而它读的是 `perception_rules.STATIC_RULES`——**另一个数据源**。
+同一 URL 两种含义是这一轮最贵的一类缺陷，所以只读面另起一条**路径=数据来源**的
+`GET /api/behaviors/active-rules`（`api/behavior_routes.py:1117`，handler `behaviors_list_rules:370`，
+deviation 就写在 docstring 里）。写侧三条按裁定挂进通道：
+`:1094` `POST /api/behaviors/candidate-rules/add`、`:1095` `PUT .../{rule_id}`、`:1097` `DELETE .../{rule_id}`；
+Q4 的入口是 `:1127` `POST /api/behaviors/rule-channel/test-rule`（handler `behaviors_test_rule:486`）。
+
+**四红线一条没放宽**：`rule_lifecycle.manual_add:487` 落 `candidate_rules`，与机器建议同类同规——
+一样要 `accepted` + `user_confirmed=1`、一样要跨 `MIN_EVIDENCE` 个独立自然日、一样先 `dry_run` 满观察期、
+一样逐步进 `rule_lifecycle_audit`。人工身份只换「建议是谁提的」这一格，不换红线豁免。
+返回值永远带 `gate`（`eligibility()` 的逐条判据）：录规则时最坑的不是被拒，而是「录成功了，
+三个月后才发现它永远晋升不了」。`manual_edit:545` 两道拒绝（`source != manual` 不许洗机器建议的原始
+steps/evidence；`status == promoted` 不许让候选行与引擎行分叉）；`manual_withdraw:604` 只删引擎前的状态
+（`store.py:45` `CANDIDATE_PRE_ENGINE` 白名单进 SQL 的 WHERE，不在词表内直接拒）。
+同名撞车单独拦（`store.get_candidate_rule_by_name:2798`）：人工录一条与机器建议同名的规则，
+`upsert_candidate_rule` 会按 name 判重、把建议的 steps/evidence 原地洗掉，而审计里那条还写着"机器建议"。
+
+**门自己响了一次，读数当场清掉而不是写进基线**：三条 `manual_*` 首版都写了字面 ok=True，
+被 homesdk 的 `fake-ok-const` 咬了三条。本仓的正当满足方式有两种真源：`service_tokens.py:240` 从**回读**派生，
+`insights/api.py:510` 从**不变量**派生。三条全改成回读派生（`rule_lifecycle.py:529` / `:593` / `:626`），
+并且**回读为空时连审计都不记**——留痕里那条"已录入"会比真相更误导人。
+`.gates-baseline.txt` 一字未改（run6 `GATE_RC=0`，pyflakes 0/0/0/0）。
+
+**Q2 搬家改的是量具在册人口，不是缺陷数——两个口径必须成对登记**：
+day-bounds 站点 99→95（4 条随 `learning_*` 进 attic，attic 侧单独扫 total=4 external=4 bounded=2 marked=2）；
+zip 配对 window 5→4（`attic/learning/learning_feedback.py:185`）。
+**"册子变薄"不许读成"缺陷清零"**，所以补了两条守恒锁而不是放松断言：
+`test_moved_zip_site_is_in_the_attic_not_vanished`（src + attic == 5，attic 侧恰 1）与
+`test_learning_sites_moved_to_attic_not_vanished`。attic 不参与门禁口径由读数自证：
+`GATE_MENTIONS_ATTIC=0`、`SRC_LEARNING=0 / ATTIC_LEARNING=8`。
+
+**Q4 的 `test_rule` 是独立回放，不是"在线上引擎上跑一遍"**：`rule_engine.py:145`，
+判定链与线上一致（strategy gate → cooldown → mark 的顺序），但**从不碰** `self._event_windows` /
+`self._cooldown_until`、从不读 `rule_trigger_history`；时间域统一走 `_replay_time:296`
+（缺时间戳 ⇒ `would_trigger=None`，不退回墙钟凭空凑窗）。`_replay_verdict:283` 把 expected 三态收成字符串。
+构不出触发子的候选返回 `trigger_check={"mode":"not_evaluated","reason":"condition_unbuildable"}`，
+不假装"不触发"。
+
+**一条交付纪律违规，自报**：`rule_engine.py` 工作区是 CRLF（CR=1139）而 `git show HEAD:` 是 LF——
+`core.autocrlf=true` 让 diff 看起来干净，但 §六.9 要求工作区 CR=0；它同时是上一轮 `M3: PATCH_NOT_FOUND`
+的真身（**量具故障被读成了"这处语义改不动"**，字节级 patcher 不认行尾）。按字节重写归一
+（53612→52473，CR=0，numstat 仍 120/8）。往后凡有字节级量具/变异脚本，先确认目标文件行尾。
+
+**权威门（终树容器快照 `/tmp/c35snap20261005c`，366 文件含 8 个 attic，基线 HEAD `3826aea`，run6）**：
+`SOURCES_RC=0`（`config_routes.py 516` / `config.py 544` / `test_vma_dcd_20261005_rules.py 492` /
+`grep -c WRITABLE_FIELDS=2`）、`GATE_RC=0` + `GATE_MENTIONS_ATTIC=0`、
+容器 `SUITE_RC=0` **1413 passed, 10 skipped in 249.80s**（`Python 3.11.16`；skip 十条与 run5 逐字相同 ⇒ 环境差异），
+本机 `1401 passed, 22 skipped` ⇒ **两侧总数同为 1423**（run5 的 1389 + 本批净新锁 34：新文件 32 + p32 1 + zip 1）；
+`TARGETED_RC=0` **85 passed**（40→85）、`TOUCHED_RC=0` **183 passed**
+（**口径**：run6 touched 集与 run5 是两套 12 文件，两个数不是同一把尺，不许相减当增量）；
+`DAYSCAN_RC=0`（src 侧自证 **18 正 11 反 0 漏咬** + `SELFTEST_REALSOURCE_KEYS writable=77 app_config_fields=167
+writable_not_in_config=0`；src total=95 external=44 config=2 bounded=42 unguarded=53 marked=2，
+SCAN_RC=0「每个 timedelta(days=) 站点都有归属」）、`ATTICSCAN_RC=0`；
+`ROUTESCAN_RC=0`（handler_shaped=196 mounted=195 parse_fail=0 referenced=1 unmounted=0 problems=0，
+SCAN_RC=0 ⇒ run4/run5 那条 195/190/unmounted=4 的**设计红已转绿**，P3-1 就此核销）；
+变异 M1–M5 **全部 RC=1 -> 咬住了**、`restored_identical=OK` ×5、`MUTATION_BAD=0`、`MUT_RC=0`；
+`REMOTE_BATCH_RC=0`、`CONTAINER_BATCH_RC=0`。
+**快照 `c35snap20261005a` / `b` 的读数作废**（tar 之后又有两次就地改动：扫描器注释指向 attic、
+`rule_engine.py` 行尾归一），run6 只在 `c` 上跑过。run6 无 `PROBE` 格（池/淘汰口径未动）。
+
+**观察项（不是缺陷，登记给下一轮）**：`engine.update_rule` / `engine.delete_rule` 现在没有 HTTP 调用方
+（写侧走通道，不直连引擎）；这两个方法留着是有理由的（`revoke` 路径要用），但**「没有 HTTP 调用方」不等于
+「死代码」**，不许下一轮顺手清掉。Q5（WRITABLE_FIELDS 写入侧区间）仍待裁，见 §6.16 末段。
+
 ---
 
 —— 关键决策部 · DCD

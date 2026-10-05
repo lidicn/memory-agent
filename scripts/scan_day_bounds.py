@@ -27,7 +27,8 @@
 
 **口径外（不是"没问题"，是"本量具不看"）**：只统计 `timedelta(days=…)`。
 `timedelta(hours=…)` / `seconds=…` 同族形状未在册，已知两例：
-`learning_api.run_evaluation_cycle` 的 `eval_after_hours`、
+`attic/learning/learning_api.run_evaluation_cycle` 的 `eval_after_hours`（DCD 20261005
+§二.2 Q2=乙 之后该模块在存档册，不进门禁口径）、
 `vision_service` 门禁的 `vlm_gate_window_sec`。要不要扩册另开一条，别把本册的
 99 站点读数与扩册后的读数混成同一个数。
 
@@ -85,8 +86,9 @@ def load_writable_config_keys(path=WRITABLE_SOURCE):
 WRITABLE_CONFIG_KEYS = load_writable_config_keys()
 
 #: `config` 归属的第二层前提：这条链读的真是**应用配置**（`config.Config` 的字段）。
-#: 只按"变量名叫 config/cfg"就豁免会放过另一类假口径：`learning_api.run_learning_cycle(store, config)`
-#: 的 `config` 是模块自己的 `LearningConfig`，`window_days` 既不在应用配置里、也不在可写白名单里，
+#: 只按"变量名叫 config/cfg"就豁免会放过另一类假口径：`attic/learning/learning_api.run_learning_cycle(store, config)`
+#: 的 `config` 是模块自己的 `LearningConfig`（DCD 20261005 §二.2 Q2=乙 后该模块在存档册），
+#: `window_days` 既不在应用配置里、也不在可写白名单里，
 #: 于是"不在白名单"被误读成"运维受控"。**不在白名单 ≠ 不可写**，除非先证明它是应用配置的字段。
 #: 字段名从 `config.py` 的 `class Config` 注解赋值解析，同样不复制清单。
 APP_CONFIG_SOURCE = os.path.join(os.path.dirname(os.path.dirname(WRITABLE_SOURCE)), "config.py")

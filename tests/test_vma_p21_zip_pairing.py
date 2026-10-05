@@ -212,8 +212,28 @@ def test_every_zip_site_in_src_is_classified():
     assert counts.get("unclassified", 0) == 0
     # 三类都在：说明门同时管住了「该加 strict」和「不该加 strict」两个方向
     assert counts.get("strict", 0) >= 13
-    assert counts.get("window", 0) >= 5
+    # window 从 5 降到 4 不是站点被修掉了，是 DCD 20261005 Q2=乙 把 learning_* 移进
+    # attic/learning 后**在册人口**少了那一个（`attic/learning/learning_feedback.py:185`）。
+    # attic 按裁定不进门禁口径，所以这一格必须由下一条锁单独证明"它只是搬家，不是消失"，
+    # 否则"册子变薄"就会被误读成"缺陷清零"。
+    assert counts.get("window", 0) >= 4
     assert counts.get("marked", 0) >= 1
+
+
+def test_moved_zip_site_is_in_the_attic_not_vanished():
+    """搬家批次必读：src 少一个 window 站点，attic 就得多多一个，总数守恒。"""
+    attic = os.path.join(_ROOT, "attic", "learning")
+    if not os.path.isdir(attic):
+        pytest.skip("attic/learning 不在场（精简检出），存档形状无从比对")
+    counts, problems = zipscan.scan_root(attic)
+    assert problems == []
+    assert counts.get("window", 0) == 1, counts
+    assert counts.get("strict", 0) == 0, counts
+    src_counts, _ = zipscan.scan_root(os.path.join(_ROOT, "src", "memory_agent"))
+    assert src_counts.get("window", 0) + counts["window"] == 5
+    hit = os.path.join(attic, "learning_feedback.py")
+    per_file, _ = zipscan.scan_file(hit)
+    assert per_file.get("window") == 1, per_file
 
 
 def test_scanner_bites_on_a_bare_zip(tmp_path):
