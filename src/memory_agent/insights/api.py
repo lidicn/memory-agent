@@ -101,8 +101,10 @@ def annotate_scan(payload: Dict[str, Any], scanned: int, scan_limit: int,
     与切片有没有被截无关，调用方传 `total_exact=True` 明说这件事；传 `None` 表示 `total`
     仍是切片行数，沿用上面的旧推断。**切片被截与总数精确可以同时成立**。
 
-    裁6 **Q6-2=A** 之后按天分批：旧判据 `scanned >= scan_limit` 失效（总数可能远低于
-    上限但某天已被截）。调用方传 `truncated=repo.last_scan_truncated` 覆盖旧判据。
+    裁6 **Q6-2=A** 之后按天分批、DCD 20261005 §二.1 **乙′** 再按小时分层：旧判据
+    `scanned >= scan_limit` 失效（总数可能远低于上限，但窗口里的行并没有读全）。
+    现判据只认**已证明的丢失**（抓回来没交出的行 / 补读后仍未探底的小时格 / 有天没轮到扫），
+    调用方传 `truncated=repo.last_scan_truncated` 覆盖旧判据。
     """
     if truncated is not None:
         truncated = bool(truncated)
@@ -425,8 +427,9 @@ class InsightService:
         - `room` 走 `events.room` 列；`category`/`domain`/`query` 解析成 `events.domain`
           白名单 + 语义实体集，两者同时生效；
         - `state` 下推进 `new_state IN (...)`；
-        - `order` 决定排序方向，也决定按天分批时**日内留哪一段**（asc 留最早、desc 留最晚），
-          日配额与 `max_scan` 总预算都不因此改变（裁5 Q4=A：不提高上限）；
+        - `order` 决定排序方向，也决定分层扫描时**每个小时格内留哪一段**（asc 留该格最早、
+          desc 留最晚）；小时配额、日配额与 `max_scan` 总预算都不因此改变
+          （裁5 Q4=A：不提高上限）；
         - `summarize` 出 `summary` 并把 `events` 缩到前 50 条样本。
 
         未传的位一律不加条件（`domains_for` 在全空时返回**全部 domain**，若照搬会把

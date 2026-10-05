@@ -1073,8 +1073,10 @@ class BehaviorService:
             "events_scanned": len(events),
             "events_total": events_total,
             "scan_limit": scan_limit,
-            # DCD 20261004 裁6 Q6-2：按天分批下截断判据改为 repo.last_scan_truncated
-            # （任一天命中日配额），旧判据 len(events) >= scan_limit 在分批下失效。
+            # DCD 20261004 裁6 Q6-2 + 20261005 §二.1 乙′：截断判据走 repo.last_scan_truncated
+            # （只认已证明的丢失：抓回来没交出的行 / 补读后仍未探底的格 / 有天没轮到扫）。
+            # 旧判据 len(events) >= scan_limit 在分摊下失效，
+            # 裁6 首版的"任一天命中日配额"在按小时分层下又漏报一层。
             "scan_truncated": bool(getattr(self.repo, "last_scan_truncated", False)),
             "excluded_entity_ids": len(exclude_ids),
         }

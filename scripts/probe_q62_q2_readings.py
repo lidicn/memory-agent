@@ -87,7 +87,7 @@ print("耗时=%sms 条数=%s 覆盖日键=%s 个（%s → %s）首末 ts=%s → 
     min(legacy_days) if legacy_days else "-", max(legacy_days) if legacy_days else "-",
     legacy_rows[0][1] if legacy_rows else "-", legacy_rows[-1][1] if legacy_rows else "-"))
 
-print("\n=== A3 改后形状：load_events 按天分批 ===")
+print("\n=== A3 改后形状：load_events 按天×小时分层（乙′）===")
 timings = []
 for _ in range(3):
     t1 = time.perf_counter()
@@ -137,6 +137,58 @@ for d in sorted(true_span, reverse=True):
         d, t_lo[11:19], t_hi[11:19], _span_hours(t_lo, t_hi),
         k_lo[11:19], k_hi[11:19], _span_hours(k_lo, k_hi) if k_lo != "-" else "-"))
 print("  口径：ts 是本地墙钟字符串（_to_iso 产出），跨度按同一字符串直算，不做时区换算")
+
+# ── A5 本件（乙′）自己的成对读数：#44 的按天前缀 vs 分层，同窗口同预算 ──────────
+# A2/A3 那对比的是"一条 LIMIT 打完 30 天"（#44 之前）；本件的改前是 #44 的按天前缀，
+# 裁定 :39 的现象（每天只剩凌晨 1 小时可见）只有这一对才量得出来，所以必须现算一遍旧形状。
+print("\n=== A5 改前(#44 按天前缀)/改后(乙′ 按小时分层) 成对读数 + 每日可见时段表 ===")
+prefix_sql = ("SELECT day, substr(ts, 12, 2) AS hh FROM events WHERE day = ? "
+              "ORDER BY ts ASC, id ASC LIMIT ?")
+prefix_timings = []
+prefix_hours: dict = {}
+for _ in range(3):
+    t2 = time.perf_counter()
+    hours: dict = {}
+    for d, _c in per_day:
+        for row in cur.execute(prefix_sql, (d, daily_quota)).fetchall():
+            hours.setdefault(d, set()).add(str(row[1]))
+    prefix_hours = hours
+    prefix_timings.append(round((time.perf_counter() - t2) * 1000, 1))
+prefix_ms = sorted(prefix_timings)[len(prefix_timings) // 2]
+
+strat_hours: dict = {}
+for e in events:
+    s = _to_iso(e.ts)[:19]
+    strat_hours.setdefault(s[:10], set()).add(s[11:13])
+
+NIGHT = ("20", "21", "22", "23")
+
+
+def _stats(hours):
+    widths = [len(v) for v in hours.values()] or [0]
+    widths = sorted(widths)
+    night = sum(1 for v in hours.values() if set(v) & set(NIGHT))
+    return widths[0], widths[len(widths) // 2], widths[-1], night
+
+
+p_w = _stats(prefix_hours)
+s_w = _stats(strat_hours)
+print("按天前缀：耗时=三次 %sms（中位 %sms）｜有货日键=%s 每日可见小时数 首/中/末=%s/%s/%s "
+      "夜间出场的天数=%s" % (prefix_timings, prefix_ms, len(prefix_hours), p_w[0], p_w[1], p_w[2], p_w[3]))
+print("按小时分层：耗时=三次 %sms（中位 %sms）｜有货日键=%s 每日可见小时数 首/中/末=%s/%s/%s "
+      "夜间出场的天数=%s" % (timings, sorted(timings)[len(timings) // 2],
+                             len(strat_hours), s_w[0], s_w[1], s_w[2], s_w[3]))
+print("耗时比（分层中位/前缀中位）=%s  日配额=%s  小时公平份额=%s" % (
+    round(sorted(timings)[len(timings) // 2] / prefix_ms, 2), daily_quota,
+    max(1, daily_quota // 24)))
+
+print("每日可见时段（窗口内最后 5 天，只报小时个数与夜间出场数，不报条数以外的明细）：")
+for d in sorted(true_span, reverse=True):
+    ph = sorted(prefix_hours.get(d, set()))
+    sh = sorted(strat_hours.get(d, set()))
+    print("  %s 前缀可见 %s 格 %s｜分层可见 %s 格 %s｜夜间(20-23) 前缀=%s 分层=%s" % (
+        d, len(ph), ",".join(ph), len(sh), ",".join(sh),
+        len(set(ph) & set(NIGHT)), len(set(sh) & set(NIGHT))))
 
 # ── B. Q2=甲：64KB 页预算改前/改后 ──────────────────────────────────────────
 print("\n=== B 设备健康整页字节预算（同一批生产行，只算不写）===")
