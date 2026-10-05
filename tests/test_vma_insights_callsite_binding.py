@@ -362,15 +362,33 @@ def _engine_scanner():
 
 
 def test_facade_engine_pointers_all_resolve():
-    """门面体里每一个 `self.<引擎>.<成员>(...)` 都必须指向真实存在的成员。"""
+    """门面体里每一个 `self.<引擎>.[成员.]*(...)` 都必须指向真实存在的成员。
+
+    链长也算：`self.core.reports.anomaly_report(…)` 这类两跳调用只量第一跳的话，
+    「门面挂在 `core.reports` 上、而 `core` 根本没有 `reports`」就正好从缝里过去
+    （run13d 起扫描器按整条链解析，`UNREGISTERED` 同样判红）。
+    """
     mod = _engine_scanner()
     targets = mod.load_targets()
     hits = mod.collect(os.path.join(ROOT, "insights", "api.py"), targets)
-    missing = [(m, ln, f"self.{o}.{a}") for m, ln, o, a in hits
-               if not hasattr(targets[o], a)]
-    assert not missing, "门面指向不存在的引擎成员（会被 _degrade 静默收成空页）：\n" + \
-        "\n".join(f"{m} (api.py:{ln}) -> {t}" for m, ln, t in missing)
+    problems = mod.missing(hits, targets)
+    assert not problems, "门面指向不存在的引擎成员（会被 _degrade 静默收成空页）：\n" + "\n".join(
+        f"{m} (api.py:{ln}) -> self.{o}.{'.'.join(c)} 断在 {hop}（{kind}）"
+        for m, ln, o, c, kind, hop in problems)
     assert len(hits) >= 30, f"扫描器没有真的读到位（只找到 {len(hits)} 个指向）"
+    deep = [h for h in hits if len(h[3]) > 1]
+    assert len(deep) == 4, [d[3] for d in deep]  # 四条报告面，一条都不许从统计里掉出去
+
+
+def test_engine_scanner_self_test_bites_chain_shapes():
+    """量具自证：合成的四种链形状必须各判一类，真 api.py 那一档必须 0 问题。
+
+    这一格不是走过场。改前的 `collect()` 判据是「`call.func.value.value` 必须是
+    `ast.Name`」，把两跳的 `self.core.reports.anomaly_report(…)` 整个跳过——于是喂给
+    扫描器四条坏链它回答「一条都没扫到」，门恒绿。断在链哪一跳、未登记要单独成类，
+    都得由合成形状证明它真会响（`--self-test` 同一套逻辑，容器里也能量具自检）。
+    """
+    assert _engine_scanner()._self_test() == 0
 
 
 def test_ledger_size_matches_the_measured_outward_surface():
