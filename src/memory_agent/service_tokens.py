@@ -314,7 +314,11 @@ class ServiceTokenStore:
     # ── 校验 ───────────────────────────────────────────────────────────────
 
     def verify(self, token: str) -> dict | None:
-        """命中返回 ``{name, source, scopes}``，否则 ``None``。"""
+        """命中返回 ``{name, source, scopes, token_kind}``，否则 ``None``。
+
+        DCD 20261005 Q5：``token_kind`` 区分 ``service``（新签发）与 ``legacy``（env 导入），
+        供调用方在审计日志中记录，作为 30 天双轨期下线决策依据。
+        """
         if not token:
             return None
         digest = _hash(token.strip())
@@ -328,6 +332,7 @@ class ServiceTokenStore:
                         "name": name,
                         "source": value.get("source", ""),
                         "scopes": list(value.get("scopes") or []),
+                        "token_kind": "service",
                     }
         for name, value in self.legacy_records().items():
             if secrets.compare_digest(value["hash"], digest):
@@ -337,6 +342,7 @@ class ServiceTokenStore:
                     "source": value["source"],
                     "channel": value["channel"],
                     "scopes": value["scopes"],
+                    "token_kind": "legacy",
                 }
         return None
 
@@ -364,6 +370,88 @@ class ServiceTokenStore:
                 cfg.save()
             except Exception as exc:  # noqa: BLE001
                 print(f"[ServiceToken] 更新使用计数失败: {exc}")
+
+    # ── DCD 20261005 Q5：30 天双轨监控 ────────────────────────────────────
+
+    #: 双轨期天数（DCD Q5：从新令牌签发日起算 30 天）
+    DUAL_TRACK_DAYS = 30
+    #: 旧令牌连续 N 天使用量为 0 可下线（DCD Q5）
+    LEGACY_ZERO_USAGE_DAYS = 7
+
+    def legacy_usage(self) -> dict:
+        """旧令牌（env 导入）使用量监控，供双轨期下线决策。
+
+        返回 ``{tokens: [...], dual_track: {...}, can_revoke: bool}``。
+        - ``tokens``：每条旧令牌的使用统计（name/last_used_at/use_count/days_since_last_use）
+        - ``dual_track``：双轨期状态（start_date/end_date/remaining_days/expired）
+        - ``can_revoke``：所有旧令牌连续 LEGACY_ZERO_USAGE_DAYS 天使用量为 0 → True
+        """
+        from datetime import datetime, timedelta
+
+        now = now_local(getattr(self._cfg(), "tz_offset_hours", 8))
+        tokens = []
+        all_zero_for_window = True
+        any_legacy = False
+
+        for name, value in self.legacy_records().items():
+            any_legacy = True
+            last_used = value.get("last_used_at", "")
+            use_count = int(value.get("use_count") or 0)
+            days_since = None
+            if last_used:
+                try:
+                    last_dt = datetime.fromisoformat(last_used)
+                    days_since = (now - last_dt).days
+                except (ValueError, TypeError):
+                    days_since = None
+            # 连续 N 天为 0 的判定：last_used_at 为空（从未用）或 days_since >= N
+            zero_for_window = (not last_used) or (days_since is not None and days_since >= self.LEGACY_ZERO_USAGE_DAYS)
+            if not zero_for_window:
+                all_zero_for_window = False
+            tokens.append({
+                "name": name,
+                "last_used_at": last_used,
+                "use_count": use_count,
+                "days_since_last_use": days_since,
+                "zero_for_window": zero_for_window,
+            })
+
+        # 双轨期：从最早的新签发令牌 created_at 起算 30 天
+        service_tokens = self._cfg().service_tokens or {}
+        start_date = ""
+        end_date = ""
+        remaining_days = None
+        expired = False
+        if service_tokens:
+            created_ats = [
+                v.get("created_at", "") for v in service_tokens.values()
+                if isinstance(v, dict) and v.get("created_at")
+            ]
+            if created_ats:
+                earliest = min(created_ats)
+                try:
+                    start_dt = datetime.fromisoformat(earliest)
+                    end_dt = start_dt + timedelta(days=self.DUAL_TRACK_DAYS)
+                    start_date = start_dt.isoformat(timespec="seconds")
+                    end_date = end_dt.isoformat(timespec="seconds")
+                    remaining = (end_dt - now).days
+                    remaining_days = max(0, remaining)
+                    expired = now >= end_dt
+                except (ValueError, TypeError):
+                    pass
+
+        return {
+            "tokens": tokens,
+            "dual_track": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "remaining_days": remaining_days,
+                "expired": expired,
+                "total_days": self.DUAL_TRACK_DAYS,
+            },
+            "can_revoke": any_legacy and all_zero_for_window,
+            "legacy_count": len(tokens),
+        }
 
 
 def reset_legacy_stats() -> None:

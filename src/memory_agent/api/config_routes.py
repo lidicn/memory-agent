@@ -501,6 +501,14 @@ async def revoke_service_token(request: Request):
     return ok({"message": f"已吊销: {name}"})
 
 
+async def service_token_legacy_usage(request: Request):
+    """DCD 20261005 Q5：旧令牌使用量监控 + 30 天双轨期状态。"""
+    _, err = require_admin(request)
+    if err:
+        return err
+    return ok(get_service_token_store().legacy_usage())
+
+
 ROUTES = [
     Route("/api/config", get_config_api, methods=["GET"]),
     Route("/api/config", update_config_api, methods=["POST"]),
@@ -512,5 +520,6 @@ ROUTES = [
     Route("/api/config/service-tokens", list_service_tokens, methods=["GET"]),
     Route("/api/config/service-tokens", create_service_token, methods=["POST"]),
     Route("/api/config/service-tokens/{name}", revoke_service_token, methods=["DELETE"]),
+    Route("/api/config/service-tokens/legacy-usage", service_token_legacy_usage, methods=["GET"]),
     Route("/api/health", health, methods=["GET"]),
 ]

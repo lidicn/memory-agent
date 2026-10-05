@@ -330,6 +330,8 @@ class AuthMiddleware:
                     "service_name": svc_rec["name"],
                     "service_scopes": svc_rec.get("scopes") or [],
                     "app_source": svc_rec.get("source", ""),
+                    # DCD 20261005 Q5：token_kind 区分 service/legacy，供审计日志记录
+                    "token_kind": svc_rec.get("token_kind", "service"),
                     # 遗留通道导入后仍带原有身份位：member_routes 按 butler 判，
                     # 少了这个映射，豆包管家换成"同一条密钥的导入记录"就会被拒。
                     "butler": channel == "butler",
