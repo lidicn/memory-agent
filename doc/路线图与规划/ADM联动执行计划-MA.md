@@ -1466,6 +1466,61 @@ Q3 追认 `CATEGORY_DOMAINS` 在 utils.py 顶层的两份（:271 与 :1091）逐
 ⇒ **attic 搬迁（任务表 #56）目前只在仓里，线上镜像仍是旧布局**。这与 #57 的网络隔离、端口 9080/9443 同一格：
 出网的是仓，在役的是旧镜像，等**镜像重烤 + recreate 窗口**（未获授权）。凡"线上行为"的判定必须以容器 `/app` 那格为准。
 
+### 6.21 Q-B 参数级落点收口（任务表 #40 ⑤⑥ / #58 Q-D，2026-10-06，容器 run12 → run13d）——四跳量到底，抓到一条"从未挂载"的现行缺陷
+
+裁定来源：DCD `decisions/20261005-AF用户WebUI与MA四件与CVE-裁定.md` **§三 Q2**
+（「每个入参必须有『新实现落点』或『显式不支持』的登记，**不允许静默忽略**」）。
+完整过程与成对读数在 `doc/审计报告/修复与核实/审计核实与修复_20261001.md` §四十，交接摘要在进度 §十五。
+编号纪律按本节 :1428 那条：只写「任务表 #NN」或「报告 :NN」。
+
+**一句话结论**：这句话现在有一把能量化的尺子（`scripts/scan_qb_param_landing.py`，四类判词 + `--self-test` + `--strict`），
+终树读数 `api.py` 125 / `service.py` 27 / `nlquery.py` 6 / `repository.py` 77 个形参**全部 lands、`FINDINGS=0`**；
+而顺着落点逐跳往下读，在**第四跳**抓到一条现行缺陷——门面四条报告文本面指向一个从未挂载的成员
+（`hasattr(BehaviorService,'reports')=False`，调用即 `AttributeError`，被 `@_degrade` 静默收成空页）。
+
+| 跳 | 改前 | 改后（file:line） | 锁 | 变异 |
+|---|---|---|---|---|
+| 一（门面） | `days` 进死赋值（`_days_to_range` 返回值没人读）、`query` 全函数 0 个 Load | `_tr(…, days=days)`；`query` 解实体集（`api.py:726`） | qb 第 1..8 条 | N1/N2 |
+| 二（core） | `_anomaly_report` 的 `_filters(room, category)` **不带实体集**，`filters` 回显恒空 | `service.py:619/630` 收 `entity_id` 并交 `_filters` 三位；echo 改 `",".join(entity_ids)`（:728） | qb 第 8 条（`entity_id_lands_on_repo_scans`，:208） | N3/N4/N5/N6 |
+| 三（NL 路由） | 规划好的 `plan.entity_ids` **没交给 core** ⇒ 问「X 有什么异常」拿到全屋 | `nlquery.py:120-121` `entity_id=",".join(plan.entity_ids)` | callsite 族 | N7 |
+| 四（报告文本面） | `self.core.reports` 从未挂载（`api.py:892-901` 四条全坏） | `service.py:376` 挂 `ReportBuilder()` | qb 第 9 条（`…_lands_on_the_report_surface`，:273）+ callsite `deep==4` | N10/N11/N12 |
+| 门禁那一格 | `ok=True` 字面量被仓内 `fake-ok-const` 判红（run13 首读 `SUITE_RC=1`） | 不变式回读 `_closed_ok:512`（三条同时成立才 `ok`） | `test_vma_qb_param_landing` 第 8 条 + `test_quality_gates.py` 留在口径内 | N8/N9 |
+
+**量具的两处自证**（这一批真正的产出）：
+① `scan_insights_engine_attrs.py` 从"只认 `ast.Name` 基座第一跳"扩成整条链（`SUBOWNERS:54` / `init_slots:72` /
+`resolve_chain:138`，判词分 `MISS` 与 `UNREGISTERED`），面板改前「**35 指向 / 0 空指向**」是**全绿**的、
+四条坏链一条都没进统计 ⇒ 现读「**39 指向（含多跳链 4）/ 0 空指向 / 0 未登记**」+ `SELFTEST=OK`
+（五档合成用例必须抓到 `no_member/no_method/unregistered` 三档）。
+② 变异必须**非空**：N11 第一版阈值 `len(parts) > 3` 永假（`parts` 里没有 `self`）⇒ 变异等价于不改，
+harness 老实报 `RC=0 -> 没咬住`；改 `> 2` 后用新加的 `MUT_ONLY` 单条重跑才是 `RC=1 / 2 failed`。
+
+**run13d 权威门**（快照 `/tmp/c37snap20261006d`，373 文件，基线 HEAD `25d3b1b`，容器 Python 3.11.16）：
+`TOOLCHAIN_RC=0`（pytest 9.1.1 / pyflakes 4.0.2，照旧排第一）、`SOURCES_RC=0`（本批指纹 + 七文件 3855 行与仓侧一致）、
+`PROBEANOM_RC=0`（四跳成对读数：`days` 四档各自挪窗；带 14 实体时事件总数 **377234 → 309**、异常数 **1 → 5**；
+解析不出设备时 **0 条 + `unresolved=True`** 而全屋对照 **1** 条；报告面 `days=14→15 / 2→3`）、
+`QBLAND_RC=0`（`FINDINGS=0`）、`QBSELFTEST_RC=0`、`SCANS2_RC=0`（`CALLSITE/ATTRS/ATTRS_SELFTEST` 三格 0）、
+`GATE_RC=0`（pyflakes 0/0/0/0，`.gates-baseline.txt` 一字未改）、`SUITE_RC=0`（**1459 passed / 10 skipped**，384.10s，
+`SUITE_FAILNAMES_RC=1` = grep 不到 FAILED）、`TARGETED_RC=0`（32）、`PREVBATCH_RC=0`（61，与 run11 同数）、
+`TOUCHED_RC=0`（350/3skip）、`DAYBATCH_RC=0`（src 97 项台账与 run10/run11 一字不动）、
+`ROUTEBATCH_RC=0`（197/196/0/0，与 run11 逐格相同）；`MUT13_RC=0`（N1..N12 全咬，失败条数 3/2/1/1/1/1/1/1/1/3/2/2，
+每格同基数 34）、`MUT11_RC=0`（N1..N8 全咬，条数 2/2/1/2/2/1/3/1）、`MUT10_RC=0`（M1..M10 全咬，条数 5/6/5/8/3/2/4/1/1/24），
+三档各自 `restored_identical=OK`、`MUTATION_BAD=0`。区间口径：面板未打时刻，取 `.qoder/tmp-run13d.log` 的
+birth/mtime（`+0800` 04:09:02→04:27:32）折算 UTC ⇒ 2026-10-05T20:09:02Z→20:27:32Z。
+MUT11/MUT10 是**自证**：本批没动 intent/predictor/utils/attic，也没动 `repository.py`（一字未改），
+读数应与 run11/run10 一字不差（M1..M10 = 5/6/5/8/3/2/4/1/1/24），对不上就说明改动渗到了不该渗的地方。
+
+**run12 的 Q3 六条收口**（`.qoder/tmp-q3run12.out`，生产库只读）：Q3-1 过滤/排序位**全生效**（7 位，无"不生效"格）、
+Q3-2 `days` 三档单调（1/7/30 → **5789 / 38074 / 149743**）、Q3-3 截断如实上报、Q3-6 三项对比读数齐；
+Q3-4 不齐只剩 `entity_catalog`（属任务表 #58 Q-C 的"永久 legacy"，不是补齐项）、
+Q3-5 不齐 = **9 个**既无同名无异名的工具 + **4 个**异名等价物语义待逐条核 —— 这 13 条是任务表 #40 ⑤⑥ 的正文，
+本批只把读数钉在册上，补齐要动工具面，不在 #58 Q-D 的范围内。
+
+**呈 DCD**（`关键决策部/inbox/20261006-MA-异常面两种查不到口径与unresolved键使用面-决策申请.md`）：
+Q1 异常面两种"查不到"（门面 fail-closed 答 0 条 vs NL 回落全屋；MA 建议甲 = NL 也 fail-closed，
+判据现成 `plan.params["has_query"]`（`nlquery.py:76`），不需要新出境键，但话术变化是 AF/DB 可见的行为变更）；
+Q2 `filters.unresolved` 从 `query_events` 扩到 `anomaly_report` 的 `filters`（`api.py:749`）的使用面追认，
+并**更正**上一份呈文"零新增出境键"那句话只适用于任务表 #61 那一批。
+
 
 ---
 
