@@ -46,6 +46,10 @@ services:
     depends_on:
       - redis
       - chroma
+    # DCD 20261005 §二.3 Q1=乙：MA 同时在默认网（与 caddy 通信）和 ma_internal（与 chroma/redis 通信）
+    networks:
+      - default
+      - ma_internal
 
   # Caddy 反向代理 + TLS 终止，用于 iOS/iPad PWA（HTTPS 必需）
   # 证书准备见 scripts/gen-certs.sh 或 Tailscale `tailscale cert`
@@ -54,14 +58,17 @@ services:
     container_name: memory-caddy
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      # 80 端口被 NAS 宿主服务占用，只绑 443 做 HTTPS 反代
+      - "192.168.2.200:443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./certs:/certs:ro
       - caddy_data:/data
     depends_on:
       - memory-agent
+    # caddy 只在默认网，不可达 chroma/redis（CVE 网络隔离）
+    networks:
+      - default
 
   redis:
     image: redis:alpine
@@ -69,6 +76,9 @@ services:
     restart: unless-stopped
     volumes:
       - redis_data:/data
+    # DCD 20261005 §二.3 Q1=乙：redis 只在 ma_internal，外部容器不可达
+    networks:
+      - ma_internal
 
   chroma:
     image: docker.m.daocloud.io/chromadb/chroma:0.5.23
@@ -78,6 +88,16 @@ services:
     # MA 主服务经 chroma:8000 访问（WO-MA-001 / 审计 P0-10）
     volumes:
       - chroma_data:/data
+    # DCD 20261005 §二.3 Q1=乙：chroma 只在 ma_internal，外部容器不可达
+    networks:
+      - ma_internal
+
+# DCD 20261005 §二.3 Q1=乙：MA 专用内部网，internal=true 禁止对外路由
+# 有效读数：docker network inspect ma_internal 可达 chroma 的容器 = MA + chroma（redis 同网但不主动访问 chroma）
+networks:
+  ma_internal:
+    internal: true
+    name: memory-agent_internal
 
 volumes:
   redis_data:
