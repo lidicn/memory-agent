@@ -1521,6 +1521,55 @@ Q1 异常面两种"查不到"（门面 fail-closed 答 0 条 vs NL 回落全屋�
 Q2 `filters.unresolved` 从 `query_events` 扩到 `anomaly_report` 的 `filters`（`api.py:749`）的使用面追认，
 并**更正**上一份呈文"零新增出境键"那句话只适用于任务表 #61 那一批。
 
+### 6.22 `behavior_routes` 输入边界与事件循环收口（任务表 #63，2026-10-06，容器 run14 → run14c）——覆盖率 21% → 69%，现读又引出一条现行缺陷
+
+**这一格在计划里的位置**：第十五轮 §九 优先级 1 点名三个 0%~10% 覆盖模块
+（`identity_fusion`、`behavior_predictor`、`api/behavior_routes`，见
+`元宝/memory-agent_第十五轮审计报告.md`:208），本批收口的是第三个。
+口径来源仍是 **DCD 20261005 §三 Q2**「每个入参必须有『新实现落点』或『显式不支持』的登记，不允许静默忽略」。
+交付行原文（任务表 #63）：「改码 + DESC 口径用例 + 覆盖率现读（目标 behavior_routes ≥60%，Q4）+
+容器权威门 + 台账 + 三 commit 推 GitHub」。**≥60% 是本批自设验收线**，不是路线图格、不是裁定书指标。
+
+**五族收口**（终树行号，逐条与改前档 `612f67b` 成对量过指纹）：① `_num()`（`api/behavior_routes.py:23-44`）
+铺开 **13 个 handler**，替掉两族旧写法——裸 `int(query)` 遇非数字把 handler 打成未捕获 ValueError（Starlette
+没有 `exception_handlers` ⇒ 500），`int(body.get(k) or 3)` 把 `0`/`""`/`False` 静默改值并把 config 旋钮顶死
+在字面量；同文件里 `days` 一直有守卫而 `limit` 没有，这种"半拉子守卫"比全裸更坑。② 四处重活回
+`asyncio.to_thread`（`OFFLOAD_*` 四条 0→1、总数 45→49），运行时证据是 `PROBE` 的**心跳 tick=44**
+（handler 占住主循环时这一格必为 0）与线程记录 `asyncio_0`。③ `change_attribution` 的"一个数两种口径"：
+`clamp_days` 只管第一个消费点，`delta`/`half_life`/两处 `_description` 用原值 ⇒ 传 `10**9` 时窗口夹成 3650 天
+而半衰期按 **5×10⁸ 天**算（`:317` `:331` `:375` `:396` 四处同源）。④ R3 人工审核留痕与规则视图冷却位
+**HEAD 就有实现、改前 0 条用例引用**（指纹两侧都 =1），本批补的是"实现有、锁没有"。⑤ **族 5 是覆盖率现读
+引出来的现行缺陷**：`behaviors_run` 的 `window_minutes` 原样透传到 `activity_inference.py:260` 的
+`int(... or 15)`——`"abc"`→500、`0`→静默换档、`10**12`→`timedelta` OverflowError；现夹在
+`1..DAY_WINDOW_MAX*1440`（=3650 天同口径）。这条正好回答"补覆盖是不是涂指标"：把没走过的路走一遍就走出新红。
+
+**成对现读**（同一把尺：本机 Python313 + coverage 7.16.1、全量单轮、`--include=behavior_routes,change_attribution`）：
+改前档 **1447 passed / 22 skipped**、`behavior_routes` 642 stmts / 506 miss = **21%**；终树档
+**1532 passed / 22 skipped**、678 / 207 = **69%**（`change_attribution` 87%→88%，TOTAL 49%→77%）。
+分母会随守卫增加而变，所以跨批趋势只报"未执行条数 506→207"这条绝对量。锁的密度另有一档：本批改动的
+13 个 handler 在改前 **12 个没有任何"把 handler 当函数调用"的用例**、其中 **11 个连名字都没在任何测试里出现**
+（量法：HEAD 的 128 个测试文件排除本批新增档，`name(` 与 `\bname\b` 两栏分开数）。
+盲区随读数一起登记：`behaviors_current` 挂在 `Route("/api/behaviors")`（终树 :1179），按路径 grep 找不到；
+`/api/behaviors/rules` 改前只有一条例程形状锁（`tests/test_vma_p32_day_bounds.py:626-633`）。
+
+**四次自伤都在本批内当场改掉并给了现读**（详见台账 §四十一.六）：把变异 harness 当模块 `import` ⇒ 腿被 kill
+在工作区留下 `if False:` 死门（→ ast 全表核对 + 驱动预飞格 `MUT63_VERIFY_RC`）；**权威门在飞期间改了树**
+⇒ run14b 自动降级中间档、重开 run14c；M21 的替换串少一个冒号 ⇒ pytest collection 期 SyntaxError 被门报成
+"没咬住"（→ 新增 `SYNTAX_BAD`：出网前 22 条变异逐个在内存里 `compile()`，负证明读到 `SyntaxError invalid syntax line 2`）；
+测试注释里两句"改前也回 200"与 `git show HEAD:` 冲突（HEAD 两条 handler 本来就回 404）⇒ 改成如实登记，
+另把"HEAD 侧指纹全 0"这句**推论**换成实测表。**推论不进台账**这条继续有效。
+
+**run14c 权威门**（终树档，快照 `/tmp/c63snap20261006c`，374 文件，基线 HEAD `612f67b`，容器 Python 3.11.16，
+区间 2026-10-05T22:36:06Z→22:57:02Z）：预飞 `MUT63_VERIFY_RC=0`（22 条锚点 + `SYNTAX_BAD=0` + 死门扫描 0）、
+`TOOLCHAIN_RC=0`、`SOURCES_RC=0`（终树期望表逐字复现，含 `task63 测试 896` / `T63_TESTDEFS=46`）、
+`PROBE_RC=0`（`limit=-1`→400、**心跳 tick=44**、合法 `0` 档原样到、`clamp_days(10**9)=3650` 且半衰期同源、
+`trigger_id=999999`→404）、`SCANS/QBLAND/CALLSITE/ATTRS_RC=0`、`GATE_RC=0`（pyflakes 新增 0、
+`.gates-baseline.txt` 一字未改）、`SUITE_RC=0`（**1544 passed / 10 skipped**，255.47s）、
+`TARGETED 100` / `PREVBATCH 148` / `TOUCHED 396` 全 0；`MUT63_RC=0`（控制档 `NOTHING` 85 passed、
+22 条全咬、条数 5/13/6/14/1/1/1/4/2/1/2/2/2/1/3/1/1/2/3/6/1/1、`MUTATION_BAD=0`）、
+`MUT13_RC=0`（上一批 12 条重跑作自证，条数 3/2/1/1/1/1/1/1/1/3/2/2 与 run13d 一字不差）。
+`run14` / `run14b` 留册为**中间档**（降级原因＝§6.22 自伤第 2 条：门在飞期间动了树）。
+
 
 ---
 
