@@ -5,6 +5,14 @@
    检测器沿用审计方的 AST 口径，但补掉它的两个洞：嵌套 def 经 to_thread 跑的
    正确写法（原口径会误报）、collector 这类纯内存对象（原口径会误报）。
 2. MEDIUM：SSE 订阅队列无界 → 慢客户端把内存拖大。锁住上限与"满了断开而不是挂住"。
+
+**本量具的已知盲区（任务表 #63 实测坐实，别把它当全覆盖）**：AST 口径只认
+`rt.store.<m>()` / `rt.ha_db.<m>()` 这一种形状，看不见两种同源缺陷——
+①「把 store 当**参数**传进同步函数」（`build_profile(rt.store, …)` 在 async handler 里直接调），
+②纯 CPU 的同步重函数（预测/意图推断，压根不碰 store）。
+现读：探针在 `behaviors_home_profile` 里塞 50ms 同步占用，同循环心跳 tick 增量 = **0**、
+两个调用都落在 MainThread，而本文件的 `test_no_blocking_db_calls_inside_async_defs` 全绿。
+补的那一格在 `tests/test_vma_task63_routes_input_boundary.py`（按函数名点名的 AST 门 + 心跳真响）。
 """
 
 from __future__ import annotations
