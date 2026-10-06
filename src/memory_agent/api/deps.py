@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from typing import Any, AsyncIterator, Callable
 
 from starlette.requests import Request
@@ -178,6 +179,12 @@ def _num(raw, *, name: str, cast=int, default=None, lo=None, hi=None):
 
     原先住在 `behavior_routes`，二期 MA-07/08 要求别的入口也用同一口径，故提到公共依赖
     （"同一个 store 方法，API 侧已钳制、MCP 侧裸下推"那类不对等，根因之一就是各校各的）。
+
+    非有限值单独一档，两个理由都是实测出来的：`json.loads`（Starlette 的 `request.json()`
+    就走它）默认接受 `Infinity` / `NaN` 字面量，所以 body 能把**真** `float('inf')` 递进来，
+    而 `int(float('inf'))` 抛的是 `OverflowError`——第八轮 lesson 86 量过 `except
+    (TypeError, ValueError)` 接不住它；`NaN` 更阴险，`nan < lo` 和 `nan > hi` 恒为 False，
+    只靠上下界等于没有校验。
     """
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return default, None
@@ -185,8 +192,10 @@ def _num(raw, *, name: str, cast=int, default=None, lo=None, hi=None):
         return None, f"{name} 必须是数字"
     try:
         val = cast(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None, f"{name} 必须是{'整数' if cast is int else '数字'}"
+    if isinstance(val, float) and not math.isfinite(val):
+        return None, f"{name} 必须是有限数字"
     if lo is not None and val < lo:
         return None, f"{name} 不得小于 {lo}"
     if hi is not None and val > hi:

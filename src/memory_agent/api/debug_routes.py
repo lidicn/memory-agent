@@ -184,6 +184,14 @@ def _register(run: DebugRun) -> None:
                 _CONV.pop(r.conversation_id, None)
                 if r.conversation_id in _CONV_ORDER:
                     _CONV_ORDER.remove(r.conversation_id)
+                # MA-20（第九轮）：同一条淘汰路径漏了 `_CONV_LOCKS`。改前实测
+                # N=500/2000/10000 个不同 conversation_id 时，两个有上限的容器精确停在
+                # 200，而这个容器 500/2000/10000 线性同增（键直接来自请求体
+                # `body.get("conversation_id")`）。锁的生命周期本就该跟 `_CONV` 一致：
+                # 上下文被驱逐，保护它的锁没有单独留下的理由。
+                # 这里不加 `_CONV_LOCKS_GUARD`：`_register` 全程无 await，单线程协作式
+                # 调度下不会与 `_get_conv_lock` 的读→建→写交错。
+                _CONV_LOCKS.pop(r.conversation_id, None)
 
 
 async def _execute_run(rt, run: DebugRun, tools=None, run_tool=None) -> None:

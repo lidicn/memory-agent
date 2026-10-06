@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import traceback
 from http.cookies import SimpleCookie
 from pathlib import Path
@@ -46,6 +47,7 @@ from .acp_auth import ACPTokenMiddleware
 from .acp_server import acp_dispatcher
 from .auth import AuthManager
 from .config import get_config
+from .home_profile import write_profile_atomic
 from .logging_setup import configure_logging
 from .mcp_auth import MCPTokenMiddleware
 from .runtime import get_runtime, start_runtime, stop_runtime
@@ -498,6 +500,52 @@ async def mcp_stats_endpoint(request: Request):
 
 # ── v0.5.0 AutoForge 运行指标回灌（生态闭环）────────────────────────────
 _METRICS_PATH = os.path.join(os.environ.get("DATA_DIR", "/data"), "af_metrics.json")
+_metrics_log = logging.getLogger("metrics.ingest")
+# MA-17（第七轮）：`af_metrics.json` 是**外部服务（AutoForge 回灌）与本进程共享**的文件，
+# 改前两侧都是 `read_text → json.loads → write_text`，既无锁也非原子。审计的三条实测失效：
+#   1. 20 线程各写不同 key → 落盘 5 条（丢 15 条）；
+#   2. 文件被截断后一次**完全正常**的 ingest → 落盘 1 条，原 3 条永久消失，返回体仍 `ok: True`；
+#   3. 读写并发 1327 次、读到空 784 次（59.1%）⇒「读到半截」与「确实没有指标」返回完全相同。
+# 失效 2 的第一环就是写侧那句 `except Exception: store = {}` —— 读不出来 ≠ 没有，
+# 拿"没有"去覆盖磁盘（与 AutoForge R10-02 / R16-01 同形状，跨代码库第三次出现）。
+# 落盘范式对齐同仓已做对的 `home_profile.write_profile_atomic`（mkstemp + fsync + os.replace）。
+_METRICS_LOCK = threading.Lock()
+
+
+def _metrics_load() -> dict:
+    """读指标表。**解析失败或顶层不是对象 → raise**，由调用方决定怎么报。
+
+    这里绝不返回空表：返回空表就等于授权"用一次正常写入把历史抹掉"。
+    """
+    loaded = json.loads(Path(_METRICS_PATH).read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("af_metrics.json 顶层不是对象")
+    return loaded
+
+
+def _metrics_ingest_sync(key: str, payload: dict) -> None:
+    """读→改→写全程持锁 + 原子落盘（由 `asyncio.to_thread` 调，不钉事件循环）。"""
+    with _METRICS_LOCK:
+        store = _metrics_load() if os.path.exists(_METRICS_PATH) else {}
+        store[key] = payload
+        write_profile_atomic(_METRICS_PATH, json.dumps(store, ensure_ascii=False, indent=2))
+
+
+def _metrics_query_sync() -> tuple:
+    """返回 `(metrics, error)`；损坏时 `error` 非空并且**留 WARNING**。
+
+    响应体保持既有契约（`metrics` 仍是对象，消费方不会因为新键崩），但"读不出来"
+    必须能从读数里分辨出来，不能和"没有指标"共用同一个形状。
+    """
+    if not os.path.exists(_METRICS_PATH):
+        return {}, None
+    with _METRICS_LOCK:
+        try:
+            return _metrics_load(), None
+        except Exception as exc:
+            _metrics_log.warning(
+                "af_metrics.json 读不出来，本次返回空表（这是损坏、不是无指标）: %s", exc)
+            return {}, "metrics_file_unreadable"
 
 
 async def metrics_ingest_endpoint(request: Request):
@@ -511,30 +559,27 @@ async def metrics_ingest_endpoint(request: Request):
     key = payload.get("dedupe_key") or payload["automation_id"]
     try:
         os.makedirs(os.path.dirname(_METRICS_PATH), exist_ok=True)
-        store: dict = {}
-        if os.path.exists(_METRICS_PATH):
-            try:
-                store = json.loads(Path(_METRICS_PATH).read_text(encoding="utf-8"))
-            except Exception:
-                store = {}
-        store[key] = payload
-        Path(_METRICS_PATH).write_text(
-            json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        await asyncio.to_thread(_metrics_ingest_sync, key, payload)
     except OSError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    except Exception as exc:
+        # 现有文件读不出来：拒绝合并并点名，**不覆盖**——"损坏 → 下次写入 → 历史被抹"
+        # 这条链就在这里被剪断。
+        _metrics_log.warning("指标回灌被拒（现有 af_metrics.json 不可解析）: %s", exc)
+        return JSONResponse(
+            {"ok": False, "error": "metrics_file_unreadable", "dedupe_key": key},
+            status_code=500,
+        )
     return JSONResponse({"ok": True, "dedupe_key": key})
 
 
 async def metrics_query_endpoint(request: Request):
     """返回已接收的 AutoForge 运行指标（butler 白名单）。"""
-    if not os.path.exists(_METRICS_PATH):
-        return JSONResponse({"ok": True, "metrics": {}})
-    try:
-        store = json.loads(Path(_METRICS_PATH).read_text(encoding="utf-8"))
-    except Exception:
-        return JSONResponse({"ok": True, "metrics": {}})
-    return JSONResponse({"ok": True, "metrics": store})
+    store, err = await asyncio.to_thread(_metrics_query_sync)
+    body = {"ok": True, "metrics": store}
+    if err:
+        body["error"] = err
+    return JSONResponse(body)
 
 
 _log = logging.getLogger("mcp.dispatch")

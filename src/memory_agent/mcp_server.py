@@ -2387,8 +2387,11 @@ def _build_server():
         days: 回溯天数，默认 7
         """
         rt = get_runtime()
+        # MA-06（第二轮）：改前这里不传 exact_member，等于绕过成员收窄层读全量。
+        # 现在日记恒为公共（write_self_diary 不带 member_id ⇒ member_id=''），
+        # 所以本行读数不变；一旦将来日记加成员归属，未收窄就会变成跨成员读取。
         all_mem = await asyncio.to_thread(
-            rt.store.list_agent_memories, "all", "", 500, ""
+            rt.store.list_agent_memories, "all", "", 500, "", exact_member=True
         )
         diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
         from datetime import timedelta
@@ -2413,7 +2416,7 @@ def _build_server():
         rt = get_runtime()
         # 1. 读昨天日记
         all_mem = await asyncio.to_thread(
-            rt.store.list_agent_memories, "all", "", 500, ""
+            rt.store.list_agent_memories, "all", "", 500, "", exact_member=True
         )
         diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
         diaries.sort(key=lambda x: x.get("created_at", ""))
@@ -2491,7 +2494,10 @@ def _build_server():
 
         state: staging|live|revoked|pending_review|all，默认 live（revoked 永不经 MCP 返回）。
         member_id: 成员归属过滤；非空时只返回该成员记忆。
-        不传 member_id 时：仅 admin scope 令牌可查全量（审计通道，需出证）；
+        不传 member_id 时（第二期审计 MA-05，改前这里写的是"可查全量"，与实现不符）：
+        **admin scope 也只得公共记忆**（`member_id=''`）——下游 `agent_memory.list_agent_memories`
+        恒传 `exact_member=True`，跨成员需要逐成员点名。留痕同理：记的是"公共档列表"，
+        不是"全量列表"，事后追责不能读出后者。
         普通 read/write 令牌必须传 member_id，否则拒绝。
         """
         rt = get_runtime()
@@ -2501,16 +2507,19 @@ def _build_server():
             if "admin" not in (_scopes or []):
                 return {
                     "ok": False,
-                    "error": "member_id 缺失：普通令牌必须指定 member_id；全量查询需 admin scope",
+                    "error": "member_id 缺失：普通令牌必须指定 member_id；"
+                             "admin 令牌不点名时只走公共档（member_id=''），跨成员需逐成员点名",
                     "code": 403,
                 }
-            # admin 审计通道出证：谁在什么时候列了全量记忆
+            # admin 审计通道出证：谁在什么时候走了"不点名成员"的列表档
+            # MA-05：文案原来写的是 `full member_id-less listing`，而实现只返回公共记忆
+            # （`exact_member=True`）——留痕比实际能力大，等于给事后追责造假证据。
             try:
                 await asyncio.to_thread(
                     rt.store.log_mcp_audit,
                     token_name=_tok, tool="list_agent_memories",
                     scope="admin", duration_ms=0, ok=True,
-                    error="AUDIT: full member_id-less listing", origin=_origin,
+                    error="AUDIT: public-only listing (member_id omitted)", origin=_origin,
                 )
             except Exception as _e:
                 _log.warning("审计日志写入失败（不阻断查询）: %s", _e)
@@ -2546,7 +2555,8 @@ def _build_server():
 
         question: 查询问题或自然语言主题（优先使用）。
         query: 查询问题（butler 旧参数名，兼容别名；question 为空时取 query）。
-        member_id: 成员归属过滤（只召回该成员的记忆；空=全部）。
+        member_id: 成员归属过滤（只召回该成员的记忆）。空值不返回全量：走的是与
+               `list_agent_memories` 同一档 fail-closed，只召回公共记忆（MA-05）。
         trust_min: 最低信任分过滤（默认 -1 不限制）。
         top_k: 返回条数（默认 5，最多受配置 agent_retrieve_k 约束）。
         limit: top_k 的兼容别名（butler 侧沿用的是 HTTP 分页口径的命名）；
@@ -2563,7 +2573,8 @@ def _build_server():
             if "admin" not in (_scopes or []):
                 return {
                     "ok": False,
-                    "error": "member_id 缺失：普通令牌必须指定 member_id；全量查询需 admin scope",
+                    "error": "member_id 缺失：普通令牌必须指定 member_id；"
+                             "admin 令牌不点名时只走公共档（member_id=''），跨成员需逐成员点名",
                     "code": 403,
                     "schema": "ma-recall/1",
                     "count": 0,
@@ -2575,7 +2586,7 @@ def _build_server():
                     rt0.store.log_mcp_audit,
                     token_name=_tok, tool="retrieve_agent_memories",
                     scope="admin", duration_ms=0, ok=True,
-                    error="AUDIT: cross-member recall", origin=_origin,
+                    error="AUDIT: public-scope recall (member_id omitted)", origin=_origin,
                 )
             except Exception:
                 pass

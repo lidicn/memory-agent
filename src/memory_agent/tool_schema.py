@@ -846,7 +846,7 @@ TOOL_SPECS: list = [
         generated=False,
         params=[
             _p("state", "string", "状态过滤，默认 'live'", default="live"),
-            _p("member_id", "string", "成员归属过滤；普通令牌必填，缺省仅 admin scope 可查全量"),
+            _p("member_id", "string", "成员归属过滤；普通令牌必填，admin 缺省也只返回公共记忆（无全量视图）"),
         ],
         example="list_agent_memories(state='live', member_id='member:abc')",
         pitfall="member_id 是隐私面硬门：普通令牌不传 member_id 直接 403（不会退回全量）；"

@@ -9,8 +9,9 @@ from starlette.requests import Request
 from starlette.routing import Route
 
 from ..llm_client import LLMProvider
-from ..config import get_config
-from .deps import error, json_body, mask_secret, ok, require_admin, require_user, runtime
+from ..config import NUMERIC_BOUNDS, get_config
+from .deps import (_num, error, json_body, mask_secret, ok, require_admin, require_user,
+                   runtime)
 
 _log = logging.getLogger(__name__)
 
@@ -242,14 +243,24 @@ async def update_config_api(request: Request):
         if key in SECRET_FIELDS and _is_masked(value):
             continue  # 用户没改密钥，保持原值
         current = getattr(cfg, key)
-        # 数值字段做一次类型收敛，避免前端传字符串污染配置
+        # 数值字段做一次类型收敛，避免前端传字符串污染配置；
+        # MA-18：改前**只保证类型、不保证范围**——`{"tz_offset_hours": -999}` 类型收敛
+        # 顺利通过，写完之后 `now_local()` 全线 ValueError（±24h 的限制藏在标准库内部，
+        # 只算 `timedelta(hours=…)` 看不出问题，lesson 108）。范围一律取自
+        # `config.NUMERIC_BOUNDS` 这张唯一真源表，越界走 400 并点名参数，
+        # 不替调用方悄悄改值（与 `_num` 的口径一致）。
         try:
             if isinstance(current, bool):
                 value = value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes", "on")
-            elif isinstance(current, int) and not isinstance(value, bool):
-                value = int(value)
-            elif isinstance(current, float):
-                value = float(value)
+            elif isinstance(current, (int, float)) and not isinstance(current, bool):
+                cast = float if isinstance(current, float) else int
+                lo, hi = NUMERIC_BOUNDS.get(key, (None, None))
+                value, bad = _num(value, name=f"字段 {key}", cast=cast, lo=lo, hi=hi)
+                if bad:
+                    return error(bad)
+                if value is None:
+                    # body 里显式给了 null：`_num` 把「没给」读成 default，这里没有可用的默认档
+                    return error(f"字段 {key} 类型非法")
         except (TypeError, ValueError):
             return error(f"字段 {key} 类型非法")
         if current != value:
@@ -258,7 +269,9 @@ async def update_config_api(request: Request):
 
     if changed:
         cfg.save()
-        rt.reload_config()
+        # MA-23（第十轮）：`reload_config` 重建 HAClient / 关旧 MariaDB 连接 / 重置 chroma
+        # 缓存，是整条 async 链里最重的一次同步 I/O，单次可把事件循环钉住数秒（心跳 tick 归 0）。
+        await asyncio.to_thread(rt.reload_config)
     return ok({"message": "配置已更新", "changed": changed})
 
 

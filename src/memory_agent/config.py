@@ -378,6 +378,62 @@ class Config:
             return cls()
 
 
+# ── HTTP 可写数值键的合法区间（第二期审计 MA-18/MA-19）────────────────────────
+# 唯一真源：`/api/config`（`api/config_routes.update_config_api`，越界 → 400）和
+# `/api/collect/config` + `/api/poller/config`（`api/collect_routes.collect_config`，
+# 沿用其既有的夹紧语义）都从这里取数。改前 `/api/config` 只做**类型**收敛
+# （`int()`/`float()` 成功就写），24 个数值键全部没有范围校验——MA-19 实测同输入
+# 不同结果：`polling_interval=0` 走 `/api/config` 存成 0（忙循环），走采集端点被钳到 900。
+#
+# 每个区间的出处写在行尾；`insights/models.py:82` 一类同仓既有校验是正面对照，
+# `collect_routes` 的 `max(900/15/0, …)` 是下界对照。区间判据不看"能不能算出来"，
+# 看的是**消费函数拿到这个值会做什么**（lesson 108）：`tz_offset_hours` 的 ±24h 限制
+# 藏在 `datetime.timezone` 内部，只算 `timedelta(hours=1e6)` 永远看不出问题。
+#
+# 覆盖面（实测）：`Config` 共 71 个数值字段，其中 `WRITABLE_FIELDS` 允许 HTTP 写的
+# 恰好这 24 个 ⇒ 本表 = 可写面的全集，不多不少。其余 47 个只能经 config.json / 环境变量
+# 进来，`update_config_api` 那侧本就会拒（不在白名单），这里不替它们预设区间。
+NUMERIC_BOUNDS: dict = {
+    "redis_port": (1, 65535),
+    "chroma_port": (1, 65535),
+    "ha_db_port": (1, 65535),
+    "tv_mqtt_port": (1, 65535),                    # 同上：端口域
+    "tz_offset_hours": (-12.0, 14.0),              # 对齐 insights/models.py:82
+    "llm_temperature": (0.0, 2.0),                 # OpenAI/兼容端点的采样温度域
+    "llm_max_tokens": (1, 200000),
+    "llm_timeout": (1, 600),                       # 秒；上界对齐 HTTP 侧最长可接受等待
+    "vlm_timeout_s": (1, 600),                     # 改前 0/-1 = HTTP 挂死到底（无超时）
+    "vlm_max_retries": (0, 10),
+    "ha_db_query_timeout": (1, 600),
+    "ha_db_query_batch": (1, 5000),
+    "tv_capture_timeout_s": (1, 600),
+    "tv_mqtt_timeout_s": (0.1, 600.0),
+    "polling_interval": (900, 86400),              # 下界对齐 collect_routes:158；上界=一天
+    "data_retention_days": (0, 3650),              # 下界对齐 collect_routes:163；上界=DAY_WINDOW_MAX
+    "first_run_lookback_hours": (1, 720),          # 30 天；改前 1e9 = 首跑回溯全部历史
+    "mcp_response_max_bytes": (1024, 50_000_000),   # 改前 -1 = 裁剪阈值失效
+    "ha_assist_memory_top_k": (0, 100),
+    "vision_cooldown_s": (0, 3600),
+    "vision_max_per_hour": (0, 10000),              # 改前 1e9 = 限流失效
+    "vision_no_tv_interval_s": (1, 3600),
+    "vision_snapshot_retention_days": (0, 3650),
+    "scene_graph_sample_rate": (0.0, 1.0),          # 采样比例，不是计数
+}
+
+
+def bounded(key: str, value):
+    """区间内的值原样返回；越界返回收敛后的值，区间外的一端被夹住。
+
+    给"夹紧"口径的入口用（采集端点历史上就是 `max(900, …)`），
+    与 `update_config_api` 的"拒"口径共用同一张表，两个入口对"什么是合法区间"取同一数。
+    """
+    lo_hi = NUMERIC_BOUNDS.get(key)
+    if lo_hi is None:
+        return value
+    lo, hi = lo_hi
+    return min(max(value, lo), hi)
+
+
 def get_config() -> Config:
     """获取配置（优先配置文件，环境变量仅作为初始默认值）"""
     config = Config.load()

@@ -13,6 +13,7 @@ from datetime import timedelta
 from starlette.requests import Request
 from starlette.routing import Route
 
+from ..config import bounded
 from ..store import now_local
 from .deps import error, json_body, ok, require_user, runtime
 
@@ -128,7 +129,7 @@ async def collect_enable(request: Request):
     rt = runtime(request)
     rt.config.polling_enabled = bool(enabled)
     rt.config.save()
-    rt.reload_config()
+    await asyncio.to_thread(rt.reload_config)  # MA-23：同步重建客户端，不钉事件循环
     return ok({"message": "采集已开启" if enabled else "采集已关闭", "enabled": bool(enabled)})
 
 
@@ -147,21 +148,31 @@ async def collect_config(request: Request):
     if "polling_time" in body:
         cfg.polling_time = str(body["polling_time"])[:5]
     # 前端以「分钟」为单位展示，这里统一换算为秒存储，避免单位歧义
+    # MA-19：区间的两个端点都取自 `config.NUMERIC_BOUNDS` 这张唯一真源表，与
+    # `/api/config` 读的是同一张。改前这里只有下界（`max(900/15/0, …)`），
+    # 于是 `interval_minutes=1e9` 换算成 6e10 秒照样存进去 = 采集再也不跑
+    # （lesson 87「有下界 ≠ 有上界」，与第四轮 minutes 族同一形状）。
+    # 本端点保持它原有的「夹紧并报出下界」语义（第八轮 §四 判为 ✅ 的既有契约），
+    # 只把数字换成真源表里的；`/api/config` 那边是「越界 → 400」，两入口对
+    # 「什么算合法」已经取同一数，反应口径的差异登记在台账里。
     if "interval_minutes" in body:
         try:
             minutes = int(float(body["interval_minutes"]))
-            cfg.polling_interval = max(15, minutes) * 60  # 最小 15 分钟
-        except (TypeError, ValueError):
+            cfg.polling_interval = bounded("polling_interval", max(15, minutes) * 60)  # 最小 15 分钟
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError：JSON body 能把真 `float('inf')` 递进来（`json.loads` 认
+            # `Infinity` 字面量），而 `int(inf)` 抛的正是它——lesson 86 量过
+            # `except (TypeError, ValueError)` 兜不住。
             return error("interval_minutes 必须是数字（最小 15）")
     elif "polling_interval" in body:
         try:
-            cfg.polling_interval = max(900, int(body["polling_interval"]))  # 最小 900 秒
-        except (TypeError, ValueError):
+            cfg.polling_interval = bounded("polling_interval", int(body["polling_interval"]))
+        except (TypeError, ValueError, OverflowError):
             return error("polling_interval 必须是整数秒（最小 900）")
     if "data_retention_days" in body:
         try:
-            cfg.data_retention_days = max(0, int(body["data_retention_days"]))
-        except (TypeError, ValueError):
+            cfg.data_retention_days = bounded("data_retention_days", int(body["data_retention_days"]))
+        except (TypeError, ValueError, OverflowError):
             return error("data_retention_days 必须是整数")
     if isinstance(body.get("rooms"), dict):
         cfg.rooms = body["rooms"]
@@ -169,7 +180,7 @@ async def collect_config(request: Request):
         cfg.excluded_entities = body["excluded_entities"]
 
     cfg.save()
-    rt.reload_config()
+    await asyncio.to_thread(rt.reload_config)  # MA-23
     return ok(
         {
             "message": "采集配置已更新",

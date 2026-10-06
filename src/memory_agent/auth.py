@@ -37,6 +37,26 @@ def _prune_revoked(now: float) -> None:
     for jti in [j for j, exp in _revoked_jtis.items() if exp <= now]:
         _revoked_jtis.pop(jti, None)
 
+
+def _prune_login(now: float) -> None:
+    """清理所有已经失去意义的登录计数 / 锁定键（调用方需持有 _login_guard）。
+
+    与同文件 `_prune_revoked` 同形状 —— 第九轮 MA-21 报的就是「同文件有对照，
+    这一族没铺」：改前只在**当前键**上过滤过期时间戳，键本身永不移除（全仓 `pop`
+    0 次、`clear` 0 次于过期路径），实测 1000/10000/50000 次失败 → 1250/10250/**50250**
+    条常驻，单条约 228 B。
+
+    保留条件写反过来说更清楚：窗口 `_LOGIN_WINDOW_SECONDS` 内的计数还要用来凑阈值，
+    锁定未到期的键还要继续拦人 —— 两者都不成立的键才是纯负担。
+    """
+    for k, fails in list(_login_fails.items()):
+        if not any(now - t < _LOGIN_WINDOW_SECONDS for t in fails):
+            _login_fails.pop(k, None)
+    for k, until in list(_login_locked.items()):
+        if until <= now:
+            _login_locked.pop(k, None)
+
+
 def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
@@ -250,6 +270,7 @@ class AuthManager:
         """
         now = time.time()
         with _login_guard:
+            _prune_login(now)  # MA-21：每次写入顺带做全局清理（对齐 _prune_revoked）
             for k in self._login_keys(ip, username):
                 threshold = _LOGIN_USER_MAX_FAILS if k.startswith("user:") else _LOGIN_MAX_FAILS
                 fails = [t for t in _login_fails.get(k, []) if now - t < _LOGIN_WINDOW_SECONDS]

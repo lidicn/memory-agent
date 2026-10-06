@@ -95,7 +95,7 @@ async def ha_save_rooms(request: Request):
     if isinstance(body.get("excluded_entities"), list):
         rt.config.excluded_entities = body["excluded_entities"]
     rt.config.save()
-    rt.reload_config()
+    await asyncio.to_thread(rt.reload_config)  # MA-23：同步重建客户端，不钉事件循环
     enabled = sum(
         1
         for room in rooms.values()
