@@ -31,6 +31,35 @@ _ROUTE_HINTS: Dict[str, List[str]] = {
     Intent.PERSONA.value: ["试试：给我的用户画像", "试试：总结一下我的习惯"],
 }
 
+# 只有这三条路由把规划阶段的 `entity_ids` 当取数范围（DCD 20261006 §四.2 Q1 甲）。
+# rhythm/activity/persona 天生是全屋口径，不受 fail-closed 门约束。
+_ENTITY_SCOPED_ROUTES = (Intent.DEVICE_USAGE.value, Intent.BEHAVIOR.value,
+                         Intent.ANOMALY.value)
+
+#: 从 `query` 里剔掉的噪声：停用词 + **标记提问类型的词** + 泛指名词 + 虚词。
+#: 为什么要把意图触发词也剔掉——它们回答的是"问哪一类事"，不是"问哪台设备"。
+#: 留着它们，「最近有什么异常」的 `query` 就成了"异常"，`has_query` 报真，
+#: 于是 Q1 甲 的收紧门会把一句自由问句误判成"用户点名却没解析出来"。
+_QUERY_NOISE: Tuple[str, ...] = (
+    # 原停用词
+    "多久", "多少", "什么", "哪些", "怎么", "怎么样", "吗", "了",
+    # 意图触发词（与 `_INTENT_PATTERNS` 的交替项同集合，长串在前由排序保证）
+    "睡眠时间", "使用时长", "开了多久", "开过多久", "待了多久", "待的时间",
+    "做了什么", "干了什么", "我是谁", "异常", "故障", "报错", "坏了", "离线",
+    "作息", "起床", "睡觉", "入睡", "几点", "停留", "待过", "画像", "习惯",
+    "总结", "活动", "用电", "用过", "用了", "开过", "presence", "anomaly",
+    "persona", "character", "activity", "usage", "offline", "wake", "sleep",
+    # 泛指名词：指"所有设备"而不是某台
+    "设备", "电器", "东西", "所有", "全部", "家里", "这些", "那些",
+    # 裸写的时间泛词：`strip_time_text` 的正则只接得住"最近 7 天"这类带数量的写法，
+    # 单写"最近/近期"会留在 query 里被 `has_query` 当成点名材料（实测现场）。
+    "最近几天", "这段时间", "这阵子", "这几天", "最近", "近期", "一般", "通常",
+    "经常", "每天", "每次", "有没有", "是否", "昨天", "今天", "前天", "上周",
+    "本周", "这周", "上月", "上个月", "本月", "这个月", "今年", "去年",
+    # 单字虚词（内容字如"灯""门"留在 query 里，它们是真正的点名材料）
+    "的", "在", "是", "我", "都", "还", "和", "与", "呢", "就", "有",
+)
+
 
 def detect_intent(question: str) -> str:
     """意图识别。"""
@@ -63,8 +92,7 @@ class NLQueryEngine:
             days=days, default_days=self.config.default_days)
         query = strip_time_text(rest)
         # P2：停用词按长度降序替换，否则"怎么"会先把"怎么样"拆成"样"，后者永远匹配不到
-        for token in sorted(("多久", "多少", "什么", "哪些", "怎么", "怎么样", "吗", "了"),
-                            key=len, reverse=True):
+        for token in sorted(_QUERY_NOISE, key=len, reverse=True):
             query = query.replace(token, " ")
         query = " ".join(query.split())
         entity_ids = self.resolver.resolve_ids(room=room, query=query)
@@ -108,6 +136,16 @@ class NLQueryEngine:
     def _execute(self, plan: QuestionPlan) -> Tuple[str, Dict[str, Any]]:
         tr = plan.time_range or resolve_range(days=plan.days)
         route = plan.route
+        # DCD 20261006 §四.2 Q1 甲：用户点了名、却一个设备都没解析出来时，NL 面也必须
+        # fail-closed——照实答"没找到这台设备"，不许把空 `entity_ids` 交下去当成"该房间/全屋"。
+        # 判据用现成的 `plan.params["has_query"]`（点名材料，见 `_QUERY_NOISE`），不新增出境键；
+        # 失败态回显复用 `unresolved`（同裁定 Q2 追认的口径）。
+        if route in _ENTITY_SCOPED_ROUTES and plan.params.get("has_query") \
+                and not plan.entity_ids:
+            return ("没找到「%s」对应的设备，这次不给你全屋数据。"
+                    "可以先看在册设备名，或改用房间名再问一次。" % plan.query,
+                    {"unresolved": plan.query, "route": route,
+                     "entity_ids": [], "hints": list(plan.hints)})
         if route == Intent.DEVICE_USAGE.value:
             return self._answer_usage(plan, tr)
         if route == Intent.BEHAVIOR.value:

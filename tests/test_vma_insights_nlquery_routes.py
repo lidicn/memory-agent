@@ -204,3 +204,39 @@ def test_ask_memory_outward_answers_are_not_degraded(store):
         if out.get("answer") in ("", "查询失败") or "error" in out:
             bad.append("%s -> %r / %r" % (q, out.get("answer"), out.get("error")))
     assert not bad, "对外仍是被降级的一次问答：\n  " + "\n  ".join(bad)
+
+
+# ── 6) DCD 20261006 §四.2 Q1 甲：点了名却没解析出来 ⇒ NL 面也 fail-closed ──────
+
+def test_named_but_unresolved_question_does_not_answer_with_the_whole_house(store):
+    """用户点名一台在册但没有的设备时，话术必须答"没找到"，不许把空 entity_ids 当全屋。
+
+    改前的现场：`_answer_usage`/`_answer_behavior`/anomaly 三条都传
+    `entity_id=",".join(plan.entity_ids)`，解析失败 ⇒ 空串 ⇒ 引擎按"没限制"取全屋，
+    于是「鱼缸水泵用了多久」会答成别的数据而不说找不到。判据用现成的
+    `plan.params["has_query"]`，不新增出境键；失败态回显复用 `unresolved`（同裁定 Q2）。
+    """
+    svc = _svc(store, _nightly())
+    plan = svc.nl.plan("鱼缸水泵用了多久")
+    assert plan.params["has_query"] is True, plan.params
+    assert plan.entity_ids == [], plan.entity_ids
+    answer, data = _execute(svc.nl, "鱼缸水泵用了多久")
+    assert "没找到" in answer, answer
+    assert data.get("unresolved") == plan.query, data
+    assert not data.get("items"), f"收紧失败，仍交出了全屋条目：{data.get('items')}"
+
+
+def test_free_question_without_a_named_device_still_answers(store):
+    """对偶档：没点名的自由问句仍按房间/类别答——收紧门不许把「有什么异常」判成找不到设备。
+
+    这一条是门自己的反例（"什么都不改"档）：意图触发词与虚词必须留在 `_QUERY_NOISE` 里，
+    否则 `has_query` 会把提问类型词当点名材料，本条就会红。
+    """
+    svc = _svc(store, _nightly(days=(DAY_1, DAY_3)))
+    for question in ("最近有什么异常", "书房有什么异常", "书房待了多久"):
+        plan = svc.nl.plan(question)
+        assert plan.params["has_query"] is False, (question, plan.query, plan.params)
+    answer, data = _execute(svc.nl, "书房有什么异常")
+    assert "没找到" not in answer, answer
+    assert not data.get("unresolved"), data
+    assert data.get("ok"), f"anomaly 降级了：{data.get('error')}"

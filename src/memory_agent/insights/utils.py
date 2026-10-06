@@ -267,16 +267,8 @@ def make_activity(day, kind, conf, evidence, start_h, end_h, **extra) -> Dict[st
     return out
 
 
-
-CATEGORY_DOMAINS: Dict[str, Tuple[str, ...]] = {
-    "climate": ("climate", "fan", "humidifier", "water_heater"),
-    "lighting": ("light",),
-    "media": ("media_player",),
-    "presence": ("binary_sensor", "device_tracker", "person"),
-    "appliance": ("switch", "vacuum", "input_boolean"),
-    "security": ("lock", "cover", "alarm_control_panel", "camera"),
-    "telemetry": ("sensor", "number"),
-}
+# DCD 20261006 §四.3 追认可删：本文件曾在 :271 与 :1091 各定义一份 CATEGORY_DOMAINS，
+# 逐键逐值完全相同（冗余重复、不是分叉），后一份把前一份静默覆盖掉。现在只留下面那一份。
 
 
 def category_of(domain: str) -> str:

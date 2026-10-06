@@ -9,9 +9,13 @@
 `:744`/`:1102` 是解释性注释。也就是说 P2-5 的修复**只有注释在守**，一条测试都没有——
 注释挡不住第三次重复定义。这里补三条：AST 数定义、英文键逐个出 domain、中文键不回归。
 
-另一条只登记不改动：门面路径（`insights/api.py:321` → `parser/entity.py:35`）是**另一份**
-同名常量，英文键集合与 utils 版不等价（如 `aircon`/`switch`/`media` 只在 utils 版里）。
-两条路径各服务一个引擎，词表要合口径属于**改内置词表**，不在自主决定范围内（只在台账登记）。
+另一条路径（门面：`insights/api.py:321` → `parser/entity.py:35`）是**另一份**同名常量，
+`KEYWORD_DOMAINS` 的键集合与 utils 版不等价（`aircon`/`switch`/`media` 只在 utils 版，
+`motion`/`温度`/`电量` 只在 parser 版）。原本这条只在台账登记；DCD 20261006 §四.3 判
+**丙**（不合并、差异显式在册 + 一条"差异集合必须等于登记值"的锁），所以下面
+`test_two_vocab_paths_differ_by_exactly_the_registered_sets` 把它钉住；同批**追认可删**
+的 `CATEGORY_DOMAINS` 冗余重复（utils 内两份逐键逐值相同）也已删掉，由
+`test_category_domains_now_has_exactly_one_module_level_definition` 守复发。
 """
 
 import ast
@@ -91,9 +95,10 @@ def test_ascii_key_population_is_the_merged_set():
 def test_module_level_vocab_tables_never_define_the_same_name_twice_with_different_values():
     """P2-5 的缺陷类是「同名模块级第二次赋值静默覆盖第一次」，锁要按缺陷类开，不只盯 KEYWORD_DOMAINS。
 
-    现读：`utils.py` 顶层 `CATEGORY_DOMAINS` 有 **2** 处（:271 与 :1091），逐键逐值相同 ⇒ 后一份
-    只是冗余重复，运行时行为不变；这条冗余本身登记在台账里等批（内置词表不自主改，见 #38 裁定），
-    本条锁的是**真正会出事的那一步**：哪天有人只改其中一份 ⇒ 两版不再相等 ⇒ 当场判红。
+    本批（DCD 20261006 §四.3 追认可删）之前：`utils.py` 顶层 `CATEGORY_DOMAINS` 有 2 处
+    （:271 与 :1091），逐键逐值相同 ⇒ 后一份只是冗余重复，运行时行为不变。删掉前一份后
+    这条锁仍然留着——它守的是**真正会出事的那一步**：哪天有人只改其中一份 ⇒ 两版不再
+    相等 ⇒ 当场判红；「同一名字第二次定义」本身由下面两条单定义锁各自封住。
     """
     with open(_UTILS, encoding="utf-8") as fh:
         tree = ast.parse(fh.read())
@@ -121,6 +126,73 @@ def test_chinese_keys_do_not_regress_while_fixing_english():
     for word, expect in (("空调", "climate"), ("灯", "light"), ("加湿", "humidifier"),
                          ("电视", "media_player"), ("扫地", "vacuum"), ("窗帘", "cover")):
         assert expect in resolve_domains(query=f"主卧{word}"), word
+
+
+# ── DCD 20261006 §四.3：CATEGORY_DOMAINS 去重（追认可删）+ 两版词表差异在册加锁 ──────
+
+# 现读的两条路径差异（`insights/utils.py` = 新引擎，`insights/parser/entity.py` = 门面路径）。
+# 裁定 Q2 **丙**：不合并、不改名，把差异**显式在册**并加"差异集合必须等于登记值"的锁——
+# 在拿到"结果集变化"的签字之前，最差的选择是"无人知道的差异"。
+_KW_ONLY_IN_UTILS = {"aircon", "climate", "media", "sensor", "switch", "投影"}
+_KW_ONLY_IN_PARSER = {"motion", "occupancy", "人体", "功率", "媒体", "存在", "播放",
+                      "有人", "温度", "湿度", "热水器", "电量", "门"}
+_KW_SAME_KEY_DIFF_VALUE = {"ac", "light", "tv"}
+
+
+def _module_dicts_named(name: str) -> list[dict]:
+    with open(_UTILS, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    out: list[dict] = []
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Dict):
+            continue
+        targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+        if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+            out.append({ast.literal_eval(k): ast.literal_eval(v)
+                        for k, v in zip(node.value.keys, node.value.values)})
+    return out
+
+
+def test_category_domains_now_has_exactly_one_module_level_definition():
+    """去重已获追认 ⇒ 缺陷类锁从 KEYWORD_DOMAINS 扩到 CATEGORY_DOMAINS。
+
+    改前这里是 2 处（:271 与 :1091）且逐键逐值相同，本仓库当时只锁"两版不许分叉"；
+    裁定追认可删之后，**第二次定义本身**就该判红（那正是 P2-5 静默覆盖的现场形状）。
+    """
+    defs = _module_dicts_named("CATEGORY_DOMAINS")
+    assert len(defs) == 1, f"utils.py 顶层 CATEGORY_DOMAINS 又出现 {len(defs)} 份定义"
+    with open(_UTILS, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    assigns = [node for node in ast.walk(tree)
+               if isinstance(node, (ast.Assign, ast.AnnAssign))
+               and any((isinstance(t, ast.Name) and t.id == "CATEGORY_DOMAINS")
+                       for t in ([node.target] if isinstance(node, ast.AnnAssign)
+                                 else node.targets))]
+    assert len(assigns) == 1, [getattr(n, "lineno", 0) for n in assigns]
+
+
+def test_two_vocab_paths_differ_by_exactly_the_registered_sets():
+    """两条路径的词表**允许**不等价，但不许**悄悄**不等价：三个差异集合必须逐字等于登记值。
+
+    - `CATEGORY_DOMAINS` 两边逐键逐值相同 ⇒ 不许有一侧单独加类别；
+    - `KEYWORD_DOMAINS` 是 utils 26 键 / parser 33 键，差异只有这三堆：
+      只在 utils 6 个、只在 parser 13 个、同名不同值 3 个（parser 侧一律更粗：
+      `ac=('climate',)` 对 utils 的 `('climate.ac',)`）。
+    哪天有人合并/扩表 ⇒ 本条判红，把"结果集变了"这件事推到台面上签字（裁定 Q2 丙）。
+    """
+    from memory_agent.insights.parser import entity as P
+
+    assert _module_dicts_named("CATEGORY_DOMAINS")[0] == P.CATEGORY_DOMAINS
+    utils_kw, parser_kw = KEYWORD_DOMAINS, P.KEYWORD_DOMAINS
+    assert {k for k in utils_kw if k not in parser_kw} == _KW_ONLY_IN_UTILS
+    assert {k for k in parser_kw if k not in utils_kw} == _KW_ONLY_IN_PARSER
+    shared = set(utils_kw) & set(parser_kw)
+    assert {k for k in shared if utils_kw[k] != parser_kw[k]} == _KW_SAME_KEY_DIFF_VALUE
+    # 差异值本身也钉住：这三键是"同名不同口径"的全部现场，值一改就是改判据
+    assert tuple(parser_kw["ac"]) == ("climate",) and tuple(utils_kw["ac"]) == ("climate.ac",)
+    assert tuple(parser_kw["light"]) == ("light",)
+    assert tuple(parser_kw["tv"]) == ("media_player",)
+    assert len(utils_kw) == 26 and len(parser_kw) == 33, (len(utils_kw), len(parser_kw))
 
 
 if __name__ == "__main__":
