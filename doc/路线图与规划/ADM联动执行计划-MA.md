@@ -344,6 +344,7 @@ MA 侧三件事**必须同一个 restart 窗**（代码已部署不重启不生�
 | 3 | service_token DB 侧协同（3.3.4） | DB 切换后旧 token 到期日由 SP 定 | DB v2.6 |
 | 4 | 规则冷却三问 / FTS 短词召回下限 / `list_device_health` 分页 | 冷却与分页**已按裁定落码**（§六 裁1、裁4）；**FTS 短词那件不在 20261004 裁定书里 ⇒ 仍未裁、未动** | 投 inbox（已投） |
 | 5 | 行为推断默认规则（behavior_states 结构性 0 产出） | 待 DCD 裁定 | 投 inbox |
+| 6 | **pm4py 许可硬门（DCD 20261006 §四.3 甲）**：extras **保留** pm4py，本版不因许可删功能 | **硬门**：一旦进入"商用 / 对外分发"，发布前必须先过法务确认（AGPLv3 传染面）；未过法务 ⇒ 不得对外分发。乙（从 extras 删除）列为"商用确定时"的默认动作 | 发版前（商用决定落地即触发） |
 
 ### 5.4 别再重投（已裁）
 
@@ -1570,6 +1571,83 @@ Q2 `filters.unresolved` 从 `query_events` 扩到 `anomaly_report` 的 `filters`
 `MUT13_RC=0`（上一批 12 条重跑作自证，条数 3/2/1/1/1/1/1/1/1/3/2/2 与 run13d 一字不差）。
 `run14` / `run14b` 留册为**中间档**（降级原因＝§6.22 自伤第 2 条：门在飞期间动了树）。
 
+
+---
+
+## 七、下一阶段：更紧密联动（DCD 2026-10-06）
+
+> 依据：`关键决策部/decisions/20261006-ADM下一阶段联动路线图-裁定.md`；契约 v2.0 见 `homesdk/doc/ADM联动主题注册表与消息契约.md` §七。
+> 核心：三组联动端到端跑通 + 失败统一降级/错误码（`ADM_ERR_*`）。
+
+| # | 任务 | 验收 | 前置 |
+|---|------|------|------|
+| 1 | 合并窗：镜像重烤（homesdk 进运行面 + MiniLM 退路删）+ R2 PII 回填 + service_token 生效 | 容器 `import homesdk` 通、245+ 条无明文、svc_ 令牌可用 | 合并窗 |
+| 2 | `adm/memory-agent/status` 发 **JSON**（契约 v2.0 §7.1）——**修已登记 bug**（现发字面量 `online` 被 DB 丢弃，见 `回执_MA联动收尾_DB侧三项待办_20261006.md:129`） | status = `{state,ts,degraded,reasons,version}`，DB 不再丢弃 | 1 |
+| 3 | MQTT 断连 → status `degraded` + `ADM_ERR_BROKER_UNREACHABLE`（§7.3） | 断 broker → status degraded + 码 | 1 |
+| 4 | `ma/insights` 端到端（AF↔MA 硬读数） | MA 发 insights（带 `insight_id` + `conf` 封顶 0.59）→ AF 落 pending → 人批 → `af_draft` | 1 |
+| 5 | 投 `butler/inbox/speak` 端到端（DB↔MA 硬读数） | MA 投 → 电视真播报；失败 → DB 降级 + 码 | 无 |
+| 6 | 跑 `verify_adm_linkage`（homesdk `scripts/`）三组全绿 | 探针 rc=0（缺一组即红） | 1-5 |
+
+**本仓失败语义**：载荷/鉴权 fail-closed + 码；MQTT 断连、对端离线 degrade-flag + 码；非关键提示 fail-open。**禁止静默丢弃。**
+
+**本仓执行状态（MA 侧自证，2026-10-06 落码时实测）**：
+
+| # | 本仓状态 | 依据／剩余前置 |
+|---|----------|----------------|
+| 1 | **未授权**——镜像重烤 = 改运行面，属合并窗动作，不在自主决定范围内 | 呈文见 `关键决策部/inbox/20261007-MA-合并窗五件与speak调用点与0.3.2消费时机-决策申请.md`；重启可自决、重烤不可 |
+| 2 | **码先站住、线上未翻**：`LinkageJournal.reasons()` 已是 status `reasons[]` 的入参形状并经 `/api/health` 可读；`encode_status` 在 0.3.2 里可用，但运行面装的仍是 `vendor/homesdk-0.3.1`（`Dockerfile:24`），`homesdk.adm.*` 在容器里 `ImportError` | 1（两仓同翻；DB 侧已按契约兼容旧字面量） |
+| 3 | 同上的断连档：`publish`/`publish_raw` 每条 False 出口已记 `ADM_ERR_BROKER_UNREACHABLE`，翻线那步（写进 retained status）等库进运行面 | 1 |
+| 4 | MA 已发 `insight_id`（#42），AF 侧落 pending→人批→`af_draft` 的硬读数不在本仓可测 | 1 + AF 在场 |
+| 5 | **本仓半边已落**（commit `1753cf0`）：`publish_speak()` 按 §E 发（`trace_id`/`text` 必填、`text ≤500` 截断、`role`/`priority`/`expires_at` 空值不写键、**无 `source`**、ts = epoch int），失败三档各带码。**调用点未经裁定**：MA 现用 HA `tts.speak` 直发，改成投收件箱要和它二选一，选错就是两处同时说话 ⇒ 未擅自接线，由 `test_publish_speak_has_no_production_caller_yet` 做"未挂载"会红哨兵；"电视真播报"那半条要 broker + 电视在场 | 呈文 Q1（谁来投）+ 1（端到端硬读数） |
+| 6 | 探针在 homesdk `scripts/`，本仓无运行面 | 1-5 |
+| 硬伤 1 | **已修**（commit `b3e9665`）：`_mark_stale` 三处出口带 `stable_id`，运行时转发到载荷；锁从库一路量到 MQTT 出口，两条自咬腿各自判红 | 无 |
+| 新发现 | **已修**（commit `1753cf0`）：`publish`/`publish_raw` 原先只看"有没有抛异常"，而 paho 把失败写在返回值 `rc`（未连接 = `MQTT_ERR_NO_CONN`）⇒ 没发出去长期报成"已投递"，是"禁止静默丢弃"的另一面。rc≠0 现记码并返回 False | 无 |
+
+
+### 契约对齐规范 v2.0（逐字版 · DCD 20261006）
+
+> 唯一真源 = `E:\NAS\homesdk\doc\ADM联动主题注册表与消息契约.md`。本节是其**逐字快照**，供本仓执行，不再回查其它仓；两者冲突以契约表为准并提 DCD 复议。
+
+**A. `adm/*/status` 统一 JSON**（取代字面量 `online`/`offline`）：
+
+```json
+{"state":"online|offline|degraded","ts":1760000000,"degraded":false,"reasons":[],"version":"<计划号>"}
+```
+
+- `reasons` 非空 ⇒ `degraded=true`，元素 = `ADM_ERR_*`；`version` = 计划号（AF 2.6 / MA **1.4** / DB 2.7）；
+- 消费端**兼容旧字面量**：非 JSON 的 `online`/`offline` → 按 `{"state":"online|offline"}` 解析，**不得丢弃**。
+
+**B. 统一错误码**：
+
+| 码 | 含义 |
+|---|---|
+| `ADM_ERR_BROKER_UNREACHABLE` | MQTT broker 连不上 |
+| `ADM_ERR_PEER_OFFLINE` | 对端 presence 不在线 |
+| `ADM_ERR_PAYLOAD_INVALID` | 载荷 schema/校验失败 |
+| `ADM_ERR_AUTH_REQUIRED` | 缺令牌 / 过期 / 越权 |
+| `ADM_ERR_UPSTREAM_TIMEOUT` | 调对端超时 |
+| `ADM_ERR_INTERNAL` | 未分类兜底 |
+
+落点：status `reasons[]` ／ MCP·HTTP 响应 `{ok:false, code, message}` ／ `inbox_events` 审计。**联动失败必须带码，禁止静默丢弃。**
+
+**C. 降级三档**：fail-closed（写面/不可逆：拒+码+审计）｜degrade-flag（读面/可重试：继续+`degraded`+码）｜fail-open（纯提示：放行+日志）。
+
+**D. 事件载荷（逐字）**：
+- `ma/insights` `{trace_id, ts, insight_id, kind, persons[], room?, summary, evidence[], snapshot_url?, conf?, intent?}`（`conf?` 可选封顶 0.59；`intent?` 可选；**MA 发 `insight_id` 稳定身份**）
+- `ma/presence` `{trace_id, ts, members:[{name, member_id, room, via, confidence, last_seen, trigger}], total}`（retained。**`via_raw` 不摘**：契约表 §1.2 的 member 子键列的是"对端必读集"，而 `via_raw` 是 MA 多带的一枚归一化前的原始 via，**20261002 Q1 判的是「键名以生产实际为准，不反向要求改名」**，裁定与契约里都没有"摘掉多发键"这一条。它由 `tests/test_vma_dcd_20261002_payload.py:242` 的**闭合键集锁**守着（少键或多键都判红），台账登记见 `doc/审计报告/修复与核实/审计核实与修复_20261001.md:1063`）
+- `ma/device-health` `{trace_id, ts, device_id, status, entity_id, from, to, stable_id}`（**`stable_id` 必须非空——现恒空串，是本仓要修的硬伤**；迁移类带 `from`→`to`）
+- `af/automation/fired` `{trace_id, ts, automation_id, ref}`（不 retained）
+- `af/automation/failed` `{trace_id, ts, automation_id, ref, error}`（不 retained）
+
+**E. 收件箱 schema（对齐后权威版，DB 码必须按此）**：
+- `butler/inbox/speak` `{trace_id, ts, text, role?, priority?, expires_at?}`，text ≤500，trace_id 必填
+- `butler/inbox/notify` `{trace_id, ts, title, body, channel?, priority?}`，title ≤80 / body ≤500，trace_id 必填
+- `butler/inbox/tv` `{trace_id, ts, content, duration_s?}`，content ≤500，trace_id 必填
+- **无 `source` 字段**；按通道读 `text`/`title+body`/`content`；**MA 投 notify 用 `title+body`（现已是，DB 未读）**。
+
+**F. MCP 面实名**：AF = `af_draft` + `af_apply(stage∈check|simulate|dry_run|save)`（**无 `verify`/`deploy` 别名**）；ask `GET /api/asks/pending`（read）+ `POST /api/asks/answer`（write + INBOX_KEY，回报 `channel_error`）。
+
+**G. 端到端探针**：`verify_adm_linkage`（homesdk `scripts/`），三组各一条硬读数，缺一 `rc=1`。
 
 ---
 
