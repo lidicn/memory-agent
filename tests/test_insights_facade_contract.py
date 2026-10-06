@@ -210,3 +210,47 @@ def test_no_contract_member_is_wrapped_by_degrade():
     leaked = {k: v for k, v in decorated.items()
               if k in LEGACY_CONTRACT_MEMBERS and "_degrade" in v}
     assert not leaked, f"契约成员被 _degrade 静默化（P0-5 复发）：{leaked}"
+
+
+# ── 门面切换丢键：`get_data_quality` 的 `agent_memory` 那一格 ─────────────────
+# ToolSpec（`tool_schema.py:446`）与 handler 摘要（`mcp_server.py:519`）都写着
+# "…+ agent 记忆镜像缺口（mirror_dirty）"，legacy 原形 `insights_legacy.py:3403`
+# 也确实输出 `agent_memory`；门面切到 `core.data_quality()` 之后那块整格没了。
+# 这条与 P0-5 同源：丢了也没人红，所以判据落在"承诺的键必须在输出里"。
+
+_HEALTH = {"ok": True, "states": {"live": 5}, "mirror_dirty": 2, "chroma_available": True}
+
+
+def _patch_runtime(monkeypatch, agent_memory):
+    from memory_agent import runtime as rt_mod
+    rt = SimpleNamespace(agent_memory=agent_memory)
+    monkeypatch.setattr(rt_mod, "get_runtime", lambda: rt)
+
+
+def test_get_data_quality_carries_the_agent_memory_block(store, monkeypatch):
+    _patch_runtime(monkeypatch, SimpleNamespace(health=lambda: dict(_HEALTH)))
+    out = InsightService(store, Config()).get_data_quality(days=7)
+    assert "score" in out, f"主块被打成降级信封：{sorted(out)}"
+    assert out["agent_memory"]["mirror_dirty"] == 2
+
+
+def test_unavailable_agent_memory_is_a_visible_failure_not_an_absent_key(store, monkeypatch):
+    """拿不到就明说"查不到"，不许整块缺席——缺席与"镜像很干净"读起来一样。"""
+    for agent in (None, object()):
+        _patch_runtime(monkeypatch, agent)
+        out = InsightService(store, Config()).get_data_quality(days=7)
+        assert out["agent_memory"] == {"ok": False, "error": "agent_memory 不可用"}
+        assert "score" in out
+
+
+def test_agent_memory_blowing_up_does_not_degrade_the_quality_page(store, monkeypatch):
+    """附属块炸掉时只丢附属块：整页降级会把电量倒流/心跳/陈旧那些读数一起抹掉。"""
+    def boom():
+        raise RuntimeError("runtime 还没起")
+
+    _patch_runtime(monkeypatch, None)
+    from memory_agent import runtime as rt_mod
+    monkeypatch.setattr(rt_mod, "get_runtime", boom)
+    out = InsightService(store, Config()).get_data_quality(days=7)
+    assert out["agent_memory"]["ok"] is False
+    assert "score" in out

@@ -889,11 +889,26 @@ class InsightService:
         tr = self._tr(start, end, days=days or 7)
         return self.core.coverage(tr)
 
+    def _agent_memory_health(self) -> Dict[str, Any]:
+        """agent 记忆镜像缺口那一块。判据形状取自 legacy 原形 `insights_legacy.get_data_quality`：
+        拿不到就回 `{"ok": False, "error": …}`，不许整块缺席——"查不到"与"没有"是两种读数。
+        """
+        try:
+            from .utils import get_runtime
+            agent = getattr(get_runtime(), "agent_memory", None)
+            if agent is None:
+                return {"ok": False, "error": "agent_memory 不可用"}
+            return agent.health()
+        except Exception:  # noqa: BLE001 - 附属块读不到时不许把整个质量面打成降级
+            return {"ok": False, "error": "agent_memory 不可用"}
+
     @_degrade(lambda: Page.build([]).to_dict("issues"))
     def get_data_quality(self, days: int = 30) -> Dict[str, Any]:
-        """数据质量综合评分。"""
+        """数据质量综合评分 + agent 记忆镜像缺口（`mirror_dirty`，ToolSpec 承诺的那格）。"""
         tr = self._tr(days=days or 30)
-        return self.core.data_quality(tr)
+        out = self.core.data_quality(tr)
+        out["agent_memory"] = self._agent_memory_health()
+        return out
 
     # ------------------------------------------------------------------
     # 报告输出（Markdown / JSON）
