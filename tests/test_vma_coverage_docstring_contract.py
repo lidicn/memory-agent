@@ -18,6 +18,8 @@
 - 第 4 条是这一族里最容易再次混过去的一格：故意把窗口起点落在**没有数据的那一天**，
   断言 `start_day` 仍是窗口边界。若哪天有人"顺手"把 `start_day` 改成首个有数据日，
   这条会红——因为那时文案里"窗口边界 ≠ 数据边界"这句说明就又不成立。
+- 第 5、6 条把同一把尺罩到**另两处出货文案面**（技能包 `insight/SKILL.md` 会连同工具面注入给模型，
+  `static/js/pages/user_manual.js` 是人读的那份）：首稿只修了 docstring，这两处仍留着死键。
 """
 
 import ast
@@ -83,10 +85,14 @@ def svc():
     yield facade
 
 
+def _read(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
 def _handler_doc(func_name):
     """AST 取 `@mcp.tool()` 里那个 handler 的 docstring，不依赖 mcp SDK 能否导入。"""
-    with open(_MCP_SOURCE, encoding="utf-8") as fh:
-        tree = ast.parse(fh.read(), filename=_MCP_SOURCE)
+    tree = ast.parse(_read(_MCP_SOURCE), filename=_MCP_SOURCE)
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == func_name:
             doc = ast.get_docstring(node)
@@ -146,3 +152,32 @@ def test_start_day_is_the_window_bound_not_the_first_day_with_data(svc):
     first_with_data = next(d["day"] for d in out["days"] if not d["empty"])
     assert out["start_day"] != first_with_data, (
         "`start_day` 被改成了首个有数据日——它按裁5 Q-B 是窗口边界，两者不许混用")
+
+
+# 同一族缺陷不只活在 handler docstring：技能包 SKILL.md 会被连同工具面一起注入给模型，
+# 用户手册页是人读的那份。首轮只修了 docstring，这两处仍写着 `has_data` 与「first/last 有数据日期」，
+# ⇒ 文案锁必须罩住**全部出货文案面**，否则改一处留两处，模型照技能包读照样落空。
+PROSE_SURFACES = {
+    "insight/SKILL.md": os.path.join(_SRC, "memory_agent", "skills_bundle",
+                                     "insight", "SKILL.md"),
+    "user_manual.js": os.path.join(_SRC, "memory_agent", "static", "js",
+                                   "pages", "user_manual.js"),
+}
+
+
+@pytest.mark.parametrize("surface", sorted(PROSE_SURFACES))
+def test_shipped_prose_does_not_resurrect_dead_coverage_keys(surface):
+    text = _read(PROSE_SURFACES[surface])
+    for dead in DEAD_KEYS:
+        assert dead not in text, "%s 仍在承诺载荷里不存在的 %r" % (surface, dead)
+    assert "first/last" not in text, (
+        "%s 用 first/last 这种缩写继续许诺「有数据的首末日」" % surface)
+
+
+@pytest.mark.parametrize("surface", sorted(PROSE_SURFACES))
+def test_shipped_prose_names_the_real_coverage_keys(surface):
+    """反面锁：只删死键不够，文案还得真的点名新引擎给出来的那批键。"""
+    text = _read(PROSE_SURFACES[surface])
+    unmentioned = [k for k in PROMISED_TOP_LEVEL if k not in text]
+    assert not unmentioned, "%s 没说明这些实际存在的键：%s" % (surface, unmentioned)
+    assert "empty" in text, "%s 没说逐日空日标记叫什么" % surface

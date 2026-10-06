@@ -41,8 +41,9 @@ updated_at: 2026-09-14T00:00:00
 ## 新增能力（取数更准、更直接）
 - `get_device_health(stale_days=3)` —— 主动揪失联/没电/长期静默设备。
   返回 `no_data`（从未采到）/ `stale`（最近 N 天静默）清单。`no_data` 多半是实体 ID 错或未启用。
-- `get_data_coverage(days=7)` —— 取数前先调它确认窗口完整性。返回每天 `events` 量与 `has_data` 标记、
-  `first/last` 有数据日期、`missing_days` 列表，明确告诉你「这 7 天其实只有 2 天有数据」。
+- `get_data_coverage(days=7)` —— 取数前先调它确认窗口完整性。`days[]` 每格给 `{day, events, active_hours, hours, empty}`，
+  `empty=true` 即当天 0 条；`missing_days` 是这些空日清单，覆盖率看 `day_coverage` / `hour_coverage`，高峰看 `peak_hours`。
+  `start_day/end_day` 是**查询窗口边界**，不等于「有数据的首末日」——首末日要从 `days[]` / `missing_days` 自己读。
 - `get_climate_sessions(query="主卧空调", days=7)` —— 拼出「设定温度 + 室温 + 运行时长」会话。
   室温/设定温度来自事件属性（采集时已镜像 `current_temperature` / `temperature`），解决原只有 `hvac_action`。
 - `infer_activities(days=7)` —— 规则引擎识别做饭/洗澡/睡眠/看电视/离家，带置信度与证据。

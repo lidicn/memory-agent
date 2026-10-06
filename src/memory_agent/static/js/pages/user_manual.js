@@ -208,7 +208,7 @@ metric 可选：duration（时长）/ count（次数）/ numeric_sum（数值累
 
     get_data_coverage(days=7)
 
-返回每天的事件量与 has_data 标记、first/last 有数据日期、missing_days 列表。避免把"没采集"误当"没行为"。
+返回每天的事件量与 empty 空日标记（empty=true 即当天 0 条）、missing_days 空日清单、day_coverage / hour_coverage 覆盖率、peak_hours 高峰；start_day / end_day 只是查询窗口边界，不等于「有数据的首末日」，首末日要从 days[] 自己读。避免把"没采集"误当"没行为"。
 数据质量整体问题（含记忆库镜像缺口）用：
 
     get_data_quality(days=30)`,
