@@ -11,7 +11,7 @@ import asyncio
 from starlette.requests import Request
 from starlette.routing import Route
 
-from .deps import current_user, error, json_body, ok, require_user, runtime
+from .deps import _num, current_user, error, json_body, ok, require_user, runtime
 
 # PATCH 允许局部更新的字段。
 # profile_json 是豆包管家的成员档案（作息/兴趣/课程），schema 归管家所有，
@@ -39,7 +39,7 @@ def _strip_biometrics(request: Request, members: list[dict]) -> list[dict]:
 
 async def member_list(request: Request):
     """成员列表（含 rooms / devices / tags 聚合，附件 profile / profile_json）。"""
-    members = runtime(request).store.list_members()
+    members = await asyncio.to_thread(runtime(request).store.list_members)
     return ok({"members": _strip_biometrics(request, members), "total": len(members)})
 
 
@@ -51,7 +51,8 @@ async def member_create(request: Request):
     name = (body.get("name") or "").strip()
     if not name:
         return error("缺少成员姓名 name")
-    member = runtime(request).store.create_member(
+    member = await asyncio.to_thread(
+        runtime(request).store.create_member,
         name=name,
         avatar_emoji=body.get("avatar_emoji", "") or "",
         avatar_bg=body.get("avatar_bg", "") or "#0EA5E9",
@@ -64,7 +65,7 @@ async def member_create(request: Request):
 
 async def member_detail(request: Request):
     member_id = request.path_params.get("member_id", "")
-    member = runtime(request).store.get_member(member_id)
+    member = await asyncio.to_thread(runtime(request).store.get_member, member_id)
     if not member:
         return error("成员不存在", 404)
     return ok({"member": _strip_biometrics(request, [member])[0]})
@@ -122,7 +123,7 @@ async def member_delete(request: Request):
     if err:
         return err
     member_id = request.path_params.get("member_id", "")
-    runtime(request).store.delete_member(member_id)
+    await asyncio.to_thread(runtime(request).store.delete_member, member_id)
     return ok({"message": "成员已删除"})
 
 
@@ -156,7 +157,7 @@ async def member_rooms(request: Request):
     rooms = body.get("rooms")
     if not isinstance(rooms, list):
         return error("rooms 必须是数组")
-    runtime(request).store.set_member_rooms(member_id, rooms)
+    await asyncio.to_thread(runtime(request).store.set_member_rooms, member_id, rooms)
     return ok({"message": "关联房间已更新"})
 
 
@@ -169,7 +170,7 @@ async def member_devices(request: Request):
     entity_ids = body.get("entity_ids")
     if not isinstance(entity_ids, list):
         return error("entity_ids 必须是数组")
-    runtime(request).store.set_member_devices(member_id, entity_ids)
+    await asyncio.to_thread(runtime(request).store.set_member_devices, member_id, entity_ids)
     return ok({"message": "专属设备已更新"})
 
 
@@ -182,12 +183,19 @@ async def member_tag_add(request: Request):
     tag = (body.get("tag") or "").strip()
     if not tag:
         return error("缺少标签 tag")
-    member = runtime(request).store.add_member_tag(
+    # MA-24 同批自撞：原写法 `float(body.get("confidence", 0.0) or 0.0)` 裸在 handler 里，
+    # `confidence=abc` 抛 ValueError → Starlette 500，而 confidence 的契约域是 [0, 1]。
+    confidence, conf_err = _num(body.get("confidence"), name="confidence",
+                                 cast=float, default=0.0, lo=0.0, hi=1.0)
+    if conf_err:
+        return error(conf_err)
+    member = await asyncio.to_thread(
+        runtime(request).store.add_member_tag,
         member_id=member_id,
         tag=tag,
         category=body.get("category", "other") or "other",
         emoji=body.get("emoji", "") or "",
-        confidence=float(body.get("confidence", 0.0) or 0.0),
+        confidence=confidence,
         evidence=body.get("evidence") if isinstance(body.get("evidence"), list) else None,
         source=body.get("source", "agent") or "agent",
     )
@@ -200,7 +208,7 @@ async def member_tag_delete(request: Request):
         return err
     member_id = request.path_params.get("member_id", "")
     tag = request.path_params.get("tag", "")
-    runtime(request).store.delete_member_tag(member_id, tag)
+    await asyncio.to_thread(runtime(request).store.delete_member_tag, member_id, tag)
     return ok({"message": "标签已删除"})
 
 
@@ -228,8 +236,13 @@ async def member_appearance(request: Request):
     ) or any(clothing.get(k) for k in ("top_color", "top_style", "bottom_color", "bottom_style", "distinctive"))
     if not gender and not distinguishing:
         return error("外观档案至少需要填写「性别」或一项可区分特征")
-    normalized = runtime(request).store._normalize_appearance(appearance)
-    member = runtime(request).store.update_member(member_id, appearance_json=normalized)
+    store = runtime(request).store
+
+    def _save():
+        # 归一化与写库是同一次落盘动作，合成一个 worker 调用，别让"归一化"单独占一次线程跳转
+        return store.update_member(member_id, appearance_json=store._normalize_appearance(appearance))
+
+    member = await asyncio.to_thread(_save)
     if not member:
         return error("成员不存在", 404)
     return ok({"message": "外观档案已保存", "member": member})
@@ -242,10 +255,17 @@ async def member_insight_feedback(request: Request):
         return err
     member_id = request.path_params.get("member_id", "")
     store = runtime(request).store
-    member = store.get_member(member_id)
-    if not member:
+
+    def _fetch():
+        # 两步取数在同一次线程跳转里做完：第二步要用第一步读出的成员名
+        member = store.get_member(member_id)
+        if not member:
+            return None
+        return store.member_insight_feedback(member_id, member.get("name", ""))
+
+    data = await asyncio.to_thread(_fetch)
+    if data is None:
         return error("成员不存在", 404)
-    data = store.member_insight_feedback(member_id, member.get("name", ""))
     return ok(data)
 
 

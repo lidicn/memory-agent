@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from starlette.requests import Request
 from starlette.routing import Route
 
@@ -22,7 +24,10 @@ async def list_rules(request: Request):
         "1", "true", "yes",
     )
     rt = runtime(request)
-    return ok(rt.signal_learning.list_rules(include_revoked=include_revoked))
+    data = await asyncio.to_thread(
+        rt.signal_learning.list_rules, include_revoked=include_revoked
+    )
+    return ok(data)
 
 
 async def teach(request: Request):
@@ -36,7 +41,8 @@ async def teach(request: Request):
         return error("缺少 entity_id")
     kind = (body.get("kind") or "hard").strip().lower()
     rt = runtime(request)
-    result = rt.signal_learning.teach_signal(
+    result = await asyncio.to_thread(
+        rt.signal_learning.teach_signal,
         entity_id=entity_id,
         scope=(body.get("scope") or "all").strip(),
         kind=kind,
@@ -61,7 +67,7 @@ async def revoke(request: Request):
     if not exclusion_id:
         return error("缺少 exclusion_id")
     rt = runtime(request)
-    result = rt.signal_learning.revoke_exclusion(exclusion_id)
+    result = await asyncio.to_thread(rt.signal_learning.revoke_exclusion, exclusion_id)
     if not result.get("ok"):
         return error(result.get("error", "撤销失败"), 404)
     return ok(result)

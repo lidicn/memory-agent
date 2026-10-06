@@ -528,7 +528,7 @@ async def llm_ask(request: Request):
         else:
             cache_key = ask_cache_key("du", query_label, window["start"][:10])
 
-        hit = store.get_answer_cache(cache_key)
+        hit = await asyncio.to_thread(store.get_answer_cache, cache_key)
         blob = _cache_blob(hit["payload"]) if hit else None
         if blob is not None:
             cached = True
@@ -561,7 +561,8 @@ async def llm_ask(request: Request):
                 total_human = (data or {}).get("total_on_human") or "0分"
                 if raw_count == 0 and _seconds_from_human(total_human) == 0:
                     why_llm = "no_on_events"
-                store.save_answer_cache(
+                await asyncio.to_thread(
+                    store.save_answer_cache,
                     cache_key,
                     {"answer": answer, "speak": speak, "data": data},
                     intent="device_usage",
@@ -580,7 +581,7 @@ async def llm_ask(request: Request):
     if answer is None:
         norm = normalize_for_cache(clean, today)
         llm_cache_key = ask_cache_key("llm", norm)
-        llm_hit = store.get_answer_cache(llm_cache_key)
+        llm_hit = await asyncio.to_thread(store.get_answer_cache, llm_cache_key)
         blob = _cache_blob(llm_hit["payload"]) if llm_hit else None
         if blob is not None:
             cached = True
@@ -595,7 +596,8 @@ async def llm_ask(request: Request):
             data = {"tool_calls": tool_names}
             if why_llm:
                 data["why_llm"] = why_llm
-            store.save_answer_cache(
+            await asyncio.to_thread(
+                store.save_answer_cache,
                 llm_cache_key,
                 {"answer": answer, "speak": speak, "data": data},
                 intent="llm",
@@ -655,7 +657,7 @@ async def llm_cache_clear(request: Request):
     if err:
         return err
     key = request.query_params.get("key")
-    deleted = runtime(request).store.clear_answer_cache(key)
+    deleted = await asyncio.to_thread(runtime(request).store.clear_answer_cache, key)
     return ok({"deleted": deleted, "key": key})
 
 

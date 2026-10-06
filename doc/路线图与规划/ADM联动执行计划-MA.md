@@ -1572,6 +1572,72 @@ Q2 `filters.unresolved` 从 `query_events` 扩到 `anomaly_report` 的 `filters`
 `run14` / `run14b` 留册为**中间档**（降级原因＝§6.22 自伤第 2 条：门在飞期间动了树）。
 
 
+### 6.23 第二期审计第四批：MA-23 / MA-24 收口，外加"报告 76 vs 现树 32"的口径对撞（任务表 #68/#69，2026-10-07）
+
+**这一格在计划里的位置**：二期十轮（`doc/审计报告/2期/`，第一轮→第十轮）里最后两件是第十轮的
+**MA-23 🔴**（`reload_config` 四处同步直调，单次可钉住循环数秒）与 **MA-24 🟠**
+（"76 个路由 handler 未卸载同步 store 调用，卸载率 56%"）。MA-23 的代码随**第三批** `2a14651` 落地，
+本批收 MA-24 并把第十轮"回归验证清单"四格逐格对上。细节在台账 **§四十二**，这里只登记口径与可复用结论。
+
+**交付**：六支路由 **32 个调用点 / 27 个 handler** 卸载（`+30` 行 `await asyncio.to_thread(`、摘掉的原有卸载 0 行）；
+量具 `scripts/scan_unloaded_async_io.py` 从三种面扩到五种（`db`/`module`/`store`+身体门/`subsys`/`transitive`），
+`--self-test` 八档、516 行；回归锁 `tests/test_vma_phase2_batch4_offload.py` 570 行 / 20 个 `def test_` /
+参数化展开 **49 条**；牙齿 = MUT68 **15 条**变异 + 三档控制腿 + 落点锁的反例档。
+
+**MA-23 终读**（`git blame` 四行同 SHA `2a14651`）：`config_routes.py:274` / `collect_routes.py:132` /
+`collect_routes.py:183` / `ha_routes.py:98` 全是 `await asyncio.to_thread(rt.reload_config)`；
+AST 锁在 `tests/test_vma_phase2_batch3_shared_ruler.py:672`——`reload_config` 这个属性访问**只许**出现在
+`to_thread(...)` 参数位（写回直调多出一个 `Call.func` ⇒ 红；`await rt.reload_config()` 也红）。
+
+**"76 vs 32"不是谁偷懒，是两把尺**（这条最容易被下一个人读成"漏了 44 处"）：
+报告口径写在它自己表头——「`api/` 下**触碰 `store.` / `runtime` / `reload_config` 的 async handler**」，
+**触碰字样 ≠ 有阻塞调用**。HEAD 侧按行分三类实测：inline（同行 `to_thread`）**45**、
+continuation（`to_thread(` 的下一行、写方法引用）**18**、行内真调用 **26**。
+- continuation 那 18 处按"这行没有 to_thread"数就全成"未卸载"（`vision_routes` 6、`behavior_routes` 5、
+  `collect_routes` 3、`member_routes` 2、`face_routes` 2）——本仓大量写成
+  `to_thread(\n    rt.store.method, args…)`，**方法名是引用不是调用**。
+- direct 那 26 处里 **18 处本批卸载**（member 12 / llm 5 / mcp 1），**8 处本就不在协程体**：
+  `_label_rosters`（同步函数，调用点进线程）、嵌套 `def _find_event()` / `_fetch_rows()` / `_insert_batch()` /
+  `_sanitize_and_record()`、以及 `face_routes._resolve_member_id`（`:111`/`:188` 以引用形式进 `to_thread`）。
+- 报告的 `insight_routes` 记 5 处未卸载：现读该文件 HEAD 的 9 处 store 调用**全部**是 inline `to_thread`
+  （`blame e8cdd25d`，2026-10-02），报告写作时早已收口；`mcp_routes` 记 6 处：真 store 调用只有 1 处，
+  其余五个 handler 碰的是 `runtime(request).tokens.*`＝**内存态** `MCPTokenStore`
+  （`config.agent_tokens` 字典 + `compare_digest`，只有 `_touch` 在节流窗口才写文件）。
+⇒ 反向锁两把，防止下一批照 76 给中间件加线程跳转：`test_token_store_legs_stay_on_loop`、
+`test_gauge_does_not_ring_on_in_memory_store_face`。**这是量具第四段历史**（docstring 在册）：
+它曾按变量名把中间件的 `store.verify/count/kind/scopes` 报成"协程直调 SQLite"，照做等于每请求多一次
+线程跳转去躲一次纳秒级查表，还推翻 `#51` 的现读理由 ⇒ 那一腿回退（备份 `%TEMP%/ma24_auth_offload.reverted.patch`），
+从此 store 面**看身体不看名字**。
+
+**验收四格的对上方式**（第十轮 §回归验证清单原文逐格，台账 §四十二.四有表）：
+item1 由 MA-23 四处 + AST 锁；item2 = `test_sixty_concurrent_member_list_keeps_loop_beating`（阈值 ≥5，
+本机 8 次实测 **19~21**）配控制腿 `test_instrument_detects_a_blocked_loop`（同期 8 次**全 0**，阈值 ≤1）；
+item3 = 两把零命中锁 `test_repo_zero_unloaded_direct` / `_transitive`——**零命中即空基线，红只能来自新命中**，
+这比"把 76 条塞进基线再只准减"更强；item4（A3 §八"零未卸载"）**不改第三方报告本体**
+（`元宝/A3_动态稳定性测试报告.md:149` 原句保留，全仓 grep "核销" 在那批报告里零命中＝惯例是各记各的账），
+核销登记在台账。
+
+**`HITS=0` 的边界要写在判据旁边**：`bcrypt.*` / `jwt.*` / 账号文件读写、`paho` / `httpx` 网络动词、
+动态派发都不在面表里——"零命中"说的是这三面口径内干净，**不是**"全库无阻塞调用"。
+
+**run17 权威门**（终树档，快照 `/tmp/c68snap20261007`，**400 文件**，基线 HEAD `2a14651`，容器 3.11.16，
+区间 2026-10-07T04:38:56+08:00→05:13:51+08:00）：本批把"容器树 == 本机树"的核对从手抄 grep 换成
+**逐文件 md5 + 整表 sha256 聚合**，两侧同一份脚本读同一个 `HASH_AGGREGATE=cafb96a7…581112`
+（`HASH_MISSING=0`）＋ 43 行锚点 diff 为空；出网前硬闸拦下过首跑（MUT63 预检 `VERIFY_BAD=4`，
+因第三批把 `_num()` 搬进 `day_bounds.py` ⇒ 锚点跟着函数走、不跟着文件走，任务表 #70 补跑）。
+读数：`TOOLCHAIN_RC=0`、七支量具 `SCANS_RC=0`（`FINDINGS=0`、门面面板 39/0/0、
+量具八档 `SELFTEST OK` + 直扫/`--transitive` 双档 `HITS=0`）、`GATE_RC=0`（pyflakes 新增 0、基线一字未改）、
+**`SUITE_RC=0` 1904 passed / 10 skipped（450.48s）**——与本机 `1890+24=1914` 基数相同；
+`TARGETED 49` / `BATCHES 281+1` / `PREVBATCH 302` / `TOUCHED 271` 全 0；
+`MUT68_RC=0`（15 腿全咬、条数 7/8/5/5/6/6/2/8/1/1/1/1/6/1/1 **与本机档逐字相同**、`MUTATION_BAD=0`）、
+`MUT64_RC=0`（上一批 24 条与 run16 在册读数一字不差 ⇒ 没渗到 `identity_fusion`/`behavior_predictor`/`mcp_server`）。
+run16 那 `7 failed` + `GATE_RC=1` 由 `704f603` 收口，本档两格复绿。
+
+**二期账面收口状态**：MA-01~MA-21、MA-23、MA-24 全部有处置（四批 + `704f603`）；
+唯一仍开的是 **MA-22 🔴**（`_client_ip` 无条件信任 XFF + 服务直曝 8086）——改的是部署拓扑口径，
+呈文 `20261007-MA-登录限速的客户端IP口径与8086直曝-决策申请.md` 在 inbox，`decisions/` 20261007 现读为零。
+
+
 ---
 
 ## 七、下一阶段：更紧密联动（DCD 2026-10-06）

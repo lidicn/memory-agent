@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from starlette.requests import Request
 from starlette.routing import Route
 
 from .. import mcp_server
-from .deps import error, json_body, ok, require_user, runtime
+from .deps import _num, error, json_body, ok, require_user, runtime
 
 
 def _base_url(request: Request) -> str:
@@ -176,8 +177,14 @@ async def list_audit(request: Request):
     if err:
         return err
     q = request.query_params
-    rows = runtime(request).store.list_mcp_audit(
-        limit=int(q.get("limit") or 100),
+    # 原写法 `int(q.get("limit") or 100)`：`?limit=abc` 抛 ValueError → 500，且无上限。
+    # 区间取同仓既有档（llm_routes 的 limit：default=100 / lo=1 / hi=1000），不再各入口自定。
+    limit, bad = _num(q.get("limit"), name="limit", default=100, lo=1, hi=1000)
+    if bad:
+        return error(bad)
+    rows = await asyncio.to_thread(
+        runtime(request).store.list_mcp_audit,
+        limit=limit,
         token_name=q.get("token") or "",
         tool=q.get("tool") or "",
         only_failed=(q.get("failed") or "").strip() in ("1", "true", "yes"),

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from starlette.requests import Request
 from starlette.routing import Route
 
@@ -41,9 +43,10 @@ async def add_memory(request: Request):
     if not text:
         return error("缺少 text")
     rt = runtime(request)
-    # add_semantic_memory 是同步方法（内部含 chroma 检索），不可 await
+    # MA-24：同步方法（store 写 + chroma 检索）原来直待在协程里；「不可 await」的正确修法是卸载。
     # source 标记记忆来源（v0.5）：ma=本服务原生 / butler=豆包管家生态；v0.6 #3 加固防伪造
-    result = rt.agent_memory.add_semantic_memory(
+    result = await asyncio.to_thread(
+        rt.agent_memory.add_semantic_memory,
         text=text,
         topic_key=(body.get("topic_key") or "").strip(),
         session_id=(body.get("session_id") or "web-ui").strip(),
@@ -68,7 +71,7 @@ async def list_memories(request: Request):
     topic_key = request.query_params.get("topic_key", "").strip()
     source = request.query_params.get("source", "").strip()
     rt = runtime(request)
-    result = rt.agent_memory.list_agent_memories(state, source)
+    result = await asyncio.to_thread(rt.agent_memory.list_agent_memories, state, source)
     rows = result.get("memories", [])
     if topic_key:
         rows = [r for r in rows if r.get("topic_key") == topic_key]
@@ -81,7 +84,8 @@ async def memory_health(request: Request):
     if err:
         return err
     rt = runtime(request)
-    return ok(rt.agent_memory.health())
+    data = await asyncio.to_thread(rt.agent_memory.health)
+    return ok(data)
 
 
 async def promote(request: Request):
@@ -94,8 +98,9 @@ async def promote(request: Request):
     if not memory_id:
         return error("缺少 memory_id")
     rt = runtime(request)
-    # promote_memory 是同步方法；Web 端由人工复核触发,允许 force 晋升
-    result = rt.agent_memory.promote_memory(
+    # MA-24：promote_memory 是同步方法（store + chroma）；Web 端由人工复核触发,允许 force 晋升
+    result = await asyncio.to_thread(
+        rt.agent_memory.promote_memory,
         memory_id,
         session_id=(body.get("session_id") or "").strip(),
         force=bool(body.get("force", False)),
@@ -116,7 +121,7 @@ async def revoke(request: Request):
     if not memory_id:
         return error("缺少 memory_id")
     rt = runtime(request)
-    result = rt.agent_memory.revoke_memory(memory_id)
+    result = await asyncio.to_thread(rt.agent_memory.revoke_memory, memory_id)
     if not result.get("ok"):
         return error(result.get("error", "撤销失败"))
     return ok(result)
@@ -131,7 +136,7 @@ async def rollback(request: Request):
     if not session_id:
         return error("缺少 session_id")
     rt = runtime(request)
-    result = rt.agent_memory.rollback_agent_memory(session_id)
+    result = await asyncio.to_thread(rt.agent_memory.rollback_agent_memory, session_id)
     if not result.get("ok"):
         return error(result.get("error", "回滚失败"))
     return ok(result)
@@ -150,8 +155,9 @@ async def feedback(request: Request):
     question = str(body.get("question") or "")
     comment = str(body.get("comment") or "")
     rt = runtime(request)
-    result = rt.agent_memory.feedback_memory(
-        memory_id, useful, comment=comment, question=question
+    result = await asyncio.to_thread(
+        rt.agent_memory.feedback_memory, memory_id, useful,
+        comment=comment, question=question,
     )
     if not result.get("ok"):
         return error(result.get("error", "反馈失败"))
@@ -167,7 +173,8 @@ async def negative_feedback(request: Request):
         limit = max(1, min(200, int(request.query_params.get("limit", "50"))))
     except ValueError:
         limit = 50
-    return ok(rt.agent_memory.list_negative_feedback(limit))
+    data = await asyncio.to_thread(rt.agent_memory.list_negative_feedback, limit)
+    return ok(data)
 
 
 async def sweep(request: Request):
@@ -175,7 +182,8 @@ async def sweep(request: Request):
     if err:
         return err
     rt = runtime(request)
-    result = rt.agent_memory.sweep_and_reconcile()
+    # MA-24：sweep + reconcile 逐条回写镜像（store 写 + chroma upsert），这批里最重的一格
+    result = await asyncio.to_thread(rt.agent_memory.sweep_and_reconcile)
     return ok(result)
 
 
@@ -191,7 +199,8 @@ async def retrieve(request: Request):
     trust_min = body.get("trust_min")
     top_k = int(body.get("top_k", 5))
     source = (body.get("source") or "").strip()
-    hits = rt.agent_memory.retrieve(
+    hits = await asyncio.to_thread(
+        rt.agent_memory.retrieve,
         question,
         trust_min=float(trust_min) if trust_min not in (None, "") else None,
         top_k=top_k,

@@ -177,8 +177,10 @@ async def events_face(request: Request):
     device_ts = body.get("ts")
     client = (body.get("client") or "").strip()
     rt = runtime(request)
-    result = rt.vision.record_face_event(
-        room, persons, trigger, device_ts, camera=body.get("camera"), client=client
+    # MA-24：record_face_event 同步写 behavior_events 并可能补认（store + 视觉链路）
+    result = await asyncio.to_thread(
+        rt.vision.record_face_event, room, persons, trigger, device_ts,
+        camera=body.get("camera"), client=client,
     )
     return ok(result, status_code=202)
 
