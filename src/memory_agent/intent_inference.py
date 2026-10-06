@@ -22,6 +22,8 @@ import logging
 
 from datetime import datetime, timedelta
 
+from .day_bounds import clamp_minutes
+
 
 # ── 内置意图规则（无 LLM 快路径）──────────────────────────────────────────
 # 每条规则：触发条件（行为标签列表）+ 意图 + 置信度 + 建议动作
@@ -351,7 +353,10 @@ def infer_intent_sequence(
     results = []
     seen_intents = set()
 
-    for window in [5, 15, 30] if window_min is None else [max(1, int(window_min))]:
+    # window_min 只有下界时极值会走到 `timedelta(minutes=)`：`2000000000` 直接
+    # OverflowError（500），`1000000000` 不崩但窗口回溯到公元 124 年 = 全量扫历史
+    # （第二期审计 MA-13，lesson 87「有下界 ≠ 有上界」）。
+    for window in [5, 15, 30] if window_min is None else [clamp_minutes(window_min)]:
         intent = infer_intent(events, window_min=window, person=person)
         if intent and intent["intent"] not in seen_intents:
             intent["window_min"] = window

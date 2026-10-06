@@ -22,6 +22,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
+from .day_bounds import clamp_hours, clamp_minutes
 from .store import Store, make_event_id, now_local, parse_ts
 from .task_registry import task_registry
 
@@ -234,13 +235,17 @@ class CollectService:
     ) -> None:
         tz = self.config.tz_offset_hours
         now = now_local(tz)
-        if since_minutes and since_minutes > 0:
-            last = now - timedelta(minutes=int(since_minutes))
-            print(f"[Collect] 增量采集：回溯最近 {since_minutes} 分钟")
+        # MA-12：这一档原先连下界都没有。`since_minutes=1000000000` 把窗口拉到公元 124 年
+        # （等于全量重采 HA 历史，压的是对端与本机资源），`2000000000` 起 OverflowError → MCP 500。
+        # 回落 `last_poll_time` 的语义保留，所以 `lo=0`；打印的是收口后的真实窗口，不是入参原值。
+        since = clamp_minutes(since_minutes, default=0, lo=0)
+        if since > 0:
+            last = now - timedelta(minutes=since)
+            print(f"[Collect] 增量采集：回溯最近 {since} 分钟")
         else:
             last = parse_ts(self.config.last_poll_time, tz)
             if last is None:
-                hours = max(1, int(self.config.first_run_lookback_hours or 24))
+                hours = clamp_hours(self.config.first_run_lookback_hours or 24)
                 last = now - timedelta(hours=hours)
                 print(f"[Collect] 首次采集，回溯 {hours} 小时")
         # 留 1 分钟重叠，避免边界事件漏采（写入幂等，重复无害）

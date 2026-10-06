@@ -1,4 +1,4 @@
-"""`timedelta(days=...)` 的天数收口：极值/负值防抖（审计第八轮 P3-2）。
+"""`timedelta(days=/hours=/minutes=)` 的窗口收口：极值/负值防抖（审计第八轮 P3-2 + 二期 MA-11/12/13）。
 
 **为什么要有这一层**：`days` 一路从 MCP 工具形参、HTTP 查询参数、乃至"从问句里正则出来的
 数字"（`最近 999999 天`）走到 `timedelta(days=...)`，中间没人管。实测两种坏法：
@@ -27,7 +27,11 @@ from __future__ import annotations
 
 import math
 
-__all__ = ["DAY_WINDOW_MIN", "DAY_WINDOW_MAX", "LONG_WINDOW_MAX", "clamp_days"]
+__all__ = [
+    "DAY_WINDOW_MIN", "DAY_WINDOW_MAX", "LONG_WINDOW_MAX", "clamp_days",
+    "MINUTE_WINDOW_MIN", "MINUTE_WINDOW_MAX", "clamp_minutes",
+    "HOURS_WINDOW_MIN", "HOURS_WINDOW_MAX", "clamp_hours",
+]
 
 #: 查询窗口下界：0 天窗口是空话，负数会把窗口算反。
 DAY_WINDOW_MIN = 1
@@ -38,6 +42,36 @@ DAY_WINDOW_MAX = 3650
 #: 保留期/TTL 的天花板（≈547 年）。只为把日期算式留在 `datetime` 域内，
 #: 不是一个"会真的删到"的保留期。
 LONG_WINDOW_MAX = 200_000
+
+#: 分钟/小时同族的上界就是同一个 10 年天花板换成单位（第二期审计 MA-11/12/13：
+#: `?minutes=2000000000` 与 `window_min=2000000000` 走的是 `timedelta(minutes=/hours=)`，
+#: 崩的方式和 `days` 一模一样，而 `clamp_days` 当年只铺到了"天"这一档）。
+MINUTE_WINDOW_MIN = 1
+MINUTE_WINDOW_MAX = DAY_WINDOW_MAX * 1440          # 5_256_000 分钟 = 10 年
+HOURS_WINDOW_MIN = 1
+HOURS_WINDOW_MAX = DAY_WINDOW_MAX * 24             # 87_600 小时 = 10 年
+
+
+def _clamped(value, default, lo, hi, *, integer: bool):
+    """同族 clamp 的公共算术核：`store.clamp_limit` 也复用这一份（行数档不是时间档，但坏法一样）。
+
+    刻意不走 `int(value)`：`int(float('inf'))` 抛 `OverflowError`，而调用点的
+    `except (TypeError, ValueError)` 接不住它（第八轮 lesson 86）。
+    """
+    if isinstance(value, int):  # 含 bool；不经 float()，避免 10**400 自身溢出
+        return min(hi, max(lo, value))
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(n):
+        return default
+    if math.isinf(n):
+        return hi if n > 0 else lo
+    n = float(min(hi, max(lo, n)))   # 夹到边界时 min/max 会返回 int 边界本身，先归回 float
+    if not integer and not n.is_integer():
+        return n
+    return int(n)
 
 
 def clamp_days(value, default: int = DAY_WINDOW_MIN,
@@ -52,15 +86,20 @@ def clamp_days(value, default: int = DAY_WINDOW_MIN,
     越界不静默：这些函数的返回值里都带 `start`/`end`（或 `expires_at`），
     收口后的窗口就是调用方看到的那个窗口，不存在"报了 999999 天、实际查了 3650 天还不说"。
     """
-    if isinstance(value, int):  # 含 bool；不经 float()，避免 10**400 自身溢出
-        return min(hi, max(lo, value))
-    try:
-        n = float(value)
-    except (TypeError, ValueError):
-        return default
-    if math.isnan(n):
-        return default
-    if math.isinf(n):
-        return hi if n > 0 else lo
-    n = float(min(hi, max(lo, n)))   # 夹到边界时 min/max 会返回 int 边界本身，先归回 float
-    return int(n) if n.is_integer() else n
+    return _clamped(value, default, lo, hi, integer=False)
+
+
+def clamp_minutes(value, default: int = MINUTE_WINDOW_MIN,
+                  lo: int = MINUTE_WINDOW_MIN, hi: int = MINUTE_WINDOW_MAX) -> int:
+    """分钟窗口同族收口（MA-11/12/13）。返回值恒为 `int`——分钟档位没有"半天"那种合法小数。
+
+    `lo` 由各调用点决定：`0` 在"不设窗口"是合法语义的地方（场景图查询、增量采集回落
+    `last_poll_time`）要显式传 `lo=0`，不能让它被抬成 1 分钟。
+    """
+    return _clamped(value, default, lo, hi, integer=True)
+
+
+def clamp_hours(value, default: int = HOURS_WINDOW_MIN,
+                lo: int = HOURS_WINDOW_MIN, hi: int = HOURS_WINDOW_MAX) -> int:
+    """小时窗口同族收口（`first_run_lookback_hours` 一类回溯量）。"""
+    return _clamped(value, default, lo, hi, integer=True)

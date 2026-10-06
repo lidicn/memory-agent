@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import house_time
-from .day_bounds import LONG_WINDOW_MAX, clamp_days
+from .day_bounds import (LONG_WINDOW_MAX, _clamped, clamp_days, clamp_minutes)
 
 SCHEMA_VERSION = 1
 
@@ -1665,7 +1665,7 @@ class Store:
             sql += " WHERE job_id=?"
             args.append(job_id)
         sql += " ORDER BY started_at DESC LIMIT ?"
-        args.append(int(limit))
+        args.append(clamp_limit(limit, 50, 500, label="list_researcher_runs"))
         with self._lock:
             rows = self.connect().execute(sql, args).fetchall()
         return [dict(r) for r in rows]
@@ -2256,7 +2256,7 @@ class Store:
             rows = conn.execute(
                 "SELECT cache_key, intent, payload, hits, last_used, created_at "
                 "FROM voice_answer_cache ORDER BY hits DESC, last_used DESC LIMIT ?",
-                (int(limit),),
+                (clamp_limit(limit, 100, 1000, label="list_answer_cache"),),
             ).fetchall()
         cols = ("cache_key", "intent", "payload", "hits", "last_used", "created_at")
         return [dict(zip(cols, r, strict=True)) for r in rows]
@@ -2417,7 +2417,11 @@ class Store:
         故在解析后的 JSON 上按姓名/member_id 过滤（数据量受 limit 约束）。
         返回 ``[{event_id, server_ts, day, room, trigger, status, confidence, scene_graph}]``。
         """
-        limit = max(1, int(limit or 20))
+        limit = clamp_limit(limit, 20, 200, label="list_scene_graphs")
+        # minutes 在 0/None 都是"不加时间窗"的合法语义，所以下界收进 0 而不是 1；
+        # 上界必须有（MA-11）：`?minutes=2000000000` 的 `timedelta(minutes=)` 会
+        # OverflowError 打成 HTTP 500，路由侧的 `except (TypeError, ValueError)` 兜不住它。
+        minutes = clamp_minutes(minutes, default=0, lo=0) if minutes else 0
         sql = (
             "SELECT id, server_ts, day, room, trigger, status, confidence, scene_graph_json "
             "FROM behavior_events "
@@ -2427,9 +2431,9 @@ class Store:
         if room:
             sql += " AND room = ?"
             args.append(room)
-        if minutes and int(minutes) > 0:
+        if minutes > 0:
             since = (now_local(self.tz_offset_hours)
-                     - timedelta(minutes=int(minutes))).isoformat(sep="T")
+                     - timedelta(minutes=minutes)).isoformat(sep="T")
             sql += " AND server_ts >= ?"
             args.append(since)
         # person 过滤在 Python 侧，SQL 侧多取一些再截断，避免过滤后不足 limit
@@ -2741,7 +2745,7 @@ class Store:
             sql += " WHERE status = ?"
             params.append(status)
         sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        params.append(clamp_limit(limit, 50, 500, label="list_bug_reports"))
         with self._db() as conn:
             rows = conn.execute(sql, params).fetchall()
             cols = [d[0] for d in conn.execute("SELECT * FROM bug_reports LIMIT 0").description]
@@ -5162,7 +5166,7 @@ class Store:
             sql += " WHERE rule_id = ?"
             args.append(rule_id)
         sql += " ORDER BY audit_id DESC LIMIT ?"
-        args.append(int(limit))
+        args.append(clamp_limit(limit, 100, 500, label="list_rule_lifecycle"))
         with self._db() as conn:
             rows = conn.execute(sql, args).fetchall()
         out = []
@@ -5462,6 +5466,40 @@ def safe_json_loads(raw: Any, default: Any = None) -> Any:
     except (TypeError, ValueError) as _e:
         logging.getLogger(__name__).warning("safe_json_loads 解析失败: %s (前80字符: %r)", _e, str(raw)[:80])
         return default
+
+
+def clamp_limit(value, default: int, hi: int, *, label: str = "") -> int:
+    """`LIMIT` 参数收敛进 `[1, hi]`（第二期审计 MA-07~MA-10）。
+
+    放在 **store 层**而不是路由层，是为了治第三轮点出的根因：同一个查询方法有 API 与
+    MCP 两个入口，"一个入口修了另一个没修"（MA-09）就是这么来的。只要最后一道出口钳住，
+    哪个入口都拉不走全表；路由层的 `_num` 继续负责给调用方 400，这里只兜底不打断。
+
+    算术交给 `day_bounds._clamped`，不自己写 `int(value)`：`int(float('inf'))` 抛的是
+    `OverflowError`，而 `except (TypeError, ValueError)` 接不住它（第八轮 lesson 86 量过的格子）。
+    ⇒ `±inf → 同号边界`、`NaN/无法解析 → default`、超大整数走 int 快路径直接落 `hi`。
+
+    坏值不静默：无法解析与下界收敛各留一条 WARNING。`hi` 取各方法对应的既有入口口径
+    （`list_rule_lifecycle` 对齐 API 侧 `_num` 的 `hi=500`），不是随手挑的整数。
+    """
+    if value is None:
+        return default
+    n = _clamped(value, default, 1, hi, integer=True)
+    log = logging.getLogger(__name__)
+    if isinstance(value, int):                     # 含 bool：大整数不经 float()
+        requested = float(value) if abs(value) < 10 ** 308 else float("inf")
+    else:
+        try:
+            requested = float(value)
+        except (TypeError, ValueError, OverflowError):
+            log.warning("clamp_limit 收到非数字 limit=%r，按默认档 %s 处理（%s）",
+                        value, default, label)
+            return n
+    if requested < 1:
+        log.warning(
+            "clamp_limit 下界收敛 limit=%s → %s（负数与 0 在 SQLite 里都是「不限行数」，%s）",
+            value, n, label)
+    return n
 
 
 def row_number(raw: Any, default: float, *, label: str = "", row: str = ""):

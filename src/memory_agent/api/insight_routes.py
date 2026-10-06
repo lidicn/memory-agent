@@ -24,7 +24,7 @@ from ..template_validate import (
 )
 from ..templates import BehaviorInsight, EntityQuery, run_query, run_template
 from ..store import now_local
-from .deps import error, json_body, ok, require_user, runtime
+from .deps import _num, error, json_body, ok, require_user, runtime
 
 
 def _brief(t: BehaviorInsight) -> dict:
@@ -399,7 +399,12 @@ async def researcher_runs_list(request: Request):
     if err:
         return err
     rt = runtime(request)
-    limit = int(request.query_params.get("limit", 50) or 50)
+    # 改前：`int(...)` 无 try 无钳制 ⇒ `?limit=abc` 是 500、`?limit=-1` 是全表（二期 MA-07）。
+    # 与 `GET /api/behaviors` 的 rule_lifecycle 同口径（lo=1 / hi=500），store 层再兜一次。
+    limit, bad = _num(request.query_params.get("limit"), name="limit",
+                      default=50, lo=1, hi=500)
+    if bad:
+        return error(bad)
     job_id = (request.query_params.get("job_id") or "").strip()
     runs = await asyncio.to_thread(rt.store.list_researcher_runs, job_id or None, limit)
     return ok({"runs": runs})

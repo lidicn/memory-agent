@@ -28,6 +28,7 @@ __all__ = [
     "sse_response",
     "sse_pack",
     "mask_secret",
+    "_num",
 ]
 
 
@@ -164,3 +165,30 @@ def mask_secret(value: str, keep: int = 4) -> str:
     if len(value) <= keep * 2:
         return "*" * len(value)
     return f"{value[:keep]}{'*' * 8}{value[-keep:]}"
+
+
+def _num(raw, *, name: str, cast=int, default=None, lo=None, hi=None):
+    """数字入参的统一口径：没给 → `default`；给了 → 必须转换成功且落在 `[lo, hi]`，否则拒。
+
+    改前各路由里有两族写法，都错过：裸 `int(request.query_params.get(...))` 遇到
+    `limit=abc` 直接把 handler 打成未捕获 ValueError（Starlette 500，二期 MA-07），
+    而同一个 handler 的 `days` 却有守卫；`int(body.get(k) or 3)` 则把 0/`""`/`False`
+    静默改成 3——既替调用方改了值，又把 config 上的同名旋钮顶死在字面量上。
+    这里不替调用方改值：越界与被拒都走 400，错误文案点名参数。
+
+    原先住在 `behavior_routes`，二期 MA-07/08 要求别的入口也用同一口径，故提到公共依赖
+    （"同一个 store 方法，API 侧已钳制、MCP 侧裸下推"那类不对等，根因之一就是各校各的）。
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default, None
+    if isinstance(raw, bool):        # JSON 的 true 不该被读成 1
+        return None, f"{name} 必须是数字"
+    try:
+        val = cast(raw)
+    except (TypeError, ValueError):
+        return None, f"{name} 必须是{'整数' if cast is int else '数字'}"
+    if lo is not None and val < lo:
+        return None, f"{name} 不得小于 {lo}"
+    if hi is not None and val > hi:
+        return None, f"{name} 不得大于 {hi}"
+    return val, None

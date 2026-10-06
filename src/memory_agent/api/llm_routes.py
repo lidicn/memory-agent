@@ -29,7 +29,7 @@ from ..voice_util import (
     strip_wake_word,
     _seconds_from_human,
 )
-from .deps import error, json_body, ok, require_user, runtime, sse_pack, sse_response
+from .deps import _num, error, json_body, ok, require_user, runtime, sse_pack, sse_response
 from .insight_routes import build_insight
 
 MAX_HISTORY_MESSAGES = 30
@@ -627,11 +627,13 @@ async def llm_cache_list(request: Request):
     _, err = require_user(request)
     if err:
         return err
-    try:
-        limit = int(request.query_params.get("limit", "100"))
-    except (TypeError, ValueError):
-        limit = 100
-    rows = runtime(request).store.list_answer_cache(limit)
+    # 改前：有 try 但**无钳制**（`?limit=-1`/`-999`/`99999999` 都把整张语音答案缓存拉回来，
+    # 二期 MA-08），且直接在协程里同步读库（同文件其它 handler 都走 to_thread）。
+    limit, bad = _num(request.query_params.get("limit"), name="limit",
+                      default=100, lo=1, hi=1000)
+    if bad:
+        return error(bad)
+    rows = await asyncio.to_thread(runtime(request).store.list_answer_cache, limit)
     return ok({
         "count": len(rows),
         "items": [

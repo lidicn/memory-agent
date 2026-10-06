@@ -17,6 +17,7 @@ from starlette.routing import Route
 
 import httpx
 
+from ..day_bounds import clamp_minutes
 from ..store import now_local
 from ..presence_fusion import fuse_presence
 from ..task_registry import task_registry
@@ -363,8 +364,11 @@ async def scene_graph_query(request: Request):
         minutes = int(params.get("minutes") or 0)
     except (TypeError, ValueError):
         return error("minutes 必须是数字")
-    if minutes < 0:
-        minutes = 0
+    # MA-11（第七轮）：改前只有下界，`?minutes=2000000000` 会一路进到 store 的
+    # `now - timedelta(minutes=…)` 抛 OverflowError → HTTP 500。同文件 `presence`
+    # 路由（本文件 :203）一直带 `min(minutes, 24*60)` 上界，这里是半个。
+    # store 层现已同样钳制，但响应体要回显"真正生效的那个窗口"，不能报 20 亿、查 10 年。
+    minutes = clamp_minutes(minutes, default=0, lo=0)
 
     rt = runtime(request)
     rows = await asyncio.to_thread(
