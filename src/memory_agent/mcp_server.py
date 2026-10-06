@@ -2727,6 +2727,10 @@ def _build_server():
             weekday: 0=周一, 6=周日。-1=用所有日期统计（默认）。
         """
         rt = get_runtime()
+        # HTTP 侧 `/api/behaviors/predict` 校 0-6，MCP 侧原先只判 `<0`：传 7~99 不报错，
+        # 而是每一天都被 weekday 过滤掉 ⇒ 扫完 5000 行事件回一句"没有那一天"（静默空答）。
+        if weekday is not None and not (-1 <= weekday <= 6):
+            return {"ok": False, "error": "weekday 必须是 -1（全部）或 0-6（周一到周日）"}
         events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
         if not events:
             return {"ok": False, "error": "无历史行为事件数据"}

@@ -112,7 +112,7 @@ class FusionConfig:
     margin_threshold: float = 0.15
     # 先验最小样本数
     prior_min_samples: int = 30
-    # 无信号时的评审阈值
+    # 无信号时的评审阈值——**全仓无读点**（v2.0 设计稿留下、内核没接上；同 `roster` 一并呈 DCD）
     review_floor_without_signal: float = 0.55
     # 时序衰减时间常数（秒）
     temporal_tau: float = 300.0
@@ -198,14 +198,14 @@ def evaluate_conflicts(signals: list[SignalEvidence], scores: list[CandidateScor
         face_ids = {s.candidate_id for s in face_sources if s.candidate_id}
         if len(face_ids) >= 2:
             conflicts.append(Conflict("R2", "SOURCE_DISAGREE", "两路人脸信号对立"))
-            cap = Level.MED
+            cap = _more_severe(cap, Level.MED)
 
     # R3: margin 太小
     if len(scores) >= 2:
         sorted_scores = sorted([s.score_final for s in scores], reverse=True)
         if sorted_scores[0] - sorted_scores[1] < cfg.margin_threshold:
             conflicts.append(Conflict("R3", "CLOSE_RACE", "分差太小"))
-            cap = Level.NEEDS_REVIEW
+            cap = _more_severe(cap, Level.NEEDS_REVIEW)
 
     # R4: 陌生人判定
     stranger_signals = [s for s in signals if s.candidate_id is None]
@@ -213,19 +213,19 @@ def evaluate_conflicts(signals: list[SignalEvidence], scores: list[CandidateScor
         stranger_score = sum(s.confidence for s in stranger_signals) / len(stranger_signals)
         if stranger_score > 0.8:
             conflicts.append(Conflict("R4", "STRANGER_DETECTED", "陌生人检测"))
-            cap = Level.LOW
+            cap = _more_severe(cap, Level.LOW)
 
     # R5: 房间不匹配
     room_mismatch_signals = [s for s in signals if s.room_id and s.room_id != signals[0].room_id]
     if room_mismatch_signals:
         conflicts.append(Conflict("R5", "ROOM_MISMATCH", "房间不匹配"))
-        cap = min(cap, Level.MED, key=lambda x: list(Level).index(x))
+        cap = _more_severe(cap, Level.MED)
 
     # R6: 仅推断/先验，无人脸观测
     face_observations = [s for s in signals if s.source in (Source.ARCFACE, Source.HA_FACE)]
     if not face_observations:
         conflicts.append(Conflict("R6", "NO_FACE_OBSERVATION", "无人脸观测"))
-        cap = min(cap, Level.MED, key=lambda x: list(Level).index(x))
+        cap = _more_severe(cap, Level.MED)
 
     return conflicts, cap
 
@@ -235,7 +235,7 @@ def evaluate_conflicts(signals: list[SignalEvidence], scores: list[CandidateScor
 def fuse(slot_room: str,
          signals: list[SignalEvidence],
          prior: Optional[PriorLookup] = None,
-         roster: list[str] = None,
+         roster: Optional[list[str]] = None,
          cfg: FusionConfig = CFG,
          now: float = 0.0) -> FusionResult:
     """融合身份信号（纯函数，无 IO）。
@@ -244,7 +244,8 @@ def fuse(slot_room: str,
         slot_room: 当前房间
         signals: 信号列表
         prior: 先验查询结果
-        roster: 成员名册
+        roster: 名册——**本版不读它**（`fuse` 内除 `None→[]` 外无落点，候选者不受名册约束）。
+            要不要用它过滤候选属语义决定，已呈 DCD，不在这里单方面改变行为。
         cfg: 配置
         now: 当前时间戳
 
