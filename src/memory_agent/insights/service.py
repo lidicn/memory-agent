@@ -1346,3 +1346,174 @@ class BehaviorService:
                         "active_days": qc.get("active_days", 0)},
             "filters": {"room": "", "category": "", "entity_id": ""},
         }
+
+    # ---------------------------------------------------------- device_usage
+    def device_usage(self, tr: Any, entity_ids: Optional[List[str]] = None,
+                     allow_on: Optional[set] = None,
+                     debounce_seconds: float = 5.0,
+                     include_timeline: bool = True) -> Dict[str, Any]:
+        """按设备统计开启时长 / 开关次数 / 每日分布（Q-B 新实现，替代 legacy 委托）。
+
+        与 legacy ``insights_legacy.device_usage`` 对外契约一致：
+        ``{ok, window, device_count, total_on_seconds, total_on_human, devices}``，
+        每个 device 含 ``entity_id/friendly_name/room/domain/sessions/switch_on_count/
+        switch_off_count/total_on_seconds/total_on_human/avg_session_seconds/
+        avg_session_human/longest_session_human/daily_average_human/duty_cycle_percent/
+        by_day_seconds/raw_event_count/timeline``。
+
+        算法：窗口前最后一条事件决定进入窗口时是否已开；窗口内事件按 on→off 配对；
+        窗口末未闭合则截断到 window_end；短于 debounce_seconds 的片段丢弃（去抖）。
+        """
+        try:
+            out = self._device_usage(tr, entity_ids or [], allow_on,
+                                      float(debounce_seconds or 0), include_timeline)
+            out["ok"] = True
+            return out
+        except Exception as exc:
+            return self._fail("device_usage", exc, {
+                "window": _window_meta(tr), "device_count": 0,
+                "total_on_seconds": 0.0, "total_on_human": "0秒", "devices": []})
+
+    def _device_usage(self, tr: Any, entity_ids: List[str],
+                      allow_on: Optional[set], debounce: float,
+                      include_timeline: bool) -> Dict[str, Any]:
+        from .models import TimeRange
+        from .utils import fmt_duration, is_device_on
+
+        start_ts = float(getattr(tr, "start_ts", 0) or 0)
+        end_ts = float(getattr(tr, "end_ts", 0) or 0)
+        if not start_ts or not end_ts:
+            raise ValueError("tr 缺少 start_ts/end_ts")
+        # 窗口右端不超过当前时刻（与 legacy 一致：未闭合片段截到 now）
+        now_ts = self._now()
+        window_end_ts = min(end_ts, now_ts)
+        window_start = house_dt(start_ts)
+        window_end = house_dt(window_end_ts)
+
+        targets = [e for e in entity_ids if e]
+        if not targets:
+            return {"window": _window_meta(tr), "device_count": 0,
+                    "total_on_seconds": 0.0, "total_on_human": "0秒", "devices": [],
+                    "error": "没有定位到任何设备",
+                    "hint": "传 entity_id，或用 room/category/query 语义定位；可先调 get_entity_catalog"}
+        if len(targets) > 40:
+            targets = targets[:40]
+
+        results = []
+        for eid in targets:
+            usage = self._device_usage_one(
+                eid, tr, start_ts, window_end_ts, window_start, window_end,
+                allow_on, debounce, include_timeline, fmt_duration, is_device_on)
+            meta = self._adapter.meta(eid)
+            usage["friendly_name"] = meta.get("friendly_name") or eid.split(".")[-1].replace("_", " ")
+            usage["room"] = meta.get("room", "")
+            usage["domain"] = meta.get("category") or meta.get("domain") or eid.split(".")[0]
+            results.append(usage)
+
+        results.sort(key=lambda x: -float(x.get("total_on_seconds") or 0))
+        grand = sum(float(r.get("total_on_seconds") or 0) for r in results)
+        return {
+            "window": _window_meta(tr),
+            "device_count": len(results),
+            "total_on_seconds": round(grand, 1),
+            "total_on_human": fmt_duration(grand),
+            "devices": results,
+        }
+
+    def _device_usage_one(self, eid: str, tr: Any, start_ts: float, window_end_ts: float,
+                          window_start: datetime, window_end: datetime,
+                          allow_on: Optional[set], debounce: float,
+                          include_timeline: bool, fmt_duration: Any,
+                          is_device_on: Any) -> Dict[str, Any]:
+        """单个设备的用量计算。"""
+        from .models import TimeRange
+        from .parser.entity import normalize_state
+
+        # 1) 窗口前最后一条事件：决定进入窗口时是否已开
+        # 与 legacy 一致：查询所有历史（用 365 天大窗口近似），取最后一条
+        prior_event = None
+        try:
+            prior_start = house_dt(start_ts - 365 * 86400)
+            prior_tr = TimeRange(prior_start, window_start, "prior")
+            prior_rows = self.repo.load_events(
+                prior_tr, entity_ids=[eid])
+            if prior_rows:
+                prior_event = prior_rows[-1]  # 最后一条 = 最新的
+        except Exception:
+            prior_event = None
+
+        # 2) 窗口内事件
+        rows = self.repo.load_events(tr, entity_ids=[eid])
+
+        # 3) 状态配对
+        def _is_on(state: Any) -> bool:
+            return is_device_on(state, allow_on)
+
+        segments: List[Dict[str, Any]] = []
+        cur_start: Optional[float] = None
+        if prior_event is not None and _is_on(getattr(prior_event, "state", "")):
+            cur_start = start_ts
+
+        on_count = off_count = 0
+        for ev in rows:
+            state = getattr(ev, "state", "")
+            ts = float(getattr(ev, "ts", 0) or 0)
+            if ts <= 0:
+                continue
+            if _is_on(state):
+                on_count += 1
+                if cur_start is None:
+                    cur_start = ts
+            else:
+                # 与 legacy 一致：所有非 on 事件都计 off_count（不管是否有关闭段）
+                off_count += 1
+                if cur_start is not None:
+                    segments.append({"start": cur_start, "end": ts, "open": False})
+                    cur_start = None
+        if cur_start is not None:
+            segments.append({"start": cur_start, "end": window_end_ts, "open": True})
+
+        # 4) 去抖 + 统计
+        timeline = []
+        by_day: Dict[str, float] = {}
+        durations: List[float] = []
+        for seg in segments:
+            dur = float(seg["end"]) - float(seg["start"])
+            if dur <= 0 or dur < debounce:
+                continue
+            durations.append(dur)
+            seg_start_dt = house_dt(float(seg["start"]))
+            day = seg_start_dt.strftime("%Y-%m-%d")
+            by_day[day] = round(by_day.get(day, 0.0) + dur, 1)
+            if include_timeline:
+                timeline.append({
+                    "start": seg_start_dt.isoformat(sep="T"),
+                    "end": house_dt(float(seg["end"])).isoformat(sep="T"),
+                    "duration_seconds": round(dur, 1),
+                    "duration_human": fmt_duration(dur),
+                    "still_on": bool(seg.get("open")),
+                })
+
+        total = sum(durations)
+        span_seconds = max(1.0, window_end_ts - start_ts)
+        span_days = span_seconds / 86400.0
+        out: Dict[str, Any] = {
+            "entity_id": eid,
+            "sessions": len(durations),
+            "switch_on_count": on_count,
+            "switch_off_count": off_count,
+            "total_on_seconds": round(total, 1),
+            "total_on_human": fmt_duration(total),
+            "avg_session_seconds": round(total / len(durations), 1) if durations else 0,
+            "avg_session_human": fmt_duration(total / len(durations)) if durations else "0秒",
+            "longest_session_human": fmt_duration(max(durations)) if durations else "0秒",
+            "daily_average_human": fmt_duration(total / span_days),
+            "duty_cycle_percent": round(total / span_seconds * 100, 1),
+            "by_day_seconds": by_day,
+            "raw_event_count": len(rows),
+        }
+        if include_timeline:
+            out["timeline"] = timeline[:200]
+        if not rows and prior_event is None:
+            out["notice"] = "该实体在窗口内没有任何事件，可能未被采集或一直未变化"
+        return out

@@ -69,7 +69,6 @@ LEGACY_CONTRACT_MEMBERS = (
 LEGACY_OUTWARD_METHODS = (
     "entity_catalog",
     "search_events",
-    "device_usage",
     "behavior_insights",
     "device_health",
     "define_activity",
@@ -595,18 +594,23 @@ class InsightService:
                      include_timeline: bool = True) -> Dict[str, Any]:
         """设备用量（状态配对 / 跨窗口截断 / 去抖 / 时间线均在服务端算好）。
 
-        门面原先的 7 参形状不收 entity_id/on_states/debounce_seconds/include_timeline，
-        而 mcp_server.py:1164 与 llm_routes.py:539/544/549 都按 legacy 的 10 参形状调用：
-        前者直接 TypeError（工具整天返回 error），后者把 entity_id 绑进了 `days`
-        （timedelta 收到字符串）。能力在 legacy 侧完整，交回 legacy，并补 Page 键。
+        Q-B 异名切换：从委托 legacy 改为调用 ``self.core.device_usage``（BehaviorService 新实现）。
+        入参与返回结构与 legacy 完全兼容；门面负责时间范围解析与实体定位。
         """
+        from .utils import DEFAULT_DEBOUNCE_SECONDS
         if debounce_seconds is None:
-            from ..insights_legacy import DEFAULT_DEBOUNCE_SECONDS
             debounce_seconds = DEFAULT_DEBOUNCE_SECONDS
-        out = self.legacy.device_usage(
-            entity_id=entity_id, room=room, category=category, query=query, days=days,
-            start=start, end=end, on_states=on_states,
-            debounce_seconds=debounce_seconds, include_timeline=include_timeline)
+        tr = self._tr(start, end, days=days or 7)
+        # 定位目标设备
+        if entity_id:
+            entity_ids = [e.strip() for e in entity_id.split(",") if e.strip()]
+        else:
+            entity_ids = [e.entity_id for e in self.resolver.resolve(
+                room=room, category=category, query=query)]
+        allow_on = {s.strip().lower() for s in on_states.split(",") if s.strip()} if on_states else None
+        out = self.core.device_usage(
+            tr, entity_ids=entity_ids, allow_on=allow_on,
+            debounce_seconds=float(debounce_seconds), include_timeline=include_timeline)
         if isinstance(out, dict):
             out.setdefault("items", out.get("devices") or [])
             out.setdefault("total", out.get("device_count") or 0)
