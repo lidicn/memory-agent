@@ -19,6 +19,7 @@
 
 import asyncio
 import os
+import pathlib
 import sys
 from datetime import datetime
 
@@ -269,3 +270,53 @@ def test_mcp_get_behavior_prediction_still_serves_valid_weekday(monkeypatch):
     assert res2.get("ok") is True, res2
     assert res2["arrival_prediction"] is None, "单日不足 min_days=3，如实回空而不是凑数"
     assert res2["weekday"] == target
+
+
+# ── 8) DCD 20261006 §六 Q5=乙′：未接入 + 与在役路径重叠，登记成会红的锁 ─────
+
+_SRC_ROOT = pathlib.Path(__file__).resolve().parents[1] / "src" / "memory_agent"
+
+
+def _src_sites(token):
+    """按**字面 token** 数 src 里的出现行（含 def 行本身，所以"未接入"= 只剩定义那一行）。"""
+    hits = []
+    for path in sorted(_SRC_ROOT.rglob("*.py")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if token in line:
+                hits.append(f"{path.name}:{lineno}")
+    return hits
+
+
+def test_detect_pattern_deviation_is_not_wired_while_daily_profile_is():
+    """Q5=乙′：本函数在 src 里**没有任何调用点**（只剩 `:246` 那一行 def），
+    而在役已有一条等价的偏离检测：`daily_profile.check_return_time_anomaly`
+    （中位数 + MAD，`abs(now−median) > 2σ`，由 `get_return_time_profile():127` 带出去，
+    HTTP `behavior_routes.py` 与 `livingroom_ai.py` 消费）。
+
+    两套并存 = 两套基线公式 + 两套阈值，"到家时间算不算 anomaly"是产品语义，
+    接线触发条件 = 先裁定并存还是归一（本裁定 §七.6）。
+    负控在同一条用例里：同一把尺量在役那条必须非零，否则"没有调用点"只是量具坏了。
+    """
+    assert _src_sites("detect_pattern_deviation") == ["behavior_predictor.py:246"]
+    wired = _src_sites("check_return_time_anomaly")
+    assert len(wired) >= 2, f"负控失效：在役的偏离检测都量不出调用点（{wired}）"
+
+
+def test_deviation_ignores_the_person_argument():
+    """Q5 顺带登记（本裁定 §六）：`person` 形参完全未读（`:246-252`）⇒ 换任何人名结果一字不差。
+    将来要按成员分档（不同人不同容差）必须先动这条锁并留痕。"""
+    predicted = {"predicted_hour": 18.5, "range": [17.5, 19.5]}
+    baseline = detect_pattern_deviation(predicted, 20.6, "Kevin")
+    for who in ("Alice", "", None):
+        assert detect_pattern_deviation(predicted, 20.6, who) == baseline
+
+
+def test_deviation_does_not_wrap_across_midnight():
+    """Q5 顺带登记（本裁定 §六）：小时做**线性比较**，跨午夜的带（下界 > 上界）永远判不进带，
+    且偏离量按 `|actual − predicted_hour|` 算 ⇒ 带 [23.0, 1.0]、实际 23:30 被读成
+    "晚了 23.5 小时、severe"，而真实偏离是 0.5 小时。环形距离（`min(d, 24−d)`）接线前必须补。"""
+    predicted = {"predicted_hour": 0.0, "range": [23.0, 1.0]}
+    res = detect_pattern_deviation(predicted, 23.5, "Kevin")
+    assert res["deviation"] == "late" and res["severity"] == "severe"
+    assert res["delta_hours"] == pytest.approx(23.5, abs=1e-9)
+    assert res["within_range"] is False, "跨午夜的带判不进（现状登记）"

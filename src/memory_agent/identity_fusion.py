@@ -152,13 +152,18 @@ class PriorLookup:
 
 def prior_boost(posterior: Optional[dict[str, float]], member_id: str,
                 k: int, samples: int, cfg: FusionConfig = CFG) -> float:
-    """先验修正项（log-odds）。"""
+    """先验修正项 `0.25·ln(p·k)`，裁剪到 ±0.6。
+
+    `k` 是**该候选者的证据记录数**（调用点传 `len(pairs)`，不去重），不是信号路数、
+    也不是候选人数 ⇒ 同一来源重复上报同样会让 `k` 变大。口径与两个常数的重裁绑定
+    P2 多源身份融合立项（DCD 20261006 §四、§七.5）。
+    """
     if not posterior or k <= 1 or samples < cfg.prior_min_samples:
         return 0.0
     p = float(posterior.get(member_id, 0.0))
     if p <= 0:
         return 0.0
-    # log-odds 修正
+    # 不是 log-odds：`ln(p·k)` 而非 `ln(p/(1-p))`（DCD 20261006 §四.1 登记）
     beta = 0.25 * math.log(p * k)
     # 裁剪
     return max(-0.6, min(0.6, beta))

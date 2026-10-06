@@ -33,9 +33,14 @@ from memory_agent.api import auth_routes as ar
 
 BLOCK_SECONDS = 0.25
 HEARTBEAT = 0.01
-# 卸载后循环照常 ~25 次心跳；没卸载则 0-1 次。阈值取中间，两边都离得很远。
-MIN_TICKS_WHEN_OFFLOADED = 10
+# 卸载后循环照常 ~25 次心跳（本机空载）；没卸载则 0-1 次。阈值不写死在这个数上，
+# 改成同轮空闲对照的比例（见 `assert_offloaded`）：心跳计数是墙钟量，全量档单轮
+# （1600+ 条用例，本机 18 分钟）能把卸载后的那一格压到 7，固定的 10 于是假红
+# （2026-10-06 #64 after-档实测 `1 failed` = `assert 7 >= 10`，同一条用例单独跑与
+# 容器 SUITE 两次都是绿的）。空闲对照与被测格在同一台机器、同一段负载里量，
+# 整体变慢时两个数一起降；真没卸载时 handler 冻满 BLOCK_SECONDS ⇒ 0-1 跳，够不到任何一档。
 MAX_TICKS_WHEN_BLOCKED = 1
+OFFLOAD_CONTROL_FRACTION = 0.5
 
 
 class _SlowAuth:
@@ -111,14 +116,34 @@ def _ticks_during(factory):
     return asyncio.run(main())
 
 
+def _idle_control_ticks():
+    """同轮空闲对照：同样长的时间里，循环什么都不挡时实际跳了几次。"""
+    async def idle():
+        await asyncio.sleep(BLOCK_SECONDS)
+
+    return _ticks_during(idle)
+
+
+def assert_offloaded(ticks, label):
+    """卸载档的判据：既要在绝对下界之上，也要达到同轮空闲对照的一半。"""
+    control = _idle_control_ticks()
+    floor = max(MAX_TICKS_WHEN_BLOCKED + 1, int(control * OFFLOAD_CONTROL_FRACTION))
+    assert ticks >= floor, (
+        f"{label}：事件循环被同步调用冻住。ticks={ticks}, 同轮空闲对照={control}, 阈值={floor}")
+    return control
+
+
 def test_the_heartbeat_can_actually_see_a_stall():
     """门自证：协程里直接 `time.sleep` 时心跳必须几乎不涨，否则后面那些
-    "心跳 ≥ 10" 的断言就是恒真（量具没牙，等于没锁）。"""
+    "心跳 ≥ 对照的一半" 的断言就是恒真（量具没牙，等于没锁）。"""
+    control = _idle_control_ticks()
     async def direct_blocking():
         time.sleep(BLOCK_SECONDS)
 
     ticks = _ticks_during(direct_blocking)
     assert ticks <= MAX_TICKS_WHEN_BLOCKED
+    assert ticks < control * OFFLOAD_CONTROL_FRACTION, (
+        f"量具本身没牙：冻循环档 ticks={ticks} 与空闲对照 {control} 分不开")
 
 
 def test_login_handler_does_not_freeze_the_event_loop(monkeypatch):
@@ -130,7 +155,7 @@ def test_login_handler_does_not_freeze_the_event_loop(monkeypatch):
 
     ticks = _ticks_during(call)
     assert auth.login_calls == 1
-    assert ticks >= MIN_TICKS_WHEN_OFFLOADED
+    assert_offloaded(ticks, "/api/auth/login 的 bcrypt 没卸载")
     assert auth.notes == [("ok", "u1")]
 
 
@@ -143,7 +168,7 @@ def test_auth_status_handler_does_not_freeze_the_event_loop(monkeypatch):
 
     ticks = _ticks_during(call)
     assert auth.status_reads == 1
-    assert ticks >= MIN_TICKS_WHEN_OFFLOADED
+    assert_offloaded(ticks, "/api/auth/status 的账号文件读没卸载")
 
 
 def test_two_concurrent_bootstrap_registrations_only_create_one_account(monkeypatch):
@@ -268,7 +293,7 @@ def test_jwt_authentication_does_not_freeze_the_event_loop(slow_auth):
         return counter[0]
 
     ticks = asyncio.run(main())
-    assert ticks >= MIN_TICKS_WHEN_OFFLOADED
+    assert_offloaded(ticks, "JWT 分支的 verify_token 没卸载")
     assert [i.calls for i in slow_auth.instances] == [["verify_token"]]
 
 
@@ -288,7 +313,7 @@ def test_basic_auth_does_not_freeze_the_event_loop(slow_auth):
         return counter[0]
 
     ticks = asyncio.run(main())
-    assert ticks >= MIN_TICKS_WHEN_OFFLOADED
+    assert_offloaded(ticks, "Basic 分支的 auth_manager.login 没卸载")
     assert [i.calls for i in slow_auth.instances] == [["login", "ok"]]
 
 

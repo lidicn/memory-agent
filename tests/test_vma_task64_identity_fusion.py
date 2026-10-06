@@ -33,6 +33,7 @@
 import math
 import os
 import pathlib
+import re
 import sys
 
 import pytest
@@ -319,3 +320,94 @@ def test_fusion_consumes_elimination_pseudo_signals():
     res = fuse("living", [sig], now=1000.0)
     assert res.confidence == pytest.approx(0.65, abs=1e-12)
     assert (res.level, res.needs_review) == (MED, False), "0.65 ≥ med_threshold ⇒ med；R6 封顶不触发复核之外的档"
+
+
+# ── 4) DCD 20261006 裁定（§九 验收）：登记要会红，措辞要照裁定 ────────────
+
+_SRC_ROOT = pathlib.Path(__file__).resolve().parents[1] / "src" / "memory_agent"
+
+
+def _src_ref_sites(module: str) -> list:
+    """`src/memory_agent/**.py` 里除该模块自身外的**引用行**（import 行或 `module.` 属性访问）。
+
+    故意不数散文/docstring 里的名字——那条尺会把"在文档里提到本模块"判成"接了线"。
+    """
+    pattern = re.compile(rf"\bimport\b[^\n]*\b{module}\b|\b{module}\.\w")
+    hits = []
+    for path in sorted(_SRC_ROOT.rglob("*.py")):
+        if path.name == f"{module}.py":
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if pattern.search(line):
+                hits.append(f"{path.name}:{lineno}")
+    return hits
+
+
+def test_identity_fusion_still_has_zero_call_sites_in_src():
+    """Q1=丙：留 src、不接入，把"未挂载"从一句注释升级成**会红的锁**。
+
+    接线触发条件 = P2「多源身份概率融合」立项裁定（见本裁定 §七 七条前置清单）。
+    负控在同一条用例里，量的是尺子而不是结论：同样这把尺量在役的 `presence_fusion`
+    必须非零——否则"零调用者"这个读数只是量具坏了（现读 `vision_routes.py:21`、
+    `perception_ingest.py:255` 两处 import）。
+    """
+    assert _src_ref_sites("identity_fusion") == []
+    assert _src_ref_sites("presence_fusion"), "负控失效：这把尺量不出在役模块，上面的零不构成结论"
+
+
+def test_prior_boost_k_counts_evidence_records_not_deduped_sources():
+    """Q3=甲 + §九.3 措辞修正：`fuse` 传的 `k = len(pairs)`（`identity_fusion.py:317`）
+    = 该候选者的**证据记录数**，**不去重**——既不是"几路信号"，也不是候选人数。
+
+    后果登记在册：同一来源重复上报也会把 k 变大，所以先验修正对采样频率/重复上报敏感。
+    本用例的形状就是两**条**同来源（都 ARCFACE）信号 ⇒ k=2 ⇒ 先验生效；
+    谁把 k 改成"去重后的路数"（=1），这里立刻红。k 口径的重新裁定绑定 P2 立项（§七.5）。
+    """
+    dup = [_sig("s1", Source.ARCFACE, "Alice", conf=0.6),
+           _sig("s2", Source.ARCFACE, "Alice", conf=0.6)]
+    res = fuse("living", dup, prior=PriorLookup({"Alice": 0.9}, 100), now=1000.0)
+    assert res.scores[0].candidate_id == "Alice"
+    assert res.scores[0].prior_boost == pytest.approx(0.25 * math.log(0.9 * 2), abs=1e-12)
+    assert prior_boost({"Alice": 0.9}, "Alice", 2, 100) != 0.0, "k=2 不短路 ⇒ 两条同来源也算两条记录"
+
+
+def test_confidence_domain_is_not_reclamped_and_raw_scales_with_records():
+    """Q3 衍生事实（本裁定 §四.2）：`score_final = score_raw + boost`（`:318`）之后**不再裁回
+    [0,1]**，`FusionResult.confidence` 直接取它（`:361`）。
+
+    现读比裁定书那句更尖锐：分母 `total_weight` 按**去重后的信号源**求和（`:304-309`），
+    分子按**每条记录**累加 ⇒ 同一来源重复上报把 `score_raw` **线性放大**
+    （1 条 conf 0.9 ⇒ 0.9；2 条同来源同 conf ⇒ 1.8）。所以上界不是"1+0.6"而是
+    "记录数 × 置信度 + 0.6"，**无界**。
+    这条是**登记锁**，不是"这样对"的主张：域裁剪与分母口径随 P2 立项一起重裁（§七.5）。
+    """
+    one = fuse("living", [_sig("s1", Source.ARCFACE, "Alice", conf=0.9)], now=1000.0)
+    assert one.scores[0].score_raw == pytest.approx(0.9, abs=1e-9)
+    assert one.confidence == pytest.approx(0.9, abs=1e-9), "无先验时 confidence 落在 [0,1]（常态档）"
+
+    two = fuse("living", [_sig("s1", Source.ARCFACE, "Alice", conf=0.9),
+                          _sig("s2", Source.ARCFACE, "Alice", conf=0.9)], now=1000.0)
+    assert two.scores[0].score_raw == pytest.approx(1.8, abs=1e-9), "重复上报线性放大 score_raw（现状登记）"
+    assert two.confidence > 1.0, "score_raw 未裁回 [0,1]（现状登记）"
+
+    neg = fuse("living", [_sig("s1", Source.ARCFACE, "Alice", conf=0.05),
+                          _sig("s2", Source.ARCFACE, "Alice", conf=0.05)],
+               prior=PriorLookup({"Alice": 0.01}, 100), now=1000.0)
+    assert neg.scores[0].prior_boost == -0.6, "0.25·ln(0.01×2) 越下界 ⇒ 裁到 -0.6"
+    assert neg.confidence < 0.0, "负修正可以把 confidence 打到 0 以下（同一格待重裁）"
+
+
+def test_prior_boost_formula_label_corrected_from_log_odds():
+    """Q3 衍生事实（本裁定 §四.1）：所谓"log-odds"实为 `0.25·ln(p·k)`，不是 `ln(p/(1-p))`。
+
+    两条曲线在 p→1 时方向相同但量级完全不同，名字错了会让人以为它是校准过的对数几率。
+    本用例锁住**实际公式**，源码里的 `log-odds` 措辞已按裁定核销（`identity_fusion.py:153-166`）。
+    """
+    p, k = 0.9, 5
+    assert prior_boost({"Alice": p}, "Alice", k, 100) == pytest.approx(0.25 * math.log(p * k), abs=1e-12)
+    assert prior_boost({"Alice": p}, "Alice", k, 100) != pytest.approx(
+        0.25 * math.log(p / (1 - p)), abs=1e-6), "公式不是 log-odds"
+    src = (_SRC_ROOT / "identity_fusion.py").read_text(encoding="utf-8")
+    assert "先验修正项（log-odds）" not in src, "措辞已核销：函数不再被命名成 log-odds"
+    assert "0.25·ln(p·k)" in src, "文档字符串必须写实际公式"
+
