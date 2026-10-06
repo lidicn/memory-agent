@@ -18,8 +18,11 @@
   legacy 有而本层算不出的 `timezone`（宁缺勿造，造出来就是假口径）。
 
 三条都是新引擎内部路径（`core.*`），按裁5 Q1=A 对外仍走 legacy 门面体，
-所以这批锁**不改变任何出境载荷**；`coverage`/`data_quality` 两条今天就对外，
-给它们加 `window` 属跨仓载荷键名变更，另走 DCD 登记，不在本件里擅自动。
+所以这批锁**不改变任何出境载荷**。`coverage`/`data_quality` 两条今天就对外——
+DCD `decisions/20261005-AF用户WebUI与MA四件与CVE-裁定.md:74`（Q-A=甲，把 `window`
+定为洞察类读数的**通用回显键**，点名这两格）已裁，属**已裁未落**，本件按裁定把两格纳进
+同一批参数化锁（任务表 #73）。超出裁定点名的 `compare_insights`/`plan_question`
+没有顺手加：那属裁定适用范围问题，已另呈 DCD。
 """
 
 import os
@@ -75,11 +78,24 @@ def core():
     yield svc.core, svc
 
 
+@pytest.fixture
+def svc_facade():
+    """对外那两条读法要经过门面，所以这格用的是 `InsightService`（`core` 那批用的是 `core`）。"""
+    tmp = tempfile.mkdtemp(prefix="ma_window_facade_")
+    store = Store(os.path.join(tmp, "window_facade.db"), tz_offset_hours=0.0)
+    store.init_schema()
+    store.insert_events(_dataset())
+    svc = InsightService(store, Config())
+    svc.resolver.refresh(CATALOG)
+    yield svc
+
+
 def _tr(svc):
     return svc._tr(START, END)
 
 
-@pytest.mark.parametrize("name", ("usage", "device_health", "behavior_insights"))
+@pytest.mark.parametrize("name", ("usage", "device_health", "behavior_insights",
+                                "coverage", "data_quality"))
 def test_core_reads_echo_the_window_they_scanned(core, name):
     """三个读法都给出 `window`，且逐字等于本次 tr 的口径（不是另算一个近似窗）。"""
     engine, svc = core
@@ -90,7 +106,8 @@ def test_core_reads_echo_the_window_they_scanned(core, name):
     assert out["window"] == tr.to_dict()
 
 
-@pytest.mark.parametrize("name", ("usage", "device_health", "behavior_insights"))
+@pytest.mark.parametrize("name", ("usage", "device_health", "behavior_insights",
+                                "coverage", "data_quality"))
 def test_window_is_the_requested_span_not_a_fabricated_one(core, name):
     """对偶档：窗口必须是请求的那一段——恒返回一个固定窗的实现过不了这一格。"""
     engine, svc = core
@@ -117,8 +134,21 @@ def test_window_survives_the_degrade_path(core):
         def behavior_summary(self, *a, **kw):
             raise RuntimeError("注入的取数故障")
 
+        def day_counts(self, *a, **kw):
+            raise RuntimeError("注入的取数故障")
+
+        def activity_matrix(self, *a, **kw):
+            raise RuntimeError("注入的取数故障")
+
+        def quality_counts(self, *a, **kw):
+            raise RuntimeError("注入的取数故障")
+
+        def sample_rows(self, *a, **kw):
+            raise RuntimeError("注入的取数故障")
+
     engine.repo = _Broken()
-    for name in ("usage", "device_health", "behavior_insights"):
+    for name in ("usage", "device_health", "behavior_insights",
+                 "coverage", "data_quality"):
         out = getattr(engine, name)(tr)
         assert out.get("ok") is False, "%s 故障被吞成了成功" % name
         assert "window" in out, "%s 的降级信封丢了窗口口径" % name
@@ -153,3 +183,20 @@ def test_time_range_to_dict_shape_stays_the_contract(core):
     tr = TimeRange(start=svc._tr(START, END).start, end=svc._tr(START, END).end)
     assert set(tr.to_dict()) == {"start", "end", "start_ts", "end_ts", "days", "label"}
     assert set(engine.usage(_tr(svc))["window"]) == set(tr.to_dict())
+
+
+def test_outward_facade_reads_carry_the_window(svc_facade):
+    """对外的两条读法（`get_data_coverage` / `get_data_quality`）也必须带口径。
+
+    裁5 Q-A 的甲口径点名的就是这两格，而它们**今天就对外**：MCP 侧
+    `mcp_server.py:1625` / `mcp_server.py:2614` 直接把门面返回体整包给模型，
+    门面少一格，模型那头就无从核对"这批数覆盖哪一段"。
+    """
+    svc = svc_facade
+    cov = svc.data_coverage(days=7)
+    dq = svc.get_data_quality(days=30)
+    assert cov.get("ok") is True and dq.get("ok") is True
+    for name, out in (("data_coverage", cov), ("get_data_quality", dq)):
+        assert "window" in out, "%s 对外读数没有 window" % name
+        assert set(out["window"]) == {"start", "end", "start_ts", "end_ts", "days", "label"}
+    assert cov["window"]["days"] == 7.0 or int(cov["window"]["days"]) == 7

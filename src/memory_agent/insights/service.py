@@ -428,13 +428,15 @@ class BehaviorService:
 
     # ------------------------------------------------------------- coverage
     def coverage(self, tr: Any) -> Dict[str, Any]:
+        # 窗口回显走与 usage 同一条路：降级信封也带口径（DCD 20261005 §Q-A 甲，
+        # `window` 是洞察类读数的通用回显键；这两格当时只裁未落）。
         try:
             out = self._coverage(tr)
             out["ok"] = True
-            return out
         except Exception as exc:
-            return self._fail("coverage", exc, {
+            out = self._fail("coverage", exc, {
                 "days": [], "total_events": 0, "day_coverage": 0.0, "hour_coverage": 0.0})
+        return self._with_window(out, tr)
 
     def _coverage(self, tr: Any) -> Dict[str, Any]:
         start_day, end_day = self._tr_days(tr)
@@ -1275,10 +1277,10 @@ class BehaviorService:
         try:
             out = self._data_quality(tr)
             out["ok"] = True
-            return out
         except Exception as exc:
-            return self._fail("data_quality", exc, {"checks": [], "issues": [], "score": 0.0,
-                                                    "total_events": 0, "filters": {}})
+            out = self._fail("data_quality", exc, {"checks": [], "issues": [], "score": 0.0,
+                                                   "total_events": 0, "filters": {}})
+        return self._with_window(out, tr)
 
     def _data_quality(self, tr: Any) -> Dict[str, Any]:
         qc = self.repo.quality_counts(tr)
