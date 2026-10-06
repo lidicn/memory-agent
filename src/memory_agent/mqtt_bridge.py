@@ -8,7 +8,8 @@ TVPilot / DeskPilot 希望在状态变化时**被推送**，而不是轮询 MA�
 * ``ma/presence``      成员在场快照（谁在哪个房间、通过什么方式识别）
 * ``ma/device-health`` 设备健康状态变化（在线 ↔ 失联 ↔ 失效）
 * ``adm/memory-agent/status|caps`` 本仓在线与能力摘要（retained，ADM 契约 §三）
-* ``butler/inbox/notify`` 请 DB 说话（ADM 公共收件箱，白名单内、不 retained）
+* ``butler/inbox/notify`` 请 DB 推送通知（ADM 公共收件箱，白名单内、不 retained）
+* ``butler/inbox/speak`` 请 DB 播报一段文本（同一白名单，契约 §七 E）
 
 设计约束
 --------
@@ -28,7 +29,7 @@ import time
 import uuid
 from typing import Any
 
-from . import house_time
+from . import adm_linkage, house_time
 
 try:  # paho-mqtt 是可选依赖：容器装了才真正推送，缺了只是不推
     import paho.mqtt.client as mqtt
@@ -85,8 +86,11 @@ ADM_OFFLINE = "offline"
 #: 公共收件箱白名单（DB 拥有）。投递侧只写这三条，不碰 DB 内部语义主题。
 INBOX_TOPICS = frozenset({"butler/inbox/speak", "butler/inbox/notify", "butler/inbox/tv"})
 INBOX_NOTIFY_TOPIC = "butler/inbox/notify"
+INBOX_SPEAK_TOPIC = "butler/inbox/speak"
 INBOX_MAX_TITLE = 80
 INBOX_MAX_BODY = 500
+#: `speak`/`tv` 的正文上限，与 homesdk.presence.INBOX_MAX_TEXT 同值（契约 §七 E）。
+INBOX_MAX_TEXT = 500
 
 #: homesdk.presence 探测结果缓存：None=未探测，False=不可用，Module=可用
 _presence_probe: Any = None
@@ -173,6 +177,8 @@ class MqttBridge:
         self._retry_after = 0.0
         self._closed = False  # close() 后置位：关停后残留任务不得再推送
         self._advertised = False  # presence 是否已广播（断连重连后重置，见 ensure_advertised）
+        #: 契约 §七 B 的带码留痕：每一次"想联动但没成"都往这里记一条，不靠 print 兜。
+        self.linkage = adm_linkage.LinkageJournal()
 
     # ── 状态 ──────────────────────────────────────────────────────────────
 
@@ -204,9 +210,20 @@ class MqttBridge:
             "connected": bool(self._client is not None and self._client.is_connected()),
             "advertised": self._advertised,
             "homesdk_presence": bool(homesdk_presence()),
+            "homesdk_adm_errors": bool(adm_linkage.homesdk_errors()),
+            # 契约 §七 B：失败必须带码。`reasons` 与 status JSON 的 `reasons[]` 同名同义，
+            # 合并窗里 `encode_status` 直接读这一枚就能填，不用再翻 print 出来的日志。
+            "adm_reasons": self.linkage.reasons(),
+            "adm_failures": self.linkage.entries()[-5:],
             "retry_after": round(retry_after, 1),
             "closed": self._closed,
         }
+
+    def _note(self, code_name: str, message: str, *, topic: str = "",
+              trace_id: str = "") -> None:
+        """按契约 §七 B 记一次带码留痕；名字不在词表里时由 `adm_linkage.code` 兜成 INTERNAL。"""
+        self.linkage.note(adm_linkage.code(code_name), message,
+                          topic=topic, trace_id=trace_id)
 
     # ── 发布 ──────────────────────────────────────────────────────────────
 
@@ -218,18 +235,22 @@ class MqttBridge:
         try:
             client = self._ensure_client()
             if client is None:
+                self._note("ADM_ERR_BROKER_UNREACHABLE", "broker 客户端建不起来（缺 paho 或被退避挡住）",
+                           topic=topic)
                 return False
             if not client.is_connected():
                 # connect() 异步发起，broker 拒绝（如未授权 rc=5）时既不会抛错，
                 # publish() 也会「成功」。此处显式判失败，让上层保留快照待重试，
                 # 避免误以为推送成功。paho 的 loop 线程会持续自动重连。
                 print(f"[MQTT] 客户端尚未连接，跳过发布 {topic}")
+                self._note("ADM_ERR_BROKER_UNREACHABLE", "客户端尚未连接，跳过发布", topic=topic)
                 return False
             body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-            client.publish(topic, body, qos=1, retain=retain)  # WO-ADM-001 R-49: 统一 QoS=1，与 butler subscribe 对齐
-            return True
+            info = client.publish(topic, body, qos=1, retain=retain)  # WO-ADM-001 R-49: 统一 QoS=1，与 butler subscribe 对齐
+            return self._check_publish_rc(info, topic)
         except Exception as exc:  # noqa: BLE001 - 旁路能力，失败不得上抛
             print(f"[MQTT] 发布 {topic} 失败: {exc}")
+            self._note("ADM_ERR_INTERNAL", f"发布异常: {exc}", topic=topic)
             return False
 
     def publish_raw(self, topic: str, payload: Any, retain: bool = False) -> bool:
@@ -238,17 +259,35 @@ class MqttBridge:
             return False
         topic = (topic or "").strip()
         if not topic:
+            self._note("ADM_ERR_PAYLOAD_INVALID", "空 topic 拒发")
             return False
         try:
             client = self._ensure_client()
             if client is None:
+                self._note("ADM_ERR_BROKER_UNREACHABLE", "broker 客户端建不起来", topic=topic)
                 return False
             body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-            client.publish(topic, body, qos=1, retain=retain)  # WO-ADM-001 R-49: 统一 QoS=1，与 butler subscribe 对齐
-            return True
+            info = client.publish(topic, body, qos=1, retain=retain)  # WO-ADM-001 R-49: 统一 QoS=1，与 butler subscribe 对齐
+            return self._check_publish_rc(info, topic)
         except Exception as exc:  # noqa: BLE001 - 旁路能力，失败不得上抛
             print(f"[MQTT] 发布 {topic} 失败: {exc}")
+            self._note("ADM_ERR_INTERNAL", f"发布异常: {exc}", topic=topic)
             return False
+
+    def _check_publish_rc(self, info: Any, topic: str) -> bool:
+        """paho 的 `publish()` 不抛错，失败写在返回值的 rc 上。
+
+        改前两条发布路径都只看"有没有抛异常"：broker 未连接时 paho 返回
+        `MQTT_ERR_NO_CONN`（rc=4，消息进队列或按 QoS 丢弃），而 MA 照样 return True
+        ⇒ 上层以为"已投递"，`inbox_events` 里那一头永远不会出现。契约 §七 B 的
+        "禁止静默丢弃"要求的正是把这一跳也带码，所以 rc≠0 记 BROKER_UNREACHABLE 并返回 False。
+        """
+        rc = getattr(info, "rc", 0)
+        if rc in (0, None):
+            return True
+        print(f"[MQTT] 发布 {topic} 被 paho 拒绝: rc={rc}")
+        self._note("ADM_ERR_BROKER_UNREACHABLE", f"paho 拒绝投递 rc={rc}", topic=topic)
+        return False
 
     def publish_presence(self, members: list[dict], ts: str) -> bool:
         """成员在场快照。``retain=True`` 让新订阅者立刻拿到当前状态。"""
@@ -343,12 +382,18 @@ class MqttBridge:
         tid = (trace_id or "").strip()
         if not tid:
             print("[MQTT] 收件箱投递被拒：缺 trace_id（契约要求必填）")
+            self._note("ADM_ERR_PAYLOAD_INVALID", "缺 trace_id，收件箱拒发",
+                       topic=INBOX_NOTIFY_TOPIC)
             return False
         client = self._ensure_client()
         if client is None:
+            self._note("ADM_ERR_BROKER_UNREACHABLE", "broker 客户端建不起来",
+                       topic=INBOX_NOTIFY_TOPIC, trace_id=tid)
             return False
         if not client.is_connected():
             print(f"[MQTT] 客户端尚未连接，跳过收件箱投递 {INBOX_NOTIFY_TOPIC}")
+            self._note("ADM_ERR_BROKER_UNREACHABLE", "客户端尚未连接，跳过收件箱投递",
+                       topic=INBOX_NOTIFY_TOPIC, trace_id=tid)
             return False
         safe_title = _bounded(title, INBOX_MAX_TITLE, "title")
         safe_body = _bounded(body, INBOX_MAX_BODY, "body")
@@ -360,6 +405,8 @@ class MqttBridge:
                 return True
             except Exception as exc:  # noqa: BLE001
                 print(f"[MQTT] 收件箱投递失败（homesdk 口径）: {exc}")
+                self._note("ADM_ERR_INTERNAL", f"库口径投递失败: {exc}",
+                           topic=INBOX_NOTIFY_TOPIC, trace_id=tid)
                 return False
         # 库缺席时的同构载荷：ts 用 epoch（库那份就是 int(time.time())），
         # channel/priority 为空或 0 时**不写进载荷**——和库的 include 规则一致，
@@ -375,6 +422,58 @@ class MqttBridge:
         if priority:
             payload["priority"] = priority
         return self.publish_raw(INBOX_NOTIFY_TOPIC, payload)
+
+    def publish_speak(self, text: str, *, trace_id: str, role: str = "",
+                      priority: int = 0, expires_at: float | None = None) -> bool:
+        """请 DB 播报一段文本（``butler/inbox/speak``，不 retained）——契约 §七 件 5 的本仓半边。
+
+        载荷形状与 `publish_notify` 同一套口径：`role`/`priority`/`expires_at` 为空或 0 时
+        **不写进载荷**（库的 include 规则如此），载荷里也**没有 `source` 字段**（§E 逐字）。
+        `text` 超 500 先截断再发，不整条丢掉。三条失败出口各带一枚契约码。
+
+        现场还没有调用者：MA 现有播报走 HA `tts.speak`（`announcer.py`），改成"MA 投收件箱、
+        DB 决定谁开口"要跟 HA 直发二选一，选错就变成两处同时说话。那条路由不在自主决定范围内，
+        已按"未挂载"呈 DCD；锁见 `tests/test_vma_dcd_20261006_linkage_codes.py`。
+        """
+        if not self.enabled or self._closed:
+            return False
+        tid = (trace_id or "").strip()
+        body = (text or "").strip()
+        if not tid or not body:
+            print("[MQTT] 收件箱播报被拒：缺 trace_id 或缺 text（契约 §七 E 都必填）")
+            self._note("ADM_ERR_PAYLOAD_INVALID", "缺 trace_id 或 text，收件箱拒发",
+                       topic=INBOX_SPEAK_TOPIC, trace_id=tid)
+            return False
+        client = self._ensure_client()
+        if client is None:
+            self._note("ADM_ERR_BROKER_UNREACHABLE", "broker 客户端建不起来",
+                       topic=INBOX_SPEAK_TOPIC, trace_id=tid)
+            return False
+        if not client.is_connected():
+            print(f"[MQTT] 客户端尚未连接，跳过收件箱播报 {INBOX_SPEAK_TOPIC}")
+            self._note("ADM_ERR_BROKER_UNREACHABLE", "客户端尚未连接，跳过收件箱播报",
+                       topic=INBOX_SPEAK_TOPIC, trace_id=tid)
+            return False
+        safe_text = _bounded(body, INBOX_MAX_TEXT, "text")
+        presence = homesdk_presence()
+        if presence:
+            try:
+                presence.speak(client, safe_text, trace_id=tid, role=role,
+                               priority=priority, expires_at=expires_at)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                print(f"[MQTT] 收件箱播报失败（homesdk 口径）: {exc}")
+                self._note("ADM_ERR_INTERNAL", f"库口径播报失败: {exc}",
+                           topic=INBOX_SPEAK_TOPIC, trace_id=tid)
+                return False
+        payload: dict[str, Any] = {"trace_id": tid, "ts": int(time.time()), "text": safe_text}
+        if role:
+            payload["role"] = role
+        if priority:
+            payload["priority"] = priority
+        if expires_at is not None:
+            payload["expires_at"] = expires_at
+        return self.publish_raw(INBOX_SPEAK_TOPIC, payload)
 
     def _publish_adm_state(self, state: str) -> None:
         """尽力把 status 落到 retained（关停路径用，不判定成功）。"""

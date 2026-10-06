@@ -23,7 +23,7 @@ from typing import Any
 from .analysis import AnalysisService
 from .auth import AuthManager
 from .config import Config, get_config
-from . import house_time
+from . import adm_linkage, house_time
 from .face_node_registry import FaceNodeRegistry
 from .ha_client import HAClient
 from .ha_db import HADBClient
@@ -904,6 +904,7 @@ class AppRuntime:
         self.mqtt.config = self.config
         # homesdk 可能是热更新之后才到位的（与 house_time 同一口径：探测缓存必须可解）
         reset_presence_probe()
+        adm_linkage.reset_errors_probe()
         self.insights.reload_config(self.config)
         self.analysis.config = self.config
         self.agent_memory.config = self.config
