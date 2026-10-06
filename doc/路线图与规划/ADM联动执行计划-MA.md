@@ -1645,6 +1645,24 @@ MUT63 那 22 条重锚后**容器口径全咬**——`MUT63_RC=0`、`NOTHING 85 
 "容器树＝2054dde 那棵树"由哈希一票判掉。本机腿档跑在 `git archive HEAD` 的副本里，工作树全程零改动。
 读数与更正在台账 **§四十三**（含"首稿把 `_num` 的搬家记成 `day_bounds`"这条勘误）。
 
+**run19 + run20（任务表 #72：门面丢键自查修复，基线 HEAD `8b11437`，快照 `/tmp/c72snap20261007`，400 文件）**：
+`get_data_quality` 在门面切换时把 legacy 承诺的 `agent_memory`（`mirror_dirty` 那格）**整块弄丢**，
+补回 + 三条判据锁（`insights/api.py:892/910`、`tests/test_insights_facade_contract.py:230/237/246`）。
+run19（06:06:21→06:18:02）除门 3 外全绿：`TOOLCHAIN_RC=0`（PYTEST 9.1.1 / pyflakes 4.0.2 / 3.11.16）、
+`HASH_AGGREGATE=b750ca63…a0cdbd` 本机=容器逐字同、`GATE_RC=0`、
+**`SUITE_RC=0` `1907 passed, 10 skipped in 485.90s`**、`TARGETED_RC=0` 12、`FACES_RC=0` 208、`POST_RC=0` 12。
+**但门 3 那一格作废**：控制腿读成 `NOTHING -> RC=1 |` 且 stdout 全空 ⇒ `CONTROL_BAD`。
+根因在量具不在产品——`_run_leg` 把 `PYTHONPATH` **覆盖**成 `root/src`，摘掉了容器里 pytest 所在的
+`/tmp/pylibs`（本机 3.13 的 pytest 是系统装的，所以同一份腿本机绿、容器死）。
+run20（06:23:29→06:24:33）只补这一格：`MUT72_RC=0`、`NOTHING 12 passed`、
+L1/L2/L3 FAILED = **3/3/2 与本机 3.13 档逐腿相同**、`MUT_COUNT=3 MUTATION_BAD=0`、restored=OK 全条、
+`POST_RC=0`；SNAP 聚合摘要复现 run19 值 ⇒ "作废那次没污染树"是量出来的，不是推出来的。
+**合档口径：`8b11437` 的容器证明 = run19（除门 3）+ run20（门 3）；run19 的门 3 不许被引用成"三腿在容器咬住"。**
+
+同一批还量出一处**规划主路径上的声明↔实现脱钩**（`route_question` 的 pitfall 让模型读
+已不存在的 `recommended_tool`），与一处**已裁未落**（Q-A 点名的 `coverage`/`data_quality` 仍无 `window`，
+→ 任务表 #73 自办）。运行时键集合探针的 12 条读数、以及"静态 diff 在委托形状前是瞎的"这条，见台账 **§四十五**。
+
 
 ---
 
