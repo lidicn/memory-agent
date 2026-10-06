@@ -368,12 +368,17 @@ class AppRuntime:
             return
 
     def _publish_health_changes(self, res: dict) -> None:
-        """把对账中发生变化的设备健康状态推到 MQTT（A3 告警出口）。"""
+        """把对账中发生变化的设备健康状态推到 MQTT（A3 告警出口）。
+
+        `stable_id` 必须跟着走：契约表 §1.2 把它列进 `ma/device-health`，DB 用它认
+        "同一台物理设备换了实体"。改前这一跳把 `_mark_stale` 的身份丢了，实发恒为空串。
+        """
         if not self.mqtt.enabled:
             return
         for ch in res.get("health_changes") or []:
             self.mqtt.publish_health_change(
-                ch.get("entity_id") or "", ch.get("from") or "", ch.get("to") or ""
+                ch.get("entity_id") or "", ch.get("from") or "", ch.get("to") or "",
+                stable_id=ch.get("stable_id") or "",
             )
 
     async def _periodic_candidate_promotion(self) -> None:

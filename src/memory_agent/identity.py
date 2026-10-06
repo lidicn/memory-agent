@@ -701,12 +701,17 @@ class IdentityReconciler:
             if eid in seen:
                 continue
             prev = row.get("state") or "active"
+            # 契约表 §1.2 的 `ma/device-health` 有 `stable_id` 这一枚：DB 拿它做"同一台
+            # 物理设备换了实体"的迁移判据。改前这里只带 entity_id/from/to，运行时把空串
+            # 原样发出去 ⇒ 契约字段恒空（DCD 20261006 路线图裁定 §MA 核实 硬伤 1）。
+            stable_id = row.get("stable_id") or ""
             last = _parse_iso(row.get("last_seen") or "")
             if last is None:
                 # 从未真正见过：不判定失效，只标 unknown
                 if prev != "unknown":
                     self.store.upsert_device_health(eid, state="unknown")
-                    changes.append({"entity_id": eid, "from": prev, "to": "unknown"})
+                    changes.append({"entity_id": eid, "from": prev, "to": "unknown",
+                                    "stable_id": stable_id})
                 continue
             if (now - last).days > self.stale_days:
                 if prev != "stale":
@@ -714,14 +719,16 @@ class IdentityReconciler:
                         eid, state="stale", note="对账期间未在 HA 注册表出现"
                     )
                 if prev != "stale":
-                    changes.append({"entity_id": eid, "from": prev, "to": "stale"})
+                    changes.append({"entity_id": eid, "from": prev, "to": "stale",
+                                    "stable_id": stable_id})
             elif prev != "unknown":
                 # 短暂失联：降级为 unknown，不再算「确认在线」，
                 # 这样解析不会把它当故障转移候选（恢复后下次对账会自动升回 active）
                 self.store.upsert_device_health(
                     eid, state="unknown", note="本轮对账未出现（短暂失联）"
                 )
-                changes.append({"entity_id": eid, "from": prev, "to": "unknown"})
+                changes.append({"entity_id": eid, "from": prev, "to": "unknown",
+                                "stable_id": stable_id})
         return changes
 
     # ── 模板自愈 ────────────────────────────────────────────────────────────

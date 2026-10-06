@@ -7,6 +7,9 @@
 - Q3：`ma/insights` 带 `kind` 词表 + `summary` + `evidence[]`，身份走复数 `persons[]`，旧键不删；
 - Q6：事件类 `ts` = 家庭墙钟 ISO，收件箱 `ts` = epoch int（登记在案的例外）；
 - 交付面 Q1：vendored wheel 的 sha 与 `vendor/README.md` 的登记、Dockerfile 的安装行三处一致。
+
+后面追加的是 **DCD 20261006 路线图裁定 §MA 核实 硬伤 1**（`stable_id` 实发恒为空串）——
+它修的是同一枚契约字段，所以锁放在这份 20261002 载荷锁旁边，而不是新起一个文件。
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ import os
 import re
 import sys
 import types
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -89,6 +92,11 @@ def test_adm_caps_version_is_the_plan_number_not_the_package_version():
 # ── Q2：device-health 别名 + 保留迁移方向 ────────────────────────────────────
 
 def test_device_health_payload_carries_contract_aliases_and_keeps_the_transition():
+    """本条只锁**发射器**：`stable_id` 是调用方显式传进去的，所以生产端丢不丢它，这条永远绿。
+
+    正因为如此，`stable_id` 恒空串那个硬伤才躲过了 20261002 那批锁——补的端到端锁见
+    `test_health_transitions_carry_the_stable_id_from_db_through_mqtt`。
+    """
     client = _Client()
     br = _bridge(client)
     assert br.publish_health_change("light.a", "on", "unavailable", stable_id="stable-1")
@@ -240,3 +248,62 @@ def test_presence_envelope_and_member_keys_are_the_ruled_shape(tmp_path):
     assert set(body) == {"trace_id", "members", "total", "ts"}
     assert body["total"] == len(body["members"]) == 1
     assert body["members"] == items
+
+
+# ── 硬伤 1（DCD 20261006 路线图裁定）：stable_id 从库到 MQTT 出口一整条链 ──────
+
+def test_health_transitions_carry_the_stable_id_from_db_through_mqtt(tmp_path):
+    """裁定原话：「`stable_id` 实发恒为空串（硬伤）：`runtime.py:370-377` 不传 stable_id、
+    `identity.py:691-725` `_mark_stale` 丢弃它」。
+
+    这条链改前每一环单独看都"像是对的"：`publish_health_change` 早就发 `stable_id`
+    （上面那条锁钉的就是它），但它的**默认参数是空串**，而生产两跳（`_mark_stale` 的
+    变化字典、`_publish_health_changes` 的转发）都没带上 ⇒ 契约字段恒空，DB 拿它认
+    "同一台物理设备换了实体"永远认不出。所以这条锁必须**从库里那枚真实 stable_id 起步**，
+    一路走到 MQTT 载荷，中间不许换来源、不许由测试自己补参数。
+
+    `_mark_stale` 有三个变化出口（长期失联→stale／从未见过→unknown／短暂失联→unknown），
+    缺陷在三处都存在，用例就用三台设备各走一处。
+    """
+    from memory_agent import house_time
+    from memory_agent.identity import IdentityReconciler, IdentityService
+    from memory_agent.store import Store
+
+    expect = {
+        "sensor.long_gone": "sensor__uuid-A",    # last_seen 超 stale_days ⇒ to="stale"
+        "sensor.never_seen": "sensor__uuid-B",   # 无 last_seen ⇒ to="unknown"
+        "sensor.just_gone": "sensor__uuid-C",    # 短暂失联 ⇒ to="unknown"
+    }
+    st = Store(str(tmp_path / "health.db"), tz_offset_hours=8.0)
+    st.init_schema()
+    now = house_time.now_local(8.0)
+    st.upsert_device_health("sensor.long_gone", stable_id=expect["sensor.long_gone"],
+                            state="active", last_seen=(now - timedelta(days=40)).isoformat())
+    st.upsert_device_health("sensor.never_seen", stable_id=expect["sensor.never_seen"],
+                            state="active", last_seen="")
+    st.upsert_device_health("sensor.just_gone", stable_id=expect["sensor.just_gone"],
+                            state="active", last_seen=(now - timedelta(hours=6)).isoformat())
+
+    rc = IdentityReconciler(IdentityService(st, None, 8.0),
+                            ha_getter=lambda: {"rooms": {}}, tz_offset_hours=8.0)
+    changes = rc._mark_stale(seen=set())
+    by_id = {c["entity_id"]: c for c in changes}
+    assert set(by_id) == set(expect), sorted(by_id)
+    assert by_id["sensor.long_gone"]["to"] == "stale", by_id
+    for eid, sid in expect.items():
+        assert by_id[eid].get("stable_id") == sid, f"{eid} 的变化字典又丢了身份：{by_id[eid]}"
+
+    # 控制档：判定失效用的 upsert 只改 state，库里那枚 stable_id 不许被顺手抹掉。
+    # 这一条挡住"修复改成现场重新编一个 stable_id"的走偏写法。
+    assert {r["entity_id"]: r["stable_id"] for r in st.list_device_health()} == expect
+
+    client = _Client()
+    runtime_mod.AppRuntime._publish_health_changes(
+        types.SimpleNamespace(mqtt=_bridge(client)), {"health_changes": changes})
+    hits = [json.loads(p["payload"]) for p in client.published
+            if p["topic"].endswith("ma/device-health")]
+    assert len(hits) == 3, [p["topic"] for p in client.published]
+    assert {h["stable_id"] for h in hits} == set(expect.values()), hits
+    # 别名键不能因为补身份而跑偏：device_id 仍是实体、status 仍是迁移终点
+    assert {h["device_id"] for h in hits} == set(expect), hits
+    assert all(h["status"] == h["to"] for h in hits), hits
