@@ -604,9 +604,14 @@ class InsightService:
         # 定位目标设备
         if entity_id:
             entity_ids = [e.strip() for e in entity_id.split(",") if e.strip()]
-        else:
+        elif room or category or query:
             entity_ids = [e.entity_id for e in self.resolver.resolve(
                 room=room, category=category, query=query)]
+        else:
+            # legacy 契约：三种定位方式都不给不算"全屋"，算用错参数。
+            # resolver.resolve 空入参会返回全部设备，直接送进 core 就变成静默扩权，
+            # 所以这里送空列表，让 core 按 legacy 口径回 ok=False + error + hint。
+            entity_ids = []
         allow_on = {s.strip().lower() for s in on_states.split(",") if s.strip()} if on_states else None
         out = self.core.device_usage(
             tr, entity_ids=entity_ids, allow_on=allow_on,

@@ -54,6 +54,12 @@ for _name, _member in inspect.getmembers(InsightService, predicate=callable):
     except (TypeError, ValueError):
         pass
 
+# 已经从"委托 legacy"切到 core 新实现的对外方法（Q-B 异名切换 4/4 = device_usage）。
+# 它们退出 LEGACY_OUTWARD_METHODS 后，`test_outward_methods_keep_the_legacy_parameter_shape`
+# 那条遍历登记表的形状锁就再也不看它们了——切换不能顺手把"对外形状冻结"一起切掉，
+# 所以形状口径改由这张表继续接管。
+SWITCHED_TO_CORE_METHODS = ("device_usage",)
+
 
 def _chain(node):
     parts = []
@@ -127,12 +133,14 @@ def test_every_insights_call_site_binds_against_the_facade():
 
 
 def test_outward_methods_keep_the_legacy_parameter_shape():
-    """对外 6 条工具线：门面形参名必须与 legacy 同名方法逐字一致。
+    """对外工具线：门面形参名必须与 legacy 同名方法逐字一致。
 
     形状由调用方（MCP handler / ToolSpec / HTTP 路由）决定，不由引擎内部偏好决定；
     这条断言禁止再出现「换引擎顺手重排参数」的迁移事故。
+
+    遍历集合 = 登记表 + 已切换到 core 的方法：切换只是换了实现，对外形状口径不许跟着掉。
     """
-    for name in LEGACY_OUTWARD_METHODS:
+    for name in list(LEGACY_OUTWARD_METHODS) + list(SWITCHED_TO_CORE_METHODS):
         assert hasattr(Legacy, name), f"legacy 无 {name}，转发无源可指"
         fac = [p.name for p in inspect.signature(getattr(InsightService, name)).parameters.values()
                if p.name != "self"]
@@ -167,7 +175,8 @@ def test_every_insights_toolspec_param_lands_in_a_facade_slot():
     """全部 insights 工具（不只登记表里那几条）：ToolSpec 声明的入参必须都能被门面接住。
 
     原先这条只遍历 `LEGACY_OUTWARD_METHODS`，等于「只查已经申报过的」——而 Phase 4
-    的事故恰恰是没申报。改成遍历 ToolSpec 全集：实测 17 个工具，登记表 11 条。
+    的事故恰恰是没申报。改成遍历 ToolSpec 全集：实测 17 个工具，登记表 10 条
+    （切换后 11→10，见 `test_ledger_size_matches_the_measured_outward_surface` 的证据要求）。
     """
     for spec in _insights_specs():
         member = getattr(InsightService, spec.method, None)
@@ -392,15 +401,34 @@ def test_engine_scanner_self_test_bites_chain_shapes():
 
 
 def test_ledger_size_matches_the_measured_outward_surface():
-    """登记表现在有 11 条：ToolSpec 全集 17 个工具里，仍跑在 legacy 上的都必须在表内。
+    """登记表现在有 10 条：ToolSpec 全集 17 个工具里，仍跑在 legacy 上的都必须在表内。
 
     这条把「登记表有多大」也钉住——裁5 落地时它是 6 条，Q1=A 的判据（过滤器语义是
     用户可见的正确性）扫出另外 5 条同病工具后必须是 11 条，不能靠删条目维持绿的假象。
+
+    11 → 10 的唯一合法原因是 Q-B 异名切换 4/4：`device_usage` 有了 core 新实现，
+    不再跑在 legacy 上。删条目必须**带着切换的证据**删，所以这里把证据本身也钉住：
+    门面改指 `self.core.device_usage`、门面源码不再出现 `self.legacy.`、
+    core 侧是真算法（不是把调用转发回去的空壳）。
     """
-    assert len(LEGACY_OUTWARD_METHODS) == 11, LEGACY_OUTWARD_METHODS
+    assert len(LEGACY_OUTWARD_METHODS) == 10, LEGACY_OUTWARD_METHODS
     with_toolspec = [n for n in LEGACY_OUTWARD_METHODS
                      if any(s.method == n for s in _insights_specs())]
-    assert len(with_toolspec) == 10, with_toolspec  # 只有 water_purifier_usage 不是 MCP 工具
+    assert len(with_toolspec) == 9, with_toolspec  # 只有 water_purifier_usage 不是 MCP 工具
+
+    assert "device_usage" not in LEGACY_OUTWARD_METHODS
+    assert set(SWITCHED_TO_CORE_METHODS) == {"device_usage"}, SWITCHED_TO_CORE_METHODS
+    import memory_agent.insights.api as API
+    from memory_agent.insights.service import BehaviorService
+    facade_src = inspect.getsource(API.InsightService.device_usage)
+    assert "self.core.device_usage(" in facade_src, "门面没有指到 core 新实现"
+    for name in list(SWITCHED_TO_CORE_METHODS):
+        assert f"self.legacy.{name}(" not in inspect.getsource(getattr(API.InsightService, name))
+    core_src = inspect.getsource(BehaviorService.device_usage) + \
+        inspect.getsource(BehaviorService._device_usage)
+    assert "self.legacy." not in core_src, "core 侧仍在把调用委托回 legacy"
+    assert len(inspect.getsource(BehaviorService._device_usage).splitlines()) >= 30, \
+        "core 的 device_usage 实现体量骤减，像是被换成了委托"
 
 
 # ── 工具在目录里、返回永远为空——用真库把「空」和「炸」区分开 ──────────────────

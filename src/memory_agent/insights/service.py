@@ -1363,11 +1363,16 @@ class BehaviorService:
 
         算法：窗口前最后一条事件决定进入窗口时是否已开；窗口内事件按 on→off 配对；
         窗口末未闭合则截断到 window_end；短于 debounce_seconds 的片段丢弃（去抖）。
+
+        失败语义与 legacy 同口径：**没定位到任何设备不算"全屋"，算用错参数** ⇒
+        `ok=False` + `error`（`_device_usage` 直接带 `ok=False` 返回，包装层不覆盖它）。
         """
         try:
             out = self._device_usage(tr, entity_ids or [], allow_on,
                                       float(debounce_seconds or 0), include_timeline)
-            out["ok"] = True
+            # 「没有定位到任何设备」那条由 `_device_usage` 自己带 `ok=False` 返回
+            # （legacy 契约：无定位方式不算"全屋"，算用错参数）——这里不许把它包装成成功。
+            out.setdefault("ok", True)
             return out
         except Exception as exc:
             return self._fail("device_usage", exc, {
@@ -1377,7 +1382,6 @@ class BehaviorService:
     def _device_usage(self, tr: Any, entity_ids: List[str],
                       allow_on: Optional[set], debounce: float,
                       include_timeline: bool) -> Dict[str, Any]:
-        from .models import TimeRange
         from .utils import fmt_duration, is_device_on
 
         start_ts = float(getattr(tr, "start_ts", 0) or 0)
@@ -1392,7 +1396,8 @@ class BehaviorService:
 
         targets = [e for e in entity_ids if e]
         if not targets:
-            return {"window": _window_meta(tr), "device_count": 0,
+            return {"ok": False,
+                    "window": _window_meta(tr), "device_count": 0,
                     "total_on_seconds": 0.0, "total_on_human": "0秒", "devices": [],
                     "error": "没有定位到任何设备",
                     "hint": "传 entity_id，或用 room/category/query 语义定位；可先调 get_entity_catalog"}
@@ -1427,7 +1432,6 @@ class BehaviorService:
                           is_device_on: Any) -> Dict[str, Any]:
         """单个设备的用量计算。"""
         from .models import TimeRange
-        from .parser.entity import normalize_state
 
         # 1) 窗口前最后一条事件：决定进入窗口时是否已开
         # 与 legacy 一致：查询所有历史（用 365 天大窗口近似），取最后一条
