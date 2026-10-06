@@ -1616,10 +1616,12 @@ def _build_server():
         start: str = "",
         end: str = "",
     ) -> dict:
-        """数据覆盖报告：明确告诉你窗口内实际「有数据」的日期。
+        """数据覆盖报告：逐日给出事件量与空日标记，定位"为什么某天没数据"。
 
-        避免误以为前几天的空白也是「有数据」。返回每天的 events 量与 has_data 标记、
-        first/last 有数据的日期、以及 missing_days 列表。取数前先调它确认窗口完整性。
+        `days[]` 每格是 `{day, events, active_hours, hours, empty}`（`empty=true` 即当天 0 条），
+        `missing_days` 是这些空日的清单；`start_day/end_day` 是**查询窗口边界**（不等于"有数据的
+        首末日"，首末日要从 `days[]`/`missing_days` 自己读）；覆盖率看 `day_coverage`（有数据天数
+        占比）与 `hour_coverage`，高峰看 `peak_hours`。取数前先调它确认窗口完整性。
         """
         rt = get_runtime()
         return await asyncio.to_thread(rt.insights.data_coverage, days, start, end)
