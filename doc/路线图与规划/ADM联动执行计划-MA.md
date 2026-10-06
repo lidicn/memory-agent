@@ -1663,6 +1663,15 @@ L1/L2/L3 FAILED = **3/3/2 与本机 3.13 档逐腿相同**、`MUT_COUNT=3 MUTATI
 已不存在的 `recommended_tool`），与一处**已裁未落**（Q-A 点名的 `coverage`/`data_quality` 仍无 `window`，
 → 任务表 #73 自办）。运行时键集合探针的 12 条读数、以及"静态 diff 在委托形状前是瞎的"这条，见台账 **§四十五**。
 
+**run21（任务表 #73：Q-A 已裁未落那两格落码，基线 HEAD `84f2fca`，快照 `/tmp/c73snap20261007`，400 文件，
+区间 2026-10-07T06:38:27+08:00→06:50:05+08:00）**：一次过全绿，`DRIVER_RC=0`。
+树身份本机↔容器**逐字同一**（聚合 sha256 `3600c38a…b0415922`，`HASH_MISSING=0`）；
+`TOOLCHAIN_RC=0`（3.11.16 / pytest 9.1.1 / pyflakes 4.0.2）→ `GATE_RC=0`（pyflakes 0/0/0/0）→
+全量 `1912 passed, 10 skipped in 426.72s` → 定向 `27 passed` / 落点 10 文件 `279 passed in 175.95s` →
+变异 `MUT73_RC=0`：**NOTHING 27 passed、L1 failed=4、L2 failed=4、L3 failed=13、
+`MUT_COUNT=3 MUTATION_BAD=0`、三条腿 restored=OK 全条**（容器 3.11 与本机 3.13 的 FAILED 计数逐腿一致）→
+`POST_RC=0`。本机侧另档：全量 `1898 passed, 24 skipped`（差的 14 条是无 MCP SDK 而 skip 的注册工具用例）。
+出网前拦下两次，都是我自己写的期望值：**§四十六**。
 
 ---
 
