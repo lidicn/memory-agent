@@ -1673,6 +1673,24 @@ L1/L2/L3 FAILED = **3/3/2 与本机 3.13 档逐腿相同**、`MUT_COUNT=3 MUTATI
 `POST_RC=0`。本机侧另档：全量 `1898 passed, 24 skipped`（差的 14 条是无 MCP SDK 而 skip 的注册工具用例）。
 出网前拦下两次，都是我自己写的期望值：**§四十六**。
 
+**Q-B 切换的读键自查（同一轮，台账 §四十七）**：把 14 个对外工具的键差集**逐嫌疑**判决，而不是一句
+"已裁异名切换"打包——改名等价 4 组、纯丢但信息可推 3 组、纯新增 5 行、已被 #73 补齐 1 组、
+签名不可比 1 组，**只有 2 条需要动作**：`climate_comparison` 的温控环比维度在新引擎无落点（真丢 ⇒ 呈 DCD），
+和 `get_data_coverage` 的**对外文案承诺了载荷里根本没有的键**（⇒ 任务表 #74）。
+消费方读键是量的不是问的：AF 全仓**不调用任何 MA MCP 工具**（只有 `POST /api/metrics/ingest` 单向回灌），
+DB 只读 7 个工具且与这 4 个批次工具无交集（`doubao-butler` 2704 个 .py 全仓 grep 零命中）。
+
+**run22（任务表 #74：三处出货面的死键许诺，基线 HEAD `fec2c2c`，快照 `/tmp/c74snap20261007`，401 文件，
+区间 2026-10-07T07:21:46+08:00→07:34:35+08:00）**：`DRIVER_RC=0` 全绿。
+树身份本机↔容器**逐字同一**（聚合 sha256 `934f2bee…204caf70`，两侧清单都 401、`HASH_MISSING=0`）；
+`TOOLCHAIN_RC=0`（3.11.16 / pytest 9.1.1 / pyflakes 4.0.2）→ `GATE_RC=0`（pyflakes 0/0/0/0）→
+全量 `1920 passed, 10 skipped in 467.20s` → 定向 1（文案锁 8 + window 回显 15 + 门面契约 12）`35 passed` →
+定向 2（13 个面，含 `test_tool_schema.py` / `test_mcp_surface_parity.py` / `test_acp_server.py`）`315 passed in 179.12s` →
+变异 `MUT74_RC=0`：**M-0 基线 23 passed、L1 failed=2、L2 failed=1、L3 failed=1、L4 failed=1、L5 failed=2、
+`MUT_COUNT=6 MUTATION_BAD=0`、五条腿 restored=OK 全条**（与本机 3.13 逐腿同形）→ `POST_RC=0`（23 passed）。
+本机侧全量 `1905 passed, 25 skipped in 201.61s`。**首跑被自己的预检挡在网外**（本机 guard 的单引号里多写了 `\`，
+三格 pattern 恒 0）⇒ 六秒代价，留档 `.qoder/tmp-c74-run22.out`：**§四十八**。
+
 ---
 
 ## 七、下一阶段：更紧密联动（DCD 2026-10-06）
