@@ -1624,7 +1624,8 @@ item3 = 两把零命中锁 `test_repo_zero_unloaded_direct` / `_transitive`—�
 区间 2026-10-07T04:38:56+08:00→05:13:51+08:00）：本批把"容器树 == 本机树"的核对从手抄 grep 换成
 **逐文件 md5 + 整表 sha256 聚合**，两侧同一份脚本读同一个 `HASH_AGGREGATE=cafb96a7…581112`
 （`HASH_MISSING=0`）＋ 43 行锚点 diff 为空；出网前硬闸拦下过首跑（MUT63 预检 `VERIFY_BAD=4`，
-因第三批把 `_num()` 搬进 `day_bounds.py` ⇒ 锚点跟着函数走、不跟着文件走，任务表 #70 补跑）。
+因**第二批 `f60811d` 把 `_num()` 从 `behavior_routes.py` 搬进 `api/deps.py`**（首稿误记为"第三批搬进
+`day_bounds.py`"，已按 `git log -S` 现读更正）⇒ 锚点跟着函数走、不跟着文件走，任务表 #70 补跑）。
 读数：`TOOLCHAIN_RC=0`、七支量具 `SCANS_RC=0`（`FINDINGS=0`、门面面板 39/0/0、
 量具八档 `SELFTEST OK` + 直扫/`--transitive` 双档 `HITS=0`）、`GATE_RC=0`（pyflakes 新增 0、基线一字未改）、
 **`SUITE_RC=0` 1904 passed / 10 skipped（450.48s）**——与本机 `1890+24=1914` 基数相同；
@@ -1636,6 +1637,13 @@ run16 那 `7 failed` + `GATE_RC=1` 由 `704f603` 收口，本档两格复绿。
 **二期账面收口状态**：MA-01~MA-21、MA-23、MA-24 全部有处置（四批 + `704f603`）；
 唯一仍开的是 **MA-22 🔴**（`_client_ip` 无条件信任 XFF + 服务直曝 8086）——改的是部署拓扑口径，
 呈文 `20261007-MA-登录限速的客户端IP口径与8086直曝-决策申请.md` 在 inbox，`decisions/` 20261007 现读为零。
+
+**run18（任务表 #70 补跑，快照 `/tmp/c70snap20261007`，区间 2026-10-07T05:34:03+08:00→05:44:52+08:00）**：
+MUT63 那 22 条重锚后**容器口径全咬**——`MUT63_RC=0`、`NOTHING 85 passed`、`MUT_COUNT=22 MUTATION_BAD=0`、
+每腿 FAILED 数与本机档逐腿相同；跑完 `POST_RC=0`（还原后再跑一遍仍 `85 passed`）。
+这一档不重跑 SUITE：本机与容器的聚合摘要都等于 run17 的 `cafb96a7…581112`（400 文件、`HASH_MISSING=0`），
+"容器树＝2054dde 那棵树"由哈希一票判掉。本机腿档跑在 `git archive HEAD` 的副本里，工作树全程零改动。
+读数与更正在台账 **§四十三**（含"首稿把 `_num` 的搬家记成 `day_bounds`"这条勘误）。
 
 
 ---
