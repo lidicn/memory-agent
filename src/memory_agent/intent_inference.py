@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from datetime import datetime, timedelta
 
 
@@ -124,15 +126,24 @@ def _event_dt(raw) -> datetime | None:
 
 
 def _match_time_window(rule: dict, ref: datetime) -> bool:
-    """规则声明了 time_window 时，判断 ref 时刻是否落在窗口内（支持跨午夜）。"""
+    """规则声明了 time_window 时，判断 ref 时刻是否落在窗口内（支持跨午夜）。
+
+    空窗口 = 不限（显式放行）；**读不通的窗口 = 不成立**。改前 except 里 `return True`，
+    一条写坏的 time_window（缺 `-`、非数字、只有半边、干脆不是字符串）会让该规则全天匹配，
+    约束静默消失且无痕迹 —— 第二期审计 MA-04。判据取自同仓 `patterns._json_object`：
+    坏条件不能退化成「不限」。
+    """
     tw = rule.get("time_window")
     if not tw:
         return True
     try:
         start_h, end_h = tw.split("-")
         start_h, end_h = int(start_h.split(":")[0]), int(end_h.split(":")[0])
-    except (ValueError, AttributeError):
-        return True
+    except (ValueError, AttributeError, TypeError):
+        logging.getLogger(__name__).warning(
+            "[Intent] 规则 %s 的 time_window=%r 读不通，按不成立处理",
+            rule.get("id") or rule.get("intent") or "?", tw)
+        return False
     current_h = ref.hour
     if start_h <= end_h:
         return start_h <= current_h < end_h

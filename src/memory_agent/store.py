@@ -4997,7 +4997,6 @@ class Store:
         （researcher 产出的记忆 tags 形如 ``member:lidicn``），汇总 👍/👎 与明细，
         供成员详情展示并可继续反馈（把洞察反馈反哺到成员档案视图）。
         """
-        import json as _json
         keys = [f"member:{self._escape_like(member_id)}"]
         if member_name and member_name != member_id:
             keys.append(f"member:{self._escape_like(member_name)}")
@@ -5010,17 +5009,24 @@ class Store:
         out = []
         up = down = 0
         for r in rows:
-            up += int(r["feedback_up"])
-            down += int(r["feedback_down"])
+            # 逐列收敛，不再让一条脏行把整个成员的洞察页打成 HTTP 500（第二期审计 MA-02）。
+            # tags 用 [] 兜底（这里 tags 是展示元数据，不是约束条件，方向与 patterns 的
+            # 坏 condition 不同），数字列用 row_number：真实表把 feedback_up 声明成 INTEGER
+            # 仍收得下 'abc'，SQLite 弱类型不会因为声明而报错。
+            fid = str(r["memory_id"])
+            f_up = row_number(r["feedback_up"], 0, label="feedback_up", row=fid)
+            f_down = row_number(r["feedback_down"], 0, label="feedback_down", row=fid)
+            up += f_up
+            down += f_down
             out.append({
                 "memory_id": r["memory_id"],
                 "text": r["text"],
                 "state": r["state"],
-                "trust": float(r["trust"]),
+                "trust": row_number(r["trust"], 0.0, label="trust", row=fid),
                 "topic_key": r["topic_key"],
-                "tags": _json.loads(r["tags_json"] or "[]"),
-                "feedback_up": int(r["feedback_up"]),
-                "feedback_down": int(r["feedback_down"]),
+                "tags": safe_json_loads(r["tags_json"] or "[]", []),
+                "feedback_up": f_up,
+                "feedback_down": f_down,
                 "updated_at": r["updated_at"],
             })
         return {"member_id": member_id, "count": len(out),
@@ -5028,7 +5034,6 @@ class Store:
 
     def researcher_direction_feedback(self) -> list:
         """v0.8-3 按方向聚合研究员洞察的 👍/👎（方向/模板权重反哺参考）。"""
-        import json as _json
         with self._db() as conn:
             rows = conn.execute(
                 "SELECT tags_json, feedback_up, feedback_down, trust FROM agent_memories "
@@ -5036,19 +5041,18 @@ class Store:
             ).fetchall()
         agg: dict = {}
         for r in rows:
-            try:
-                tags = _json.loads(r["tags_json"] or "[]")
-            except Exception:
-                tags = []
+            tags = safe_json_loads(r["tags_json"] or "[]", [])
             direction = next(
                 (t.split(":", 1)[1] for t in tags if t.startswith("direction:")), "unknown"
             )
             a = agg.setdefault(direction, {"direction": direction, "up": 0, "down": 0,
                                            "count": 0, "_trust": 0.0})
-            a["up"] += int(r["feedback_up"])
-            a["down"] += int(r["feedback_down"])
+            # tags 有 try 不代表整批安全：同一段里的三个数字列原先是裸 int()/float()，
+            # 一条脏 feedback_up 照样把整个方向聚合打断（第二期审计 MA-02 的同一形状）。
+            a["up"] += row_number(r["feedback_up"], 0, label="feedback_up")
+            a["down"] += row_number(r["feedback_down"], 0, label="feedback_down")
             a["count"] += 1
-            a["_trust"] += float(r["trust"])
+            a["_trust"] += row_number(r["trust"], 0.0, label="trust")
         out = []
         for a in agg.values():
             a["avg_trust"] = round(a.pop("_trust") / max(1, a["count"]), 3)
@@ -5064,7 +5068,10 @@ class Store:
         if not rows:
             return {"session_id": session_id, "count": 0, "avg_trust": 0.0,
                     "live": 0, "revoked": 0, "strict": False}
-        trusts = [float(r["trust"]) for r in rows]
+        # 一条脏 trust 原先让整句 float() 抛 ValueError，调用点（agent_memory.add_semantic_memory
+        # 的声誉回路）裸调 ⇒ 该 session 在"入口校验之后、写库之前"炸掉，新记忆一条也写不进去。
+        # 坏值按 0.0（中性）计入，读数继续可用且 WARNING 留痕（第二期审计 MA-03）。
+        trusts = [row_number(r["trust"], 0.0, label="trust", row=session_id) for r in rows]
         avg = sum(trusts) / len(trusts)
         live = sum(1 for r in rows if r["state"] == "live")
         revoked = sum(1 for r in rows if r["state"] == "revoked")
@@ -5323,12 +5330,18 @@ class Store:
             rows = conn.execute(sql).fetchall()
         out = []
         for r in rows:
+            tags = safe_json_loads(r["tags_json"] or "[]", None)
+            if tags is None:
+                # 坏 tags_json 不能退化成 []：[] 的语义是"不限标签"，一条读不出来的规则
+                # 就此匹配该房间全部事件（同 patterns._json_object 的判断）。跳过这一条，
+                # 其余规则照常生效——改前 json.loads 在循环里裸调，一条脏行让整批一起抛。
+                continue
             out.append(
                 {
                     "rule_id": r["rule_id"],
                     "name": r["name"],
                     "room": r["room"],
-                    "tags": json.loads(r["tags_json"] or "[]"),
+                    "tags": tags,
                     "start_hour": r["start_hour"],
                     "end_hour": r["end_hour"],
                     "min_events": r["min_events"],
@@ -5449,3 +5462,20 @@ def safe_json_loads(raw: Any, default: Any = None) -> Any:
     except (TypeError, ValueError) as _e:
         logging.getLogger(__name__).warning("safe_json_loads 解析失败: %s (前80字符: %r)", _e, str(raw)[:80])
         return default
+
+
+def row_number(raw: Any, default: float, *, label: str = "", row: str = ""):
+    """列值 → 数字：一条脏列只丢那一列，不再让 `int()`/`float()` 打断整批读取。
+
+    表声明了 INTEGER/REAL 不构成保护——SQLite 弱类型照样收得下 'abc'（第二期审计
+    MA-02/MA-03 的实测就是拿真实建表语句做的）。失败记 WARNING，坏数据可见。
+    返回 `int` 还是 `float` 由 `default` 的类型决定，调用方的投影形状不会因此漂移。
+    """
+    try:
+        val = float(raw)
+    except (TypeError, ValueError) as exc:
+        logging.getLogger(__name__).warning(
+            "row_number 解析失败 %s%s: %s (值前 40 字符: %r)",
+            label, f" (行 {row})" if row else "", exc, str(raw)[:40])
+        return default
+    return int(val) if isinstance(default, int) else val

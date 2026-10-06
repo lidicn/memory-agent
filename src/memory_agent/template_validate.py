@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -240,12 +241,20 @@ def _find_candidates(rt, ref: str) -> list[dict]:
 
 
 def _within_window(last_ts: str, days: int, rt) -> bool:
+    """最后一条数据是否落在窗口内。解析不出时间戳 ⇒ **不在窗口内**（False）。
+
+    改前 `except Exception: return True`，坏时间戳的实体在校验报告里被判 `ok`——
+    而它的真实状态是"数据读不出来"，本该是 `no_data`（第二期审计 MA-16，
+    与 MA-04/MA-14 同形状的第三处）。
+    """
     try:
         lt = datetime.fromisoformat(last_ts)
         now = now_local(_tz(rt)).replace(tzinfo=None)
         return (now - lt) <= timedelta(days=clamp_days(days))
     except Exception:
-        return True
+        logging.getLogger(__name__).warning(
+            "[TemplateValidate] 实体最后时间戳 %r 解析不出来，按窗口外处理", last_ts)
+        return False
 
 
 def _validate_entity(rt, eq, index: int, window_days: int) -> dict:

@@ -22,6 +22,8 @@ MA 不做实时流（批量采集 + 人脸推送）；本模块由 runtime 周�
 
 from __future__ import annotations
 
+import logging
+
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -98,7 +100,13 @@ def _parse_ts(value: str) -> Optional[datetime]:
 
 
 def _in_time_window(ts: str, window: str) -> bool:
-    """判断时刻是否落在 ``HH:MM-HH:MM`` 窗口内（支持跨午夜 21:00-02:00）。"""
+    """判断时刻是否落在 ``HH:MM-HH:MM`` 窗口内（支持跨午夜 21:00-02:00）。
+
+    空窗口 = 不限（显式放行）；窗口读不通、或时刻解析不出来 = **不成立**。
+    改前两条 except/None 分支都 `return True`：一条声明"只在 08:00–22:00 成立"的规则，
+    只要窗口字符串写坏（或末步事件时间戳坏掉）就变成全天都算命中，用户在界面上看到的是
+    "命中率变高"，实际是约束没了（第二期审计 MA-14，与 MA-04 同形状的第二处）。
+    """
     if not window:
         return True
     try:
@@ -107,13 +115,17 @@ def _in_time_window(ts: str, window: str) -> bool:
         em = int(e[:2]) * 60 + int(e[3:5])
         dt = _parse_ts(ts)
         if dt is None:
-            return True
+            logging.getLogger(__name__).warning(
+                "[Activity] time_window=%r 的时刻 %r 解析不出来，按不成立处理", window, ts)
+            return False
         tm = dt.hour * 60 + dt.minute
         if sm <= em:
             return sm <= tm <= em
         return tm >= sm or tm <= em  # 跨午夜
     except Exception:
-        return True
+        logging.getLogger(__name__).warning(
+            "[Activity] 规则 time_window=%r 读不通，按不成立处理", window)
+        return False
 
 
 def rule_horizon_minutes(rules: list[dict]) -> int:

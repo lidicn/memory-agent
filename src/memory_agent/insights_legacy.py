@@ -2184,6 +2184,9 @@ class InsightService:
         if warn:
             out["coverage_warning"] = warn["message"]
             out["missing_tags"] = warn["missing_tags"]
+            if warn.get("unverified"):
+                # "预检没跑成"必须和"覆盖良好"在响应形状上分得开
+                out["coverage_unverified"] = True
             out["message"] += " ⚠️ " + warn["message"]
         return out
 
@@ -2193,6 +2196,9 @@ class InsightService:
         返回 None 表示覆盖良好；否则返回 warning dict（含 missing_tags 与 message），
         说明规则要求的标签在指定房间（或全屋）最近 window_days 天内没有任何对应实体
         产生过事件——即『缺实体类型』，规则将无法命中。
+
+        预检自身跑不起来时返回带 `unverified: True` 的 dict，**不返回 None**：
+        "没查成"和"查了且良好"必须是两种形状，否则调用方读不出区别（MA-15）。
 
         注意：这是诊断而非拦截。规则仍会被注册（用户可先注册、补齐传感器后自动生效），
         但会显式给出『缺实体类型』的明确结论与代理建议，避免运行期含糊的『未命中』。
@@ -2211,8 +2217,14 @@ class InsightService:
                     continue
                 disp = str((names.get(eid, {}) or {}).get("friendly_name") or "")
                 present |= (self._tags_of(eid, disp) & set(tags))
-        except Exception:
-            return None  # 预检失败不阻塞注册，只跳过告警
+        except Exception as exc:
+            # 预检跑不起来 ≠ 覆盖良好。改前返回 None，与"真的覆盖良好"逐字节相同，
+            # 调用点 `if warn:` 直接不加告警 ⇒ 这个函数致力于消除"含糊的未命中"，
+            # 自己失败时却制造了同样含糊的沉默（第二期审计 MA-15）。
+            # 仍不阻塞注册（有意设计），但把"没查成"如实说成"没查成"。
+            return {"missing_tags": [], "unverified": True,
+                    "message": f"覆盖预检未能完成（读最近 {clamp_days(window_days)} 天事件失败："
+                               f"{type(exc).__name__}），本次不判定缺不缺实体类型"}
         missing = [t for t in tags if t not in present]
         if not missing:
             return None
