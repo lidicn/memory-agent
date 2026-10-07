@@ -199,3 +199,42 @@ def test_inbox_exception_does_not_escape_the_perception_loop():
 
     _, _, a = _ann_inbox(mqtt=_Boom())
     assert a.announce(_ev("face_known")) is False
+
+
+def test_ha_rejection_is_reported_as_not_announced():
+    """HA 回了 `ok=False`（服务调用 4xx/实体不在场）时返回值必须如实是 False。
+
+    回落那条有对偶用例（`test_inbox_rejection_is_reported_as_not_announced`），HA 这条是
+    变异档 N10 逼出来的盲区：把 `return ok` 写成 `return True` 时全仓 67 条用例一条都不响，
+    而调用方拿这个返回值决定"要不要记一次播报"——谎报等于把配置错误洗成一切正常。
+    """
+    class _Reject(FakeHA):
+        def execute_action(self, action):
+            self.calls.append(action)
+            return {"ok": False, "status_code": 404, "error": "entity_id not found"}
+
+    ha = _Reject()
+    a = _ann(ha, cooldown_sec=0)
+    assert a.announce(_ev("face_known")) is False
+    assert len(ha.calls) == 1, "确实打出去了，只是没成——两者要能分开"
+
+
+def test_ha_non_dict_reply_is_not_announced_and_does_not_escape():
+    """HA 客户端回非 dict（None / 字符串 / 异常包装体）时不许抛穿采集链路。
+
+    N12 档：把 `isinstance(res, dict)` 那层判断删掉，`res.get(...)` 当场 AttributeError，
+    而 `announce()` 是被周期任务调的——旁路能力炸穿主链路正是审计反复点名的形状。
+    """
+    class _Garbage(FakeHA):
+        def __init__(self, reply):
+            super().__init__()
+            self.reply = reply
+
+        def execute_action(self, action):
+            self.calls.append(action)
+            return self.reply
+
+    for reply in (None, "unexpected", 42, ["ok"]):
+        ha = _Garbage(reply)
+        a = _ann(ha, cooldown_sec=0)
+        assert a.announce(_ev("cry")) is False, reply

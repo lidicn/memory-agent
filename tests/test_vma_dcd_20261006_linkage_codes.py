@@ -326,6 +326,34 @@ def test_publish_speak_production_caller_is_the_announcer_fallback():
     assert len(callers) == 1, f"回落调用点应当只有一处，实际 {callers}"
 
 
+def test_the_production_announcer_is_wired_to_the_bridge():
+    """裁 B 的回落路要有**运行面**的证据：单测里那个 `mqtt=` 替身证明不了 runtime 真把桥交给了它。
+
+    N14 档：把 `runtime.py` 构造处的 `mqtt=self.mqtt,` 删掉，全仓 67 条播报/联动用例一条都不响
+    ——线上表现是"HA 那两键没配、收件箱明明在场，却什么都不播"，而所有单测仍然绿。
+    所以这里钉三件事：构造点**只有一处**、它在 `runtime.py`、它带了 `mqtt` 这个关键字实参。
+    """
+    hits = []
+    for dirpath, _dirs, files in os.walk(_SRC_DIR):
+        for fn in files:
+            if not fn.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fn)
+            try:
+                tree = ast.parse(open(path, encoding="utf-8").read())
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == "Announcer"):
+                    hits.append((os.path.relpath(path, _SRC), node.lineno,
+                                 {kw.arg for kw in node.keywords}))
+    assert len(hits) == 1, f"生产构造点应当只有一处，实际 {hits}"
+    rel, _lineno, kwargs = hits[0]
+    assert rel == os.path.join("memory_agent", "runtime.py"), rel
+    assert "mqtt" in kwargs, f"回落路没在运行面接线：{sorted(kwargs)}"
+
+
 def _last(client, topic):
     hits = [p for p in client.published if p["topic"].endswith(topic)]
     assert hits, f"没有发往 *{topic} 的消息：{[p['topic'] for p in client.published]}"
