@@ -1794,6 +1794,35 @@ REGISTERED=15 CASES=17 UNVERIFIED=26 PROBLEM=0` 与本机 3.13 逐字符同）�
 现读 0 行 ⇒ 靶面与本批零交集，三档腿数锚点 11/22/14 现读未动 ⇒ 不当通过也不当缺失）。
 日志副本 `.qoder/run29-driver.log`（容器真文件 `/tmp/ma_c89_run29.log`）。逐格读数见台账 **§二十二**。
 
+### 6.26 容器权威门 run30（任务表 #85：`UNVERIFIED` 26 → 23 的"有断言"由六腿变异自证，2026-10-08）
+
+快照树 = `a5ffdde`（413 文件），容器 `memory-agent` / Python 3.11.16 / pytest 9.1.1 / pyflakes 4.0.2，
+起算 06:05:56+08:00 → `REMOTE_DONE` 06:16:23+08:00（10 分 27 秒）。全档格 RC 实测：
+`TOOLCHAIN_RC=0`（含 `MCP_IMPORT_OK`——这一格是本档成立的前提）、`SNAP_RC=0`（413/413/0，聚合
+`fbcde36d3e8f3f8cf31957412c13ebb65dce30c874b7939828581c3b38665770` = 本机串逐字符同）、
+`MUTFILE_RC=0`（六件字节数两侧逐件相同：8460/52173/140377/8194/10349/24327）、`AST311_RC=0`、
+`LOCK_RC=0` **7 passed**、`NEWTWO_RC=0` **2 passed / NEWTWO_SKIPPED=0**、`MUT_RC=0` **六腿全杀**
+（对照腿 `[Q-0] 46 passed in 5.61s` skipped=0 ⇒ `killed=6 survived=0 invalid=0`、`WT_UNTOUCHED=True`）、
+四把门 `SELFTEST_RC=0`×4 + `SCAN_RC=0`×4（G4 两侧同串 `DECLARED=41 REGISTERED=18 CASES=23 UNVERIFIED=23 PROBLEM=0`）、
+`GATE_RC=0`（pyflakes 0/0）、**`SUITE_RC=0` = 2055 passed, 10 skipped in 487.32s**（= 2065 收集，比 run29 多 11 条 = 本批新用例数）、
+`POST_HASHES_RC=0` 复算同串、`MUT_DST_CLEANED_RC=0`。十条 skip 逐条有名（hmmlearn×2 / pm4py×2 / river×5 / 精简检出的 provenance×1），
+名单里没有 `test_rounds11_19` ⇒ 那两条 `retrieve_agent_memories` 工具本体用例在权威档里没被 skip。
+
+**这一档存在理由**（run29 回答不了）：`UNVERIFIED` 从 26 减到 23 的前提是"这三格现在有直接断言"，
+而这句话只能由变异腿证明、不能由用例名字证明。六条腿各把那一格**退回报告描述过的旧写法**
+（health 恒 True / health 只数行不看值 / health 把异常上抛 / `activity_rules` 的 `enabled_only` 失效 /
+拆掉 403 门 / 放行空 question）。其中 R05/R06 的靶是 `@mcp.tool()` 嵌套函数体，本机旧 SDK 取不到已注册工具 ⇒
+本机同口径只能读成 `killed=4 survived=2`（这条差异登记为**出网理由**，不登记为缺陷）。
+旧三档（11/22/14 腿）本档未重跑，判据当场量：`git diff --name-only 8c16b06..HEAD -- src` = 0。
+两处尺子判红都是我的写法（`guard` 少一个参数在 `set -u` 下把 driver 打死在未出网处；
+本机 python 重定向带 CRLF ⇒ `read` 把行尾 CR 读进变量造成假不等），修的是尺子、不是删格子。
+日志副本 `.qoder/run30-driver.log` + `.qoder/tmp-c90-driver30-run.log`；逐格读数见台账 **§二十三**，
+结论对账见审计台账 **§五十六**。
+
+**#85 到这里只剩不能自裁的**：MA-29/32/34 与 ACP sessionId 甲/乙 等 DCD 裁定（最新裁定仍为
+`decisions/20261007-MA五件与AF一件-裁定.md`，两份追补回执在 inbox 待回），MA-22 部署面那半条（compose 8086 直曝）
+按裁乙+丙留给部署面/DB 侧，**我不能自证其已收口**。
+
 
 ---
 
