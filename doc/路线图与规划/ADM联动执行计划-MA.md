@@ -1691,6 +1691,19 @@ DB 只读 7 个工具且与这 4 个批次工具无交集（`doubao-butler` 2704
 本机侧全量 `1905 passed, 25 skipped in 201.61s`。**首跑被自己的预检挡在网外**（本机 guard 的单引号里多写了 `\`，
 三格 pattern 恒 0）⇒ 六秒代价，留档 `.qoder/tmp-c74-run22.out`：**§四十八**。
 
+**run23（任务表 #75：把"对外文案许诺的键"按全仓扫一遍，三处活口 + 温度链补锁，基线 HEAD `e4e5774`，
+快照 `/tmp/c75snap20261007`，402 文件，区间 2026-10-07T08:22:18+08:00→08:33:31+08:00）**：`CONTAINER_BATCH_RC=0` 全绿。
+树身份本机↔容器**逐字同一**（聚合 sha256 `c43fa06a…f75e1c`，两侧清单都 402、`HASH_MISSING=0`）；
+`TOOLCHAIN_RC=0`（3.11.16 / pytest 9.1.1 / pyflakes 4.0.2）→ `GATE_RC=0`（pyflakes 0/0/0/0）→
+全量 `1930 passed, 10 skipped in 436.69s` → 定向 1（promised-keys 10 + 文案锁 + window 回显 + 门面契约）`45 passed` →
+定向 2（13 个会读这三处面的文件）`266 passed in 105.33s` →
+变异 `MUT75_RC=0`：**M-0 对照 10 passed、L1 failed=1、L2 failed=1、L3 failed=1、L4 failed=2、L5 failed=1、
+L6 failed=1、L7 failed=2，`MUT75_COUNT=8 MUTATION_BAD=0`、`SRC_UNCHANGED=True`（四个 SHA 与本机 3.13 逐字相同）**
+——L6/L7 动的是引擎（温度链读错 attrs 字段、把 attrs 名当输出键发出），与文案回滚五腿同表；
+`POST_RC=0`（18 passed）。六格锚点数字（含 `MCP_DATA_QUALITY_ISSUES_OTHER=2` 这格按 2 记账，legacy 归属不是缺陷）
+本机与容器逐字一致。**首跑同样被预检挡在网外**（我在关键文件清单里把 `insights/nlquery.py` 写错成别的名字，
+`GUARD_FAIL IN_SNAP_nlquery.py 期望=1 实际=0`）⇒ 未出网，改对再发。扫描过程、六个量具盲区与两处自捉见 **§四十九**。
+
 ---
 
 ## 七、下一阶段：更紧密联动（DCD 2026-10-06）
