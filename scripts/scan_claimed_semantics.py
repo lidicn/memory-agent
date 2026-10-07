@@ -35,10 +35,14 @@
 `test_list_agent_memories_public档不谎称_all`）。第一版按"首列 + 纯 ASCII"收，把四条**确实存在**
 的用例判成 CASE_NOT_FOUND；量具若把真用例说成不存在，下一只手就会去删登记，门反而变瞎。
 
-首跑读数（现读，2026-10-08）：
-    SRC=src/memory_agent DECLARED=41 REGISTERED=15 CASES=17 UNVERIFIED=26 PROBLEM=0 / SCAN_RC=0
-    同一次扫描还把 retrieve_agent_memories 从 REGISTRY 踢进 UNVERIFIED：它的 403 分支没有直接断言，
+读数（同一棵树两次现读，2026-10-08）：
+    首批      SRC=src/memory_agent DECLARED=41 REGISTERED=15 CASES=17 UNVERIFIED=26 PROBLEM=0 / SCAN_RC=0
+    减三格后  SRC=src/memory_agent DECLARED=41 REGISTERED=18 CASES=23 UNVERIFIED=23 PROBLEM=0 / SCAN_RC=0
+    首批那次还把 retrieve_agent_memories 从 REGISTRY 踢进 UNVERIFIED：它的 403 分支没有直接断言，
     原先登记的用例其实断的是 service 层的另一件事——这正是本门要抓的"用例名字像、断的不是那条语义"。
+    后来补了工具本体的两条用例（正例 403 + 空参数对偶档）才把它移回 REGISTRY。
+    那两条要 mcp>=2.0 才取到已注册工具函数：本机旧 SDK ⇒ skip，容器（3.11 + mcp 2.x）实跑，
+    权威档在容器那一侧；若两侧都 skip，这条登记就是假的，须退回 UNVERIFIED。
 
 命名偏离登记：审计员给的名字是 `check_claimed_semantics.py`；本仓量具族是 `scan_*`
 （scripts/ 现读 4 个 check_*.py（`git ls-files` 只 1 个在册）+ 12 个 scan_*.py，本轮新建的四把在内；
@@ -127,6 +131,30 @@ REGISTRY = {
         "cases": [("test_vma_dcd_20261002_payload.py",
                    "test_adm_caps_version_is_the_plan_number_not_the_package_version")],
     },
+    # 2026-10-08 减基线三格（UNVERIFIED 只准减）。前两格纯本机可跑；第三格（工具本体 403）
+    # 需要 mcp>=2.0 才取到已注册工具函数：本机旧 SDK ⇒ skip，容器权威档实跑 ⇒ 登记时以此为准，
+    # 若两侧都 skip 就是假登记，须退回 UNVERIFIED。
+    ("repository.py", "health"): {
+        "claims": ["fail-closed"],
+        "cases": [("test_vma_a8_insights_clock_and_tags.py",
+                   "test_health_is_false_when_the_query_raises_not_true_and_not_a_crash"),
+                  ("test_vma_a8_insights_clock_and_tags.py",
+                   "test_health_true_only_when_select_one_roundtrips_exactly")],
+    },
+    ("repository.py", "activity_rules"): {
+        "claims": ["fail-closed"],
+        "cases": [("test_vma_a8_insights_clock_and_tags.py",
+                   "test_activity_rules_query_failure_raises_instead_of_faking_no_rules"),
+                  ("test_vma_a8_insights_clock_and_tags.py",
+                   "test_activity_rules_enabled_only_adds_the_where_clause")],
+    },
+    ("mcp_server.py", "retrieve_agent_memories"): {
+        "claims": ["fail-closed"],
+        "cases": [("test_rounds11_19_ma25_35_fixes.py",
+                   "test_retrieve_agent_memories_tool_body_403s_when_scope_is_not_admin"),
+                  ("test_rounds11_19_ma25_35_fixes.py",
+                   "test_retrieve_agent_memories_tool_body_refuses_empty_question")],
+    },
 }
 
 #: 首批基线：声明在场、但还没配到"真断言那条语义"的用例。只准减，上限见 tests 里的 BASELINE_CAP。
@@ -143,15 +171,12 @@ UNVERIFIED = {
     ("behavior_routes.py", "behaviors_bad_case_export"): "路由本体的「拒了就不写盘」无直接断言，出境面白名单在 feedback_pack 那一侧有用例",
     ("insights_legacy.py", "data_quality_issues"): "声明词指向计数口径，现有用例只锁键位（不是同一条语义）",
     ("mcp_server.py", "get_member_daily_pattern"): "门面转发，fail-closed 断言在 summary_queries 那一侧",
-    ("mcp_server.py", "retrieve_agent_memories"): "工具本体的 403 分支（普通令牌不点名成员）无直接断言；同一档语义只在 service 层由 test_list_agent_memories_public档不谎称_all 断言",
     ("mcp_server.py", "trigger_incremental_collection"): "幂等需连续两次触发的断言，现无",
     ("mcp_server.py", "_idem_result"): "幂等缓存的内部件，断言在外层 c1 用例",
     ("mcp_server.py", "_idem_reserve"): "内部预留件：重复预留同一键的行为只被外层 c1 并发用例间接断到，本体无直接断言",
     ("mcp_tokens.py", "migrate_legacy"): "幂等待「重复迁移第二次不新增」的用例",
     ("perception_ingest.py", "from_ha_event"): "现有 test_from_ha_event 只断形状，不断重复喂同事件的幂等",
     ("perception_ingest.py", "gate_promote_to_behavior"): "晋升面的自增/幂等待重复晋升不叠加的用例",
-    ("repository.py", "health"): "名字太通用，命中的用例都在说别的对象；HA 不可达分支无直接断言",
-    ("repository.py", "activity_rules"): "同上：命中是表名字符串，不是对该函数 fail-closed 的断言",
     ("store.py", "make_event_id"): "确定性哈希需同输入同输出的直接断言，现无",
     ("store.py", "save_arena_snapshot"): "递增（seq/版本）无直接断言",
     ("store.py", "insert_behavior_event"): "自增 id 断言依赖上层用例，本体无",

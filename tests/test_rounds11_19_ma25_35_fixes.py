@@ -174,6 +174,57 @@ def test_list_agent_memories_named_member_echoes_member():
     assert store.calls[0]["member_id"] == "member:abc"
 
 
+# ── MA-05 同档语义的**工具本体**格（2026-10-08，UNVERIFIED 只准减）────────────
+# 原先只有 service 层的 `list_agent_memories` 被断到"不点名不谎称 all"；
+# `retrieve_agent_memories` 自己那条 403 分支（普通令牌不点名成员）没有直接断言，
+# 而 docstring 明写它走的是同一档 fail-closed。
+
+
+def _mcp_tool_fn(name):
+    """从真服务器取已注册工具的 callable。本机 mcp 为旧 SDK 时 `mcp_server` 是 None
+    ⇒ 返回 None，调用侧按既有惯例 skip；容器（3.11 + mcp>=2.0）实跑，权威档在那一侧。"""
+    server = getattr(ms, "mcp_server", None)
+    if server is None:
+        return None
+    tools = getattr(getattr(server, "_tool_manager", None), "_tools", None) or {}
+    return getattr(tools.get(name), "fn", None)
+
+
+def test_retrieve_agent_memories_tool_body_403s_when_scope_is_not_admin():
+    from memory_agent.mcp_context import reset_caller, set_caller
+
+    fn = _mcp_tool_fn("retrieve_agent_memories")
+    if fn is None:
+        pytest.skip("本机 mcp 为旧 SDK，取不到已注册工具函数（容器权威档实跑）")
+    try:
+        set_caller("butler-token", ["read"], "test")
+        out = asyncio.run(fn(question="昨晚睡了几个小时", member_id=""))
+    finally:
+        reset_caller()
+    assert out.get("ok") is False, out
+    assert out.get("code") == 403, f"不点名成员必须 403，实得 {out}"
+    assert out.get("count") == 0 and out.get("memories") == [], out
+    assert out.get("schema") == "ma-recall/1", out
+
+
+def test_retrieve_agent_memories_tool_body_refuses_empty_question():
+    """对偶档的另一半：空 question/query 是**参数缺失**（不是越权），
+    必须 400 口径的 ok=False 且不落进检索路径——写错成放行就会拿空串去召回全库。"""
+    from memory_agent.mcp_context import reset_caller, set_caller
+
+    fn = _mcp_tool_fn("retrieve_agent_memories")
+    if fn is None:
+        pytest.skip("本机 mcp 为旧 SDK，取不到已注册工具函数（容器权威档实跑）")
+    try:
+        set_caller("admin-token", ["admin"], "test")
+        out = asyncio.run(fn(question="", query="", member_id="member:abc"))
+    finally:
+        reset_caller()
+    assert out.get("ok") is False, out
+    assert out.get("count") == 0 and out.get("memories") == [], out
+    assert "code" not in out, f"空问题不是越权，不该带 403：{out}"
+
+
 # ── MA-28：dry_run 必须真的校验，且与写入走同一串判据 ───────────────────────
 
 class _SigStore:

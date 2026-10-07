@@ -22,8 +22,16 @@ _SCRIPTS = os.path.join(_ROOT, "scripts")
 _SRC = os.path.join(_ROOT, "src", "memory_agent")
 _TESTS = os.path.join(_ROOT, "tests")
 
-#: 现读 2026-10-08：DECLARED=41 REGISTERED=15 CASES=17 UNVERIFIED=26 PROBLEM=0。只准改小。
-BASELINE_CAP = 26
+#: 现读 2026-10-08（本机，同一棵树上两次读数）：
+#:   首批  DECLARED=41 REGISTERED=15 CASES=17 UNVERIFIED=26 PROBLEM=0
+#:   减三格后 DECLARED=41 REGISTERED=18 CASES=23 UNVERIFIED=23 PROBLEM=0
+#: 只准改小。
+BASELINE_CAP = 23
+
+#: 2026-10-08 减掉的三格：它们不许静默退回 UNVERIFIED（退回=那条真断言被人删了而台账不说）。
+REDUCED_20261008 = (("repository.py", "health"),
+                   ("repository.py", "activity_rules"),
+                   ("mcp_server.py", "retrieve_agent_memories"))
 
 GAUGES = (
     "scan_stub_claims_success",
@@ -131,3 +139,17 @@ def test_unverified_baseline_never_grows():
         "要么改写文案不再承诺该语义，不许加基线把 SCAN_RC 压绿" % (BASELINE_CAP, len(gate.UNVERIFIED)))
     for key, note in gate.UNVERIFIED.items():
         assert len(note) >= 12, "基线条目没写缺哪一半（空话=台账说谎）：%s::%s" % key
+
+
+def test_reductions_stay_registered_with_both_directions():
+    """减下来的三格不许静默退回基线，也不许只剩单方向断言。
+
+    单方向（只测"该红的时候红"）会让门形同虚设：`health` 改成恒 True、
+    `activity_rules` 改成吞异常回 [] 都还能过一半用例。
+    """
+    gate = _load("scan_claimed_semantics")
+    for key in REDUCED_20261008:
+        assert key in gate.REGISTRY, "%s 不在 REGISTRY：用例被删了却没人记账" % (key,)
+        assert key not in gate.UNVERIFIED, "%s 又出现在基线：同一函数进了两本台账" % (key,)
+        assert len(gate.REGISTRY[key]["cases"]) >= 2, (
+            "%s 的用例数退到 %d：正例与对偶档必须成对" % (key, len(gate.REGISTRY[key]["cases"])))

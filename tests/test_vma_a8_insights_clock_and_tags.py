@@ -142,3 +142,69 @@ def test_list_entities_healthy_rows_do_not_warn(caplog):
         rows = repo.list_entities()
     assert [r.entity_id for r in rows] == ["sensor.temp", "binary_sensor.door"]
     assert caplog.records == []
+
+
+# ── health() / activity_rules() 的 fail-closed 直接断言（2026-10-08，UNVERIFIED 只准减）──
+# 这两条原先只被"文件名/表名字符串"命中，没有断到函数自己声明的那半语义：
+# health 的 docstring 写"任何异常都 fail-closed 成 False"，activity_rules 写
+# "表不存在/查询失败一律上抛"。缺一半就是宣称有兜底、实测无人踩过。
+
+
+class _BoomStore:
+    """db_query 每次都炸——模拟 HA/SQLite 侧不可达，不是"查询返回空"。"""
+
+    def __init__(self):
+        self.sql = []
+
+    def db_query(self, sql, params=()):
+        self.sql.append(sql)
+        raise RuntimeError("database is locked")
+
+
+def test_health_is_false_when_the_query_raises_not_true_and_not_a_crash(caplog):
+    """health 的 fail-closed：查询抛异常 ⇒ False 且留痕，不能把异常上抛给探活方，
+    也不能因为"没抛"就回 True（探活方拿到 True 就等于宣布库能用）。"""
+    store = _BoomStore()
+    repo = StoreRepository(store, None)
+    with caplog.at_level(logging.WARNING, logger="insights.repository"):
+        assert repo.health() is False
+    assert len(store.sql) == 1                        # 确实打了一次 SELECT 1
+    assert "health" in caplog.text                    # 失败要说得出是哪一格失败
+
+
+@pytest.mark.parametrize("rows,want", [
+    ([{"ok": 1}], True),      # 正例：SELECT 1 原样回来才算健康
+    ([], False),              # 空结果不是健康
+    ([{"ok": 0}], False),     # 键在、值不对也不是健康
+    ([{"ok": 2}], False),     # 探针列被换成别的值 ⇒ 不是同一条查询
+    ([{"other": 1}], False),  # 键名换了（别名漂移）⇒ 读不到 ok 就是不自证健康
+])
+def test_health_true_only_when_select_one_roundtrips_exactly(rows, want):
+    """对偶档成对给：把 `return bool(rows) and rows[0].get("ok") == 1` 改成
+    `return bool(rows)`（宽松化）或 `return True`，这几档里必有红的。
+    注意 `{"ok": True}` 是**通过**的（`True == 1` 走值比较）——该函数锁的是"探针列回的是 1"，
+    不是身份比较，所以不把 True 写成预期失败。"""
+    repo = StoreRepository(_FakeStore(rows), None)
+    assert repo.health() is want
+
+
+def test_activity_rules_query_failure_raises_instead_of_faking_no_rules():
+    """activity_rules 的 fail-closed：查询失败必须**上抛**。
+    吞成 [] 等于把"库读不到"翻译成"这个家没有自定义规则"——消费方（infer_activities）
+    会照内置规则照常出结论，且 rule_sources 里一切正常。"""
+    store = _BoomStore()
+    repo = StoreRepository(store, None)
+    with pytest.raises(RuntimeError):
+        repo.activity_rules()
+    assert store.sql and "FROM activity_rules" in store.sql[0]
+
+
+def test_activity_rules_enabled_only_adds_the_where_clause():
+    """enabled_only 这一半语义要有直接断言：False 时不得带 enabled=1 过滤，
+    True 时必须带——否则"禁用规则被当成没有规则"或反之都测不出来。"""
+    on = _FakeStore([])
+    StoreRepository(on, None).activity_rules()
+    off = _FakeStore([])
+    StoreRepository(off, None).activity_rules(enabled_only=False)
+    assert "WHERE enabled=1" in on.sql[0], on.sql[0]
+    assert "WHERE enabled=1" not in off.sql[0], off.sql[0]
