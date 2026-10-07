@@ -131,11 +131,27 @@ APP_ENDPOINTS = (
 )
 
 
+# 「内网段」按实名段列出，不用 `ip.is_private`：Python 把 0.0.0.0/8、169.254.0.0/16、
+# 192.0.2.0/24、198.51.100.0/24、203.0.113.0/24、240.0.0.0/4、fe80::/10 与
+# 2001:db8::/32 也都算 "private"（实测 3.11/3.13 同），照旧写法等于把 dbg_ 令牌的
+# 放行面从内网扩大到这些保留/文档/链路本地段上——与 docstring 的承诺不符。
+_TRUSTED_SOURCE_NETS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),   # Docker bridge 网关也落在此段
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),        # IPv6 ULA
+)
+
+
 def _is_trusted_source(client_ip: str | None) -> bool:
     """判断客户端 IP 是否为可信来源（loopback 或内网段）。
 
+    内网段按 RFC1918 与 IPv6 ULA 实名判定，不是 `ip_address().is_private`：
+    文档段 / 保留段 / 链路本地段（如 203.0.113.7、169.254.1.1、2001:db8::1、
+    fe80::1、0.0.0.0、240.0.0.1）不可信。IPv4-mapped IPv6（::ffff:a.b.c.d）
+    拆回 v4 后按同一口径判。
     调试令牌（dbg_）仅允许从可信来源访问，防止令牌泄露后被外网利用。
-    无法解析 IP 时视为不可信（fail-closed）。
+    无法解析 IP 或 IP 缺失时视为不可信（fail-closed）。
     """
     if not client_ip:
         return False
@@ -143,7 +159,12 @@ def _is_trusted_source(client_ip: str | None) -> bool:
         ip = ipaddress.ip_address(client_ip)
     except ValueError:
         return False
-    return ip.is_loopback or ip.is_private
+    if ip.is_loopback:
+        return True
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    return any(ip.version == net.version and ip in net for net in _TRUSTED_SOURCE_NETS)
 
 
 class AuthMiddleware:

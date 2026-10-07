@@ -38,6 +38,7 @@
 读数（同一棵树两次现读，2026-10-08）：
     首批      SRC=src/memory_agent DECLARED=41 REGISTERED=15 CASES=17 UNVERIFIED=26 PROBLEM=0 / SCAN_RC=0
     减三格后  SRC=src/memory_agent DECLARED=41 REGISTERED=18 CASES=23 UNVERIFIED=23 PROBLEM=0 / SCAN_RC=0
+    减五格后  SRC=src/memory_agent DECLARED=41 REGISTERED=23 CASES=36 UNVERIFIED=18 PROBLEM=0 / SCAN_RC=0
     首批那次还把 retrieve_agent_memories 从 REGISTRY 踢进 UNVERIFIED：它的 403 分支没有直接断言，
     原先登记的用例其实断的是 service 层的另一件事——这正是本门要抓的"用例名字像、断的不是那条语义"。
     后来补了工具本体的两条用例（正例 403 + 空参数对偶档）才把它移回 REGISTRY。
@@ -155,6 +156,50 @@ REGISTRY = {
                   ("test_rounds11_19_ma25_35_fixes.py",
                    "test_retrieve_agent_memories_tool_body_refuses_empty_question")],
     },
+    # 2026-10-08 第二批减基线五格：这五个函数此前 tests 里 grep 零命中（"覆盖了"是别人替它背的）。
+    # 每一格都配了 fail-open 那侧的对偶档（缺 IP/坏 CIDR/第二次执行/同键第二次/只差微秒），
+    # 七腿变异（run31）逐条把对偶档退回去，全部必须红。
+    ("app.py", "_is_trusted_source"): {
+        "claims": ["fail-closed"],
+        "cases": [("test_vma_phase3_claims_direct.py",
+                   "test_is_trusted_source_accepts_only_loopback_rfc1918_and_ula"),
+                  ("test_vma_phase3_claims_direct.py",
+                   "test_is_trusted_source_rejects_reserved_documented_and_link_local_ranges"),
+                  ("test_vma_phase3_claims_direct.py",
+                   "test_is_trusted_source_fails_closed_when_the_ip_is_absent_or_unparsable")],
+    },
+    ("auth.py", "_trusted_proxy_networks"): {
+        "claims": ["fail-closed"],
+        "cases": [("test_vma_phase3_claims_direct.py",
+                   "test_trusted_proxy_networks_keeps_the_valid_items"),
+                  ("test_vma_phase3_claims_direct.py",
+                   "test_trusted_proxy_networks_skips_unparsable_items_without_trusting_everyone"),
+                  ("test_vma_phase3_claims_direct.py",
+                   "test_trusted_proxy_networks_cache_follows_the_config_string")],
+    },
+    ("mcp_tokens.py", "migrate_legacy"): {
+        "claims": ["幂等"],
+        "cases": [("test_vma_phase3_claims_direct.py",
+                   "test_migrate_legacy_replaces_plaintext_with_hash_and_never_keeps_the_secret"),
+                  ("test_vma_phase3_claims_direct.py",
+                   "test_migrate_legacy_second_run_migrates_nothing_and_changes_nothing"),
+                  ("test_vma_phase3_claims_direct.py",
+                   "test_migrate_legacy_does_not_duplicate_the_default_token_on_rerun")],
+    },
+    ("task_record.py", "upsert_task_record"): {
+        "claims": ["幂等"],
+        "cases": [("test_vma_phase3_claims_direct.py",
+                   "test_upsert_task_record_same_key_twice_stays_one_row_and_takes_the_new_data"),
+                  ("test_vma_phase3_claims_direct.py",
+                   "test_upsert_task_record_other_period_key_is_a_new_row")],
+    },
+    ("store.py", "make_event_id"): {
+        "claims": ["幂等"],
+        "cases": [("test_vma_phase3_claims_direct.py",
+                   "test_make_event_id_is_a_stable_sha1_for_the_same_input"),
+                  ("test_vma_phase3_claims_direct.py",
+                   "test_make_event_id_keeps_events_that_differ_only_by_subsecond_timestamp")],
+    },
 }
 
 #: 首批基线：声明在场、但还没配到"真断言那条语义"的用例。只准减，上限见 tests 里的 BASELINE_CAP。
@@ -164,9 +209,7 @@ UNVERIFIED = {
     ("activity_inference.py", "mine_drift"): "同上：漂移挖掘的重复喂入没有直接断言",
     ("api.py", "_closed_ok"): "门面辅助函数，只被上层用例间接覆盖",
     ("api.py", "anomaly_report"): "fail-closed 分支没有单独用例（异常面本身有用例）",
-    ("app.py", "_is_trusted_source"): "MA-22 的乙案落码后靠 test_vma_login_rate_limit 覆盖链路，本函数无直接断言",
     ("app.py", "metrics_ingest_endpoint"): "幂等需重复 POST 断言，现无",
-    ("auth.py", "_trusted_proxy_networks"): "CIDR 解析的失败口径无直接断言（裁乙+丙落地后待补）",
     ("behavior_routes.py", "behaviors_feedback_pack"): "路由面 fail-closed 由 feedback_pack 的用例承担，路由本体无",
     ("behavior_routes.py", "behaviors_bad_case_export"): "路由本体的「拒了就不写盘」无直接断言，出境面白名单在 feedback_pack 那一侧有用例",
     ("insights_legacy.py", "data_quality_issues"): "声明词指向计数口径，现有用例只锁键位（不是同一条语义）",
@@ -174,15 +217,12 @@ UNVERIFIED = {
     ("mcp_server.py", "trigger_incremental_collection"): "幂等需连续两次触发的断言，现无",
     ("mcp_server.py", "_idem_result"): "幂等缓存的内部件，断言在外层 c1 用例",
     ("mcp_server.py", "_idem_reserve"): "内部预留件：重复预留同一键的行为只被外层 c1 并发用例间接断到，本体无直接断言",
-    ("mcp_tokens.py", "migrate_legacy"): "幂等待「重复迁移第二次不新增」的用例",
     ("perception_ingest.py", "from_ha_event"): "现有 test_from_ha_event 只断形状，不断重复喂同事件的幂等",
     ("perception_ingest.py", "gate_promote_to_behavior"): "晋升面的自增/幂等待重复晋升不叠加的用例",
-    ("store.py", "make_event_id"): "确定性哈希需同输入同输出的直接断言，现无",
     ("store.py", "save_arena_snapshot"): "递增（seq/版本）无直接断言",
     ("store.py", "insert_behavior_event"): "自增 id 断言依赖上层用例，本体无",
     ("store.py", "get_behavior_event"): "声明词与现有用例不同条语义",
     ("store.py", "_idem_now"): "时钟辅助件，无独立断言必要但登记以封住新增",
-    ("task_record.py", "upsert_task_record"): "命中用例断的是入参边界，不是 upsert 幂等",
 }
 
 
