@@ -66,6 +66,10 @@ NO_BUFFER_HEADERS = {
 
 
 # ── 会话存储 ───────────────────────────────────────────────────────────
+class SessionOwnerConflict(Exception):
+    """请求的 sessionId 已被别的主体认领（MA-37）。"""
+
+
 class SessionStore:
     """轻量内存会话表（单进程，无单点；上限镜像 _MAX_RUNS 思想）。"""
 
@@ -75,6 +79,11 @@ class SessionStore:
 
     def new(self, session_id: Optional[str] = None, owner_token: str = "") -> str:
         sid = session_id or f"acp_{uuid.uuid4().hex}"
+        prev = self._sessions.get(sid)
+        # 调用方可以自报 sessionId，于是"已存在的 id"不能因为有人再 new 一次就把属主改掉：
+        # 那等于 B 只要知道 A 的会话名就能接管它（history/delete/cancel 随即全部对 B 放行）。
+        if prev is not None and prev.get("owner_token") != owner_token:
+            raise SessionOwnerConflict(sid)
         self._sessions[sid] = {"run_id": None, "created_at": time.time(), "owner_token": owner_token}
         self._trim()
         return sid
@@ -363,7 +372,10 @@ async def acp_handle(
         ), None
 
     if method == M_SESSION_NEW:
-        sid = _STORE.new(params.get("sessionId"), owner_token=_owner)
+        try:
+            sid = _STORE.new(params.get("sessionId"), owner_token=_owner)
+        except SessionOwnerConflict:
+            return make_error(req_id, ERR_INVALID_PARAMS, "sessionId 已被占用（属主不匹配）"), None
         return make_response(req_id, {"sessionId": sid}), None
 
     if method == M_SESSION_LIST:
@@ -414,7 +426,13 @@ async def acp_handle(
         return make_response(req_id, {"sessionId": sid, "status": "cancelling"}), None
 
     if method == M_PROMPT:
-        session_id = params.get("sessionId") or _STORE.new()
+        # MA-36：prompt 不只读会话，还把本轮写回 `_CONV[sessionId]`——它是 history/delete/cancel
+        # 那条属主护栏的第四个入口，缺了它，B 用 A 的 sessionId 就能读到 A 的历史并污染它。
+        # 未传 sessionId 时新建归当前主体（原来建成 owner_token=""，A 随后读自己的历史会被拒）。
+        requested = params.get("sessionId")
+        if requested and not _STORE.check_owner(requested, _owner):
+            return make_error(req_id, ERR_INVALID_PARAMS, "无权访问该会话（属主不匹配）"), None
+        session_id = requested or _STORE.new(owner_token=_owner)
         instruction = _extract_instruction(params)
         if not instruction:
             return (
