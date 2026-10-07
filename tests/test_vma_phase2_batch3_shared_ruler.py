@@ -117,7 +117,7 @@ def _writable_numeric_keys() -> set:
 
 
 def test_bounds_table_is_exactly_the_writable_numeric_surface():
-    """表 = HTTP 写得动的数值键全集，不多不少（实测 24 个；`Config` 共 71 个数值字段）。
+    """表 = HTTP 写得动的数值键全集，不多不少（实测 24 个；`Config` 共 72 个数值字段）。
 
     新增一个可写数值键却忘了配区间 ⇒ 这条先响，而不是留到下一个审计轮。
     """

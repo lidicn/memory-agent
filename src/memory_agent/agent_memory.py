@@ -519,7 +519,11 @@ class AgentMemoryService:
             "ok": True,
             "state": state,
             "source": source or "all",
-            "member_id": member_id or "all",
+            # MA-27：原来空 member_id 时回显 "all"，而实现是 fail-closed 只返回公共记忆
+            # （exact_member=True + member_id=''）⇒ 响应自己把自己说成跨成员全量。
+            # 回显按实际取数口径给，另加一个显式 scope 字段供消费方判档。
+            "member_id": member_id or "",
+            "member_scope": "member" if member_id else "public_only",
             "count": len(rows),
             "memories": [
                 {

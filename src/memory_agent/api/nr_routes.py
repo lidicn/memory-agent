@@ -4,7 +4,11 @@
 -----------
 ``nodered/water_purifier_flow.json`` 是线上运行流，其 HTTP 节点固定为
 ``POST http://<host>/api/analyze/water_purifier`` + Basic Auth。
-本文件内所有端点的**路径与响应结构一律不得变更**，只允许修内部 Bug。
+本文件内所有端点的**路径一律不得变更**；响应结构也不许变更 —— 例外只允许一种：
+把"假成功"改成如实回执（状态码/错误体）。理由：路径变化会打断线上流，而"本来就没做这件事"
+的回执变化是修复谎报，留着它继续报成功才是会打断人的那种变更（第十四轮审计 MA-30，
+`nr_execute_action` 原样例）。线上那份流只消费 `/api/analyze/water_purifier`，
+`/api/nr/*` 四个端点全仓（含 `web/`、测试、手册）无消费点 —— 这条按 file:line 复核过。
 """
 
 from __future__ import annotations
@@ -50,10 +54,21 @@ async def nr_match_pattern(request: Request):
 
 
 async def nr_execute_action(request: Request):
+    """占位端点：本服务不执行任何动作。
+
+    MA-30：原来函数体只是把入参回显成一句「动作已执行: x -> y」，零执行逻辑。
+    调用方（Node-RED 流）据此认为设备已被操作，而实际什么都没发生 —— 这是"静默假成功"，
+    比报 501 危险。全仓（含 web/、测试、手册）除定义与注册两处外没有任何消费点，
+    所以如实降级不会打断真实调用方。真要接执行器时替换本函数体，不要恢复这句假回执。
+    """
     body = await json_body(request)
-    action_type = body.get("type", "")
-    target = body.get("target", "")
-    return ok({"message": f"动作已执行: {action_type} -> {target}"})
+    action_type = str(body.get("type", "") or "")
+    target = str(body.get("target", "") or "")
+    return error(
+        f"未实现：本服务不执行动作（{action_type or '未指定'} -> {target or '未指定'}），"
+        "未实际执行任何设备操作",
+        501,
+    )
 
 
 async def nr_record_feedback(request: Request):

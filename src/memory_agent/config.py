@@ -104,6 +104,7 @@ class Config:
     excluded_entities: List[str] = field(default_factory=list)
     last_poll_time: str = ""  # 上次采集时间
     data_retention_days: int = 90  # 数据保留天数
+    data_retention_interval_seconds: int = 86400  # 保留期清理的重跑间隔（MA-35：原来只在启动跑一次）
     first_run_lookback_hours: int = 24  # 首次采集回溯窗口，避免起点=当前时刻导致采到 0 条
 
     # ── 记忆研究员（v0.8：定向洞察 LLM 生成）全局安全闸 ─────────────────────
@@ -411,8 +412,8 @@ class Config:
 # 看的是**消费函数拿到这个值会做什么**（lesson 108）：`tz_offset_hours` 的 ±24h 限制
 # 藏在 `datetime.timezone` 内部，只算 `timedelta(hours=1e6)` 永远看不出问题。
 #
-# 覆盖面（实测）：`Config` 共 71 个数值字段，其中 `WRITABLE_FIELDS` 允许 HTTP 写的
-# 恰好这 24 个 ⇒ 本表 = 可写面的全集，不多不少。其余 47 个只能经 config.json / 环境变量
+# 覆盖面（实测）：`Config` 共 72 个数值字段，其中 `WRITABLE_FIELDS` 允许 HTTP 写的
+# 恰好这 24 个 ⇒ 本表 = 可写面的全集，不多不少。其余 48 个只能经 config.json / 环境变量
 # 进来，`update_config_api` 那侧本就会拒（不在白名单），这里不替它们预设区间。
 NUMERIC_BOUNDS: dict = {
     "redis_port": (1, 65535),

@@ -4588,9 +4588,10 @@ class Store:
         持锁 **143 秒**，期间采集线程、WebUI、MCP 全部排队（一个并发读者实测等了
         143151 ms）。改成每批只锁到本批提交，锁释放点摊平，其它线程在批间隙能进。
 
-        代价：不再是一个原子事务。保留清理是幂等的周期任务（``runtime.py:137`` 走
-        ``to_thread`` 定时跑），中途失败下次接着删即可，不值得为它牺牲全局可用性的
-        两分钟。
+        代价：不再是一个原子事务。保留清理是幂等的周期任务（`runtime.py` 的
+        `AppRuntime._run_retention_cleanup` 走 `to_thread`，启动一轮、之后每
+        `data_retention_interval_seconds` 重跑一轮），中途失败下次接着删即可，
+        不值得为它牺牲全局可用性的两分钟。
         """
         if retention_days <= 0:
             return 0

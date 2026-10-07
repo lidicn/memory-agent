@@ -425,11 +425,21 @@ class LLMRouter:
         return []
 
     def reconfigure(self, config: Optional["Config"] = None) -> None:
+        stale = self.providers
+        self.providers = []
         self.config = config
         backs = self._resolve_backends(config)
         enabled = [b for b in backs if b.get("enabled", True)]
         # 若所有后端被禁用，仍保留第一条作为兜底，避免彻底瘫痪
         self.providers = [LLMProvider(b, config) for b in (enabled or backs[:1])]
+        # MA-25：整表重建会把旧 provider 的 httpx.AsyncClient 一起丢掉（连接与连接池
+        # 随对象引用消失，但客户端自己不会被 GC 关闭）⇒ 每次热更新漏一批连接。
+        # 先建新表再关旧表：关到一半失败也不影响新配置生效。
+        for p in stale:
+            try:
+                p.close()
+            except Exception as exc:
+                print(f"[LLMRouter] 旧 provider 关闭失败（{getattr(p, 'name', '?')}）: {exc}")
 
     def close(self) -> None:
         for p in self.providers:

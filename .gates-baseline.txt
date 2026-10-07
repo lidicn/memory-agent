@@ -133,7 +133,6 @@ src/memory_agent/mcp_server.py#fake-ok-const#_build_server.review_behavior_anoma
 src/memory_agent/mcp_server.py#fake-ok-const#_build_server.revoke_signal_rule
 src/memory_agent/mcp_server.py#fake-ok-const#_build_server.save_analysis_template
 src/memory_agent/mcp_server.py#fake-ok-const#_build_server.save_skill
-src/memory_agent/mcp_server.py#fake-ok-const#_build_server.teach_signal
 src/memory_agent/mcp_server.py#fake-ok-const#_build_server.trigger_incremental_collection
 src/memory_agent/mcp_server.py#fake-ok-const#_build_server.write_self_diary
 src/memory_agent/mcp_server.py#fake-ok-const#get_mcp_stats

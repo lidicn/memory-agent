@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+# 与 ToolSpec 声明的 enum 同集合（tool_schema.py teach_signal.exclusion_type）：
+# 引擎按 `exclusion_type != 'exclude'` 分流，越界的值会静默把硬排变成无效行。
+EXCLUSION_TYPES = ("exclude", "is_automation", "not_automation")
+
 
 class SignalLearningService:
     def __init__(self, store, agent_memory):
@@ -109,6 +113,7 @@ class SignalLearningService:
         source_refs: Optional[List[str]] = None,
         session_id: str = "mcp",
         exclusion_type: str = "exclude",
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         entity_id = (entity_id or "").strip()
         if not entity_id:
@@ -116,6 +121,30 @@ class SignalLearningService:
         kind = (kind or "hard").strip().lower()
         if kind not in ("hard", "soft"):
             return {"ok": False, "error": "kind 仅支持 'hard' | 'soft'", "code": 400}
+        exclusion_type = (exclusion_type or "exclude").strip().lower()
+        if exclusion_type not in EXCLUSION_TYPES:
+            return {
+                "ok": False,
+                "error": "exclusion_type 仅支持 " + "|".join(EXCLUSION_TYPES),
+                "code": 400,
+            }
+        if kind == "soft" and not (text or "").strip():
+            return {"ok": False, "error": "kind='soft' 必须提供 text", "code": 400}
+        # MA-28：dry_run 原来是门面里一句没有任何校验的"参数校验通过"。校验挪到这里，
+        # 与真实写入走同一串判据 —— 探边界探到的就是落库会接受的。
+        # scope 不校验：硬排除按 entity 生效（insights/repository.py 的取用口径），
+        # scope 只是标签，收紧它会改变语义而不是修 Bug。
+        checked = ["entity_id", "kind", "exclusion_type"]
+        if kind == "soft":
+            checked.append("text")
+        if dry_run:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "kind": kind,
+                "checked": checked,
+                "message": "dry_run：已校验 " + "、".join(checked) + "，未写入",
+            }
 
         if kind == "hard":
             exclusion_id = self.store.upsert_signal_exclusion(
@@ -140,8 +169,7 @@ class SignalLearningService:
             }
 
         # kind == 'soft'：走 agent_memory 软记忆（topic_key=signal_trust）
-        if not text or not text.strip():
-            return {"ok": False, "error": "kind='soft' 必须提供 text", "code": 400}
+        # （text 必填已在前置校验里做过，这里不再重复判）
         # vMA-1.2.1: 记忆写入路径 PII 脱敏（姓名→成员N、手机/邮箱/身份证/长数字打码）
         try:
             from .negative_samples import sanitize_text, _store_member_names

@@ -135,17 +135,35 @@ class AppRuntime:
 
 
     async def _run_retention_cleanup(self) -> None:
-        """后台执行数据保留清理，不阻塞启动。"""
-        try:
-            await asyncio.to_thread(
-                self.store.purge_old, self.config.data_retention_days
-            )
-            # B-MA-05: 定期清理幂等键和 MCP 审计表，防止无限增长
-            await asyncio.to_thread(self.store.purge_idempotency)
-            await asyncio.to_thread(self.store.purge_mcp_audit, 30)
-            print("[Runtime] 数据清理完成：events/idempotency/mcp_audit")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[Runtime] 数据保留清理失败（不影响运行）: {exc}")
+        """常驻任务：启动先清一轮，之后按 `data_retention_interval_seconds` 周期性重清。
+
+        MA-35：原来这个函数一轮跑完就返回，而它唯一的调用点在 startup ⇒ 声明的保留期
+        （默认 90 天）只在开机那一刻生效一次；长跑不重启的容器里 events 跨度会远大于 90 天，
+        而 `store.purge_old` 的 docstring 自己写着它是「周期任务」。
+        每轮独立 try：清理失败只损失这一轮，下一轮重试（`purge_old` 内部是分批 DELETE，
+        每批之间放锁，所以长时间运行不会把事件循环按死）。
+        """
+        interval = max(
+            60, int(getattr(self.config, "data_retention_interval_seconds", 86400))
+        )
+        while True:
+            try:
+                removed = await asyncio.to_thread(
+                    self.store.purge_old, self.config.data_retention_days
+                )
+                # B-MA-05: 定期清理幂等键和 MCP 审计表，防止无限增长
+                idem = await asyncio.to_thread(self.store.purge_idempotency)
+                audit = await asyncio.to_thread(self.store.purge_mcp_audit, 30)
+                print(
+                    f"[Runtime] 数据清理完成：events={removed} idempotency={idem} "
+                    f"mcp_audit={audit}（下一轮 {interval}s 后）"
+                )
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Runtime] 数据保留清理失败（{min(interval, 600)}s 后重试）: {exc}")
+                await asyncio.sleep(min(interval, 600))
 
     async def startup(self) -> None:
         if self._started:
@@ -174,8 +192,8 @@ class AppRuntime:
         if seeded:
             print(f"[Runtime] 种子化 {seeded} 个内置技能到 {self.config.skills_dir}")
 
-        # 数据清理移到后台异步执行，不阻塞启动
-        # events 表 100 万行时 DELETE 可能需数分钟，同步执行会卡死 startup
+        # 数据清理是常驻周期任务（MA-35）：启动跑一轮，之后按间隔重跑。
+        # events 表 100 万行时 DELETE 可能需数分钟，同步执行会卡死 startup，所以整段在后台。
         if self.config.data_retention_days > 0:
             self._retention_task = task_registry.create(
                 self._run_retention_cleanup(), name="runtime.retention_cleanup"
@@ -278,7 +296,27 @@ class AppRuntime:
         print("[Runtime] 启动完成")
 
     async def _periodic_self_diary(self) -> None:
-        """常驻任务：每天 23:00 自动生成自我日记。"""
+        """常驻任务外壳：日记轮次抛了就退避重启（第二期审计 MA-31）。
+
+        旧结构是「整个函数一个 try」：排期段（墙钟读取 / 日期换算 / 等到 23:00）不在内层
+        per-iteration try 罩范围内，一旦抛异常就被外层接住、函数直接返回 ——
+        `self.tasks` 里那条变成已完成态，只留一行 print，永久停摆且无自愈。
+        结论与报告一致，但修点不是"补一个 try"（try 本来就有），是**接住之后要能重跑**。
+        """
+        backoff = 60
+        while True:
+            try:
+                await self._self_diary_round()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                print(f"[SelfDiary] 任务异常，{backoff}s 后重启: {e}")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 3600)
+
+    async def _self_diary_round(self) -> None:
+        """每天 23:00 自动生成自我日记；异常向上抛，由 _periodic_self_diary 退避重启。"""
         try:
             await asyncio.sleep(10)  # 启动稍延
             while True:
@@ -347,7 +385,10 @@ class AppRuntime:
                     print(f"[SelfDiary] 生成失败: {e}")
                 await asyncio.sleep(60)  # 防止重复触发
         except Exception as e:
-            print(f"[SelfDiary] 任务异常: {e}")
+            # MA-31：接住之后必须让外壳看见。原来这一格只 print 就 return，
+            # 于是任务永久停摆 —— print 留着（现场），raise 是给重启用的。
+            print(f"[SelfDiary] 循环退出: {e}")
+            raise
 
     async def _periodic_livingroom_ai(self) -> None:
         """常驻任务：轻量轮询客厅盒侧 AI 事件，落 perception_events（source=edge_ai）。

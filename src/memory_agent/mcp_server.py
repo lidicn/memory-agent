@@ -217,12 +217,18 @@ def _read_skill_meta(path: str) -> dict:
 
 
 def seed_builtin_skills(rt: "AppRuntime") -> int:
-    """启动种子化：把包内内置技能（skills_bundle）首次写入网关 skills_dir。
+    """启动种子化：把包内内置技能（skills_bundle）写入网关 skills_dir。
 
-    仅当目标技能不存在时才写入（不覆盖 Agent 已迭代出的更高版本），返回新写入的数量。
-    内置技能即网关作为真源对外提供的最新版本，Agent 通过 get_skill 拉取。
+    判据是**版本比较**，不是文件存在性（第十七轮审计 MA-33）：
+    - 目标不存在 ⇒ 写入；
+    - 盘上版本低于内置版本、或盘上那份解析不出版本（空文件/被截断/手工改坏）⇒ 覆盖升级并留痕；
+    - 盘上版本 ≥ 内置版本 ⇒ 跳过（保护 Agent 已迭代出的更高版本），结束时打印跳过数量。
+    内置技能即网关作为真源对外提供的最新版本，Agent 通过 get_skill 拉取；
+    原来只按 `os.path.isfile(dst)` 判跳 ⇒ 旧版部署升级后永久停在旧版且无任何日志，
+    那句"真源 = 最新版本"就成了空话。返回本次写入（新增 + 升级）的技能数。
     """
     seeded = 0
+    skipped = 0
     if not os.path.isdir(BUNDLED_SKILLS_DIR):
         return seeded
     for name in sorted(os.listdir(BUNDLED_SKILLS_DIR)):
@@ -231,14 +237,40 @@ def seed_builtin_skills(rt: "AppRuntime") -> int:
             continue
         dst_dir = os.path.join(rt.config.skills_dir, name)
         dst = os.path.join(dst_dir, "SKILL.md")
+
+        bundled_meta = _read_skill_meta(src)
+        # 内置那份自己就该带版本号；缺版本号的内置技能按 v1 记账，好让"没有版本"这件事可查
+        try:
+            bundled_version = int(bundled_meta.get("version", 1))
+        except (TypeError, ValueError):
+            bundled_version = 1
+        if not bundled_meta.get("version"):
+            print(f"[SeedSkills] {name}: 内置 SKILL.md 未声明 version，按 v{bundled_version} 记账")
+
+        disk_version: "int | None" = None
         if os.path.isfile(dst):
-            continue
+            disk_meta = _read_skill_meta(dst)
+            try:
+                # 解析不出版本 = 盘上那份不可信（空文件/截断/手工改坏），按 0 处理以便被修复
+                disk_version = int(disk_meta["version"]) if disk_meta.get("version") else 0
+            except (TypeError, ValueError):
+                disk_version = 0
+            if disk_version >= bundled_version:
+                skipped += 1
+                continue
+
         os.makedirs(dst_dir, exist_ok=True)
         with open(src, "r", encoding="utf-8") as f:
             data = f.read()
         with open(dst, "w", encoding="utf-8") as f:
             f.write(data)
         seeded += 1
+        if disk_version is not None:
+            print(
+                f"[SeedSkills] {name}: v{disk_version} → v{bundled_version}（内置为真源，已升级）"
+            )
+    if skipped:
+        print(f"[SeedSkills] 跳过 {skipped} 个已不落后于内置版本的技能（不覆盖 Agent 迭代）")
     return seeded
 
 
@@ -1711,15 +1743,17 @@ def _build_server():
           看电视(watching_tv)。
         - kind='soft'：走 agent 记忆（topic_key=signal_trust，参与信任闭环，用于带条件软判）；
           此时 text 必填，source_refs 须为可解析的真实引用。
-        - dry_run=true：只校验参数，不写入。
+        - dry_run=true：只校验参数，不写入。校验与真实写入走同一串判据
+          （entity_id / kind / exclusion_type / soft 时的 text），回显里 checked 就是实际查过的字段。
         """
-        if dry_run:
-            return {"ok": True, "dry_run": True, "message": "dry_run：参数校验通过，未写入"}
+        # MA-28：这里原来有一句 `if dry_run: return {"ok": True, ... "参数校验通过"}`，
+        # 一行校验都没做 —— 探边界探出"通过"，真写入却被拒（或被静默收下），
+        # 承诺的"先探边界"是假的。校验挪进 signal_learning.teach_signal 本体。
         rt = get_runtime()
         return await asyncio.to_thread(
             rt.signal_learning.teach_signal,
             entity_id, scope, kind, reason, text, (source_refs or []),
-            session_id, exclusion_type,
+            session_id, exclusion_type, dry_run,
         )
 
     @mcp.tool()
@@ -2672,11 +2706,16 @@ def _build_server():
                 body = body[end + 3:].strip()
 
         prev_version = 0
-        if existing.get("version"):
-            try:
-                prev_version = int(existing["version"])
-            except ValueError:
-                prev_version = 0
+        # MA-26：基数原来只从**入参** frontmatter 解析，从不读盘上那份 ⇒
+        # 入参不带版本号时恒回 version: 1，磁盘上已到 v5 的技能被覆盖成 v1（版本倒退），
+        # 而本工具的承诺是"自增 version…Agent 下次 get_skill 即拿到最新版本"。
+        # 消费方（list_skills / get_skill）都按版本号判定"有没有更新"，倒退等于永久收不到。
+        for src in (existing, _read_skill_meta(path) if os.path.isfile(path) else {}):
+            if src.get("version"):
+                try:
+                    prev_version = max(prev_version, int(src["version"]))
+                except (ValueError, TypeError):
+                    pass
         new_version = prev_version + 1
 
         from .store import now_local
