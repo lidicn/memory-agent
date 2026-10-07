@@ -267,6 +267,11 @@ def _window_meta(tr: Any) -> Dict[str, Any]:
             "end": str(getattr(tr, "end_iso", "") or "")}
 
 
+def _climate_unavailable(reason: str) -> Dict[str, Any]:
+    """温控环比块的降级形状：整块缺席与"家里没温控数据"读起来一样，所以降级必须带 error。"""
+    return {"ok": False, "error": reason}
+
+
 class _Window:
     """TimeRange 的最小替身（duck-typing），供 compare_insights / user_persona 自建窗口。"""
 
@@ -363,9 +368,10 @@ class _ResolverAdapter:
 
 
 class BehaviorService:
-    """业务服务层：api.py 持有 self.core = BehaviorService(repo, resolver, config)。"""
+    """业务服务层：api.py 持有 self.core = BehaviorService(repo, resolver, config, climate_provider=…)。"""
 
-    def __init__(self, repo: Any, resolver: Any, config: Any) -> None:
+    def __init__(self, repo: Any, resolver: Any, config: Any,
+                 climate_provider: Any = None) -> None:
         self.repo = repo
         self.resolver = resolver
         self.config = config
@@ -374,6 +380,10 @@ class BehaviorService:
         # api.py 的四条 `self.core.reports.<x>_report(...)` 文本面此前指向一个从未挂载的
         # 成员（`hasattr(BehaviorService, 'reports') == False`，调用即 AttributeError）。
         self.reports = ReportBuilder()
+        # 温控环比的取数接缝（DCD 20261007 §二 裁乙）：sessions 由**门面注入的回调**给出，
+        # 引擎自己不持有 legacy——直接读 `self.legacy` 等于把 legacy 的生命周期再拖长一档。
+        # 未注入时环比块显式写"未注入"，不许整块缺席（缺席与"家里没温控数据"读起来一样）。
+        self.climate_provider = climate_provider
 
     # ------------------------------------------------------------- 公共骨架
     def _now(self) -> float:
@@ -801,7 +811,7 @@ class BehaviorService:
     # ------------------------------------------------------- compare_insights
     def compare_insights(self, compare_days: int = 7, room: str = "", category: str = "") -> Dict[str, Any]:
         defaults = {"days": 0, "current": {}, "previous": {}, "delta": {}, "trend": "flat",
-                    "filters": {}}
+                    "filters": {}, "climate_comparison": _climate_unavailable("整页降级，温控块未计算")}
         try:
             out = self._compare_insights(compare_days, room, category)
             out["ok"] = True
@@ -849,8 +859,32 @@ class BehaviorService:
         return {
             "days": days, "current": current, "previous": previous,
             "delta": delta, "trend": trend,
+            "climate_comparison": self._climate_comparison(cur, prev),
             "filters": self._filter_echo(room, category, "", rooms, domains, entity_ids),
         }
+
+    def _climate_comparison(self, cur: _Window, prev: _Window) -> Dict[str, Any]:
+        """温控维度环比（DCD 20261007 §二 裁乙）——被门面切换洗掉的修复 #9 重新落地。
+
+        sessions 由**注入的 `climate_provider` 回调**按窗口给出（引擎不读 `self.legacy`），
+        聚合与差值调已迁好的 `utils.aggregate_climate_sessions` / `utils.compare_climate`，
+        键名与 legacy 逐字同（`current/previous/delta_hours/delta_avg_setpoint_c`）。
+
+        刻意不吃 `room`/`category` 过滤器：legacy 的 `_climate_compare` 从来不传这两个参数，
+        全屋口径是被替代方自己的定义，跟着它走才算"维度回来了"而不是"顺手改了口径"。
+        取数失败只降级这一块（整页失败会把活动环比的读数一起抹掉），且降级形状带 error。
+        """
+        provider = self.climate_provider
+        if provider is None:
+            return _climate_unavailable("climate_provider 未注入")
+        try:
+            from .utils import aggregate_climate_sessions, compare_climate
+            cur_agg = aggregate_climate_sessions(list(provider(cur.start_iso, cur.end_iso) or []))
+            prev_agg = aggregate_climate_sessions(list(provider(prev.start_iso, prev.end_iso) or []))
+            return compare_climate(cur_agg, prev_agg)
+        except Exception as exc:  # noqa: BLE001 - 附属块炸只丢附属块
+            self.log.exception("climate_provider 取数失败，温控环比块降级")
+            return _climate_unavailable("%s: %s" % (type(exc).__name__, exc))
 
     # ---------------------------------------------------------------- rhythm
     def rhythm(self, tr: Any, room: str = "") -> Dict[str, Any]:

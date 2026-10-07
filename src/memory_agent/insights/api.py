@@ -182,7 +182,8 @@ class InsightService:
         self._injected_repo = repository is not None
         self.repo: BaseRepository = repository or build_repository(store, self.config)
         self.resolver = EntityResolver(self._safe_entities())
-        self.core = BehaviorService(self.repo, self.resolver, self.config)
+        self.core = BehaviorService(self.repo, self.resolver, self.config,
+                                    climate_provider=self._climate_sessions_for_window)
         self.nl = NLQueryEngine(self.core, self.resolver, self.config)
         # 延迟导入：insights_legacy 体积大且反向依赖本包 utils，仅在实例化时取。
         from ..insights_legacy import InsightService as LegacyInsightService
@@ -235,6 +236,17 @@ class InsightService:
             self.entities_error = f"{type(exc).__name__}: {exc}"
             return []
 
+    def _climate_sessions_for_window(self, start_iso: str, end_iso: str) -> List[Dict[str, Any]]:
+        """温控环比的取数接缝（DCD 20261007 §二 裁乙），注入给 `BehaviorService`。
+
+        引擎侧只拿到这个回调、不持有 `self.legacy`；窗口口径用 `_Window` 的
+        `start_iso/end_iso`（家庭墙钟 naive 串）直接交给 legacy 的 `resolve_range`，
+        它按 `tz_offset_hours` 解释 naive——与引擎其余读数同一把钟。
+        sessions 的计算本身留在 legacy（裁5 Q1=A：`climate_sessions` 是对外承诺的 legacy 方法）。
+        """
+        out = self.legacy.climate_sessions(start=start_iso, end=end_iso)
+        return list(out.get("sessions") or []) if isinstance(out, dict) else []
+
     def reload_config(self, config: Any) -> None:
         """配置热更新：归一化后**重建**依赖该配置的下游对象。
 
@@ -249,7 +261,8 @@ class InsightService:
         if not self._injected_repo:
             self.repo = build_repository(self.store, self.config)
         self.resolver.refresh(self._safe_entities())
-        self.core = BehaviorService(self.repo, self.resolver, self.config)
+        self.core = BehaviorService(self.repo, self.resolver, self.config,
+                                    climate_provider=self._climate_sessions_for_window)
         self.nl = NLQueryEngine(self.core, self.resolver, self.config)
         # legacy 在构造时把 insight_cache_ttl 读进 _CACHE_TTL，只换 .config 不生效；
         # 重建一次，缓存 TTL 与热更新一致（代价：丢弃进程内结果缓存）。
@@ -678,7 +691,12 @@ class InsightService:
 
     @_degrade(lambda: Page.build([]).to_dict("insights"))
     def get_behavior_insights(self, compare_days: int = 7) -> Dict[str, Any]:
-        """行为洞察（当前窗口 vs 前一窗口，带环比）。"""
+        """行为洞察（当前窗口 vs 前一窗口，带环比）。
+
+        载荷除活动量的两窗口差值（`delta`/`trend`）外，另带 `climate_comparison`：
+        空调开启时长与平均设定/室温的两窗口环比（`current/previous/delta_hours/
+        delta_avg_setpoint_c`，与 legacy 逐字同名，DCD 20261007 §二 裁乙）。
+        """
         return self.core.compare_insights(compare_days=compare_days)
 
     @_degrade(lambda: Page.build([]).to_dict("activities"))

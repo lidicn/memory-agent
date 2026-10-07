@@ -254,3 +254,188 @@ def test_agent_memory_blowing_up_does_not_degrade_the_quality_page(store, monkey
     out = InsightService(store, Config()).get_data_quality(days=7)
     assert out["agent_memory"]["ok"] is False
     assert "score" in out
+
+
+# ── DCD 20261007 §二 裁乙：温控环比维度回到新引擎（门面注入 climate_provider）────
+#
+# 缺陷形状与被替代方一模一样：修复 #9 加的温控环比在 Phase 4 门面切换时被洗掉——
+# `api.py` 的 `get_behavior_insights` 改走 `core.compare_insights`，而 `_compare_insights`
+# 只算活动量，已迁好的 `insights/utils.py aggregate_climate_sessions / compare_climate`
+# 只剩 legacy 反向 import。全量测试照绿，因为**没人读过那一格**。
+#
+# 所以判据不能只钉键名：键在、数恒空是同一场事故的另一种表现。这里三条真库读数锁
+# （与 legacy 逐字对账 / 具体数字 / 两窗口分别取数）加三条形状锁
+# （引擎不碰 self.legacy / 每个构造点都注入 / 降级只丢这一块）一起上。
+
+SERVICE_PY = os.path.join(_PKG, "insights", "service.py")
+API_PY = os.path.join(_PKG, "insights", "api.py")
+# legacy `compare_climate` 的产出键，裁定要求逐字沿用。
+LEGACY_CLIMATE_KEYS = {"current", "previous", "delta_hours", "delta_avg_setpoint_c"}
+
+_CLIMATE_ROOMS = {
+    "卧室": {"enabled": True, "entities": {
+        "climate.bedroom_ac": {"name": "卧室空调", "domain": "climate"},
+        "light.bedroom": {"name": "卧室灯", "domain": "light"},
+    }},
+}
+
+
+def _climate_events():
+    """当前窗口一组 2 小时会话、前一窗口一组 3 小时会话，各带设定/室温。
+
+    放在 -2 天与 -9 天是**窗口交叠区**：legacy 的环比窗口对齐自然日边界，引擎按
+    `now` 滚动切 7×86400 秒，两侧各留两天余量才能保证两边读到同一批事件——
+    否则"与 legacy 对账"那条锁会随时钟点漂红。
+    """
+    from memory_agent.insights.models import house_now
+    now = house_now()
+    rows = []
+    for offset, on_h, off_h, setpoint, room_temp in ((2, 10, 12, 24.0, 27.5),
+                                                     (9, 10, 13, 22.0, 26.0)):
+        day = now - timedelta(days=offset)
+        on_ts = day.replace(hour=on_h, minute=0, second=0, microsecond=0)
+        off_ts = day.replace(hour=off_h, minute=0, second=0, microsecond=0)
+        attrs = '{"temperature": %s, "current_temperature": %s}' % (setpoint, room_temp)
+        rows.append({"entity_id": "climate.bedroom_ac", "ts": on_ts.isoformat(timespec="seconds"),
+                     "room": "卧室", "old_state": "off", "new_state": "cool", "attrs_json": attrs})
+        rows.append({"entity_id": "climate.bedroom_ac", "ts": off_ts.isoformat(timespec="seconds"),
+                     "room": "卧室", "old_state": "cool", "new_state": "off", "attrs_json": attrs})
+        rows.append({"entity_id": "light.bedroom", "ts": on_ts.isoformat(timespec="seconds"),
+                     "room": "卧室", "old_state": "off", "new_state": "on",
+                     "attrs_json": '{"friendly_name": "卧室灯"}'})
+    return rows
+
+
+@pytest.fixture
+def climate_live():
+    """真库 + 真事件：返回 (Store, 门面)。温控环比必须有读数可对，形状锁赢不了这个。"""
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.remove(path)
+    st = Store(path, tz_offset_hours=8.0)
+    st.init_schema()
+    st.insert_events(_climate_events())
+    cfg = Config()
+    cfg.rooms = _CLIMATE_ROOMS
+    try:
+        yield st, InsightService(st, cfg)
+    finally:
+        st.close()
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def test_climate_comparison_is_the_legacy_block_verbatim(climate_live):
+    """同库同钟跑 legacy 与引擎，两块的**键集合与读数**逐字相同。
+
+    裁定口径"消费 legacy 读数 + 键名沿用 legacy"——这条就是它的可执行形式。
+    """
+    from memory_agent.insights_legacy import InsightService as LegacyInsightService
+    st, svc = climate_live
+    engine = svc.core.compare_insights(compare_days=7)["climate_comparison"]
+    # 用门面自己交给 legacy 的那份原始 Config（`raw_config`），两边读的才是同一套房间表。
+    legacy = LegacyInsightService(svc.raw_config, st).get_behavior_insights(7)["climate_comparison"]
+    assert set(engine) == LEGACY_CLIMATE_KEYS, sorted(engine)
+    assert set(legacy) == LEGACY_CLIMATE_KEYS, sorted(legacy)
+    assert engine == legacy, f"引擎块与 legacy 块不一致：\nengine={engine}\nlegacy={legacy}"
+
+
+def test_climate_comparison_carries_the_measured_numbers(climate_live):
+    """读数锁：2h/3h 两窗口会话、设定 24 vs 22 —— 键在但数恒空也算丢维度。"""
+    block = climate_live[1].core.compare_insights(compare_days=7)["climate_comparison"]
+    assert block.get("ok") is None, f"温控块被降级了：{block}"
+    assert block["current"]["sessions"] == 1 and block["previous"]["sessions"] == 1, block
+    assert block["current"]["hours"] == 2.0 and block["previous"]["hours"] == 3.0, block
+    assert block["delta_hours"] == -1.0, block
+    assert block["current"]["avg_setpoint_c"] == 24.0, block
+    assert block["delta_avg_setpoint_c"] == 2.0, block
+
+
+def test_climate_comparison_reads_each_window_from_the_provider(climate_live):
+    """两窗口分别取数：provider 收到的是各自的 start_iso/end_iso。
+
+    反例锁——把 provider 换成"永远取全屋大窗口"的实现，`delta_hours` 立刻归零，
+    这条判据就是为那个形状准备的（照抄一个窗口 = 环比永远是 0，比缺键更难发现）。
+    """
+    from memory_agent.insights.service import BehaviorService
+    _, svc = climate_live
+    seen = []
+
+    def spy(start_iso, end_iso):
+        seen.append((start_iso, end_iso))
+        return svc._climate_sessions_for_window(start_iso, end_iso)
+
+    out = BehaviorService(svc.repo, svc.resolver, svc.config,
+                          climate_provider=spy).compare_insights(compare_days=7)
+    assert len(seen) == 2, f"provider 该被调两次（当前 + 前一窗口），实得 {seen}"
+    assert seen[0] != seen[1], f"两次取数用了同一个窗口：{seen}"
+    assert out["climate_comparison"]["delta_hours"] == -1.0, out["climate_comparison"]
+    assert seen[1][1] == seen[0][0], f"两窗口不连续（前窗 end 应等于当前窗 start）：{seen}"
+
+
+def test_engine_never_touches_self_legacy():
+    """形状锁（裁乙的"不直接读 self.legacy"）：引擎源码里 `self.legacy` 出现次数必须为 0。
+
+    这条是前瞻锁——今天没有，写它是为了让"顺手改成 self.legacy.xxx()"当场红，
+    那正是把 legacy 生命周期再拖长一档的起点。
+    """
+    with open(SERVICE_PY, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=SERVICE_PY)
+    hits = [(n.lineno, n.attr) for n in ast.walk(tree)
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+            and n.value.id == "self" and n.attr == "legacy"]
+    assert not hits, f"BehaviorService 直接读了 self.legacy：{hits}"
+
+
+def test_every_facade_construction_injects_the_climate_provider():
+    """形状锁：门面里每一处 `BehaviorService(...)` 都必须带 `climate_provider=`。
+
+    构造点有两处（`__init__` 与 `reload_config`）。热更新那条漏注入的后果是
+    "改一次配置，温控环比从此永久消失"——上一轮就是这么洗掉修复 #9 的。
+    """
+    with open(API_PY, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=API_PY)
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "BehaviorService"]
+    assert calls, "门面里找不到 BehaviorService 的构造点——注入点搬走了，请同步更新本锁"
+    missing = [n.lineno for n in calls
+               if "climate_provider" not in {kw.arg for kw in n.keywords}]
+    assert not missing, f"这些构造点没注入 climate_provider，温控环比会静默降级：{missing}"
+    assert hasattr(InsightService, "_climate_sessions_for_window"), \
+        "provider 指向的门面方法不存在（写错的属性名在构造时才炸，先在这里钉住）"
+
+
+def test_missing_provider_is_a_visible_failure_not_an_absent_block(store):
+    """没注入回调时那一格必须明说"未注入"，不许整块缺席——与 agent_memory 那条同口径。"""
+    from memory_agent.insights.service import BehaviorService
+    svc = InsightService(store, Config())
+    out = BehaviorService(svc.repo, svc.resolver, svc.config).compare_insights(compare_days=7)
+    assert out["ok"] is True, out
+    assert out["climate_comparison"] == {"ok": False, "error": "climate_provider 未注入"}, out
+
+
+def test_blowing_up_provider_degrades_only_the_climate_block(store):
+    """取数炸了只丢附属块：活动环比的读数不该被温控块拖下水（否则修一个维度坏一页）。"""
+    from memory_agent.insights.service import BehaviorService
+    svc = InsightService(store, Config())
+
+    def boom(start_iso, end_iso):
+        raise RuntimeError("legacy 挂了")
+
+    out = BehaviorService(svc.repo, svc.resolver, svc.config,
+                          climate_provider=boom).compare_insights(compare_days=7)
+    assert out["ok"] is True, out
+    assert "total_events" in out["current"], out
+    block = out["climate_comparison"]
+    assert block["ok"] is False and "legacy 挂了" in block["error"], block
+
+
+def test_degraded_envelope_still_carries_the_climate_block(store):
+    """整页降级（`compare_days` 非法）时那一格也要在，且自称是降级——不是安静消失。"""
+    svc = InsightService(store, Config())
+    out = svc.core.compare_insights(compare_days=-1)
+    assert out["ok"] is False, out
+    assert out["climate_comparison"]["ok"] is False, out
+    assert "降级" in out["climate_comparison"]["error"], out
