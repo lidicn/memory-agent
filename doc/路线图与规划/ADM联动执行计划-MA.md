@@ -1782,7 +1782,17 @@ L1~L5 该响全响（`failed=3 / 2 / 2 / 1 / 1`），`MUT78_COUNT=6 MUTATION_BAD
 （本机↔容器 `wc -c` 逐件相同）后，3.11.16 下 `PYCOMPILE311_RC=0`、容器 pyflakes 4.0.2 **零条**、四把门
 `SELFTEST_RC=0` ×4、对被测树现扫的四行读数与本机 3.13 逐字符同，锁文件在硬链接副本树里 **6 passed in 16.77s**；
 旁证结束删掉副本树并重跑哈希，**第三次**仍是 `b377f79c…eb3c2`（408/408/0）。
-**仍待 run29**：五件与既有 2048 条用例共处一树的全量档（旁证只量了五件本身）。
+**run29 已闭合那一格**（2026-10-08 05:36:12 → 05:46:28+08:00，快照树 = `8c16b06`，413 文件 = run28 那 408 件 +
+五件新文件本身首次进被测树）：`TOOLCHAIN_RC=0`（3.11.16 / pytest 9.1.1 / pyflakes 4.0.2）、`SNAP_RC=0`、
+`NEWFIVE_RC=0`（容器 `wc -c` 与本机逐件相同：9446 / 15510 / 23093 / 21446 / 6983，合计 76478）、
+`AST311_RC=0`、四把门 `SELFTEST_G1..G4_RC=0` 且 `_MISS=0`、`SCAN_G1..G4_RC=0`（G4 行 `DECLARED=41
+REGISTERED=15 CASES=17 UNVERIFIED=26 PROBLEM=0` 与本机 3.13 逐字符同）、`GATE_RC=0`（pyflakes 0/0/0/0）、
+**`SUITE_RC=0` = 2044 passed, 10 skipped in 545.35s = 2054 收集**（= run28 的 2048 + 锁文件自己的 6 条）、
+`LOCK_RC=0` 容器 **6 passed in 15.96s**（本机 6 passed in 6.55s，两档并立）、
+`POST_HASHES_RC=0` 且起算/复算**逐字符同串** `6c419f2fd3d1138f83cac0d1d19930ba1d3e7dc704b69e843848cc243af18fcb`
+（413/413/0）、`POST_SCAN_G1..G4_RC=0`；变异档 `MUT_SKIPPED_IN_RUN29=1`（判据：`git diff --name-only 800c17b..HEAD -- src`
+现读 0 行 ⇒ 靶面与本批零交集，三档腿数锚点 11/22/14 现读未动 ⇒ 不当通过也不当缺失）。
+日志副本 `.qoder/run29-driver.log`（容器真文件 `/tmp/ma_c89_run29.log`）。逐格读数见台账 **§二十二**。
 
 
 ---
