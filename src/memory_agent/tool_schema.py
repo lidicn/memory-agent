@@ -1062,7 +1062,8 @@ TOOL_SPECS: list = [
             _p("limit", "integer", "返回条数，默认 50，最大 200", default=50),
         ],
         example="query_behavior_events(room='书房', start='2026-08-30T15:00:00', end='2026-08-30T17:00:00')",
-        pitfall="时间默认按天切片；精确到小时需传 start/end。结果按 server_ts 倒序。",
+        pitfall="时间默认按天切片；精确到小时需传 start/end。结果行里的时间键是 time（服务端接收时刻，"
+                "落库列名 server_ts），按它倒序。",
     ),
     # ── AutoFlow 竞技场（外部服务窄接口，见 docs/交接单_AutoFlow竞技场对接.md）────
     # 仅对持有 arena_ 令牌（kind=arena）的竞技场开放，与生产 / butler / ACP 令牌隔离。

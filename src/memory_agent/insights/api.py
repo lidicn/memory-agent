@@ -696,6 +696,8 @@ class InsightService:
         载荷除活动量的两窗口差值（`delta`/`trend`）外，另带 `climate_comparison`：
         空调开启时长与平均设定/室温的两窗口环比（`current/previous/delta_hours/
         delta_avg_setpoint_c`，与 legacy 逐字同名，DCD 20261007 §二 裁乙）。
+        `window` 是统一回显键（DCD 20261007 §三 Q2 甲回溯），这里回显的是**两窗口合并的跨度**
+        （前窗 start → 当前窗 end）——两子块各自的起止在 `current`/`previous` 里。
         """
         return self.core.compare_insights(compare_days=compare_days)
 
@@ -853,12 +855,18 @@ class InsightService:
                            return_hints=return_hints)
 
     @_degrade(lambda: {"question": "", "intent": "unknown", "total": 0, "offset": 0,
-                       "has_more": False})
+                       "has_more": False, "window": {}})
     def plan_question(self, question: str, days: int = 7) -> Dict[str, Any]:
-        """问题规划（意图 / 实体 / 时间范围）。"""
+        """问题规划（意图 / 实体 / 时间范围）。
+
+        两个时间键并存，不是等价替换（DCD 20261007 §三 Q2 的分工口径）：
+        `time_range` 是本工具特有的**语义窗口对象**（从问题里解析出的起止，可能是"上周""昨晚"）；
+        `window` 是洞察类读数的**统一回显键**（本结果覆盖哪一段），与其余读法同形状同口径。
+        """
         plan = self.nl.plan(question, days=days or 7)
         data = plan.to_dict()
         data.update({"total": 1, "offset": 0, "has_more": False})
+        data["window"] = plan.time_range.to_dict() if plan.time_range else {}
         return data
 
     # ------------------------------------------------------------------

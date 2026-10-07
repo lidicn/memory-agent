@@ -810,8 +810,11 @@ class BehaviorService:
 
     # ------------------------------------------------------- compare_insights
     def compare_insights(self, compare_days: int = 7, room: str = "", category: str = "") -> Dict[str, Any]:
+        # `window` 在降级信封里也留一格空 dict：缺窗要读成"没算出窗"，不是"窗口无限"
+        # （DCD 20261005 §Q-A 甲的通用口径；非法 `compare_days` 时两窗口无从谈起）。
         defaults = {"days": 0, "current": {}, "previous": {}, "delta": {}, "trend": "flat",
-                    "filters": {}, "climate_comparison": _climate_unavailable("整页降级，温控块未计算")}
+                    "filters": {}, "window": {},
+                    "climate_comparison": _climate_unavailable("整页降级，温控块未计算")}
         try:
             out = self._compare_insights(compare_days, room, category)
             out["ok"] = True
@@ -859,6 +862,10 @@ class BehaviorService:
         return {
             "days": days, "current": current, "previous": previous,
             "delta": delta, "trend": trend,
+            # 统一回显键 `window`（DCD 20261007 §三 Q2 甲回溯）：本页读数覆盖的是**两个窗口
+            # 合并的那一段**（前窗 start → 当前窗 end），不是当前窗口——只回显当前窗会让
+            # 消费方把 14 天的对账读成 7 天。两子块各自还带 start_iso/end_iso。
+            "window": _window_meta(_Window(prev.start_ts, cur.end_ts)),
             "climate_comparison": self._climate_comparison(cur, prev),
             "filters": self._filter_echo(room, category, "", rooms, domains, entity_ids),
         }
