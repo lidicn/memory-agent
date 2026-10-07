@@ -1704,6 +1704,57 @@ L6 failed=1、L7 failed=2，`MUT75_COUNT=8 MUTATION_BAD=0`、`SRC_UNCHANGED=True
 本机与容器逐字一致。**首跑同样被预检挡在网外**（我在关键文件清单里把 `insights/nlquery.py` 写错成别的名字，
 `GUARD_FAIL IN_SNAP_nlquery.py 期望=1 实际=0`）⇒ 未出网，改对再发。扫描过程、六个量具盲区与两处自捉见 **§四十九**。
 
+### 6.24 容器权威门 run24 → run27（任务表 #77~#84，2026-10-07，四档连跑）
+
+**run24（任务表 #77：把尺挪到"给人看的界面"那一面，基线 HEAD `f6773ea`，快照 `/tmp/c77snap20261007`，404 文件，
+区间 2026-10-07T10:05:02+08:00→10:14:41+08:00）**：`REMOTE_BATCH_RC=0` 全绿。
+`TOOLCHAIN_RC=0`（3.11.16 / pytest 9.1.1 / pyflakes 4.0.2）→ `SNAP_RC=0`
+（聚合 sha256 `8f19ebc5…a593b`，本机与容器**逐字同一**，两侧清单都 404、`HASH_MISSING=0`）→ `GATE_RC=0`
+（pyflakes 0/0/0/0）→ 全量 **`1947 passed, 10 skipped in 502.81s`** → 定向 `22 passed` → 两处 selftest +
+FACES 三格全 `RC=0` → `POST_HASH_RC=0` + `POST_RC=0`（17 passed）。
+
+**run25（任务表 #78：死目录镜像 439 行删除，基线 HEAD `97b7062`，快照 `/tmp/c78snap20261007`，404 文件，
+区间 11:31:08→11:40:58+08:00）**：`GATE_RC=0` → 全量 **`1951 passed, 10 skipped in 467.73s`** →
+定向两格 `25 passed` / `84 passed` → 变异 `MUT78_RC=0`：控制腿 M-0 对照 `17 passed`（failed=0），
+L1~L5 该响全响（`failed=3 / 2 / 2 / 1 / 1`），`MUT78_COUNT=6 MUTATION_BAD=0` → `POST_RC=0`（17 passed）。
+**这一档的读数只证明 `97b7062` 那一棵树**：#78 删掉的 439 行让 `mcp_server.py` 里所有旧行号从此作废，
+第二十轮那批报告（MA-26/28/33）的落点必须按符号重锚 —— 重锚表见 **§五十四 一**。
+
+**run26（任务表 #79~#82：DCD 20261007 §三/§四/§五 三件 + 温控环比，基线 HEAD `fdad983`，
+快照 `/tmp/c82snap20261008`，406 文件，区间 2026-10-07 18:19→19:04 UTC）**：
+`GATE_RC=0`（0/0/0/0）→ 全量 **`2002 passed, 10 skipped in 549.90s`** → 定向三格
+`AUTH_A_RC=0`（157 passed）/ `ANN_B_RC=0`（84 passed, 1 skipped）/ `PROSE_C_RC=0`（39 passed）→
+两档变异 **`totals: killed=22 survived=0 invalid=0 legs=22`** 与 **`killed=14 survived=0 invalid=0 legs=14`**、
+两档控制腿先绿（`207 passed in 86.47s` / `70 passed in 7.03s`）、两份 `WT_UNTOUCHED=True` →
+`POST_HASHES_RC=0` 且聚合摘要 `998d4aa8…d34a` 与格 0 **逐字同** → `POST_ANN_RC=0`（39 passed）/
+`POST_AUTH_RC=0`（22 passed）。逐节读数与**两处量具自身缺陷**（RUNTIME 探针用 `__file__` 算根、在容器里算到 `/src`；
+`MUT_OUT` 写在容器内而 grep 跑在主机上）见 **§五十三 六**。
+
+**run27（任务表 #84：MA-36 Critical + MA-37 High —— ACP 会话属主护栏补齐第四个入口，基线 HEAD `af3e0fe`，
+快照 `/tmp/c82snap27`，407 文件，区间 2026-10-08T03:11:39+08:00→03:22:49+08:00）**：`DRIVER27_RC=0`，
+**且预检 0 条 GUARD_FAIL**（上一档 run26 的预检被我自己改错的两处挡过一次，见下）。
+`TOOLCHAIN_RC=0` → `SNAP_RC=0`（**407/407、`HASH_MISSING=0`，聚合摘要 `42de814d…a557e` 本机与容器逐字同一**）→
+五组形状锚点全 `RC=0`，本仓第一次把**入口对等**做成读数：`ACP_CHECK_CALLS=4`（四个入口都在，少一个就报 3）、
+`ACP_CONFLICT_CLS=ACP_RAISE=ACP_ROUTE_EXCEPT=ACP_NEW_PREV=ACP_PROMPT_CHECK=ACP_NEW_OWNER=ACP_NEWARG=1`、
+`L20_DEFS=8` 且 `L20_PARITY=L20_CROSS=L20_TRIM=L20_UNAUTH=1` → `GATE_RC=0`（0/0/0/0）→
+全量 **`2010 passed, 10 skipped in 469.60s`**（比 run26 的 2002 正好多 8 条 = 本批新回归锁）→
+定向四格 `AUTH_A 157` / `ANN_B 84 passed + 1 skipped` / `PROSE_C 39` / **新格 `ACP_D 28 passed`** →
+**run26 欠的 RUNTIME 格在这里补上**：`PROBE_RC=0` 且 `PROBE_BAD=0`，裁 B 四格矩阵在容器真解释器下逐格对
+（`CASE_ha_wins HA_HITS=1 INBOX_HITS=0` / `CASE_fallback_no_target ROUTE=inbox TID_LEN=32` /
+`CASE_no_route RET=False` / `CASE_switch_off ROUTE=none`）→
+变异 **`MR20_RC=0`：控制腿 `28 passed in 4.91s`、P01~P06 六条全 KILLED、
+`totals: killed=6 survived=0 invalid=0 legs=6`、`WT_UNTOUCHED=True`**（与本机 3.13 同形）→
+`POST_HASHES_RC=0` 摘要回到同一枚 ⇒ 六腿没碰被测树，`POST_ANN 39` / `POST_AUTH 22` / `POST_ACP 28` 全 `RC=0`。
+**#81/#82 的两档变异本档显式跳过**（`M81_SKIPPED_IN_RUN27=1` / `M82_SKIPPED_IN_RUN27=1`）：
+`git diff --name-only fdad983 HEAD` 只有两个文件、与那 36 条腿的靶面无交集，
+它们的容器读数**只引 run26**，两份并立不混引 —— 这是"跳过要留下可核的理由"，不是"沿用上一轮的结论"。
+**首跑被自己的预检挡在网外两处**（都属量具，不属产品）：`MR20_LEGS` 的 grep 模式多写一层 `\` ⇒ `Unmatched (` 计数为空；
+两处残留的 `filelist26` 引用 ⇒ **`tar -T` 会拿旧清单打包，快照里根本没有新回归锁那份文件**，
+`IN_SNAP_test_acp_round20_owner_isolation.py 期望=1 实际=0` 当场抓住（留档 `.qoder/tmp-c82-run27-preflight-fail.out`）。
+另有一条**已在档但无害**的反面教训：重定向写在 `ex "…"` 引号外 ⇒ 日志落在 NAS 主机，
+容器里 `tail` 找不到（`tail: cannot open '/tmp/c82snap27_mr20_run.log'`），六腿判定由 harness 自己在容器内写的
+`MUT_OUT` 提供、不受影响。三处口径写进 **§五十三 六**。
+
 ---
 
 ## 七、下一阶段：更紧密联动（DCD 2026-10-06）
@@ -1722,18 +1773,25 @@ L6 failed=1、L7 failed=2，`MUT75_COUNT=8 MUTATION_BAD=0`、`SRC_UNCHANGED=True
 
 **本仓失败语义**：载荷/鉴权 fail-closed + 码；MQTT 断连、对端离线 degrade-flag + 码；非关键提示 fail-open。**禁止静默丢弃。**
 
-**本仓执行状态（MA 侧自证，2026-10-06 落码时实测）**：
+**本仓执行状态（MA 侧自证；2026-10-06 落码时实测，2026-10-08 按 DCD 20261007 §四/§五 回填）**：
 
 | # | 本仓状态 | 依据／剩余前置 |
 |---|----------|----------------|
-| 1 | **未授权**——镜像重烤 = 改运行面，属合并窗动作，不在自主决定范围内 | 呈文见 `关键决策部/inbox/20261007-MA-合并窗五件与speak调用点与0.3.2消费时机-决策申请.md`；重启可自决、重烤不可 |
-| 2 | **码先站住、线上未翻**：`LinkageJournal.reasons()` 已是 status `reasons[]` 的入参形状并经 `/api/health` 可读；`encode_status` 在 0.3.2 里可用，但运行面装的仍是 `vendor/homesdk-0.3.1`（`Dockerfile:24`），`homesdk.adm.*` 在容器里 `ImportError` | 1（两仓同翻；DB 侧已按契约兼容旧字面量） |
+| 1 | **仓内已换 0.3.2、运行面仍未烤**：`vendor/` 只剩 `homesdk-0.3.2-py3-none-any.whl`（0.3.1 那枚已删），`Dockerfile:26` 装 0.3.2，sha 与 `homesdk/dist/VERSIONS.txt` 0.3.2 段逐字同（`19bc83a6…`）。裁定 §四 Q2 **授权换 `vendor/` + 安装行，随下一次既有变更窗进运行面、不单独开窗** ⇒ 重烤这一步照旧**不在自主决定范围内** | 呈文见 `关键决策部/inbox/20261007-MA-合并窗五件与speak调用点与0.3.2消费时机-决策申请.md`；重启可自决、重烤不可。窗口动作清单见本节末「合并窗五件」 |
+| 2 | **码先站住、线上未翻**：`LinkageJournal.reasons()` 已是 status `reasons[]` 的入参形状并经 `/api/health` 可读；`encode_status` 在 0.3.2 里可用，但**在役容器**装的仍是 0.3.1（镜像没重烤），`homesdk.adm.*` 在容器里 `ImportError`、本仓自带同键同值词表顶上 | 1（两仓同翻；DB 侧已按契约兼容旧字面量）。presence status 载荷由字面量翻成 JSON 是**预期变更**（裁定 §六 Q2，规格 §三.4/§四 已更正），消费必须走 `decode_status` |
 | 3 | 同上的断连档：`publish`/`publish_raw` 每条 False 出口已记 `ADM_ERR_BROKER_UNREACHABLE`，翻线那步（写进 retained status）等库进运行面 | 1 |
 | 4 | MA 已发 `insight_id`（#42），AF 侧落 pending→人批→`af_draft` 的硬读数不在本仓可测 | 1 + AF 在场 |
-| 5 | **本仓半边已落**（commit `1753cf0`）：`publish_speak()` 按 §E 发（`trace_id`/`text` 必填、`text ≤500` 截断、`role`/`priority`/`expires_at` 空值不写键、**无 `source`**、ts = epoch int），失败三档各带码。**调用点未经裁定**：MA 现用 HA `tts.speak` 直发，改成投收件箱要和它二选一，选错就是两处同时说话 ⇒ 未擅自接线，由 `test_publish_speak_has_no_production_caller_yet` 做"未挂载"会红哨兵；"电视真播报"那半条要 broker + 电视在场 | 呈文 Q1（谁来投）+ 1（端到端硬读数） |
+| 5 | **本仓半边已落**（commit `1753cf0`）：`publish_speak()` 按 §E 发（`trace_id`/`text` 必填、`text ≤500` 截断、`role`/`priority`/`expires_at` 空值不写键、**无 `source`**、ts = epoch int），失败三档各带码。**调用点已裁并接线（裁定 §四 Q1 = 裁 B，commit `e09238d`）**：`Announcer` 两条路按优先级分流——HA 两键（`announce_tts_entity` + `announce_target`）齐全走直发，否则回落投 `butler/inbox/speak`（带 32 位 `trace_id`）；**两条不会同时发**。原"未挂载"哨兵随裁定翻成正锁 `test_publish_speak_production_caller_is_the_announcer_fallback`，运行面接线另有一把 AST 锁（`runtime.py` 唯一构造点、带 `mqtt` 实参）。"电视真播报"那半条要 broker + 电视在场，且**DB 侧 `speak` 已消费的硬读数由 DB 出**（裁定原句：MA 不背这个无法自证的读数） | 1（端到端硬读数）；回落条件比裁定文字宽一格已在台账 **§五十三.四** 登记待追认 |
 | 6 | 探针在 homesdk `scripts/`，本仓无运行面 | 1-5 |
 | 硬伤 1 | **已修**（commit `b3e9665`）：`_mark_stale` 三处出口带 `stable_id`，运行时转发到载荷；锁从库一路量到 MQTT 出口，两条自咬腿各自判红 | 无 |
 | 新发现 | **已修**（commit `1753cf0`）：`publish`/`publish_raw` 原先只看"有没有抛异常"，而 paho 把失败写在返回值 `rc`（未连接 = `MQTT_ERR_NO_CONN`）⇒ 没发出去长期报成"已投递"，是"禁止静默丢弃"的另一面。rc≠0 现记码并返回 False | 无 |
+
+**合并窗五件（DCD 20261007 §四 Q3 确认的动作清单，逐字登记、本次一个都不做）**：
+「装 0.3.2 wheel → 翻 `advertise()`/LWT 为 JSON → 断连记 degraded + `ADM_ERR_BROKER_UNREACHABLE` → 跑探针三组」，
+其中「**R2 PII 回填与 service_token 生效不拆开**（各带备份 + 逐条验证红线），与上面同窗但**独立过账**」。
+另两件挂同一批：**8086 收口**挂 DB 的 homesdk token 收敛（PR-A `peer_url` 可改指 Caddy 9080）——裁定 §五 明写
+"DB 直连 8086 依赖真实存在（`doubao-butler/butler/config.py:134-135`），先不收口"；
+`MA_TRUST_PROXY` 进不进 `WRITABLE_FIELDS` 随任务表 **#68 第二批**一并定。
 
 
 ### 契约对齐规范 v2.0（逐字版 · DCD 20261006）
