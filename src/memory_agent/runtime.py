@@ -235,12 +235,15 @@ class AppRuntime:
               f"总开关 device_feed_enabled={self._device_feed.enabled()}，"
               f"dry_run={self._device_feed.dry_run()}")
         # 主动感知 v2.0 · Phase 0.1 + 0.4：客厅盒侧 AI 事件轻量轮询 + 主动播报闭环
+        # 播报两条路并存（DCD 20261007 §四 Q1 = 裁 B）：HA 直发优先，缺 tts 实体/播放设备时
+        # 回落投 butler/inbox/speak。桥在这里就交给它——`self.mqtt.enabled` 才是回落路的开关。
         announcer = Announcer(
             self.ha, self.store,
             tts_entity=getattr(self.config, "announce_tts_entity", "") or "",
             enabled=getattr(self.config, "announce_enabled", False),
             cooldown_sec=getattr(self.config, "announce_cooldown_sec", 30),
             target=getattr(self.config, "announce_target", "") or "",
+            mqtt=self.mqtt,
         )
         self._livingroom_ai = LivingRoomAIIngest(
             self.ha, self.store,

@@ -312,15 +312,18 @@ def _callers_of(method_name: str) -> list[str]:
     return out
 
 
-def test_publish_speak_has_no_production_caller_yet():
-    """件 5 的"谁来投"没裁完：MA 现在用 HA `tts.speak` 直发，改成收件箱要和它二选一，
-    选错就是两处同时说话。裁定把它列在 §七 件 5（前置=无）只覆盖**本仓半边**——
-    载荷、上限、带码失败都已就绪；调用点由 DCD 20261006 呈文的答复决定。
+def test_publish_speak_production_caller_is_the_announcer_fallback():
+    """件 5 的"谁来投"由 DCD 20261007 §四 Q1 裁 **B**：`announcer.py` 在 HA 直发未就绪时投。
 
-    这条锁反向钉住"擅自接线"：哪天出现生产调用点，这里判红，逼着先回看裁定。
+    这条锁原本钉的是"还没有生产调用点"（未经裁定不许擅自接线）。裁定批准接线之后，
+    它换成钉"**只有那一处**投"：调用点每多一处，就多一个可能与 HA 同时说话的地方，
+    而"两处同时说话"是裁定驳回 A/C 时点名的失败形状。所以数量与落点都要判。
     """
     callers = [c for c in _callers_of("publish_speak") if "mqtt_bridge.py" not in c]
-    assert callers == [], f"`butler/inbox/speak` 的调用点未经裁定：{callers}"
+    files = sorted({c.split(":")[0] for c in callers})
+    assert files == [os.path.join("memory_agent", "announcer.py")], \
+        f"`butler/inbox/speak` 出现了未经裁定的调用点：{callers}"
+    assert len(callers) == 1, f"回落调用点应当只有一处，实际 {callers}"
 
 
 def _last(client, topic):

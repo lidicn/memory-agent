@@ -165,7 +165,9 @@ class Config:
     # 决策（2026-09-17）：人脸识别不稳定不可靠，**不做语音播报**（避免错误打扰），
     # 感知事件仅落库记录（perception_events）供人工/离线回溯。以下 Announcer 配置
     # 保留为"识别稳定后的可选能力"，默认关闭。
-    announce_enabled: bool = False                    # 主动播报总开关（默认关，需配 tts 实体+播放设备）
+    announce_enabled: bool = False                    # 主动播报总开关（默认关；关掉时两条路都不发）
+    # 播报走哪条由这两键决定（DCD 20261007 §四 Q1 = 裁 B，两条并存、按优先级）：
+    # 两键都配了 → HA `tts.speak` 直发；缺任何一键 → 回落投 `butler/inbox/speak` 请 DB 播报。
     announce_tts_entity: str = ""                     # HA 的 tts 实体，如 "tts.doubao_tts" / "tts.edgetts_*"
     announce_target: str = ""                         # 播放设备 media_player.*（tts.speak 必需，否则只合成不发声）
     announce_cooldown_sec: int = 30                   # 同类事件最小播报间隔，防刷屏

@@ -47,15 +47,16 @@ def test_announce_unknown_and_cry_messages():
 
 
 def test_announce_disabled_without_entity():
+    """没有收件箱可回落时，缺 tts 实体 = 整条链路无路可走（HA 那条不通）。"""
     ha = FakeHA()
-    a = _ann(ha, tts_entity="")  # 无 tts 实体 → 强制关闭
+    a = _ann(ha, tts_entity="")  # 无 tts 实体、无 mqtt
     assert a.enabled is False
     assert a.announce(_ev("face_known")) is False
     assert ha.calls == []
 
 
 def test_announce_disabled_without_target():
-    """只配 tts 实体、未配播放设备 → 未就绪（HA 会静默不发声）。"""
+    """只配 tts 实体、未配播放设备 → HA 那条未就绪（HA 会只合成不出声）。"""
     ha = FakeHA()
     a = _ann(ha, target="")
     assert a.enabled is False
@@ -96,3 +97,105 @@ def test_execute_action_speak_sets_media_player_entity_id(monkeypatch):
     captured.clear()
     ha.execute_action({"device": TTS, "command": "speak", "params": {"message": "hi"}})
     assert "media_player_entity_id" not in captured["data"]
+
+
+# ── DCD 20261007 §四 Q1 裁 B：两条路并存，按优先级 ──────────────────────────
+
+class FakeMqtt:
+    """收件箱替身：只记 `publish_speak` 的入参，返回值可控（桥自己会记契约码）。"""
+
+    def __init__(self, enabled=True, ok=True):
+        self.enabled = enabled
+        self.ok = ok
+        self.calls = []
+
+    def publish_speak(self, text, *, trace_id, **kw):
+        self.calls.append({"text": text, "trace_id": trace_id, "kw": kw})
+        return self.ok
+
+
+def _ann_inbox(**kw):
+    """缺 HA 那两键的常见形态：实体没配（或播放设备没配），但收件箱在场。"""
+    ha = kw.pop("ha", FakeHA())
+    mqtt = kw.pop("mqtt", FakeMqtt())
+    kw.setdefault("tts_entity", "")
+    kw.setdefault("target", "")
+    kw.setdefault("enabled", True)
+    return ha, mqtt, Announcer(ha, None, mqtt=mqtt, **kw)
+
+
+def test_inbox_fallback_when_ha_route_is_not_configured():
+    """裁 B 的正面：HA 直发没配起来时播报不该就此沉默，改投 `butler/inbox/speak`。"""
+    ha, mqtt, a = _ann_inbox()
+    assert a.enabled is False and a.inbox_ready is True
+    assert a.announce(_ev("face_known", {"friendly_name": "妈妈"})) is True
+    assert mqtt.calls[0]["text"] == "客厅的妈妈回来了"
+    assert ha.calls == [], "HA 那条不通就不该往 HA 打"
+
+
+def test_missing_target_falls_back_too():
+    """只配实体不配播放设备 = HA 会只合成不出声，那个洞正是回落要接的那一个。"""
+    ha, mqtt, a = _ann_inbox(tts_entity=TTS, target="")
+    assert a.announce(_ev("cry")) is True
+    assert [c["text"] for c in mqtt.calls] == ["客厅的婴儿在哭"]
+    assert ha.calls == []
+
+
+def test_fallback_carries_a_real_trace_id():
+    """契约 §七 E 的 `trace_id` 必填且桥会拒空串：给个空的等于把这条投递变成必然失败。"""
+    _, mqtt, a = _ann_inbox()
+    a.announce(_ev("face_unknown"))
+    tid = mqtt.calls[0]["trace_id"]
+    assert len(tid) == 32 and all(c in "0123456789abcdef" for c in tid), tid
+
+
+def test_ha_route_wins_and_inbox_stays_silent():
+    """**优先级而不是并行**：两键都配了就走 HA 直发，同一次事件绝不能两处同时说话——
+    裁定驳回 A/C 时点名的就是那个形状。"""
+    ha, mqtt, a = _ann_inbox(tts_entity=TTS, target=TARGET)
+    assert a.enabled is True
+    assert a.announce(_ev("face_known")) is True
+    assert len(ha.calls) == 1
+    assert mqtt.calls == []
+
+
+def test_no_route_means_false_not_true():
+    """两条路都不通时必须报 False。报成 True 是把"配错了"洗成"听起来一切正常"。"""
+    _, _, a = _ann_inbox(mqtt=None)
+    assert a.announce(_ev("face_known")) is False
+    ha2, mqtt2, a2 = _ann_inbox(mqtt=FakeMqtt(enabled=False))
+    assert a2.inbox_ready is False
+    assert a2.announce(_ev("face_known")) is False
+    assert mqtt2.calls == [] and ha2.calls == []
+
+
+def test_master_switch_blocks_both_routes():
+    """`announce_enabled` 仍是总闸：关掉时 HA 和收件箱都不该收到东西。"""
+    ha, mqtt, a = _ann_inbox(enabled=False, tts_entity=TTS, target=TARGET)
+    assert a.announce(_ev("cry")) is False
+    assert ha.calls == [] and mqtt.calls == []
+
+
+def test_cooldown_applies_on_the_fallback_path_too():
+    """冷却是"同一类事件别刷屏"，不该因为换了条路就失效。"""
+    _, mqtt, a = _ann_inbox(cooldown_sec=1000)
+    assert a.announce(_ev("face_known")) is True
+    assert a.announce(_ev("face_known")) is False
+    assert len(mqtt.calls) == 1
+
+
+def test_inbox_rejection_is_reported_as_not_announced():
+    """桥拒发（载荷不合法 / broker 不可达）时返回值要如实是 False，桥自己记的码不在这里重造。"""
+    _, mqtt, a = _ann_inbox(mqtt=FakeMqtt(ok=False))
+    assert a.announce(_ev("face_known")) is False
+    assert len(mqtt.calls) == 1
+
+
+def test_inbox_exception_does_not_escape_the_perception_loop():
+    """采集主链路不能被一条播报的异常拖下水——兜成 False 才是旁路该有的样子。"""
+    class _Boom(FakeMqtt):
+        def publish_speak(self, text, *, trace_id, **kw):
+            raise RuntimeError("broker 线程炸了")
+
+    _, _, a = _ann_inbox(mqtt=_Boom())
+    assert a.announce(_ev("face_known")) is False

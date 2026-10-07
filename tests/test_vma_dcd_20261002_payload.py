@@ -195,23 +195,41 @@ def test_inbox_notify_ts_stays_epoch_int_as_the_registered_exception():
 
 # ── 交付面 Q1：vendor 的三处一致 ─────────────────────────────────────────────
 
-_WHEEL = os.path.join(_ROOT, "vendor", "homesdk-0.3.1-py3-none-any.whl")
+def _vendor_wheels():
+    """`vendor/` 里现有的 homesdk wheel 文件名（排序后返回）。
+
+    名字从目录里读、不写死版本：写死 `homesdk-0.3.1-…whl` 的锁在换版那天会退化成
+    "仓里是 0.3.2，锁还在替 0.3.1 作证"——红是红的，但红在过期的账上。
+    """
+    d = os.path.join(_ROOT, "vendor")
+    if not os.path.isdir(d):
+        return []
+    return sorted(f for f in os.listdir(d)
+                  if f.startswith("homesdk-") and f.endswith("-py3-none-any.whl"))
+
+
+_WHEELS = _vendor_wheels()
+_WHEEL = os.path.join(_ROOT, "vendor", _WHEELS[0]) if _WHEELS else ""
 _README = os.path.join(_ROOT, "vendor", "README.md")
 _DOCKERFILE = os.path.join(_ROOT, "Dockerfile")
 # 三件齐全才是"完整检出"：容器快照常只 `git archive src tests …`，那种缺件不是不一致，
 # 判红就是把取证手法的差异报成产品缺陷。
-_PROVENANCE_COMPLETE = os.path.exists(_WHEEL) and os.path.exists(_README) and os.path.exists(_DOCKERFILE)
+_PROVENANCE_COMPLETE = bool(_WHEELS) and os.path.exists(_README) and os.path.exists(_DOCKERFILE)
 
 
 @pytest.mark.skipif(not _PROVENANCE_COMPLETE,
                     reason="wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对")
 def test_vendored_wheel_matches_the_sha_registered_in_vendor_readme():
+    assert len(_WHEELS) == 1, (
+        f"vendor/ 里有 {len(_WHEELS)} 枚 homesdk wheel：{_WHEELS}——"
+        "两枚并存时『装哪一枚』靠人记，不是靠 Dockerfile；换版要删旧的那枚")
     readme = open(_README, encoding="utf-8").read()
     actual = hashlib.sha256(open(_WHEEL, "rb").read()).hexdigest()
     assert actual in readme, f"wheel 实算 sha {actual} 与 vendor/README.md 登记值不一致"
 
     dockerfile = open(_DOCKERFILE, encoding="utf-8").read()
-    assert "vendor/homesdk-0.3.1-py3-none-any.whl" in dockerfile
+    assert f"vendor/{_WHEELS[0]}" in dockerfile, (
+        f"Dockerfile 装的不是仓里那枚 wheel（仓内是 {_WHEELS[0]}）")
     assert "COPY vendor/" in dockerfile, " wheel 进了仓但没进镜像构建上下文"
 
 

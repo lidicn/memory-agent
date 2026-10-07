@@ -431,9 +431,10 @@ class MqttBridge:
         **不写进载荷**（库的 include 规则如此），载荷里也**没有 `source` 字段**（§E 逐字）。
         `text` 超 500 先截断再发，不整条丢掉。三条失败出口各带一枚契约码。
 
-        现场还没有调用者：MA 现有播报走 HA `tts.speak`（`announcer.py`），改成"MA 投收件箱、
-        DB 决定谁开口"要跟 HA 直发二选一，选错就变成两处同时说话。那条路由不在自主决定范围内，
-        已按"未挂载"呈 DCD；锁见 `tests/test_vma_dcd_20261006_linkage_codes.py`。
+        调用点是 DCD 20261007 §四 Q1 的**裁 B**：`announcer.py` 在 HA 直发未就绪（缺
+        `announce_tts_entity` 或缺播放设备）时投这里，HA 就绪时**不投**——两条是优先级不是
+        并行，否则同一次事件两处同时说话。DB 侧真播报的硬读数由 DB 出（合并窗内实测），MA 不背。
+        锁见 `tests/test_vma_dcd_20261006_linkage_codes.py` 与 `tests/test_announcer.py`。
         """
         if not self.enabled or self._closed:
             return False
