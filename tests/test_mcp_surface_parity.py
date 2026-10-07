@@ -255,3 +255,137 @@ def test_assign_member_device_still_writes_for_a_real_member(monkeypatch):
             assert "media_player.tv_livingroom" in (fresh.get("devices") or []), fresh
         finally:
             store.close()
+
+
+# ── DCD 20261007 §一 裁甲：目录唯一真源 = tool_schema.build_catalog() ──────────
+
+# 这里曾有**第二份真源**：`mcp_server.py:169` 一份 434 行手抄的 `TOOL_CATALOG` 字面量
+# （48 条），在文件末尾被 `TOOL_CATALOG = build_catalog()` 覆盖，而四个读者
+# （help / describe / selftest / WebUI 的 MCP 接入页）全在函数体内、取到的都是覆盖后的值。
+# 那份镜像无人消费、条目却比真源少 46 条，逐条补齐是白付的双向维护费——本批删除。
+# 下面三把门钉的是"它别回来"：绑定点唯一、值必须是 build_catalog()、且不许有 import 期读者。
+
+def _module_binding_nodes(tree):
+    """模块级（深度 0）赋值语句：[(绑定名, lineno, 值节点), ...]，多目标/元组解包不算。"""
+    out = []
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign):
+            target = node.target
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        else:
+            continue
+        if isinstance(target, ast.Name) and node.value is not None:
+            out.append((target.id, node.lineno, node.value))
+    return out
+
+
+def _import_time_names(node):
+    """节点里**import 期**会求值的名字：进装饰器/默认值/基类/复合语句体，不进函数与方法的体。"""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        out = [n for dec in node.decorator_list for n in _import_time_names(dec)]
+        out += [n for d in node.args.defaults for n in _import_time_names(d)]
+        out += [n for d in node.args.kw_defaults if d for n in _import_time_names(d)]
+        return out
+    if isinstance(node, ast.ClassDef):
+        out = [n for dec in node.decorator_list for n in _import_time_names(dec)]
+        out += [n for b in node.bases for n in _import_time_names(b)]
+        out += [n for kw in node.keywords for n in _import_time_names(kw)]
+        for stmt in node.body:
+            out += _import_time_names(stmt)
+        return out
+    if isinstance(node, ast.Name):
+        # 只数"读"（Load）：绑定语句自己的目标名是 Store，否则 `TOOL_CATALOG = build_catalog()`
+        # 这一行会把自己判成 import 期读者。
+        return [node.id] if isinstance(node.ctx, ast.Load) else []
+    out = []
+    for child in ast.iter_child_nodes(node):
+        out += _import_time_names(child)
+    return out
+
+
+def _catalog_source_readings(path):
+    """从源码读目录面的形状量（不 import mcp，本机与容器同构）。"""
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    bindings = _module_binding_nodes(tree)
+    r = {"catalog": [b for b in bindings if b[0] == "TOOL_CATALOG"],
+         "names": [b for b in bindings if b[0] == "TOOL_NAMES"],
+         "big_dict_tables": [],
+         "import_time_reads": []}
+    for name, lineno, value in bindings:
+        if (isinstance(value, ast.List) and len(value.elts) >= 10
+                and sum(1 for e in value.elts if isinstance(e, ast.Dict)) >= 10):
+            r["big_dict_tables"].append((name, lineno, len(value.elts)))
+    # 全局口径：目录的两个名字在 import 期**一处都不许被读**（真源绑定自身那两行的值里
+    # 只含 build_catalog / TOOL_NAMES_FROM_SPEC，不会误报）。不按"最早绑定之前"划界——
+    # 那会让"字面量 + 派生行"一起回来时派生行落在界后而漏检（对照档 M1 实测抓到这一点）。
+    for node in tree.body:
+        hits = [n for n in _import_time_names(node) if n in ("TOOL_CATALOG", "TOOL_NAMES")]
+        if hits:
+            r["import_time_reads"].append((type(node).__name__, node.lineno,
+                                           sorted(set(hits))))
+    return r
+
+
+READINGS = _catalog_source_readings(MCP_SERVER_PY)
+
+
+def test_tool_catalog_is_bound_exactly_once_from_the_spec_builder():
+    """目录面在 mcp_server 里**恰好一处**模块级绑定，且值必须是 `build_catalog()` 调用。
+
+    钉的是"覆盖"这个动作本身：谁再手写一份字面量、或把真源换成别的东西（本地拼装、
+    缓存常量），这里当场判红，而不是等 help/describe 与 caps.tools 悄悄分叉。
+    """
+    cat = READINGS["catalog"]
+    assert len(cat) == 1, f"模块级 TOOL_CATALOG 绑定应恰好一处，实为 {[(l, ast.dump(v)[:60]) for _, l, v in cat]}"
+    lineno, value = cat[0][1], cat[0][2]
+    assert isinstance(value, ast.Call), f":{lineno} 的 TOOL_CATALOG 不再是函数调用，而是 {type(value).__name__}"
+    func = value.func
+    assert isinstance(func, ast.Name) and func.id == "build_catalog", (
+        f":{lineno} 的目录真源不是 build_catalog()，而是 {ast.dump(func)[:80]}")
+    assert not value.args and not value.keywords, f"build_catalog() 传了参数，同源口径要重核：{ast.dump(value)[:120]}"
+    names = READINGS["names"]
+    assert len(names) == 1, f"模块级 TOOL_NAMES 绑定应恰好一处，实为 {[l for _, l, _ in names]}"
+    value = names[0][2]
+    assert isinstance(value, ast.Name) and value.id == "TOOL_NAMES_FROM_SPEC", (
+        f":{names[0][1]} 的 TOOL_NAMES 不再取自 tool_schema（实为 {ast.dump(value)[:80]}）")
+
+
+def test_no_hand_written_tool_dict_table_is_bound_at_module_level():
+    """镜像回归的通用形状：模块级不许再有 ≥10 条的 dict 列表字面量。
+
+    逐条盯 `TOOL_CATALOG` 只能防同名回来，防不住换个名字再来一份"待接线的真源"。
+    """
+    assert not READINGS["big_dict_tables"], (
+        f"mcp_server.py 里出现手写大表（≥10 条 dict）：{READINGS['big_dict_tables']}")
+
+
+def test_catalog_is_never_read_at_import_time():
+    """目录名字在 import 期**一处都不许被读**：读者只能在函数体运行期取真源绑定后的值。
+
+    这正是被删那份字面量当初"能活着"的原因——`:604` 的派生行在 import 期消费它。
+    谁把 TOOL_CATALOG/TOOL_NAMES 放进装饰器、默认值或模块级语句，这里判红。
+    """
+    assert not READINGS["import_time_reads"], (
+        f"import 期就读目录的地方：{READINGS['import_time_reads']}")
+
+
+def test_describe_page_serves_the_whole_spec_catalog():
+    """四个读者里唯一能不调 SDK 就跑到的一条：WebUI 的 MCP 接入页必须拿到**整份**目录。
+
+    `describe()` 读的是模块级 `TOOL_CATALOG`/`TOOL_NAMES`，而那份手写字面量只有 48 条、
+    真源有 90 条——镜像若还在（或被换成截断版），这一页就会少报能力，且一声不响。
+    """
+    from memory_agent import mcp_server as ms
+
+    info = ms.describe()
+    catalog = info["catalog"]
+    names = info["tools"]
+    assert len(catalog) == len(tool_schema.build_catalog()), (
+        f"describe() 给前端的目录 {len(catalog)} 条，真源 {len(tool_schema.build_catalog())} 条")
+    assert names == ms.TOOL_NAMES and len(names) == len(catalog), (
+        f"tools 与 catalog 不同源：{len(names)} vs {len(catalog)}")
+    assert [t["name"] for t in catalog] == list(names), "目录与工具名清单顺序/内容不一致"
+    missing = [t["name"] for t in catalog if not t.get("summary")]
+    assert not missing, f"这些工具进目录却没有 summary，前端只能显示兜底文案：{missing}"
