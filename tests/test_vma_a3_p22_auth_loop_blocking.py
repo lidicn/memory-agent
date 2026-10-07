@@ -30,6 +30,7 @@ from starlette.requests import Request
 
 from memory_agent import app as app_module
 from memory_agent.api import auth_routes as ar
+from memory_agent.config import Config
 
 BLOCK_SECONDS = 0.25
 HEARTBEAT = 0.01
@@ -78,8 +79,16 @@ class _SlowAuth:
 
 
 class _RT:
+    """最小运行时替身。
+
+    带一份真 `Config`：`_client_ip` 从 DCD 20261007 §五 裁乙起要读 `trust_proxy` /
+    `trusted_proxy_cidrs` 两个键，用真配置（默认关 → 一律 TCP 对端）而不是再造一层
+    config 替身，免得替身把口径替掉。
+    """
+
     def __init__(self, auth):
         self.auth = auth
+        self.config = Config()
 
 
 def _request(body=None, method="POST"):
@@ -272,7 +281,6 @@ async def _downstream(scope, receive, send):
 
 @pytest.fixture
 def slow_auth(monkeypatch):
-    from memory_agent.config import Config
     monkeypatch.setattr(app_module, "get_config", lambda: Config())
     monkeypatch.setattr(app_module, "AuthManager", _SlowAuthManager)
     _SlowAuthManager.instances = []

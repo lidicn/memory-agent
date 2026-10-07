@@ -7,6 +7,7 @@ import asyncio
 from starlette.requests import Request
 from starlette.routing import Route
 
+from ..auth import resolve_client_ip
 from .deps import current_user, error, json_body, ok, require_admin, require_user, runtime
 
 
@@ -64,19 +65,19 @@ async def register(request: Request):
 
 
 def _client_ip(request: Request) -> str:
-    """取客户端 IP（WO-MA-004 ⑤b：取 X-Forwarded-For 最后一个元素）。
+    """客户端 IP，口径见 `auth.resolve_client_ip`（DCD 20261007 §五 裁乙）。
 
-    首元素可被攻击者伪造（自行决定被限速的 IP = 限速器反向失效）。
-    反向代理（Caddy）会把真实客户端 IP 追加到 XFF 末尾，因此取最后一个。
-    无 XFF 时回退到 TCP 对端 IP。
+    这里只把 Request 拆成口径要的几件事；口径本身不在本模块，因为 Basic Auth
+    那条入口（`app.AuthMiddleware`）必须落在同一个桶键上。
     """
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        parts = [p.strip() for p in xff.split(",") if p.strip()]
-        if parts:
-            return parts[-1]
     client = request.client
-    return client.host if client else "unknown"
+    cfg = runtime(request).config
+    return resolve_client_ip(
+        client.host if client else "unknown",
+        request.headers.get("x-forwarded-for", ""),
+        trust_proxy=cfg.trust_proxy,
+        trusted_proxy_cidrs=cfg.trusted_proxy_cidrs,
+    )
 
 
 async def login(request: Request):
@@ -88,7 +89,8 @@ async def login(request: Request):
     # 审计 A4：登录爆破防护（按 IP + 用户名双维度限流 / 锁定）
     allowed, retry = rt.auth.login_allowed(ip, username)
     if not allowed:
-        return error(f"尝试过于频繁，请在 {max(1, retry // 60 + 1)} 分钟后重试", 429)
+        # 向上取整到分钟（60 秒的退避不能显示成"2 分钟"：那是给用户的错误预期）。
+        return error(f"尝试过于频繁，请在 {max(1, (retry + 59) // 60)} 分钟后重试", 429)
     # bcrypt.checkpw 是"刻意慢"函数（百毫秒级），而未鉴权的 /login 在改前直接在协程里调它：
     # 任何人都能用登录请求把整条事件循环冻住。卸载到线程后循环在此期间照常调度。
     result = await asyncio.to_thread(rt.auth.login, username, password)

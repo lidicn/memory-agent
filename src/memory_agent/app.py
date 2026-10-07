@@ -45,7 +45,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from . import api, mcp_server
 from .acp_auth import ACPTokenMiddleware
 from .acp_server import acp_dispatcher
-from .auth import AuthManager
+from .auth import AuthManager, resolve_client_ip
 from .config import get_config
 from .home_profile import write_profile_atomic
 from .logging_setup import configure_logging
@@ -386,7 +386,14 @@ class AuthMiddleware:
             # WO-MA-004 ⑤a：Basic Auth 与 JWT 登录路径汇到同一份爆破计数。
             # 原实现直接调 login()，无 login_allowed 检查、无 note_login_failure，
             # 等于给攻击者开了一条无限次尝试密码的旁路。
-            ip = client_ip or "unknown"
+            # 桶键走同一个口径（DCD 20261007 §五 裁乙）：两条入口若各算各的 IP，
+            # 同一个客户端就会落进不同的桶，⑤a 想要的"同一份计数"就不成立了。
+            ip = resolve_client_ip(
+                client_ip or "unknown",
+                headers.get("x-forwarded-for", ""),
+                trust_proxy=config.trust_proxy,
+                trusted_proxy_cidrs=config.trusted_proxy_cidrs,
+            )
             allowed, _retry = auth_manager.login_allowed(ip, username)
             if not allowed:
                 return None

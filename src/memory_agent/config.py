@@ -64,6 +64,25 @@ class Config:
     # JWT配置（WO-MA-004 ③：无默认值，未显式配置则拒绝启动）
     jwt_secret: str = ""
 
+    # ── 入口与客户端 IP 口径（DCD 20261007 §五 裁乙）─────────────────────────
+    # 登录限速按「IP + 用户名」双桶计数，所以"客户端 IP 是谁"直接决定桶的归属。
+    # 改前 `_client_ip` 无条件取 X-Forwarded-For 末位：末位只有在本机**确实只经过
+    # 自己那台反代**时才可信，而 MA 的 8086 是直曝的（裁定：暂不收口，见下），
+    # 直连的请求自带任意 XFF 就能自造 IP 桶——限速器反向失效。
+    #
+    # 口径：默认关，关闭时**完全不看 XFF**，一律 TCP 对端。开启时还要请求方 IP
+    # ∈ `trusted_proxy_cidrs` 才解析 XFF，否则仍按 TCP 对端。
+    # `trusted_proxy_cidrs` 填 **Caddy 服务名解析出的那个单 IP**（形如 `172.18.0.7/32`
+    # 或直接 `172.18.0.7`），不用 `172.16.0.0/12` 整段——信任面越大，能伪造 XFF 的
+    # 邻居越多。只收 IP/CIDR 字面量，**不做服务名解析**：把信任决定交给 DNS 等于
+    # 让"谁能拿到这个名字"决定谁能伪造客户端 IP。
+    #
+    # 8086 直曝本轮**不收口**（DCD 核实：DB 直连 `http://192.168.2.200:8086` 依赖
+    # 真实存在，收口 = 断 DB→MA），挂在 DB 的 service_token 收敛同一批；所以这里
+    # 必须先把软件层的口径修对，直连面才不会绕过限速。
+    trust_proxy: bool = False
+    trusted_proxy_cidrs: str = ""
+
     # MCP配置
     mcp_auth_token: str = ""
     # 升级后结构：{name: {"hash": sha256, "prefix": "mcp_xxxx", "created_at": ..., "last_used_at": ...}}
@@ -453,6 +472,12 @@ def get_config() -> Config:
         "llm_api_key": "LLM_API_KEY",
         "llm_model": "LLM_MODEL",
         "jwt_secret": "JWT_SECRET",
+        # 入口 IP 口径（DCD 20261007 §五 裁乙）。两个键都走 env_map 的既有口径
+        # （「当前值为空才用环境变量」），不像 device_feed 那样另开覆盖段：
+        # `trust_proxy=False` / `trusted_proxy_cidrs=""` 本身就是"空"，不存在
+        # 非空默认值让环境变量永不过效的那个坑。
+        "trust_proxy": "MA_TRUST_PROXY",
+        "trusted_proxy_cidrs": "MA_TRUSTED_PROXY_CIDRS",
         "db_path": "DB_PATH",
         "skills_dir": "SKILLS_DIR",
         "ha_db_enabled": "HA_DB_ENABLED",

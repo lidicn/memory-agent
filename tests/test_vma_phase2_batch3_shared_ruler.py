@@ -370,14 +370,26 @@ def test_register_cascades_conv_locks_without_awaiting(clean_debug_state):
 
 @pytest.fixture
 def clean_login_state():
-    saved = (dict(auth_module._login_fails), dict(auth_module._login_locked))
+    """隔离登录限速的**全部**进程内状态。
+
+    加进 `_login_global` / `_login_global_until`（DCD 20261007 §五 裁丙）是必须的，
+    不是装饰：本文件下面那条 5000 次失败的清扫用例会把全局预算打穿，而预算一旦打穿
+    就把 `_login_global_until` 推到未来一分钟 —— 不清它就会顺着模块状态漏到后面的
+    用例，让别处"还能登录"的断言随机判红（限速状态是模块级的，跨用例不自动复位）。
+    """
+    saved = (dict(auth_module._login_fails), dict(auth_module._login_locked),
+             list(auth_module._login_global), auth_module._login_global_until)
     auth_module._login_fails.clear()
     auth_module._login_locked.clear()
+    auth_module._login_global.clear()
+    auth_module._login_global_until = 0.0
     yield
     auth_module._login_fails.clear()
     auth_module._login_fails.update(saved[0])
     auth_module._login_locked.clear()
     auth_module._login_locked.update(saved[1])
+    auth_module._login_global[:] = saved[2]
+    auth_module._login_global_until = saved[3]
 
 
 @pytest.fixture
