@@ -69,7 +69,8 @@ TOOL_SPECS: list = [
     ToolSpec(
         name="route_question",
         summary="拿到用户问题后**第一步**调用：用确定性逻辑摸排问题（时间窗口/设备/意图/模板），"
-                "返回执行计划——推荐工具、参数建议与步骤。模型只需照计划调用具体工具，避免从零自选。",
+                "返回执行计划——route/intent（该走哪条路、判定为何）、entity_ids/time_range（已解析出的设备与窗口）、"
+                "hints（候选追问）。模型只需照 route 去调对应工具，避免从零自选。",
         description="路由/规划工具。内置 LLM 拿到任意家庭数据类问题时应首先调用它，拿到结构化执行计划后再逐步调用数据工具。"
                     "若用户说'用/按 xxx 模板分析'，计划会直接推荐 run_analysis_template(template_id=..., days=模板默认天数) 执行模板出结果；"
                     "其余周期性报告类诉求仍提示复用 export_insight。",
@@ -82,7 +83,9 @@ TOOL_SPECS: list = [
             _p("days", "integer", "不确定时间窗口时的兜底天数，默认7", default=7),
         ],
         example="route_question(question=\"昨天书房电脑开了多久\") → 计划：get_device_usage(query='书房电脑', days=2)",
-        pitfall="这是规划工具不是数据工具，调用后必须接着按计划调用 recommended_tool 才能真正取数。",
+        pitfall="这是规划工具不是数据工具：返回体里没有'下一步工具名'那样的键。要看的键是 route/intent——"
+                "取值是意图名（device_usage/behavior/anomaly/rhythm/activity/persona，认不出来时 auto），"
+                "再按那一类去调对应数据工具（如 device_usage → get_device_usage）才能真正取数。",
     ),
     ToolSpec(
         name="get_entity_catalog",
@@ -436,7 +439,7 @@ TOOL_SPECS: list = [
             _p("question", "string", "口语问题，如'昨天书房电脑开了多久'、'昨天净水器出水量'", required=True),
             _p("days", "integer", "回溯窗口，默认 7", default=7),
             _p("route", "string", "auto/structured/semantic；auto=结构化+语义副驾，semantic=纯语义检索", default="auto"),
-            _p("return_hints", "boolean", "True 时保留 semantic_hints/agent_memory_hints（调试用）", default=False),
+            _p("return_hints", "boolean", "True 时保留顶层 hints（规划阶段生成的候选追问，调试用）", default=False),
         ],
         example="昨天书房电脑开了多久 / 昨晚空调开了几次 / 昨天净水器出水量",
         pitfall="route=semantic 只走向量库，可能漏掉结构化统计；默认 auto 已兼顾两者。模糊问法（如'最近怎么样'）会回落到行为总览+语义副驾。",

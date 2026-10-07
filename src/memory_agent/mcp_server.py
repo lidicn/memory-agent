@@ -2078,7 +2078,7 @@ def _build_server():
         例：「用户上周三晚上在干嘛」「昨天谁在家做饭」「空调最近设定几度」。
         问法先映射到既有洞察工具（关系库主力）；模糊问法回落向量库语义检索（副驾）。
         route: auto=结构化+副驾证据, structured=仅结构化, semantic=纯语义+agent记忆。
-        return_hints=True 时返回 semantic_hints / agent_memory_hints（调试/混合）。
+        return_hints=True 时另给顶层键 `hints`（规划阶段生成的候选追问，调试/混合用）。
         """
         rt = get_runtime()
         return await asyncio.to_thread(
@@ -2611,7 +2611,13 @@ def _build_server():
 
     @mcp.tool()
     async def get_data_quality(days: int = 30) -> dict:
-        """聚合数据质量：现有 data_quality_issues + agent 记忆镜像缺口（mirror_dirty）。"""
+        """聚合数据质量：逐项 `checks`，未通过项的名字列在 `issues`。
+
+        顶层键 = `checks[]`（每格 {name, ok, value, ratio, detail}）、`issues`（未通过的检查名）、
+        `score`（通过占比）、`total_events`/`sample_size`、`missing_days`、`noise_ratio`、
+        `summary`、`filters`、`window`、`ok`；agent 记忆镜像缺口在 `agent_memory` 块里——
+        子系统可用时是 {ok, states, mirror_dirty, chroma_available}，读不到时只有 {ok:false, error}。
+        """
         rt = get_runtime()
         return await asyncio.to_thread(rt.insights.get_data_quality, days)
 
