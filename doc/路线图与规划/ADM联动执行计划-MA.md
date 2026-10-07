@@ -1755,6 +1755,36 @@ L1~L5 该响全响（`failed=3 / 2 / 2 / 1 / 1`），`MUT78_COUNT=6 MUTATION_BAD
 容器里 `tail` 找不到（`tail: cannot open '/tmp/c82snap27_mr20_run.log'`），六腿判定由 harness 自己在容器内写的
 `MUT_OUT` 提供、不受影响。三处口径写进 **§五十三 六**。
 
+### 6.25 容器权威门 run28 + run28b（任务表 #85：MA-25~MA-35 落码 `800c17b`，2026-10-08 凌晨两档并立）
+
+主档（快照树 = `800c17b`，容器 `memory-agent` / Python 3.11.16 / pytest 9.1.1 / pyflakes 4.0.2，起算 04:16:04+08:00）：
+`TOOLCHAIN_RC=0`、`SNAP_RC=0`、`GATE_RC=0`（pyflakes 0/0/0/0）、**`SUITE_RC=0` = 2038 passed, 10 skipped in 550.21s**、
+`HARNESS_RC=0`、定向三格 `BATCH_E_RC=0`(151) / `FACES_F_RC=0`(101) / `PROSE_G_RC=0`(39)、
+`M85_RC=0` 11 腿全杀（对照腿 `[Q-0]` 28 passed 全跑）、`M81_RC=0` 22 腿全杀、`M82_RC=0` 14 腿全杀，
+`POST_HASHES_RC=0` 聚合哈希与起算**逐字符同串**（`b377f79c…eb3c2`）、`POST_BATCH_RC=0`、`POST_ACP_RC=0`，
+`REMOTE_DONE` 收尾于 05:02:16+08:00。十条 skip 逐条有名、全是可选重依赖（禁 pip install 的既有口径），
+名单里没有 `test_rounds11_19` ⇒ MA-26 那条锁在容器里是实跑的（本机 3.13 因 `mcp` SDK 过旧而 skip 的那 15 条没跟过来）。
+
+反例档 run28b（04:24:39+08:00，全程只读）：主档里两格是**我的量具锚点写错**，不是产品少一条 ——
+锁名按 `def test_xxx():` 命中 0（这四条签名带 `monkeypatch`）、`参数校验通过` 的 1 命中来自我自己写的注释。
+两档并立、不回头改主档读数；本机(=HEAD 工作树)与容器快照树按同一口径逐格对账 **18/18 MATCH**。
+这条是"容器权威门"唯一的反向用途：容器档把量具的错也照样量成红，所以判红之后必须先怀疑尺子。
+
+四把门禁量具（2 期四份报告的"建议加门禁"落成可执行门 + 一把 pytest 锁 `tests/test_vma_phase2_claims_gauge.py`，
+本机 3.13 档 6 passed）：`scan_stub_claims_success.py`（第十四轮 :213-214）、`scan_source_of_truth_sync.py`
+（第十七轮 :153-154）、`scan_cleanup_scheduled.py`（第十九轮 :153-154）、`scan_claimed_semantics.py`
+（第十二轮 :201-202，REGISTRY 15 条带真断言 + UNVERIFIED 26 条基线，`BASELINE_CAP=26` 钉住"基线只准减"）。
+四把门首跑都把我写的假登记/假红判了出来（用例名口径要放宽缩进与中文名、单跳归因要改多层、
+`not isfile` 是入参校验不是跳过守卫、`retrieve_agent_memories` 挂的用例断的不是同一条语义），
+错法与修正都进量具头部并锁成负例 —— 逐格读数与口径见台账 **§五十五 五之三**。
+
+**未进 run28 那棵树**：五件全是本轮新建的未跟踪文件（快照树哈希必须不动）。容器旁证已在场：按字节核过入容器
+（本机↔容器 `wc -c` 逐件相同）后，3.11.16 下 `PYCOMPILE311_RC=0`、容器 pyflakes 4.0.2 **零条**、四把门
+`SELFTEST_RC=0` ×4、对被测树现扫的四行读数与本机 3.13 逐字符同，锁文件在硬链接副本树里 **6 passed in 16.77s**；
+旁证结束删掉副本树并重跑哈希，**第三次**仍是 `b377f79c…eb3c2`（408/408/0）。
+**仍待 run29**：五件与既有 2048 条用例共处一树的全量档（旁证只量了五件本身）。
+
+
 ---
 
 ## 七、下一阶段：更紧密联动（DCD 2026-10-06）
