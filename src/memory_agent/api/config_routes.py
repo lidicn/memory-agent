@@ -66,6 +66,16 @@ SECRET_FIELDS = (
     "butler_token", "ha_assist_token", "tv_mqtt_pass",
 )
 
+# 这些字段不允许被空字符串意外覆盖（GET 返回空 → WebUI 显示空 → 点保存 → 空值覆盖真实值）。
+# 包含全部密钥字段 + 配套用户名（用户名虽非密钥，但被清空后同样导致认证失败）。
+# 用户显式清空需传 "__CLEAR__"。
+EMPTY_PRESERVE_FIELDS = SECRET_FIELDS + (
+    "nr_user", "ha_db_user", "go2rtc_user", "tv_mqtt_user",
+)
+
+# 显式清空标记：前端传此值表示用户确实要清空该字段，而非"没改"。
+CLEAR_SENTINEL = "__CLEAR__"
+
 
 def _is_masked(value) -> bool:
     """判断前端回传的是否是掩码占位值，是则不覆盖真实密钥。
@@ -238,8 +248,17 @@ async def update_config_api(request: Request):
         value = body[key]
         if key == "llm_backends":
             value = _restore_backend_keys(value, getattr(cfg, "llm_backends", []))
-        if key in SECRET_FIELDS and _is_masked(value):
-            continue  # 用户没改密钥，保持原值
+        # 密钥/用户名字段保护：
+        #   1. 掩码格式（含 8 连星或全星号）→ 用户没改，保持原值
+        #   2. 空字符串 → GET 返回空时 WebUI 回传空，保持原值（防意外清空）
+        #   3. "__CLEAR__" → 用户显式清空，置空
+        if key in EMPTY_PRESERVE_FIELDS:
+            if value == CLEAR_SENTINEL:
+                value = ""
+            elif _is_masked(value) or value == "":
+                continue  # 没改密钥/用户名，保持原值
+        elif key in SECRET_FIELDS and _is_masked(value):
+            continue  # 兼容：SECRET_FIELDS 已在 EMPTY_PRESERVE_FIELDS 中，此分支理论不可达
         current = getattr(cfg, key)
         # 数值字段做一次类型收敛，避免前端传字符串污染配置；
         # MA-18：改前**只保证类型、不保证范围**——`{"tz_offset_hours": -999}` 类型收敛
