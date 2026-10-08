@@ -1,0 +1,1767 @@
+下面按文档1 的要求给出完整设计交付：设计说明 → 关键设计决策 → 待确认问题 → 代码 → 单测 → 使用示例 → 验收逐条对照。
+
+
+（说明：我无法访问目标仓也无法在本环境执行 py_compile/pytest，因此验收第 2 条要求的 total/collectable/ran 三个数内容中未提供，需在目标仓实际运行后回填；其余各条均按契约逐条落实。）
+
+
+
+一、目标与边界
+
+目标：行为变化归因模块 = 检测行为模式变化 + 自动搜索候选原因，属因果推理层阶段 1，纯统计 + 规则，无 LLM。
+新增文件：src/memory_agent/change_attribution.py、tests/test_change_attribution.py。
+严格约束（均遵守）：不修改 store.py、behavior_predictor.py、agent_memory.py、behavior_routes.py；零新依赖（仅 stdlib）；不删除文件；不碰现网配置。
+
+二、总体设计
+
+数据流：events（runtime.store.list_behavior_events() 返回的 behavior_events 列表）→ 脏数据过滤 → 按时间排序 → 事件序按 split_ratio 切分基线段/观察段 → 按指标聚合为"每日一个观测值" → 描述统计 + 效应量 + 显著性 → 判定 changed → 在变化窗口/基线窗口内统计候选原因事件 → 综合置信度排序输出。
+
+
+指标定义（与 §1 契约一致）：
+
+
+metric	每日观测值定义
+arrival_time	当日该人第一次出现时刻，转小时浮点数
+activity_count	当日该人事件条数
+room_distribution	当日该人事件中 room 命中指定房间的占比（需 room 参数）
+active_duration	当日该人首次事件到最后事件的跨度（小时）
+
+三、关键设计决策（逐条理由）
+
+1.数据结构与索引：事件先解析为 (datetime, dict) 列表并按 server_ts 稳定排序一次，后续窗口统计复用该有序列表；指标聚合用 dict[day -> value]（插入序即时间序）。理由：事件量级为家庭场景（每天几十条），O(n log n) 排序 + 线性扫描足够，且不引入任何索引结构改动（store.py 不许改）。
+2.脏数据 fail-open：server_ts 缺失/非法、persons_json 非法 JSON 的事件一律跳过，不影响其余计算。理由：与 behavior_predictor.py 现有解析口径一致（同样是 try/except 后 continue）。
+3.参数错误 fail-fast：未知 metric、room_distribution 缺 room、split_ratio 不在 (0,1)、lookback_days <= 0 抛 ValueError。理由：属于调用方契约错误，静默降级会产生误导性归因。
+4.search_candidate_causes() 的 change_start_ts 非法 → fail-closed 返回 []。理由：时间锚点不可靠时，宁可不给原因也不给错误原因。
+5.显著性判定：changed = (p_value < 0.05) 且 (|effect_size| > 0.5) 且 before/after 观测数各 ≥ 2。阈值取自文档1 中">0.5 视为中等效应""<0.05 视为显著"；加样本数下限是因为 Mann-Whitney 正态近似与 Cohen's d 在样本 <2 时无定义。
+6.效应量 Cohen's d：合并标准差取 sqrt(((n1-1)s1²+(n2-1)s2²)/(n1+n2-2))；当合并方差为 0 而均值不等时，取 ±10.0 封顶值（而不是 inf），保证结果可 JSON 序列化。
+7.p 值用 Mann-Whitney U 正态近似 + tie 校正（只用 stdlib 实现），小样本不做精确分布。理由：文档1 要求"Mann-Whitney U 检验的 p 值"，而 scipy 被禁用，正态近似是纯 stdlib 下的标准做法。
+8.direction：仅当 changed=True 时输出 increase/decrease，否则 none，保证与 changed 语义一致。
+9.候选原因窗口：变化窗口 = [change_start_ts - lookback_days, change_start_ts)，基线窗口 = 紧邻其前的等长窗口。理由：文档1 描述示例是"变化前3天内电视打开次数增加了200%"，基线须独立于变化窗口。
+10.候选事件不做人员过滤（设备/环境事件常无 persons_json，且诱因可能来自其他家庭成员）；日程类候选按该人事件统计，person 参数由此生效。
+11.综合置信度：confidence = 0.5*lift_score + 0.3*count_score + 0.2*correlation，其中 lift=(count+1)/(baseline_count+1)（Laplace 平滑，避免基线为 0 时除零）、count_score=min(1, count/5)、correlation 为窗口内该事件最近一次出现时间与 change_start_ts 的接近度 1 - gap_days/lookback_days，截断到 [0,1]。理由：同时体现"变化幅度、证据量、时间邻近性"三方面，且全为确定性规则。
+12.排序：按 confidence 降序，平手时按 count 降序、event_type 升序，保证输出稳定可断言。
+13.attribute() 中 change_start_ts 的来源：取切分后"观察段"第一条事件的 server_ts。理由：attribute() 契约签名里没有该参数，必须从同一份事件流内生推导，且必须与 detect_change() 的切分口径一致（共用 _parse_events/_split_index）。
+14.room 参数：detect_change()/attribute() 在契约 4/5 个参数后追加可选关键字 room: str | None = None，对既有调用完全向后兼容。
+
+四、需求中未明确、需要确认的问题（不猜，列出）
+
+1.metric="room_distribution" 需"配合 room 参数"，但 §1 的 detect_change 签名没有 room 参数 —— 内容中未提及相关信息（如何传入房间）。暂按可选关键字 room 处理，请确认。
+2.activity_count 的"单位时间"具体单位 —— 内容中未提及相关信息。暂按"天"。
+3.active_duration（活跃时长）的确切定义 —— 内容中未提及相关信息。暂按"当日首次事件→末次事件跨度"。
+4.correlation（与行为变化的时间相关性）的计算式 —— 内容中未提及相关信息。暂按时间接近度（见决策 11）。
+5.基线窗口长度 —— 内容中未提及相关信息。暂按与 lookback_days 等长且紧邻。
+6.候选原因是否按 person 过滤 —— 内容中未提及相关信息。暂按决策 10。
+7.日程类中的 holiday 判定依据 —— 内容中未提及相关信息（没有节假日日历或接口）。本实现不产出holiday 候选，仅产出 weekday/weekend，待补充节假日数据源后补齐。
+8.changed 判定是否要求 p<0.05 与 |d|>0.5 同时成立 —— 内容中未明说组合方式。暂按"同时成立"（见决策 5）。
+
+
+五、代码 src/memory_agent/change_attribution.py
+
+python
+"""行为变化归因：检测行为模式变化并自动搜索候选原因。
+
+因果推理层阶段 1（最小可行版本）：纯统计 + 规则，不引入 LLM，不引入第三方依赖。
+
+三个入口：
+- detect_change()            检测某人的行为指标是否发生显著变化
+- search_candidate_causes()  在变化前后窗口内搜索候选原因事件
+- attribute()                完整归因 = 检测变化 + 搜索候选原因
+
+数据来源：runtime.store.list_behavior_events() 返回的 behavior_events 列表，每项含
+id / server_ts / action / scene / room / persons_json / source / confidence / extra_json。
+
+失败/降级语义：
+- 事件级脏数据（server_ts 缺失或非法、persons_json 非法 JSON）→ fail-open，跳过该条；
+- 指标名非法、room_distribution 缺 room、split_ratio/lookback_days 非法 → fail-fast，抛 ValueError；
+- search_candidate_causes() 收到非法 change_start_ts → fail-closed，返回 []。
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import statistics
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Any
+
+__all__ = ["detect_change", "search_candidate_causes", "attribute"]
+
+SUPPORTED_METRICS: tuple[str, ...] = (
+    "arrival_time",
+    "activity_count",
+    "room_distribution",
+    "active_duration",
+)
+
+_DEVICE_ACTIONS = frozenset({"light_on", "light_off", "tv_on", "aircon_on"})
+_PERSON_ACTIONS = frozenset({"face_known", "face_unknown"})
+_ENVIRONMENT_ACTIONS = frozenset({"door_open", "window_open"})
+
+_CAUSE_TYPE_ACTIONS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("device_change", _DEVICE_ACTIONS),
+    ("person_change", _PERSON_ACTIONS),
+    ("environment_change", _ENVIRONMENT_ACTIONS),
+)
+
+_EVENT_LABELS: dict[str, str] = {
+    "light_on": "开灯",
+    "light_off": "关灯",
+    "tv_on": "电视打开",
+    "aircon_on": "空调打开",
+    "face_known": "已知人员出现",
+    "face_unknown": "陌生人出现",
+    "door_open": "开门",
+    "window_open": "开窗",
+    "weekday": "工作日",
+    "weekend": "周末",
+}
+
+_P_SIGNIFICANT = 0.05          # Mann-Whitney U 显著性阈值
+_EFFECT_MEDIAN = 0.5           # Cohen's d 中等效应阈值
+_MIN_SAMPLES_PER_SEGMENT = 2   # 每段最少观测数
+_ZERO_VAR_EFFECT_CAP = 10.0    # 合并方差为 0 时的封顶效应量
+_CORR_WEIGHT = 0.2
+_COUNT_WEIGHT = 0.3
+_LIFT_WEIGHT = 0.5
+
+
+# ---------------------------------------------------------------- 基础解析
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    if not isinstance(value, str) or len(value) < 16:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _event_persons(event: dict) -> list[dict]:
+    raw = event.get("persons_json") or "[]"
+    try:
+        persons = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(persons, list):
+        return []
+    return [p for p in persons if isinstance(p, dict)]
+
+
+def _event_matches_person(event: dict, person: str) -> bool:
+    return any(p.get("name") == person for p in _event_persons(event))
+
+
+def _parse_events(events: Any) -> list[tuple[datetime, dict]]:
+    """过滤脏数据并按时间排序（fail-open）。"""
+    pairs: list[tuple[datetime, dict]] = []
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        dt = _parse_ts(event.get("server_ts"))
+        if dt is None:
+            continue
+        pairs.append((dt, event))
+    pairs.sort(key=lambda item: item[0])
+    return pairs
+
+
+def _split_index(n: int, split_ratio: float) -> int:
+    return max(1, min(n - 1, int(n * split_ratio)))
+
+
+# ---------------------------------------------------------------- 指标聚合
+
+
+def _metric_series(
+    pairs: list[tuple[datetime, dict]],
+    person: str,
+    metric: str,
+    room: str | None = None,
+) -> dict[str, float]:
+    """把一段事件聚合成 {日期: 指标值}。"""
+    daily: dict[str, list[tuple[datetime, dict]]] = defaultdict(list)
+    for dt, event in pairs:
+        if not _event_matches_person(event, person):
+            continue
+        daily[dt.strftime("%Y-%m-%d")].append((dt, event))
+
+    series: dict[str, float] = {}
+    for day, items in daily.items():
+        items.sort(key=lambda item: item[0])
+        if metric == "arrival_time":
+            first = items[0][0]
+            series[day] = first.hour + first.minute / 60.0
+        elif metric == "activity_count":
+            series[day] = float(len(items))
+        elif metric == "room_distribution":
+            total = len(items)
+            hit = sum(1 for _, ev in items if (ev.get("room") or "") == room)
+            series[day] = hit / total
+        elif metric == "active_duration":
+            span = (items[-1][0] - items[0][0]).total_seconds() / 3600.0
+            series[day] = span
+    return series
+
+
+def _empty_summary() -> dict:
+    return {"mean": 0.0, "median": 0.0, "std": 0.0, "count": 0, "period": ""}
+
+
+def _summary(series: dict[str, float]) -> dict:
+    values = list(series.values())
+    if not values:
+        return _empty_summary()
+    days = sorted(series)
+    std = statistics.stdev(values) if len(values) >= 2 else 0.0
+    return {
+        "mean": round(statistics.fmean(values), 4),
+        "median": round(statistics.median(values), 4),
+        "std": round(std, 4),
+        "count": len(values),
+        "period": f"{days[0]}~{days[-1]}",
+    }
+
+
+# ---------------------------------------------------------------- 统计检验
+
+
+def _norm_cdf(z: float) -> float:
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def _cohens_d(before: list[float], after: list[float]) -> float:
+    n1, n2 = len(before), len(after)
+    if n1 == 0 or n2 == 0:
+        return 0.0
+    diff = statistics.fmean(after) - statistics.fmean(before)
+    var1 = statistics.variance(before) if n1 >= 2 else 0.0
+    var2 = statistics.variance(after) if n2 >= 2 else 0.0
+    denom = n1 + n2 - 2
+    pooled = math.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / denom) if denom > 0 else 0.0
+    if pooled <= 0.0:
+        # 合并方差为 0：均值相同→0，否则给封顶值（避免 inf 无法序列化）
+        return 0.0 if diff == 0.0 else math.copysign(_ZERO_VAR_EFFECT_CAP, diff)
+    return diff / pooled
+
+
+def _mann_whitney_p(before: list[float], after: list[float]) -> float:
+    """Mann-Whitney U 检验（正态近似 + tie 校正），返回双侧 p 值。"""
+    n1, n2 = len(before), len(after)
+    if n1 == 0 or n2 == 0:
+        return 1.0
+    combined = [(v, 0) for v in before] + [(v, 1) for v in after]
+    combined.sort(key=lambda item: item[0])
+
+    ranks = [0.0] * len(combined)
+    tie_term = 0
+    i = 0
+    while i < len(combined):
+        j = i
+        while j < len(combined) and combined[j][0] == combined[i][0]:
+            j += 1
+        avg_rank = (i + 1 + j) / 2.0
+        for k in range(i, j):
+            ranks[k] = avg_rank
+        tie_term += (j - i) ** 3 - (j - i)
+        i = j
+
+    r1 = 0.0
+    for idx, item in enumerate(combined):
+        if item[1] == 0:
+            r1 += ranks[idx]
+    u1 = r1 - n1 * (n1 + 1) / 2.0
+    u2 = n1 * n2 - u1
+    u = min(u1, u2)
+
+    n = n1 + n2
+    if n < 2:
+        return 1.0
+    sigma2 = n1 * n2 / 12.0 * ((n + 1) - tie_term / (n * (n - 1)))
+    if sigma2 <= 0.0:
+        return 1.0
+    z = (u - n1 * n2 / 2.0) / math.sqrt(sigma2)
+    return max(0.0, min(1.0, 2.0 * (1.0 - _norm_cdf(abs(z)))))
+
+
+# ---------------------------------------------------------------- 入口 1：变化检测
+
+
+def detect_change(
+    events: list[dict],
+    person: str,
+    metric: str,
+    split_ratio: float = 0.5,
+    room: str | None = None,
+) -> dict:
+    """检测某人的行为指标是否发生显著变化。
+
+    metric: "arrival_time" | "activity_count" | "room_distribution" | "active_duration"
+    room:   metric="room_distribution" 时必填（契约签名的向后兼容扩展）。
+
+    返回 {changed, metric, person, before, after, effect_size, p_value, direction}。
+    """
+    if metric not in SUPPORTED_METRICS:
+        raise ValueError(f"不支持的 metric: {metric!r}，可选: {SUPPORTED_METRICS}")
+    if metric == "room_distribution" and not room:
+        raise ValueError("metric='room_distribution' 必须提供 room 参数")
+    if not (0.0 < split_ratio < 1.0):
+        raise ValueError("split_ratio 必须位于 (0, 1) 区间内")
+
+    pairs = _parse_events(events)
+    if len(pairs) < 2:
+        return {
+            "changed": False,
+            "metric": metric,
+            "person": person,
+            "before": _empty_summary(),
+            "after": _empty_summary(),
+            "effect_size": 0.0,
+            "p_value": 1.0,
+            "direction": "none",
+        }
+
+    idx = _split_index(len(pairs), split_ratio)
+    before_series = _metric_series(pairs[:idx], person, metric, room)
+    after_series = _metric_series(pairs[idx:], person, metric, room)
+
+    before = _summary(before_series)
+    after = _summary(after_series)
+    before_vals = list(before_series.values())
+    after_vals = list(after_series.values())
+
+    effect_size = _cohens_d(before_vals, after_vals)
+    p_value = _mann_whitney_p(before_vals, after_vals)
+
+    enough = (
+        before["count"] >= _MIN_SAMPLES_PER_SEGMENT
+        and after["count"] >= _MIN_SAMPLES_PER_SEGMENT
+    )
+    changed = bool(
+        enough
+        and p_value < _P_SIGNIFICANT
+        and abs(effect_size) > _EFFECT_MEDIAN
+    )
+
+    if not changed:
+        direction = "none"
+    else:
+        direction = "increase" if after["mean"] > before["mean"] else "decrease"
+
+    return {
+        "changed": changed,
+        "metric": metric,
+        "person": person,
+        "before": before,
+        "after": after,
+        "effect_size": round(effect_size, 4),
+        "p_value": round(p_value, 6),
+        "direction": direction,
+    }
+
+
+# ---------------------------------------------------------------- 入口 2：候选原因
+
+
+def _correlation(last_dt: datetime | None, window_end: datetime, lookback_days: float) -> float:
+    if last_dt is None:
+        return 0.0
+    gap_days = (window_end - last_dt).total_seconds() / 86400.0
+    if lookback_days <= 0:
+        return 0.0
+    return round(max(0.0, min(1.0, 1.0 - gap_days / lookback_days)), 4)
+
+
+def _confidence(count: int, baseline_count: int, correlation: float) -> float:
+    lift = (count + 1.0) / (baseline_count + 1.0)          # Laplace 平滑
+    lift_score = max(0.0, min(1.0, (lift - 1.0) / 2.0))
+    count_score = min(1.0, count / 5.0)
+    value = _LIFT_WEIGHT * lift_score + _COUNT_WEIGHT * count_score + _CORR_WEIGHT * correlation
+    return round(max(0.0, min(1.0, value)), 4)
+
+
+def _describe(event_type: str, count: int, baseline_count: int, lookback_days: float) -> str:
+    label = _EVENT_LABELS.get(event_type, event_type)
+    days = int(lookback_days) if float(lookback_days).is_integer() else lookback_days
+    if baseline_count <= 0:
+        return f"变化前{days}天内{label}新增出现{count}次（基线期为0次）"
+    pct = (count - baseline_count) / baseline_count * 100.0
+    if abs(pct) < 0.5:
+        return f"变化前{days}天内{label}次数与基线期持平（{count}次）"
+    verb = "增加了" if pct > 0 else "减少了"
+    return f"变化前{days}天内{label}{verb}{abs(pct):.0f}%"
+
+
+def search_candidate_causes(
+    events: list[dict],
+    person: str,
+    change_start_ts: str,
+    lookback_days: int = 7,
+) -> list[dict]:
+    """在变化窗口内搜索候选原因事件。
+
+    变化窗口 = [change_start_ts - lookback_days, change_start_ts)
+    基线窗口 = 紧邻其前的等长窗口。
+    返回按 confidence 降序的候选原因列表；change_start_ts 非法时 fail-closed 返回 []。
+    """
+    start = _parse_ts(change_start_ts)
+    if start is None:
+        return []
+    if lookback_days <= 0:
+        raise ValueError("lookback_days 必须为正数")
+
+    window_end = start
+    window_start = start - timedelta(days=lookback_days)
+    base_end = window_start
+    base_start = base_end - timedelta(days=lookback_days)
+
+    def in_window(dt: datetime, left: datetime, right: datetime) -> bool:
+        return left <= dt < right
+
+    pairs = _parse_events(events)
+    candidates: list[dict] = []
+
+    # 设备 / 人员 / 环境变化：基于全部事件（不做人员过滤）
+    for cause_type, actions in _CAUSE_TYPE_ACTIONS:
+        bucket: dict[str, list] = {}
+        for dt, event in pairs:
+            action = event.get("action") or ""
+            if action not in actions:
+                continue
+            slot = bucket.setdefault(action, [0, 0, None])
+            if in_window(dt, window_start, window_end):
+                slot[0] += 1
+                if slot[2] is None or dt > slot[2]:
+                    slot[2] = dt
+            elif in_window(dt, base_start, base_end):
+                slot[1] += 1
+        for event_type, (count, baseline_count, last_dt) in bucket.items():
+            if count == 0 and baseline_count == 0:
+                continue
+            corr = _correlation(last_dt, window_end, lookback_days)
+            candidates.append(
+                {
+                    "cause_type": cause_type,
+                    "event_type": event_type,
+                    "count": count,
+                    "baseline_count": baseline_count,
+                    "correlation": corr,
+                    "confidence": _confidence(count, baseline_count, corr),
+                    "description": _describe(event_type, count, baseline_count, lookback_days),
+                }
+            )
+
+    # 日程变化：按该人的事件落在工作日/周末统计
+    person_pairs = [(dt, ev) for dt, ev in pairs if _event_matches_person(ev, person)]
+    for event_type, is_weekend in (("weekday", False), ("weekend", True)):
+        count = 0
+        baseline_count = 0
+        last_dt: datetime | None = None
+        for dt, _event in person_pairs:
+            if (dt.weekday() >= 5) != is_weekend:
+                continue
+            if in_window(dt, window_start, window_end):
+                count += 1
+                if last_dt is None or dt > last_dt:
+                    last_dt = dt
+            elif in_window(dt, base_start, base_end):
+                baseline_count += 1
+        if count == baseline_count:
+            continue
+        corr = _correlation(last_dt, window_end, lookback_days)
+        candidates.append(
+            {
+                "cause_type": "schedule_change",
+                "event_type": event_type,
+                "count": count,
+                "baseline_count": baseline_count,
+                "correlation": corr,
+                "confidence": _confidence(count, baseline_count, corr),
+                "description": _describe(event_type, count, baseline_count, lookback_days),
+            }
+        )
+
+    candidates.sort(key=lambda c: (-c["confidence"], -c["count"], c["event_type"]))
+    return candidates
+
+
+# ---------------------------------------------------------------- 入口 3：完整归因
+
+
+def attribute(
+    events: list[dict],
+    person: str,
+    metric: str,
+    split_ratio: float = 0.5,
+    lookback_days: int = 7,
+    room: str | None = None,
+) -> dict:
+    """完整归因：先检测变化，再搜索候选原因。
+
+    返回 detect_change() 的全部字段 + candidate_causes；changed=False 时 candidate_causes 为空列表。
+    """
+    result = detect_change(events, person, metric, split_ratio, room=room)
+    output = dict(result)
+    output["candidate_causes"] = []
+    if not result["changed"]:
+        return output
+
+    pairs = _parse_events(events)
+    if len(pairs) < 2:
+        return output
+    idx = _split_index(len(pairs), split_ratio)
+    change_start_ts = pairs[idx][0].isoformat()
+    output["candidate_causes"] = search_candidate_causes(
+        events, person, change_start_ts, lookback_days
+    )
+    return output
+"""行为变化归因：检测行为模式变化并自动搜索候选原因。
+
+因果推理层阶段 1（最小可行版本）：纯统计 + 规则，不引入 LLM，不引入第三方依赖。
+
+三个入口：
+- detect_change()            检测某人的行为指标是否发生显著变化
+- search_candidate_causes()  在变化前后窗口内搜索候选原因事件
+- attribute()                完整归因 = 检测变化 + 搜索候选原因
+
+数据来源：runtime.store.list_behavior_events() 返回的 behavior_events 列表，每项含
+id / server_ts / action / scene / room / persons_json / source / confidence / extra_json。
+
+失败/降级语义：
+- 事件级脏数据（server_ts 缺失或非法、persons_json 非法 JSON）→ fail-open，跳过该条；
+- 指标名非法、room_distribution 缺 room、split_ratio/lookback_days 非法 → fail-fast，抛 ValueError；
+- search_candidate_causes() 收到非法 change_start_ts → fail-closed，返回 []。
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import statistics
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Any
+
+__all__ = ["detect_change", "search_candidate_causes", "attribute"]
+
+SUPPORTED_METRICS: tuple[str, ...] = (
+    "arrival_time",
+    "activity_count",
+    "room_distribution",
+    "active_duration",
+)
+
+_DEVICE_ACTIONS = frozenset({"light_on", "light_off", "tv_on", "aircon_on"})
+_PERSON_ACTIONS = frozenset({"face_known", "face_unknown"})
+_ENVIRONMENT_ACTIONS = frozenset({"door_open", "window_open"})
+
+_CAUSE_TYPE_ACTIONS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("device_change", _DEVICE_ACTIONS),
+    ("person_change", _PERSON_ACTIONS),
+    ("environment_change", _ENVIRONMENT_ACTIONS),
+)
+
+_EVENT_LABELS: dict[str, str] = {
+    "light_on": "开灯",
+    "light_off": "关灯",
+    "tv_on": "电视打开",
+    "aircon_on": "空调打开",
+    "face_known": "已知人员出现",
+    "face_unknown": "陌生人出现",
+    "door_open": "开门",
+    "window_open": "开窗",
+    "weekday": "工作日",
+    "weekend": "周末",
+}
+
+_P_SIGNIFICANT = 0.05          # Mann-Whitney U 显著性阈值
+_EFFECT_MEDIAN = 0.5           # Cohen's d 中等效应阈值
+_MIN_SAMPLES_PER_SEGMENT = 2   # 每段最少观测数
+_ZERO_VAR_EFFECT_CAP = 10.0    # 合并方差为 0 时的封顶效应量
+_CORR_WEIGHT = 0.2
+_COUNT_WEIGHT = 0.3
+_LIFT_WEIGHT = 0.5
+
+
+# ---------------------------------------------------------------- 基础解析
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    if not isinstance(value, str) or len(value) < 16:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _event_persons(event: dict) -> list[dict]:
+    raw = event.get("persons_json") or "[]"
+    try:
+        persons = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(persons, list):
+        return []
+    return [p for p in persons if isinstance(p, dict)]
+
+
+def _event_matches_person(event: dict, person: str) -> bool:
+    return any(p.get("name") == person for p in _event_persons(event))
+
+
+def _parse_events(events: Any) -> list[tuple[datetime, dict]]:
+    """过滤脏数据并按时间排序（fail-open）。"""
+    pairs: list[tuple[datetime, dict]] = []
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        dt = _parse_ts(event.get("server_ts"))
+        if dt is None:
+            continue
+        pairs.append((dt, event))
+    pairs.sort(key=lambda item: item[0])
+    return pairs
+
+
+def _split_index(n: int, split_ratio: float) -> int:
+    return max(1, min(n - 1, int(n * split_ratio)))
+
+
+# ---------------------------------------------------------------- 指标聚合
+
+
+def _metric_series(
+    pairs: list[tuple[datetime, dict]],
+    person: str,
+    metric: str,
+    room: str | None = None,
+) -> dict[str, float]:
+    """把一段事件聚合成 {日期: 指标值}。"""
+    daily: dict[str, list[tuple[datetime, dict]]] = defaultdict(list)
+    for dt, event in pairs:
+        if not _event_matches_person(event, person):
+            continue
+        daily[dt.strftime("%Y-%m-%d")].append((dt, event))
+
+    series: dict[str, float] = {}
+    for day, items in daily.items():
+        items.sort(key=lambda item: item[0])
+        if metric == "arrival_time":
+            first = items[0][0]
+            series[day] = first.hour + first.minute / 60.0
+        elif metric == "activity_count":
+            series[day] = float(len(items))
+        elif metric == "room_distribution":
+            total = len(items)
+            hit = sum(1 for _, ev in items if (ev.get("room") or "") == room)
+            series[day] = hit / total
+        elif metric == "active_duration":
+            span = (items[-1][0] - items[0][0]).total_seconds() / 3600.0
+            series[day] = span
+    return series
+
+
+def _empty_summary() -> dict:
+    return {"mean": 0.0, "median": 0.0, "std": 0.0, "count": 0, "period": ""}
+
+
+def _summary(series: dict[str, float]) -> dict:
+    values = list(series.values())
+    if not values:
+        return _empty_summary()
+    days = sorted(series)
+    std = statistics.stdev(values) if len(values) >= 2 else 0.0
+    return {
+        "mean": round(statistics.fmean(values), 4),
+        "median": round(statistics.median(values), 4),
+        "std": round(std, 4),
+        "count": len(values),
+        "period": f"{days[0]}~{days[-1]}",
+    }
+
+
+# ---------------------------------------------------------------- 统计检验
+
+
+def _norm_cdf(z: float) -> float:
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def _cohens_d(before: list[float], after: list[float]) -> float:
+    n1, n2 = len(before), len(after)
+    if n1 == 0 or n2 == 0:
+        return 0.0
+    diff = statistics.fmean(after) - statistics.fmean(before)
+    var1 = statistics.variance(before) if n1 >= 2 else 0.0
+    var2 = statistics.variance(after) if n2 >= 2 else 0.0
+    denom = n1 + n2 - 2
+    pooled = math.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / denom) if denom > 0 else 0.0
+    if pooled <= 0.0:
+        # 合并方差为 0：均值相同→0，否则给封顶值（避免 inf 无法序列化）
+        return 0.0 if diff == 0.0 else math.copysign(_ZERO_VAR_EFFECT_CAP, diff)
+    return diff / pooled
+
+
+def _mann_whitney_p(before: list[float], after: list[float]) -> float:
+    """Mann-Whitney U 检验（正态近似 + tie 校正），返回双侧 p 值。"""
+    n1, n2 = len(before), len(after)
+    if n1 == 0 or n2 == 0:
+        return 1.0
+    combined = [(v, 0) for v in before] + [(v, 1) for v in after]
+    combined.sort(key=lambda item: item[0])
+
+    ranks = [0.0] * len(combined)
+    tie_term = 0
+    i = 0
+    while i < len(combined):
+        j = i
+        while j < len(combined) and combined[j][0] == combined[i][0]:
+            j += 1
+        avg_rank = (i + 1 + j) / 2.0
+        for k in range(i, j):
+            ranks[k] = avg_rank
+        tie_term += (j - i) ** 3 - (j - i)
+        i = j
+
+    r1 = 0.0
+    for idx, item in enumerate(combined):
+        if item[1] == 0:
+            r1 += ranks[idx]
+    u1 = r1 - n1 * (n1 + 1) / 2.0
+    u2 = n1 * n2 - u1
+    u = min(u1, u2)
+
+    n = n1 + n2
+    if n < 2:
+        return 1.0
+    sigma2 = n1 * n2 / 12.0 * ((n + 1) - tie_term / (n * (n - 1)))
+    if sigma2 <= 0.0:
+        return 1.0
+    z = (u - n1 * n2 / 2.0) / math.sqrt(sigma2)
+    return max(0.0, min(1.0, 2.0 * (1.0 - _norm_cdf(abs(z)))))
+
+
+# ---------------------------------------------------------------- 入口 1：变化检测
+
+
+def detect_change(
+    events: list[dict],
+    person: str,
+    metric: str,
+    split_ratio: float = 0.5,
+    room: str | None = None,
+) -> dict:
+    """检测某人的行为指标是否发生显著变化。
+
+    metric: "arrival_time" | "activity_count" | "room_distribution" | "active_duration"
+    room:   metric="room_distribution" 时必填（契约签名的向后兼容扩展）。
+
+    返回 {changed, metric, person, before, after, effect_size, p_value, direction}。
+    """
+    if metric not in SUPPORTED_METRICS:
+        raise ValueError(f"不支持的 metric: {metric!r}，可选: {SUPPORTED_METRICS}")
+    if metric == "room_distribution" and not room:
+        raise ValueError("metric='room_distribution' 必须提供 room 参数")
+    if not (0.0 < split_ratio < 1.0):
+        raise ValueError("split_ratio 必须位于 (0, 1) 区间内")
+
+    pairs = _parse_events(events)
+    if len(pairs) < 2:
+        return {
+            "changed": False,
+            "metric": metric,
+            "person": person,
+            "before": _empty_summary(),
+            "after": _empty_summary(),
+            "effect_size": 0.0,
+            "p_value": 1.0,
+            "direction": "none",
+        }
+
+    idx = _split_index(len(pairs), split_ratio)
+    before_series = _metric_series(pairs[:idx], person, metric, room)
+    after_series = _metric_series(pairs[idx:], person, metric, room)
+
+    before = _summary(before_series)
+    after = _summary(after_series)
+    before_vals = list(before_series.values())
+    after_vals = list(after_series.values())
+
+    effect_size = _cohens_d(before_vals, after_vals)
+    p_value = _mann_whitney_p(before_vals, after_vals)
+
+    enough = (
+        before["count"] >= _MIN_SAMPLES_PER_SEGMENT
+        and after["count"] >= _MIN_SAMPLES_PER_SEGMENT
+    )
+    changed = bool(
+        enough
+        and p_value < _P_SIGNIFICANT
+        and abs(effect_size) > _EFFECT_MEDIAN
+    )
+
+    if not changed:
+        direction = "none"
+    else:
+        direction = "increase" if after["mean"] > before["mean"] else "decrease"
+
+    return {
+        "changed": changed,
+        "metric": metric,
+        "person": person,
+        "before": before,
+        "after": after,
+        "effect_size": round(effect_size, 4),
+        "p_value": round(p_value, 6),
+        "direction": direction,
+    }
+
+
+# ---------------------------------------------------------------- 入口 2：候选原因
+
+
+def _correlation(last_dt: datetime | None, window_end: datetime, lookback_days: float) -> float:
+    if last_dt is None:
+        return 0.0
+    gap_days = (window_end - last_dt).total_seconds() / 86400.0
+    if lookback_days <= 0:
+        return 0.0
+    return round(max(0.0, min(1.0, 1.0 - gap_days / lookback_days)), 4)
+
+
+def _confidence(count: int, baseline_count: int, correlation: float) -> float:
+    lift = (count + 1.0) / (baseline_count + 1.0)          # Laplace 平滑
+    lift_score = max(0.0, min(1.0, (lift - 1.0) / 2.0))
+    count_score = min(1.0, count / 5.0)
+    value = _LIFT_WEIGHT * lift_score + _COUNT_WEIGHT * count_score + _CORR_WEIGHT * correlation
+    return round(max(0.0, min(1.0, value)), 4)
+
+
+def _describe(event_type: str, count: int, baseline_count: int, lookback_days: float) -> str:
+    label = _EVENT_LABELS.get(event_type, event_type)
+    days = int(lookback_days) if float(lookback_days).is_integer() else lookback_days
+    if baseline_count <= 0:
+        return f"变化前{days}天内{label}新增出现{count}次（基线期为0次）"
+    pct = (count - baseline_count) / baseline_count * 100.0
+    if abs(pct) < 0.5:
+        return f"变化前{days}天内{label}次数与基线期持平（{count}次）"
+    verb = "增加了" if pct > 0 else "减少了"
+    return f"变化前{days}天内{label}{verb}{abs(pct):.0f}%"
+
+
+def search_candidate_causes(
+    events: list[dict],
+    person: str,
+    change_start_ts: str,
+    lookback_days: int = 7,
+) -> list[dict]:
+    """在变化窗口内搜索候选原因事件。
+
+    变化窗口 = [change_start_ts - lookback_days, change_start_ts)
+    基线窗口 = 紧邻其前的等长窗口。
+    返回按 confidence 降序的候选原因列表；change_start_ts 非法时 fail-closed 返回 []。
+    """
+    start = _parse_ts(change_start_ts)
+    if start is None:
+        return []
+    if lookback_days <= 0:
+        raise ValueError("lookback_days 必须为正数")
+
+    window_end = start
+    window_start = start - timedelta(days=lookback_days)
+    base_end = window_start
+    base_start = base_end - timedelta(days=lookback_days)
+
+    def in_window(dt: datetime, left: datetime, right: datetime) -> bool:
+        return left <= dt < right
+
+    pairs = _parse_events(events)
+    candidates: list[dict] = []
+
+    # 设备 / 人员 / 环境变化：基于全部事件（不做人员过滤）
+    for cause_type, actions in _CAUSE_TYPE_ACTIONS:
+        bucket: dict[str, list] = {}
+        for dt, event in pairs:
+            action = event.get("action") or ""
+            if action not in actions:
+                continue
+            slot = bucket.setdefault(action, [0, 0, None])
+            if in_window(dt, window_start, window_end):
+                slot[0] += 1
+                if slot[2] is None or dt > slot[2]:
+                    slot[2] = dt
+            elif in_window(dt, base_start, base_end):
+                slot[1] += 1
+        for event_type, (count, baseline_count, last_dt) in bucket.items():
+            if count == 0 and baseline_count == 0:
+                continue
+            corr = _correlation(last_dt, window_end, lookback_days)
+            candidates.append(
+                {
+                    "cause_type": cause_type,
+                    "event_type": event_type,
+                    "count": count,
+                    "baseline_count": baseline_count,
+                    "correlation": corr,
+                    "confidence": _confidence(count, baseline_count, corr),
+                    "description": _describe(event_type, count, baseline_count, lookback_days),
+                }
+            )
+
+    # 日程变化：按该人的事件落在工作日/周末统计
+    person_pairs = [(dt, ev) for dt, ev in pairs if _event_matches_person(ev, person)]
+    for event_type, is_weekend in (("weekday", False), ("weekend", True)):
+        count = 0
+        baseline_count = 0
+        last_dt: datetime | None = None
+        for dt, _event in person_pairs:
+            if (dt.weekday() >= 5) != is_weekend:
+                continue
+            if in_window(dt, window_start, window_end):
+                count += 1
+                if last_dt is None or dt > last_dt:
+                    last_dt = dt
+            elif in_window(dt, base_start, base_end):
+                baseline_count += 1
+        if count == baseline_count:
+            continue
+        corr = _correlation(last_dt, window_end, lookback_days)
+        candidates.append(
+            {
+                "cause_type": "schedule_change",
+                "event_type": event_type,
+                "count": count,
+                "baseline_count": baseline_count,
+                "correlation": corr,
+                "confidence": _confidence(count, baseline_count, corr),
+                "description": _describe(event_type, count, baseline_count, lookback_days),
+            }
+        )
+
+    candidates.sort(key=lambda c: (-c["confidence"], -c["count"], c["event_type"]))
+    return candidates
+
+
+# ---------------------------------------------------------------- 入口 3：完整归因
+
+
+def attribute(
+    events: list[dict],
+    person: str,
+    metric: str,
+    split_ratio: float = 0.5,
+    lookback_days: int = 7,
+    room: str | None = None,
+) -> dict:
+    """完整归因：先检测变化，再搜索候选原因。
+
+    返回 detect_change() 的全部字段 + candidate_causes；changed=False 时 candidate_causes 为空列表。
+    """
+    result = detect_change(events, person, metric, split_ratio, room=room)
+    output = dict(result)
+    output["candidate_causes"] = []
+    if not result["changed"]:
+        return output
+
+    pairs = _parse_events(events)
+    if len(pairs) < 2:
+        return output
+    idx = _split_index(len(pairs), split_ratio)
+    change_start_ts = pairs[idx][0].isoformat()
+    output["candidate_causes"] = search_candidate_causes(
+        events, person, change_start_ts, lookback_days
+    )
+    return output
+
+
+六、单测 tests/test_change_attribution.py
+
+（覆盖 §8 第 14 条全部场景：无变化检测、有变化检测、候选原因搜索、完整归因、边界条件；每条 §2.1 目标至少 1 条，含边界与异常路径；无"只断言 ok is True"的空测试；无桩实现。）
+
+
+python
+"""change_attribution 单测：无变化 / 有变化 / 候选原因 / 完整归因 / 边界与异常。"""
+
+from __future__ import annotations
+
+import json
+import random
+from datetime import datetime, timedelta
+
+import pytest
+
+from memory_agent.change_attribution import (
+    attribute,
+    detect_change,
+    search_candidate_causes,
+)
+
+
+# ---------------------------------------------------------------- 测试工具
+
+
+def _iso(day: datetime, hour_float: float) -> str:
+    total = int(round(hour_float * 60))
+    hour, minute = divmod(total, 60)
+    hour = max(0, min(23, hour))
+    return day.replace(hour=hour, minute=minute, second=0).isoformat()
+
+
+def _ev(ts: str, action: str, person: str | None = None, room: str = "客厅") -> dict:
+    persons = [{"name": person, "confidence": 0.9}] if person else []
+    return {
+        "id": 0,
+        "server_ts": ts,
+        "action": action,
+        "scene": "",
+        "room": room,
+        "persons_json": json.dumps(persons, ensure_ascii=False),
+        "source": "edge_ai",
+        "confidence": 0.9,
+        "extra_json": "{}",
+    }
+
+
+def _arrival_events(hours: list[float], person: str = "Kevin") -> list[dict]:
+    events = []
+    for i, h in enumerate(hours):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        events.append(_ev(_iso(day, h), "face_known", person=person))
+    return events
+
+
+def _tv_timeline(days: int = 20) -> list[dict]:
+    """20 天、每天 2 条事件，前半段到家 18 点，后半段到家 21 点。"""
+    events: list[dict] = []
+    for i in range(days):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        hour = (17.9, 18.0, 18.1)[i % 3] if i < days // 2 else (20.9, 21.0, 21.1)[i % 3]
+        events.append(_ev(_iso(day, hour), "face_known", person="Kevin"))
+        events.append(_ev(_iso(day, hour + 0.1), "tv_on"))
+    return events
+
+
+# ---------------------------------------------------------------- detect_change：无变化
+
+
+def test_detect_change_no_change_random_data():
+    rng = random.Random(20260925)
+    base = [rng.gauss(18.0, 1.0) for _ in range(10)]
+    hours = base + [base[i] for i in (6, 2, 9, 0, 8, 4, 1, 7, 3, 5)]  # 同分布随机数据
+    result = detect_change(_arrival_events(hours), "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["direction"] == "none"
+    assert result["effect_size"] == 0.0
+    assert result["p_value"] == 1.0
+
+
+# ---------------------------------------------------------------- detect_change：有变化
+
+
+def test_detect_change_significant_increase():
+    hours = [18.0] * 10 + [21.0] * 10
+    result = detect_change(_arrival_events(hours), "Kevin", "arrival_time")
+    assert result["changed"] is True
+    assert result["effect_size"] > 0.5
+    assert result["p_value"] < 0.05
+    assert result["direction"] == "increase"
+
+
+def test_detect_change_significant_decrease():
+    hours = [21.0] * 10 + [18.0] * 10
+    result = detect_change(_arrival_events(hours), "Kevin", "arrival_time")
+    assert result["changed"] is True
+    assert result["direction"] == "decrease"
+
+
+def test_detect_change_return_has_eight_keys():
+    result = detect_change(_arrival_events([18.0] * 10 + [21.0] * 10), "Kevin", "arrival_time")
+    assert set(result) == {
+        "changed", "metric", "person", "before", "after",
+        "effect_size", "p_value", "direction",
+    }
+
+
+def test_detect_change_before_after_have_five_keys_and_period():
+    result = detect_change(_arrival_events([18.0] * 10 + [21.0] * 10), "Kevin", "arrival_time")
+    for key in ("before", "after"):
+        assert set(result[key]) == {"mean", "median", "std", "count", "period"}
+    assert result["before"]["period"] == "2026-09-01~2026-09-10"
+    assert result["after"]["period"] == "2026-09-11~2026-09-20"
+    assert result["before"]["count"] == 10
+    assert result["after"]["count"] == 10
+
+
+def test_detect_change_activity_count_metric():
+    events = []
+    for i in range(20):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        n = 1 if i < 10 else 3
+        for k in range(n):
+            events.append(_ev(_iso(day, 18.0 + k * 0.2), "light_on", person="Kevin"))
+    result = detect_change(events, "Kevin", "activity_count")
+    assert result["metric"] == "activity_count"
+    assert result["changed"] is True
+    assert result["after"]["mean"] > result["before"]["mean"]
+
+
+def test_detect_change_active_duration_metric():
+    events = []
+    for i in range(20):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        span = 0.2 if i < 10 else 2.0
+        events.append(_ev(_iso(day, 18.0), "face_known", person="Kevin"))
+        events.append(_ev(_iso(day, 18.0 + span), "light_on", person="Kevin"))
+    result = detect_change(events, "Kevin", "active_duration")
+    assert result["changed"] is True
+    assert result["after"]["mean"] > result["before"]["mean"]
+
+
+def test_detect_change_room_distribution_with_room():
+    events = []
+    for i in range(20):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        if i < 10:
+            events.append(_ev(_iso(day, 18.0), "light_on", person="Kevin", room="客厅"))
+            events.append(_ev(_iso(day, 18.2), "light_on", person="Kevin", room="书房"))
+        else:
+            events.append(_ev(_iso(day, 18.0), "light_on", person="Kevin", room="客厅"))
+            events.append(_ev(_iso(day, 18.2), "light_on", person="Kevin", room="客厅"))
+    result = detect_change(events, "Kevin", "room_distribution", room="客厅")
+    assert result["changed"] is True
+    assert result["before"]["mean"] == 0.5
+    assert result["after"]["mean"] == 1.0
+
+
+# ---------------------------------------------------------------- detect_change：边界与异常
+
+
+def test_detect_change_empty_events():
+    result = detect_change([], "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["direction"] == "none"
+    assert result["before"]["count"] == 0
+    assert result["after"]["count"] == 0
+    assert result["before"]["period"] == ""
+    assert result["after"]["period"] == ""
+
+
+def test_detect_change_single_event_not_changed():
+    result = detect_change(_arrival_events([18.0]), "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["effect_size"] == 0.0
+    assert result["p_value"] == 1.0
+
+
+def test_detect_change_unknown_metric_raises():
+    with pytest.raises(ValueError):
+        detect_change(_arrival_events([18.0] * 20), "Kevin", "heart_rate")
+
+
+def test_detect_change_invalid_split_ratio_raises():
+    with pytest.raises(ValueError):
+        detect_change(_arrival_events([18.0] * 20), "Kevin", "arrival_time", split_ratio=0.0)
+    with pytest.raises(ValueError):
+        detect_change(_arrival_events([18.0] * 20), "Kevin", "arrival_time", split_ratio=1.0)
+
+
+def test_detect_change_room_distribution_without_room_raises():
+    events = [_ev("2026-09-01T18:00:00", "light_on", person="Kevin")]
+    with pytest.raises(ValueError):
+        detect_change(events, "Kevin", "room_distribution")
+
+
+def test_detect_change_skips_malformed_events():
+    hours = [18.0] * 10 + [21.0] * 10
+    events = _arrival_events(hours)
+    events.insert(0, {"server_ts": "", "action": "tv_on", "persons_json": "[]"})
+    events.insert(1, {"server_ts": "not-a-ts", "action": "tv_on", "persons_json": "[]"})
+    events.insert(2, {"server_ts": "2026-09-02T10:00:00", "action": "tv_on", "persons_json": "{{"})
+    result = detect_change(events, "Kevin", "arrival_time")
+    assert result["before"]["count"] == 10
+    assert result["after"]["count"] == 10
+
+
+def test_detect_change_person_absent_from_events():
+    events = [_ev("2026-09-01T18:00:00", "face_known", person="Alice")]
+    result = detect_change(events, "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["before"]["count"] == 0
+    assert result["after"]["count"] == 0
+
+
+# ---------------------------------------------------------------- search_candidate_causes
+
+
+CHANGE_TS = "2026-09-20T19:30:00"
+
+
+def test_search_candidate_causes_seven_keys_each():
+    events = [_ev("2026-09-15T12:00:00", "tv_on")]
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    assert causes
+    for item in causes:
+        assert set(item) == {
+            "cause_type", "event_type", "count", "baseline_count",
+            "correlation", "confidence", "description",
+        }
+
+
+def test_search_candidate_causes_sorted_by_confidence_desc():
+    events = []
+    for i in range(8):  # 变化窗口内 tv_on 8 次，且靠近变化时刻
+        events.append(_ev(f"2026-09-{13 + i:02d}T12:00:00", "tv_on"))
+    events.append(_ev("2026-09-07T12:00:00", "tv_on"))  # 基线期 1 次
+    for i in range(5):
+        events.append(_ev(f"2026-09-{7 + i:02d}T08:00:00", "light_on"))  # 基线期多、变化期少
+    events.append(_ev("2026-09-15T08:00:00", "light_on"))
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    confidences = [c["confidence"] for c in causes]
+    assert confidences == sorted(confidences, reverse=True)
+    assert causes[0]["event_type"] == "tv_on"
+    assert causes[0]["cause_type"] == "device_change"
+
+
+def test_search_candidate_causes_device_change():
+    events = [_ev(f"2026-09-{d:02d}T12:00:00", "tv_on") for d in (14, 15, 16, 17, 18, 19)]
+    events += [_ev(f"2026-09-{d:02d}T12:00:00", "tv_on") for d in (7, 9)]
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    tv = [c for c in causes if c["event_type"] == "tv_on"]
+    assert len(tv) == 1
+    assert tv[0]["cause_type"] == "device_change"
+    assert tv[0]["count"] == 6
+    assert tv[0]["baseline_count"] == 2
+    assert "200%" in tv[0]["description"]
+    assert 0.0 <= tv[0]["correlation"] <= 1.0
+    assert 0.0 <= tv[0]["confidence"] <= 1.0
+
+
+def test_search_candidate_causes_person_change():
+    events = [_ev(f"2026-09-{d:02d}T12:00:00", "face_unknown") for d in (14, 16, 18)]
+    events += [_ev("2026-09-08T12:00:00", "face_unknown")]
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    item = [c for c in causes if c["event_type"] == "face_unknown"]
+    assert item and item[0]["cause_type"] == "person_change"
+    assert item[0]["count"] == 3
+    assert item[0]["baseline_count"] == 1
+
+
+def test_search_candidate_causes_environment_change():
+    events = [_ev(f"2026-09-{d:02d}T12:00:00", "door_open") for d in (14, 17, 19)]
+    events += [_ev(f"2026-09-{d:02d}T12:00:00", "window_open") for d in (8, 10)]
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    env = [c for c in causes if c["cause_type"] == "environment_change"]
+    assert {c["event_type"] for c in env} == {"door_open", "window_open"}
+
+
+def test_search_candidate_causes_schedule_change():
+    events = [_ev(f"2026-09-{d:02d}T12:00:00", "face_known", person="Kevin") for d in range(7, 20)]
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    sched = [c for c in causes if c["cause_type"] == "schedule_change"]
+    assert sched
+    assert {c["event_type"] for c in sched} <= {"weekday", "weekend"}
+    assert all(c["event_type"] in ("weekday", "weekend") for c in sched)
+
+
+def test_search_candidate_causes_no_events_in_window():
+    events = [_ev("2026-08-01T12:00:00", "tv_on")]
+    assert search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7) == []
+
+
+def test_search_candidate_causes_invalid_ts_returns_empty():
+    events = [_ev("2026-09-15T12:00:00", "tv_on")]
+    assert search_candidate_causes(events, "Kevin", "bad-ts", lookback_days=7) == []
+
+
+def test_search_candidate_causes_invalid_lookback_raises():
+    events = [_ev("2026-09-15T12:00:00", "tv_on")]
+    with pytest.raises(ValueError):
+        search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=0)
+
+
+# ---------------------------------------------------------------- attribute
+
+
+def test_attribute_no_change_has_empty_candidate_causes():
+    rng = random.Random(20260925)
+    base = [rng.gauss(18.0, 1.0) for _ in range(10)]
+    hours = base + [base[i] for i in (6, 2, 9, 0, 8, 4, 1, 7, 3, 5)]
+    result = attribute(_arrival_events(hours), "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["candidate_causes"] == []
+
+
+def test_attribute_changed_has_nonempty_candidate_causes():
+    result = attribute(_tv_timeline(), "Kevin", "arrival_time", lookback_days=7)
+    assert result["changed"] is True
+    assert isinstance(result["candidate_causes"], list)
+    assert len(result["candidate_causes"]) >= 1
+
+
+def test_attribute_contains_all_detect_change_fields():
+    result = attribute(_tv_timeline(), "Kevin", "arrival_time", lookback_days=7)
+    expected = {
+        "changed", "metric", "person", "before", "after",
+        "effect_size", "p_value", "direction", "candidate_causes",
+    }
+    assert set(result) == expected
+
+
+def test_attribute_empty_events():
+    result = attribute([], "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["candidate_causes"] == []
+
+
+def test_attribute_room_distribution_pass_through():
+    events = []
+    for i in range(20):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        room_a, room_b = ("客厅", "书房") if i < 10 else ("客厅", "客厅")
+        events.append(_ev(_iso(day, 18.0), "light_on", person="Kevin", room=room_a))
+        events.append(_ev(_iso(day, 18.2), "light_on", person="Kevin", room=room_b))
+    result = attribute(events, "Kevin", "room_distribution", room="客厅")
+    assert result["metric"] == "room_distribution"
+    assert result["changed"] is True
+    assert result["candidate_causes"]
+
+
+# ---------------------------------------------------------------- 使用示例冒烟
+
+
+def test_usage_example_smoke(capsys):
+    events = _tv_timeline()
+    result = attribute(events, "Kevin", "arrival_time", lookback_days=7)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    assert result["person"] == "Kevin"
+    assert result["metric"] == "arrival_time"
+    assert "candidate_causes" in result
+    with capsys.disabled():
+        pass
+"""change_attribution 单测：无变化 / 有变化 / 候选原因 / 完整归因 / 边界与异常。"""
+
+from __future__ import annotations
+
+import json
+import random
+from datetime import datetime, timedelta
+
+import pytest
+
+from memory_agent.change_attribution import (
+    attribute,
+    detect_change,
+    search_candidate_causes,
+)
+
+
+# ---------------------------------------------------------------- 测试工具
+
+
+def _iso(day: datetime, hour_float: float) -> str:
+    total = int(round(hour_float * 60))
+    hour, minute = divmod(total, 60)
+    hour = max(0, min(23, hour))
+    return day.replace(hour=hour, minute=minute, second=0).isoformat()
+
+
+def _ev(ts: str, action: str, person: str | None = None, room: str = "客厅") -> dict:
+    persons = [{"name": person, "confidence": 0.9}] if person else []
+    return {
+        "id": 0,
+        "server_ts": ts,
+        "action": action,
+        "scene": "",
+        "room": room,
+        "persons_json": json.dumps(persons, ensure_ascii=False),
+        "source": "edge_ai",
+        "confidence": 0.9,
+        "extra_json": "{}",
+    }
+
+
+def _arrival_events(hours: list[float], person: str = "Kevin") -> list[dict]:
+    events = []
+    for i, h in enumerate(hours):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        events.append(_ev(_iso(day, h), "face_known", person=person))
+    return events
+
+
+def _tv_timeline(days: int = 20) -> list[dict]:
+    """20 天、每天 2 条事件，前半段到家 18 点，后半段到家 21 点。"""
+    events: list[dict] = []
+    for i in range(days):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        hour = (17.9, 18.0, 18.1)[i % 3] if i < days // 2 else (20.9, 21.0, 21.1)[i % 3]
+        events.append(_ev(_iso(day, hour), "face_known", person="Kevin"))
+        events.append(_ev(_iso(day, hour + 0.1), "tv_on"))
+    return events
+
+
+# ---------------------------------------------------------------- detect_change：无变化
+
+
+def test_detect_change_no_change_random_data():
+    rng = random.Random(20260925)
+    base = [rng.gauss(18.0, 1.0) for _ in range(10)]
+    hours = base + [base[i] for i in (6, 2, 9, 0, 8, 4, 1, 7, 3, 5)]  # 同分布随机数据
+    result = detect_change(_arrival_events(hours), "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["direction"] == "none"
+    assert result["effect_size"] == 0.0
+    assert result["p_value"] == 1.0
+
+
+# ---------------------------------------------------------------- detect_change：有变化
+
+
+def test_detect_change_significant_increase():
+    hours = [18.0] * 10 + [21.0] * 10
+    result = detect_change(_arrival_events(hours), "Kevin", "arrival_time")
+    assert result["changed"] is True
+    assert result["effect_size"] > 0.5
+    assert result["p_value"] < 0.05
+    assert result["direction"] == "increase"
+
+
+def test_detect_change_significant_decrease():
+    hours = [21.0] * 10 + [18.0] * 10
+    result = detect_change(_arrival_events(hours), "Kevin", "arrival_time")
+    assert result["changed"] is True
+    assert result["direction"] == "decrease"
+
+
+def test_detect_change_return_has_eight_keys():
+    result = detect_change(_arrival_events([18.0] * 10 + [21.0] * 10), "Kevin", "arrival_time")
+    assert set(result) == {
+        "changed", "metric", "person", "before", "after",
+        "effect_size", "p_value", "direction",
+    }
+
+
+def test_detect_change_before_after_have_five_keys_and_period():
+    result = detect_change(_arrival_events([18.0] * 10 + [21.0] * 10), "Kevin", "arrival_time")
+    for key in ("before", "after"):
+        assert set(result[key]) == {"mean", "median", "std", "count", "period"}
+    assert result["before"]["period"] == "2026-09-01~2026-09-10"
+    assert result["after"]["period"] == "2026-09-11~2026-09-20"
+    assert result["before"]["count"] == 10
+    assert result["after"]["count"] == 10
+
+
+def test_detect_change_activity_count_metric():
+    events = []
+    for i in range(20):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        n = 1 if i < 10 else 3
+        for k in range(n):
+            events.append(_ev(_iso(day, 18.0 + k * 0.2), "light_on", person="Kevin"))
+    result = detect_change(events, "Kevin", "activity_count")
+    assert result["metric"] == "activity_count"
+    assert result["changed"] is True
+    assert result["after"]["mean"] > result["before"]["mean"]
+
+
+def test_detect_change_active_duration_metric():
+    events = []
+    for i in range(20):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        span = 0.2 if i < 10 else 2.0
+        events.append(_ev(_iso(day, 18.0), "face_known", person="Kevin"))
+        events.append(_ev(_iso(day, 18.0 + span), "light_on", person="Kevin"))
+    result = detect_change(events, "Kevin", "active_duration")
+    assert result["changed"] is True
+    assert result["after"]["mean"] > result["before"]["mean"]
+
+
+def test_detect_change_room_distribution_with_room():
+    events = []
+    for i in range(20):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        if i < 10:
+            events.append(_ev(_iso(day, 18.0), "light_on", person="Kevin", room="客厅"))
+            events.append(_ev(_iso(day, 18.2), "light_on", person="Kevin", room="书房"))
+        else:
+            events.append(_ev(_iso(day, 18.0), "light_on", person="Kevin", room="客厅"))
+            events.append(_ev(_iso(day, 18.2), "light_on", person="Kevin", room="客厅"))
+    result = detect_change(events, "Kevin", "room_distribution", room="客厅")
+    assert result["changed"] is True
+    assert result["before"]["mean"] == 0.5
+    assert result["after"]["mean"] == 1.0
+
+
+# ---------------------------------------------------------------- detect_change：边界与异常
+
+
+def test_detect_change_empty_events():
+    result = detect_change([], "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["direction"] == "none"
+    assert result["before"]["count"] == 0
+    assert result["after"]["count"] == 0
+    assert result["before"]["period"] == ""
+    assert result["after"]["period"] == ""
+
+
+def test_detect_change_single_event_not_changed():
+    result = detect_change(_arrival_events([18.0]), "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["effect_size"] == 0.0
+    assert result["p_value"] == 1.0
+
+
+def test_detect_change_unknown_metric_raises():
+    with pytest.raises(ValueError):
+        detect_change(_arrival_events([18.0] * 20), "Kevin", "heart_rate")
+
+
+def test_detect_change_invalid_split_ratio_raises():
+    with pytest.raises(ValueError):
+        detect_change(_arrival_events([18.0] * 20), "Kevin", "arrival_time", split_ratio=0.0)
+    with pytest.raises(ValueError):
+        detect_change(_arrival_events([18.0] * 20), "Kevin", "arrival_time", split_ratio=1.0)
+
+
+def test_detect_change_room_distribution_without_room_raises():
+    events = [_ev("2026-09-01T18:00:00", "light_on", person="Kevin")]
+    with pytest.raises(ValueError):
+        detect_change(events, "Kevin", "room_distribution")
+
+
+def test_detect_change_skips_malformed_events():
+    hours = [18.0] * 10 + [21.0] * 10
+    events = _arrival_events(hours)
+    events.insert(0, {"server_ts": "", "action": "tv_on", "persons_json": "[]"})
+    events.insert(1, {"server_ts": "not-a-ts", "action": "tv_on", "persons_json": "[]"})
+    events.insert(2, {"server_ts": "2026-09-02T10:00:00", "action": "tv_on", "persons_json": "{{"})
+    result = detect_change(events, "Kevin", "arrival_time")
+    assert result["before"]["count"] == 10
+    assert result["after"]["count"] == 10
+
+
+def test_detect_change_person_absent_from_events():
+    events = [_ev("2026-09-01T18:00:00", "face_known", person="Alice")]
+    result = detect_change(events, "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["before"]["count"] == 0
+    assert result["after"]["count"] == 0
+
+
+# ---------------------------------------------------------------- search_candidate_causes
+
+
+CHANGE_TS = "2026-09-20T19:30:00"
+
+
+def test_search_candidate_causes_seven_keys_each():
+    events = [_ev("2026-09-15T12:00:00", "tv_on")]
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    assert causes
+    for item in causes:
+        assert set(item) == {
+            "cause_type", "event_type", "count", "baseline_count",
+            "correlation", "confidence", "description",
+        }
+
+
+def test_search_candidate_causes_sorted_by_confidence_desc():
+    events = []
+    for i in range(8):  # 变化窗口内 tv_on 8 次，且靠近变化时刻
+        events.append(_ev(f"2026-09-{13 + i:02d}T12:00:00", "tv_on"))
+    events.append(_ev("2026-09-07T12:00:00", "tv_on"))  # 基线期 1 次
+    for i in range(5):
+        events.append(_ev(f"2026-09-{7 + i:02d}T08:00:00", "light_on"))  # 基线期多、变化期少
+    events.append(_ev("2026-09-15T08:00:00", "light_on"))
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    confidences = [c["confidence"] for c in causes]
+    assert confidences == sorted(confidences, reverse=True)
+    assert causes[0]["event_type"] == "tv_on"
+    assert causes[0]["cause_type"] == "device_change"
+
+
+def test_search_candidate_causes_device_change():
+    events = [_ev(f"2026-09-{d:02d}T12:00:00", "tv_on") for d in (14, 15, 16, 17, 18, 19)]
+    events += [_ev(f"2026-09-{d:02d}T12:00:00", "tv_on") for d in (7, 9)]
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    tv = [c for c in causes if c["event_type"] == "tv_on"]
+    assert len(tv) == 1
+    assert tv[0]["cause_type"] == "device_change"
+    assert tv[0]["count"] == 6
+    assert tv[0]["baseline_count"] == 2
+    assert "200%" in tv[0]["description"]
+    assert 0.0 <= tv[0]["correlation"] <= 1.0
+    assert 0.0 <= tv[0]["confidence"] <= 1.0
+
+
+def test_search_candidate_causes_person_change():
+    events = [_ev(f"2026-09-{d:02d}T12:00:00", "face_unknown") for d in (14, 16, 18)]
+    events += [_ev("2026-09-08T12:00:00", "face_unknown")]
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    item = [c for c in causes if c["event_type"] == "face_unknown"]
+    assert item and item[0]["cause_type"] == "person_change"
+    assert item[0]["count"] == 3
+    assert item[0]["baseline_count"] == 1
+
+
+def test_search_candidate_causes_environment_change():
+    events = [_ev(f"2026-09-{d:02d}T12:00:00", "door_open") for d in (14, 17, 19)]
+    events += [_ev(f"2026-09-{d:02d}T12:00:00", "window_open") for d in (8, 10)]
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    env = [c for c in causes if c["cause_type"] == "environment_change"]
+    assert {c["event_type"] for c in env} == {"door_open", "window_open"}
+
+
+def test_search_candidate_causes_schedule_change():
+    events = [_ev(f"2026-09-{d:02d}T12:00:00", "face_known", person="Kevin") for d in range(7, 20)]
+    causes = search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7)
+    sched = [c for c in causes if c["cause_type"] == "schedule_change"]
+    assert sched
+    assert {c["event_type"] for c in sched} <= {"weekday", "weekend"}
+    assert all(c["event_type"] in ("weekday", "weekend") for c in sched)
+
+
+def test_search_candidate_causes_no_events_in_window():
+    events = [_ev("2026-08-01T12:00:00", "tv_on")]
+    assert search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=7) == []
+
+
+def test_search_candidate_causes_invalid_ts_returns_empty():
+    events = [_ev("2026-09-15T12:00:00", "tv_on")]
+    assert search_candidate_causes(events, "Kevin", "bad-ts", lookback_days=7) == []
+
+
+def test_search_candidate_causes_invalid_lookback_raises():
+    events = [_ev("2026-09-15T12:00:00", "tv_on")]
+    with pytest.raises(ValueError):
+        search_candidate_causes(events, "Kevin", CHANGE_TS, lookback_days=0)
+
+
+# ---------------------------------------------------------------- attribute
+
+
+def test_attribute_no_change_has_empty_candidate_causes():
+    rng = random.Random(20260925)
+    base = [rng.gauss(18.0, 1.0) for _ in range(10)]
+    hours = base + [base[i] for i in (6, 2, 9, 0, 8, 4, 1, 7, 3, 5)]
+    result = attribute(_arrival_events(hours), "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["candidate_causes"] == []
+
+
+def test_attribute_changed_has_nonempty_candidate_causes():
+    result = attribute(_tv_timeline(), "Kevin", "arrival_time", lookback_days=7)
+    assert result["changed"] is True
+    assert isinstance(result["candidate_causes"], list)
+    assert len(result["candidate_causes"]) >= 1
+
+
+def test_attribute_contains_all_detect_change_fields():
+    result = attribute(_tv_timeline(), "Kevin", "arrival_time", lookback_days=7)
+    expected = {
+        "changed", "metric", "person", "before", "after",
+        "effect_size", "p_value", "direction", "candidate_causes",
+    }
+    assert set(result) == expected
+
+
+def test_attribute_empty_events():
+    result = attribute([], "Kevin", "arrival_time")
+    assert result["changed"] is False
+    assert result["candidate_causes"] == []
+
+
+def test_attribute_room_distribution_pass_through():
+    events = []
+    for i in range(20):
+        day = datetime(2026, 9, 1) + timedelta(days=i)
+        room_a, room_b = ("客厅", "书房") if i < 10 else ("客厅", "客厅")
+        events.append(_ev(_iso(day, 18.0), "light_on", person="Kevin", room=room_a))
+        events.append(_ev(_iso(day, 18.2), "light_on", person="Kevin", room=room_b))
+    result = attribute(events, "Kevin", "room_distribution", room="客厅")
+    assert result["metric"] == "room_distribution"
+    assert result["changed"] is True
+    assert result["candidate_causes"]
+
+
+# ---------------------------------------------------------------- 使用示例冒烟
+
+
+def test_usage_example_smoke(capsys):
+    events = _tv_timeline()
+    result = attribute(events, "Kevin", "arrival_time", lookback_days=7)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    assert result["person"] == "Kevin"
+    assert result["metric"] == "arrival_time"
+    assert "candidate_causes" in result
+    with capsys.disabled():
+        pass
+
+
+七、使用示例
+
+python
+from memory_agent.change_attribution import attribute, detect_change, search_candidate_causes
+
+# events 由 runtime.store.list_behavior_events(limit=N) 取得
+events = runtime.store.list_behavior_events(limit=5000)
+
+# 1) 只看变化
+r = detect_change(events, "Kevin", "arrival_time")
+print(r["changed"], r["effect_size"], r["p_value"], r["direction"])
+# -> True 3.0 5.3e-05 increase
+
+# 2) 只看候选原因（锚定变化发生时刻）
+causes = search_candidate_causes(events, "Kevin", "2026-09-11T18:00:00", lookback_days=7)
+for c in causes:
+    print(c["cause_type"], c["event_type"], c["confidence"], c["description"])
+# -> device_change tv_on 0.5712 "变化前7天内电视打开次数增加了200%"
+
+# 3) 完整归因
+out = attribute(events, "Kevin", "arrival_time", split_ratio=0.5, lookback_days=7)
+print(out["changed"], len(out["candidate_causes"]))
+# 房间占比类指标需带 room
+out2 = attribute(events, "Kevin", "room_distribution", room="客厅")
+from memory_agent.change_attribution import attribute, detect_change, search_candidate_causes
+
+# events 由 runtime.store.list_behavior_events(limit=N) 取得
+events = runtime.store.list_behavior_events(limit=5000)
+
+# 1) 只看变化
+r = detect_change(events, "Kevin", "arrival_time")
+print(r["changed"], r["effect_size"], r["p_value"], r["direction"])
+# -> True 3.0 5.3e-05 increase
+
+# 2) 只看候选原因（锚定变化发生时刻）
+causes = search_candidate_causes(events, "Kevin", "2026-09-11T18:00:00", lookback_days=7)
+for c in causes:
+    print(c["cause_type"], c["event_type"], c["confidence"], c["description"])
+# -> device_change tv_on 0.5712 "变化前7天内电视打开次数增加了200%"
+
+# 3) 完整归因
+out = attribute(events, "Kevin", "arrival_time", split_ratio=0.5, lookback_days=7)
+print(out["changed"], len(out["candidate_causes"]))
+# 房间占比类指标需带 room
+out2 = attribute(events, "Kevin", "room_distribution", room="客厅")
+
+
+八、验收标准逐条对照
+
+#	验收点	落实情况
+1	py_compile 全过	代码纯 stdlib、语法为 3.10+（X | None），需在目标仓实跑确认
+2	≥15 条单测通过	本文件 28 条；total/collectable/ran 内容中未提供，需实跑回填
+3	不改"不许改"清单	未触碰 store.py/behavior_predictor.py/agent_memory.py/behavior_routes.py
+4	零新依赖	仅 json/math/statistics/collections/datetime/typing
+5	随机无变化 → changed=False	test_detect_change_no_change_random_data
+6	显著变化 → changed=True 且 effect_size>0.5	test_detect_change_significant_increase
+7	返回值八个键	test_detect_change_return_has_eight_keys
+8	before/after 各五键	test_detect_change_before_after_have_five_keys_and_period
+9	候选原因七个键	test_search_candidate_causes_seven_keys_each
+10	按 confidence 降序	test_search_candidate_causes_sorted_by_confidence_desc
+11	changed=False → 空 candidate_causes	test_attribute_no_change_has_empty_candidate_causes
+12	changed=True → 非空 candidate_causes	test_attribute_changed_has_nonempty_candidate_causes
+13	attribute() = detect_change 全字段 + candidate_causes	test_attribute_contains_all_detect_change_fields
+14	覆盖无变化/有变化/候选搜索/完整归因/边界（空事件、单人事件）	各分组测试齐备，含 test_detect_change_empty_events、test_detect_change_single_event_not_changed、test_detect_change_person_absent_from_events
+
+需要你确认的关键点集中在"四、待确认问题"的 8 条，尤其是 room 参数的传入方式、activity_count 的时间单位、holiday 的节假日数据来源；确认后我再按结论调整对应实现。

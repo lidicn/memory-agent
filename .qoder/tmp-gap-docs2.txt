@@ -1,0 +1,227 @@
+##### list_behavior_anomalies
+列出已落库的行为异常（按严重度降序）。
+
+:param status: new（未复核）| confirmed | ignored；留空=全部
+:param days: 只取最近 N 天（按异常所属日期），默认 14
+:param limit: 返回上限，默认 50
+--- body ---
+from datetime import timedelta
+rt = get_runtime()
+day_from = (now_local(rt.config.tz_offset_hours) - timedelta(days=max(1, int(days or 14)))).strftime('%Y-%m-%d')
+rows = await asyncio.to_thread(rt.store.list_behavior_anomalies, status or None, day_from, None, None, max(1, min(int(limit or 50), 500)))
+return {'ok': True, 'count': len(rows), 'day_from': day_from, 'anomalies': rows}
+
+##### list_behavior_drifts
+列出已落库的漂移/异常时段。
+
+:param kind: drift（活跃度分布突变）| anomaly（异常时段）；留空=全部
+:param days: 只取最近 N 天，默认 14
+--- body ---
+from datetime import timedelta
+rt = get_runtime()
+day_from = (now_local(rt.config.tz_offset_hours) - timedelta(days=max(1, int(days or 14)))).strftime('%Y-%m-%d')
+rows = await asyncio.to_thread(rt.store.list_behavior_drifts, kind or None, day_from, None, max(1, min(int(limit or 50), 500)))
+return {'ok': True, 'count': len(rows), 'day_from': day_from, 'drifts': rows}
+
+##### list_bug_reports
+列出已上报的 bug。status: open|resolved|all
+--- body ---
+rt = get_runtime()
+bugs = await asyncio.to_thread(rt.store.list_bug_reports, status, limit)
+return {'ok': True, 'count': len(bugs), 'bugs': bugs}
+
+##### list_candidate_rules
+列出候选规则建议（vMA-1.2.1）。
+
+status: staging(待确认) | confirmed(已确认) | rejected(已拒绝)
+返回未确认的自动规则建议，供人工审核。
+--- body ---
+rt = get_runtime()
+rules = await asyncio.to_thread(rt.store.list_candidate_rules, status=status)
+return {'ok': True, 'count': len(rules), 'rules': rules}
+
+##### list_device_health
+实体健康 / 失效清单（A3）。
+
+state 可填 active（确认在线）/ unknown（短暂失联）/ stale（长期失效），
+留空返回全部。``referenced=1`` 表示该实体仍被某个模板引用，
+它一旦失效就会让洞察失真，应优先处理。
+--- body ---
+rt = get_runtime()
+identity = getattr(rt, 'identity', None)
+if identity is None:
+    return {'ok': False, 'error': '身份层未启用'}
+rows = await asyncio.to_thread(identity.store.list_device_health, state)
+devices = await asyncio.to_thread(identity.list_devices)
+return {'ok': True, 'state': state or 'all', 'health': rows, 'total': len(rows), 'logical_devices': len(devices)}
+
+##### list_members
+列出全部家庭成员，返回 id/name/rooms/devices/tags 轻量字段。
+不含头像/人脸等大字段；需要详情用 get_member_persona(member_id)。
+--- body ---
+rt = get_runtime()
+raw = await asyncio.to_thread(rt.store.list_members)
+_SKIP = {'face_photo', 'avatar_url', 'embedding', 'face_feature', 'profile_json', 'appearance_json'}
+members = []
+for m in raw:
+    slim = {k: v for k, v in m.items() if k not in _SKIP}
+    if isinstance(slim.get('tags'), list):
+        slim['tags'] = [{'label': t.get('label') or t.get('name', ''), 'category': t.get('category', ''), 'confidence': t.get('confidence', 0)} for t in slim['tags'] if isinstance(t, dict)]
+    members.append(slim)
+return {'ok': True, 'members': members, 'total': len(members)}
+
+##### list_rule_channel
+DCD R3 生效通道全景（只读）。
+
+candidate_id 非空时只返回该候选的门槛判据（eligibility 预演）；
+否则返回 accepted 候选的晋升预演清单 + 试运行/已转正/已撤销规则与观察读数。
+判据：accepted + user_confirmed + ≥MA_RULE_MIN_EVIDENCE 个独立证据日 + 事件类型在引擎实时 feed 词表内。
+--- body ---
+rt = get_runtime()
+lc = _rule_lifecycle(rt)
+if candidate_id:
+    return await asyncio.to_thread(lc.eligibility, candidate_id)
+return await asyncio.to_thread(lc.channel_status)
+
+##### list_rule_lifecycle_audit
+列出规则生命周期审计（机器建议→人工确认→生效→转正/撤销全链路留痕）。
+--- body ---
+rt = get_runtime()
+rows = await asyncio.to_thread(rt.store.list_rule_lifecycle, rule_id, limit)
+intact = all((str(r.get('rule_id') or '') and str(r.get('action') or '') and str(r.get('created_at') or '') for r in rows))
+return {'ok': intact, 'count': len(rows), 'items': rows}
+
+##### mine_behavior_process
+过程挖掘（只读分析）：把「房间·天」当轨迹、设备标签为步骤，挖行为过程模型并找**异常的一天**。
+
+与序列规则（define_activity/mine_sequences 的 n-gram 频次）互补：本工具做**一致性检验**
+——某天的行为步骤里出现了平时几乎不走的转移（如平时只 门→灯→电脑，某天多插了空调），
+即判为行为异常。返回变体统计、DFG 规模、一致性率与异常清单（含稀有边证据）。
+适用『最近有没有哪天行为异常/不对劲』『作息是不是变了』。不写库；要落库请用
+refresh_behavior_anomalies。
+
+:param days: 回溯天数，默认 7
+:param rooms: 逗号分隔的房间白名单，留空=全部房间
+--- body ---
+rt = get_runtime()
+room_list = [r.strip() for r in (rooms or '').split(',') if r.strip()] or None
+return await asyncio.to_thread(rt.activity.mine_process, None, None, days, room_list, persist=False, emit_rules=False)
+
+##### promote_candidate_rule
+把一条 accepted 候选规则晋升进引擎（DCD R3）。
+
+必须先过证据门槛，否则拒绝并返回 blockers；晋升成功的规则一律
+``mode='dry_run'``（只记录不触发），观察期满再 advance_rule_to_live 转正。
+--- body ---
+rt = get_runtime()
+_tok, _scopes, _origin = _caller_context()
+return await asyncio.to_thread(_rule_lifecycle(rt).promote, rule_id, _tok or _origin or 'agent', reason)
+
+##### query_device_usage
+按「逻辑设备名」查询用量 / 时长 / 计数（v0.3 语义工具）。
+
+与 ``get_device_usage`` 的区别：本工具接受**逻辑设备名**（如「客厅电视」「游戏机」），
+由身份层解析为当前 entity_id。因此 HA 集成重登、双集成并存导致 entity_id 漂移后
+依然稳定——不必先调 get_entity_catalog 去查最新的 entity_id。
+
+典型用法：``query_device_usage(logical_device="客厅电视", attribute="source",
+value="HDMI 3", metric="duration", days=2)`` 即「电视 HDMI 3 近两天的时长」。
+
+logical_device 与 entity_id 二选一；都不传会报错。
+metric：duration（时长）/ count（次数）/ numeric_sum（数值累计）。
+--- body ---
+from .templates import run_query
+rt = get_runtime()
+return await asyncio.to_thread(run_query, rt, entity_id=entity_id, logical_id=logical_device, attribute=attribute, pattern=pattern, value=value, metric=metric, days=days, start=start, end=end, include_timeline=include_timeline)
+
+##### read_self_diary
+读取最近 N 天的自我日记。
+days: 回溯天数，默认 7
+--- body ---
+rt = get_runtime()
+all_mem = await asyncio.to_thread(rt.store.list_agent_memories, 'all', '', 500, '')
+diaries = [m for m in all_mem if m.get('topic_key') == 'self_diary']
+from datetime import timedelta
+cutoff = (now_local(rt.config.tz_offset_hours) - timedelta(days=days)).isoformat()
+diaries = [d for d in diaries if d.get('created_at', '') >= cutoff]
+diaries.sort(key=lambda x: x.get('created_at', ''))
+return {'ok': True, 'count': len(diaries), 'diaries': [{'date': d.get('created_at', '')[:10], 'text': d.get('text', '')} for d in diaries]}
+
+##### refresh_behavior_anomalies
+重算并**落库**行为异常（写工具，需 read+write 令牌）。
+
+同 mine_behavior_process 的算法，但把异常写入 behavior_anomalies 供 WebUI 复核，
+并把「房间高频过程变体」写候选规则（source=process，作为规则缺口提示，人工审核）。
+--- body ---
+rt = get_runtime()
+room_list = [r.strip() for r in (rooms or '').split(',') if r.strip()] or None
+return await asyncio.to_thread(rt.activity.mine_process, None, None, days, room_list, persist=True, emit_rules=True)
+
+##### refresh_behavior_drift
+重算并**落库**漂移点/异常时段（写工具，需 read+write 令牌）→ behavior_drifts。
+--- body ---
+rt = get_runtime()
+return await asyncio.to_thread(rt.activity.mine_drift, None, None, days, None, persist=True)
+
+##### refresh_rule_recall_gaps
+重算并**落库**召回放宽建议（写工具，需 read+write 令牌）。
+
+对反复卡在同一步的缺口，产出「去掉该步骤」的宽松变体，写 ``candidate_rules``
+（source=recall_gap，staging 待人工审核）。不会自动改动线上规则。
+--- body ---
+rt = get_runtime()
+return await asyncio.to_thread(rt.activity.audit_rule_recall, None, None, days, None, persist=True)
+
+##### report_bug
+上报一条 bug（agent 用 MA 时发现功能问题记录于此）。
+
+tool_name: 出问题的 MCP 工具名
+description: 问题描述
+expected: 期望行为
+actual: 实际行为
+severity: minor|major|critical
+--- body ---
+rt = get_runtime()
+_tok, _scopes, _origin = _caller_context()
+result = await asyncio.to_thread(rt.store.add_bug_report, tool_name, description, expected, actual, severity, _tok)
+return {'ok': True, **result}
+
+##### review_behavior_anomaly
+复核行为异常（写工具）：status = confirmed（确属异常）/ ignored（误报）/ new（复位）。
+
+人工复核结果在重跑挖掘时会被保留（不会被刷新洗掉）。
+--- body ---
+rt = get_runtime()
+if status not in ('new', 'confirmed', 'ignored'):
+    return {'ok': False, 'error': 'status 必须是 new/confirmed/ignored'}
+changed = await asyncio.to_thread(rt.store.set_behavior_anomaly_status, anomaly_id, status)
+if not changed:
+    return {'ok': False, 'error': f'异常不存在: {anomaly_id}'}
+return {'ok': True, 'anomaly_id': anomaly_id, 'status': status}
+
+##### revoke_active_rule
+撤销一条生效规则（红线"可回滚"）。
+
+关闭规则（mode='revoked'、enabled=0）并删除它经 infer_activity 产生的
+推断活动，回滚条数写入审计。
+--- body ---
+rt = get_runtime()
+_tok, _scopes, _origin = _caller_context()
+return await asyncio.to_thread(_rule_lifecycle(rt).revoke, rule_id, _tok or _origin or 'agent', reason, rollback_inferences)
+
+##### revoke_signal_rule
+撤销信号硬排除（将其标记为 revoked）。exclusion_id 来自 teach_signal 的返回值。
+--- body ---
+rt = get_runtime()
+ok = await asyncio.to_thread(rt.store.revoke_signal_exclusion, exclusion_id)
+if not ok:
+    return {'ok': False, 'error': f'NOT_FOUND: 排除规则 {exclusion_id} 不存在'}
+return {'ok': True, 'message': f'排除规则 {exclusion_id} 已撤销'}
+
+##### write_self_diary
+写一段自我日记（第一人称视角）。写入 staging，永不自动晋升。
+text: 日记正文（第一人称，如"今天晚上客厅很安静…"）
+--- body ---
+rt = get_runtime()
+mid = await asyncio.to_thread(rt.store.add_agent_memory, 'self_diary', text, 'self_diary', '[]', '[]', 365, 'staging', 1)
+return {'ok': True, 'memory_id': mid, 'message': '日记已写入 staging'}

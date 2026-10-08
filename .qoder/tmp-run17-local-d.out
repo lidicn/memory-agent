@@ -1,0 +1,27 @@
+.........F........                                                       [100%]
+================================== FAILURES ===================================
+___________ test_free_question_without_a_named_device_still_answers ___________
+
+store = <memory_agent.store.Store object at 0x000002F7BAA9C450>
+
+    def test_free_question_without_a_named_device_still_answers(store):
+        """对偶档：没点名的自由问句仍按房间/类别答——收紧门不许把「有什么异常」判成找不到设备。
+    
+        这一条是门自己的反例（"什么都不改"档）：意图触发词与虚词必须留在 `_QUERY_NOISE` 里，
+        否则 `has_query` 会把提问类型词当点名材料，本条就会红。
+        """
+        svc = _svc(store, _nightly(days=(DAY_1, DAY_3)))
+        for question in ("最近有什么异常", "书房有什么异常", "书房待了多久"):
+            plan = svc.nl.plan(question)
+>           assert plan.params["has_query"] is False, (question, plan.query, plan.params)
+E           AssertionError: ('最近有什么异常', '最近', {'has_room': False, 'has_query': True})
+E           assert True is False
+
+tests\test_vma_insights_nlquery_routes.py:238: AssertionError
+---------------------------- Captured stdout setup ----------------------------
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\ma_nlq_85yd8_3o\nlq.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+=========================== short test summary info ===========================
+FAILED tests/test_vma_insights_nlquery_routes.py::test_free_question_without_a_named_device_still_answers
+1 failed, 17 passed in 3.94s

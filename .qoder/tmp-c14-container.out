@@ -1,0 +1,53 @@
+HEAD=4ae51c9 ORIGIN=4ae51c9
+FILES=347
+TAR_RC=0 SIZE=2190682
+SCP_RC=0
+STAGE_RC=0
+SYNC_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+........................................................................ [ 97%]
+....................................                                     [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_algo_kernel.py:91: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:119: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:154: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:165: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:179: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:198: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1250 passed, 10 skipped in 210.39s (0:03:30)
+PREDICTOR_RC=0
+行数=4023
+
+=== A. server_ts 形状分布 ===
+  naive  n=3979
+  aware  n=44
+  同一自然日混用两种形状的天数=1 ['2026-09-18']
+
+=== B. 人名字符串元素（旧格式 ["Kevin"]）在库里是否存在 ===
+  含字符串元素的人数=1 / 去重人名数=8（只报长度）：[2, 2, 3, 5, 5, 5, 6, 34]
+
+=== C. 三个入口逐个跑：非空读数 / 不抛异常 ===
+  predict_arrival_time             非空=4/8 判红=0 
+  predict_post_arrival_activities  非空=4/8 判红=0 
+  predict_daily_routine            非空=8/8 判红=0 
+
+=== D. data_days 结构化口径（每人：出现天数）===
+  人名长度=2   data_days=1   arrival.sample_days=-1  predicted_hour=-
+  人名长度=2   data_days=1   arrival.sample_days=-1  predicted_hour=-
+  人名长度=3   data_days=13  arrival.sample_days=13  predicted_hour=12.03
+  人名长度=5   data_days=14  arrival.sample_days=14  predicted_hour=12.49
+  人名长度=5   data_days=15  arrival.sample_days=15  predicted_hour=12.25
+  人名长度=5   data_days=2   arrival.sample_days=-1  predicted_hour=-
+  人名长度=6   data_days=14  arrival.sample_days=14  predicted_hour=15.7
+  人名长度=34  data_days=1   arrival.sample_days=-1  predicted_hour=-
+
+=== E. 时区折算是否改变读数（offset 8 vs 0）===
+  读数随偏移改变的人数=0 / 8（>0 证明 `tz_offset_hours` 不是装饰参数）
+PROBE_DONE

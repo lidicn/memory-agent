@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "E:\NAS\memory-agent\.qoder\tmp-c77-jskeys.py", line 386, in <module>
+    sys.exit(selftest() if "--selftest" in sys.argv[1:] else main())
+             ~~~~~~~~^^
+  File "E:\NAS\memory-agent\.qoder\tmp-c77-jskeys.py", line 368, in selftest
+    main()
+    ~~~~^^
+  File "E:\NAS\memory-agent\.qoder\tmp-c77-jskeys.py", line 247, in main
+    reads = js_reads(PAGES_DIR)
+  File "E:\NAS\memory-agent\.qoder\tmp-c77-jskeys.py", line 113, in js_reads
+    rel = os.path.relpath(path, ROOT).replace("\\", "/")
+          ~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "<frozen ntpath>", line 796, in relpath
+ValueError: path is on mount 'E:', start on mount 'C:'

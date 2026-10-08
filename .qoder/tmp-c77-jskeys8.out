@@ -1,0 +1,94 @@
+FACES api_methods=100 unparsed=0 route_entries=208 handler_defs=292 js_callsites=67
+FACES2 defs_indexed=1537 handlers_with_helper_edge=78
+CALLSITES_ORPHAN=0 PATH_UNMATCHED=0 CHAIN_UNKNOWN=64
+READKEY_HARD=0 SHAPE=2 NESTED_MISS=0 GREEN_BY_HELPER=12 RESOLVED_ONLY=12
+
+=== HARD（前端读键既不在返回顶层解析结果、也不在 handler 函数体宇宙 ⇒ 首要嫌疑，0 条）===
+
+=== GREEN_BY_HELPER（只靠 helper 边才判绿的键 ⇒ 逐条按 file:line 抽查，12 条）===
+  agentMemorySweep /api/agent/memories/sweep  key=sweep  读点=src/memory_agent/static/js/pages/agent_memory.js:321  helper=src/memory_agent/agent_memory.py:701#AgentMemoryService.sweep_and_reconcile
+  createAppToken /api/config/app-tokens  key=token  读点=src/memory_agent/static/js/pages/settings.js:499  helper=src/memory_agent/app_tokens.py:43#AppTokenStore.generate,src/memory_agent/mcp_tokens.py:102#MCPTokenStore.generate,src/memory_agent/service_tokens.py:203#ServiceTokenStore.generate
+  health /api/health  key=collecting  读点=src/memory_agent/static/js/main.js:131  helper=src/memory_agent/agent_memory.py:705#AgentMemoryService.health,src/memory_agent/api/config_routes.py:436#health,src/memory_agent/insights/repository.py:121#StoreRepository.health
+  memberInsightFeedback /api/members/*/insight-feedback  key=down  读点=src/memory_agent/static/js/pages/members.js:833  helper=src/memory_agent/store.py:4996#Store.member_insight_feedback
+  memberInsightFeedback /api/members/*/insight-feedback  key=memories  读点=src/memory_agent/static/js/pages/members.js:833  helper=src/memory_agent/store.py:4996#Store.member_insight_feedback
+  memberInsightFeedback /api/members/*/insight-feedback  key=up  读点=src/memory_agent/static/js/pages/members.js:833  helper=src/memory_agent/store.py:4996#Store.member_insight_feedback
+  signalRules /api/signal-rules  key=counts  读点=src/memory_agent/static/js/pages/signal_rules.js:385  helper=src/memory_agent/signal_learning.py:182#SignalLearningService.list_rules
+  signalRules /api/signal-rules  key=hard  读点=src/memory_agent/static/js/pages/signal_rules.js:385  helper=src/memory_agent/signal_learning.py:182#SignalLearningService.list_rules
+  signalRules /api/signal-rules  key=soft  读点=src/memory_agent/static/js/pages/signal_rules.js:385  helper=src/memory_agent/signal_learning.py:182#SignalLearningService.list_rules
+  validateTemplates /api/templates/validate  key=summary  读点=src/memory_agent/static/js/pages/insights.js:272  helper=src/memory_agent/template_validate.py:359#validate_template,src/memory_agent/template_validate.py:414#validate_all
+  visionAnalyze /api/vision/analyze  key=scene  读点=src/memory_agent/static/js/pages/vision.js:444  helper=src/memory_agent/vision_service.py:788#VisionService.analyze_room
+  visionTestLlm /api/vision/test-llm  key=answer  读点=src/memory_agent/static/js/pages/vision.js:426  helper=src/memory_agent/vision_service.py:1379#VisionService.test_llm
+
+=== SHAPE（函数体宇宙里有、返回顶层解析没有 ⇒ 嵌套/分支形状要人工判，2 条）===
+  systemUpdateCheck /api/system/update/check  key=has_update  读点=src/memory_agent/static/js/pages/settings.js:560
+  systemUpdateCheck /api/system/update/check  key=latest_commit  读点=src/memory_agent/static/js/pages/settings.js:560
+
+=== NESTED_MISS（列表元素读键在 handler 宇宙里没有，0 条）===
+
+=== CHAIN_UNKNOWN（载荷由 helper 造，本尺不追，64 条）===
+  acpCreateToken /api/acp/tokens  看不清=<追不到赋值 err>
+  acpRevokeToken /api/acp/tokens  看不清=<追不到赋值 err>
+  acpSelftest /api/acp/selftest  看不清=<追不到赋值 err>
+  acpTestOutbound /api/acp/test-outbound  看不清=<追不到赋值 err>
+  agentMemories /api/agent/memories  看不清=<追不到赋值 err>
+  agentMemoryPromote /api/agent/memories/promote  看不清=<追不到赋值 err>
+  agentMemoryPromote /api/agent/memories/promote  看不清=<追不到赋值 err>
+  agentMemoryRetrieve /api/agent/memories/retrieve  看不清=<追不到赋值 err>
+  agentMemorySweep /api/agent/memories/sweep  看不清=<追不到赋值 err>
+  arenaAnalytics /api/arena/analytics  看不清=<非 dict 载荷>,len
+  changePassword /api/auth/change-password  看不清=<追不到赋值 err>
+  collectBackfill /api/collect/backfill  看不清=<追不到赋值 err>
+  collectCalendar /api/collect/calendar  看不清=<追不到赋值 err>
+  collectCancel /api/collect/cancel  看不清=<追不到赋值 err>
+  collectConfig /api/collect/config  看不清=<追不到赋值 err>
+  collectEnable /api/collect/enable  看不清=<追不到赋值 err>
+  collectJobs /api/collect/jobs  看不清=<追不到赋值 err>
+  collectProgress /api/collect/progress  看不清=<追不到赋值 err>
+  collectStats /api/collect/stats  看不清=<追不到赋值 err>
+  collectStatus /api/collect/status  看不清=<追不到赋值 err>
+  collectTrigger /api/collect/trigger  看不清=<追不到赋值 err>
+  collectTrigger /api/collect/trigger  看不清=<追不到赋值 err>
+  createAppToken /api/config/app-tokens  看不清=<追不到赋值 err>,同名多义 src/memory_agent/app_tokens.py:43#AppTokenStore.generate
+  deleteUser /api/users/delete  看不清=<追不到赋值 err>
+  getConfig /api/config  看不清=<追不到赋值 err>
+  getConfig /api/config  看不清=<追不到赋值 err>
+  haDiscover /api/ha/discover  看不清=<追不到赋值 err>
+  haRooms /api/ha/rooms  看不清=<追不到赋值 err>
+  haRooms /api/ha/rooms  看不清=<追不到赋值 err>
+  haRooms /api/ha/rooms  看不清=<追不到赋值 err>
+  haSaveRooms /api/ha/rooms  看不清=<追不到赋值 err>
+  health /api/health  看不清=<看不清>,<追不到赋值 err>,<非 dict 载荷>,同名多义 src/memory_agent/agent_memory.py:705#AgentMemoryService.health
+  identityDevices /api/identity/devices  看不清=<追不到赋值 err>
+  identityHealth /api/identity/health  看不清=<追不到赋值 err>
+  listAppTokens /api/config/app-tokens  看不清=<追不到赋值 err>,同名多义 src/memory_agent/app_tokens.py:43#AppTokenStore.generate
+  listMerges /api/identity/merges  看不清=<追不到赋值 err>
+  llmModels /api/llm/models  看不清=<追不到赋值 err>
+  llmPreview /api/llm/analyze/preview  看不清=<追不到赋值 err>
+  llmSaveInsight /api/llm/analyze/save  看不清=<追不到赋值 err>
+  mcpAudit /api/mcp/audit  看不清=<追不到赋值 err>
+  mcpCreateToken /api/mcp/tokens  看不清=<追不到赋值 err>
+  mcpRevokeToken /api/mcp/tokens/revoke  看不清=<追不到赋值 err>
+  mcpSelftest /api/mcp/selftest  看不清=<追不到赋值 err>
+  memberInsightFeedback /api/members/*/insight-feedback  看不清=<追不到赋值 err>,<非 dict 载荷>,_fetch
+  members /api/members  看不清=<追不到赋值 err>
+  researcherDirectionFeedback /api/researcher/direction-feedback  看不清=<追不到赋值 err>
+  researcherJobs /api/researcher/jobs  看不清=<追不到赋值 err>
+  researcherRuns /api/researcher/runs  看不清=<追不到赋值 err>
+  revealSecret /api/config/reveal  看不清=<追不到赋值 err>
+  revealSecret /api/config/reveal  看不清=<追不到赋值 err>
+  revealSecret /api/config/reveal  看不清=<追不到赋值 err>
+  saveConfig /api/config  看不清=<追不到赋值 err>
+  saveConfig /api/config  看不清=<追不到赋值 err>
+  signalRules /api/signal-rules  看不清=<追不到赋值 err>
+  signalTeach /api/signal-rules/teach  看不清=<追不到赋值 err>
+  systemUpdate /api/system/update  看不清=<追不到赋值 err>,JSONResponse
+  systemUpdateCheck /api/system/update/check  看不清=<追不到赋值 err>,JSONResponse
+  testConnection /api/config/test  看不清=<追不到赋值 err>
+  testConnection /api/config/test  看不清=<追不到赋值 err>
+  users /api/users  看不清=<追不到赋值 err>
+  validateTemplates /api/templates/validate  看不清=<追不到赋值 err>
+  visionAnalyze /api/vision/analyze  看不清=<追不到赋值 err>
+  visionCameraTest /api/vision/cameras/test  看不清=<追不到赋值 err>
+  visionTestLlm /api/vision/test-llm  看不清=<追不到赋值 err>
+
+PAIR_CALLSITES=67 PAIR_MULTI_ROUTE=0（>1 条路由并进同一宇宙＝宽松判，只作候选）

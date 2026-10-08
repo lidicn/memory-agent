@@ -1,0 +1,52 @@
+.FF.F.                                                                   [100%]
+================================== FAILURES ===================================
+_________ test_event_record_dt_follows_house_clock_not_machine_local __________
+
+foreign_house_tz = datetime.timezone(datetime.timedelta(seconds=46800))
+
+    def test_event_record_dt_follows_house_clock_not_machine_local(foreign_house_tz):
+        ev = EventRecord(ts=TS, entity_id="binary_sensor.door")
+>       assert ev.dt == m.house_dt(TS)
+E       AssertionError: assert datetime.datetime(2025, 10, 7, 15, 50) == datetime.datetime(2025, 10, 7, 20, 50)
+E        +  where datetime.datetime(2025, 10, 7, 15, 50) = EventRecord(ts=1759823400.0, entity_id='binary_sensor.door', state='', attributes={}, friendly_name='', room='', domain='', unit='').dt
+E        +  and   datetime.datetime(2025, 10, 7, 20, 50) = <function house_dt at 0x000002267EA41760>(1759823400.0)
+E        +    where <function house_dt at 0x000002267EA41760> = m.house_dt
+
+tests\test_vma_a8_insights_clock_and_tags.py:52: AssertionError
+________________ test_event_record_dt_day_hour_share_one_clock ________________
+
+foreign_house_tz = datetime.timezone(datetime.timedelta(seconds=46800))
+
+    def test_event_record_dt_day_hour_share_one_clock(foreign_house_tz):
+        """同一个事件的时间读数不许自相矛盾：dt 的日期必须等于 day、小时必须等于 hour。"""
+        ev = EventRecord(ts=TS, entity_id="binary_sensor.door")
+        assert ev.dt.strftime("%Y-%m-%d") == ev.day
+>       assert ev.dt.hour == ev.hour
+E       AssertionError: assert 15 == 20
+E        +  where 15 = datetime.datetime(2025, 10, 7, 15, 50).hour
+E        +    where datetime.datetime(2025, 10, 7, 15, 50) = EventRecord(ts=1759823400.0, entity_id='binary_sensor.door', state='', attributes={}, friendly_name='', room='', domain='', unit='').dt
+E        +  and   20 = EventRecord(ts=1759823400.0, entity_id='binary_sensor.door', state='', attributes={}, friendly_name='', room='', domain='', unit='').hour
+
+tests\test_vma_a8_insights_clock_and_tags.py:60: AssertionError
+_____________ test_malformed_tags_json_is_logged_with_the_rule_id _____________
+
+caplog = <_pytest.logging.LogCaptureFixture object at 0x000002267E9EF620>
+
+    def test_malformed_tags_json_is_logged_with_the_rule_id(caplog):
+        """坏 tags_json 会让规则的标签条件**静默消失**（规则照常返回，只是不再按标签过滤）。
+        行为仍按无标签运行（不把一次解析失败升级成整条查询外抛），但必须留痕到日志。"""
+        repo = StoreRepository(_FakeStore([_rule_row("{not json")]), None)
+        with caplog.at_level(logging.WARNING, logger="insights.repository"):
+            rows = repo.activity_rules()
+        assert rows[0]["tags"] == []                      # 行为不变
+>       assert "r-7" in caplog.text                       # 但哪条规则被降级要说得出
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert 'r-7' in ''
+E        +  where '' = <_pytest.logging.LogCaptureFixture object at 0x000002267E9EF620>.text
+
+tests\test_vma_a8_insights_clock_and_tags.py:100: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_vma_a8_insights_clock_and_tags.py::test_event_record_dt_follows_house_clock_not_machine_local
+FAILED tests/test_vma_a8_insights_clock_and_tags.py::test_event_record_dt_day_hour_share_one_clock
+FAILED tests/test_vma_a8_insights_clock_and_tags.py::test_malformed_tags_json_is_logged_with_the_rule_id
+3 failed, 3 passed in 0.97s

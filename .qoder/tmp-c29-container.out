@@ -1,0 +1,51 @@
+HEAD=8a78485
+FILES=360
+TAR_RC=0 SIZE=2242283
+SCP_RC=0
+STAGE_RC=0
+SYNC_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:198: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1339 passed, 10 skipped in 207.54s (0:03:27)
+TARGETED_RC=0
+.................                                                        [100%]
+17 passed in 3.37s
+TOUCHED_RC=0
+.....ssssss............................................................. [100%]
+66 passed, 6 skipped in 13.07s
+SCAN_RC=0
+Python 3.11.16
+SELFTEST pos_expected=4 pos_hit=4 neg_files=5 neg_flagged=0 neg_counts={'strict': 1, 'window': 2, 'marked': 2}
+SELFTEST_OK
+ROOT=src/memory_agent total_zip=19 marked=1 strict=13 window=5
+SCAN_RC=0 每个 zip 站点都有归属
+PROBESCRIPT_SCP_RC=0
+PROBE_DOCKER_CP_RC=0
+9f681245eb0ac2a9
+PROBE_SHA_RC=0
+PROBE_RC=0
+S1_compare_labelings raised=ValueError detail=ValueError('zip() argument 2 is shorter than argument 1')
+S2_map_states raised=ValueError detail=ValueError('zip() argument 2 is shorter than argument 1')
+S3_cosine_dim_mismatch raised=ValueError detail=ValueError('向量维度不一致: 3 vs 2（不同模型的向量不可比）')
+S3b_cosine_fallback raised=ValueError detail=ValueError('向量维度不一致: 3 vs 2（不同模型的向量不可比）')
+S3c_cosine_equal_len value=1.0
+[History] 语义检索失败: zip() argument 2 is shorter than argument 1
+S4_semantic_search_ragged returned_rows=0 expected_docs=3
+S4b_semantic_search_aligned returned_rows=3
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: /tmp/c29zipeceo3nv2/t.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+S5_schema table=voice_answer_cache cols=6
+S5_schema table=candidate_rules cols=13
+S5_schema table=bug_reports cols=10
+S5_schema table=agent_memories cols=24
+S5b_list_bug_reports rows=1 keys=10 table_cols=10
+S5c_list_answer_cache rows=0 keys=0
+S5d_list_negative_feedback rows=0 keys=0 table_cols=24
+PROBE_RC=0
+CONTAINER_BATCH_RC=0

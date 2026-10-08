@@ -1,0 +1,2 @@
+ROOT=src/memory_agent STUBS=0 PROBLEM=0 EXEMPT_TOTAL=0 EXEMPT_HIT=0 EXEMPT_STALE=0
+SCAN_RC=0 除在册豁免外，没有「带 TODO 却回成功」的桩

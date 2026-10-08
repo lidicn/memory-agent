@@ -1,0 +1,20 @@
+行数=4023
+去重人名数=7（只报长度）：[2, 3, 5, 5, 5, 6, 34]
+
+=== 1) 三个入口函数逐个跑，异常必须原样报出 ===
+  predict_arrival_time / 人名长度=2 ⇒ AttributeError: 'str' object has no attribute 'get'
+  predict_arrival_time：判红人名数=7 / 7
+  predict_post_arrival_activities / 人名长度=2 ⇒ AttributeError: 'str' object has no attribute 'get'
+  predict_post_arrival_activities：判红人名数=7 / 7
+  predict_daily_routine / 人名长度=2 ⇒ AttributeError: 'str' object has no attribute 'get'
+  predict_daily_routine：判红人名数=7 / 7
+
+=== 2) data_days 子串口径 vs 结构化口径（逐人名，只报数字）===
+  人名长度=2   子串天数=13  结构化天数=1    <== 不等
+  人名长度=3   子串天数=13  结构化天数=13 
+  人名长度=5   子串天数=2   结构化天数=2  
+  人名长度=5   子串天数=14  结构化天数=14 
+  人名长度=5   子串天数=15  结构化天数=15 
+  人名长度=6   子串天数=14  结构化天数=14 
+  人名长度=34  子串天数=13  结构化天数=1    <== 不等
+PROBE_DONE

@@ -1,0 +1,85 @@
+HEAD=2054dde
+UNPUSHED=0
+WORKTREE_DIRTY_TRACKED=0
+GUARD_OK REMOTE_SYNTAX_RC=0
+GUARD_OK SELF_SYNTAX_RC=0
+GUARD_OK HASHES_PARSE_RC=0
+GUARD_OK MUT63_PARSE_RC=0
+.qoder/tmp-c70-remote18.sh UNESCAPED=0 ODD_QUOTE_LINES=[]
+LINT_RC=0
+GUARD_OK LINT_RC=0
+GUARD_OK MUT63_VERIFY_RC=0
+PARSE_ONLY_RC=0 MUTANTS_PARSED=22
+DEADSHAPE_COUNT=0
+SYNTAX_BAD=0
+VERIFY_BAD=0
+GUARD_OK MUT63_PARSED=22
+GUARD_OK MUT63_SYNTAXBAD=0
+GUARD_OK MUT63_VERIFYBAD=0
+GUARD_OK MUT63_DEADSHAPE=0
+GUARD_OK MUT63_LOCAL_BAD=0
+NOTHING 什么都不改档 -> RC=0 FAILED=0 | 85 passed in 8.94s
+MUT_COUNT=22 MUTATION_BAD=0
+FILES=400
+GUARD_OK FILES=400
+IN_SNAP_checked=9
+GUARD_OK HASHES_LOCAL_RC=0
+HASH_LISTED=400 HASH_FILES=400 HASH_MISSING=0
+HASH_AGGREGATE=cafb96a7e93403c526f9afbc85e9a4099c541f6ca94052323792e3fe9a581112
+GUARD_OK HASH_MISSING=0
+GUARD_OK HASH_AGG_MATCHES_RUN17=cafb96a7e93403c526f9afbc85e9a4099c541f6ca94052323792e3fe9a581112
+PREFLIGHT_OK=1
+GUARD_OK TAR_RC=0
+TAR_SIZE=2432371
+GUARD_OK SCP_RC=0
+GUARD_OK REMOTE_SCP_RC=0
+GUARD_OK MUT63_SCP_RC=0
+GUARD_OK HASHES_SCP_RC=0
+GUARD_OK FILELIST_SCP_RC=0
+STAGE_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+SYNC_RC=0
+2026-10-07T05:34:03+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+Python 3.11.16
+TOOLCHAIN_RC=0
+SNAP_RC=0
+HASH_LISTED=400 HASH_FILES=400 HASH_MISSING=0
+HASH_AGGREGATE=cafb96a7e93403c526f9afbc85e9a4099c541f6ca94052323792e3fe9a581112
+MUT63_RC=0
+NOTHING 什么都不改档 -> RC=0 FAILED=0 | 85 passed in 25.68s
+M1 丢掉 bool 判定 -> RC=1 FAILED=5 咬住了 restored=OK | 5 failed, 80 passed in 24.47s
+M2 下界门失效 -> RC=1 FAILED=13 咬住了 restored=OK | 13 failed, 72 passed in 25.04s
+M3 上界门失效 -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 79 passed in 24.93s
+M4 转换失败退回默认档（改前的 int(x or 3)） -> RC=1 FAILED=14 咬住了 restored=OK | 14 failed, 71 passed in 25.58s
+M5 min_variant_support 顶死字面量 3 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 32.02s
+M6 mine_process 的合法 bucket_sec=0 被吞 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 25.17s
+M7 min_score 的合法 0.0 被吞 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 23.39s
+M8 causal_analyze 窗口门失效 -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 81 passed in 26.22s
+M9 causal_counterfactual 窗口门失效 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 23.62s
+M10 bad-cases 的 limit 拒绝分支摘掉 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 23.09s
+M11 predictions 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 23.07s
+M12 intent 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 23.28s
+M13 home_profile 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 23.64s
+M14 半衰期回到原值（两个口径） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 28.42s
+M15 intent 的 limit 上下界失效 -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 82 passed in 31.92s
+M16 mine_drift 的合法 bucket_sec=0 被吞 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 22.96s
+M17 rule_channel_audit 回到吞异常改 100 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 22.90s
+M18 min_count 回到 `or 3` 静默改值 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 23.35s
+M19 trigger_id 回到裸 int（无守卫） -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 82 passed in 25.69s
+M20 window_minutes 回到原样透传（改前的 500 路） -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 79 passed in 24.70s
+M21 人工审核不再留痕（R3 红线的留痕步） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 22.68s
+M22 规则视图的冷却位写死 False -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 23.44s
+MUT_COUNT=22 MUTATION_BAD=0
+POST_RC=0
+........................................................................ [ 84%]
+.............                                                            [100%]
+85 passed in 23.17s
+2026-10-07T05:44:52+08:00
+REMOTE_BATCH_RC=0
+REMOTE_DRIVER_RC=0
+CONTAINER_BATCH_RC=0
+DRIVER_RC=0

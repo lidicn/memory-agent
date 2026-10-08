@@ -1,0 +1,7 @@
+api.py                 params= 125 lands= 124 dropped= 1 dead_result= 0 registered= 0
+service.py             params=  26 lands=  26 dropped= 0 dead_result= 0 registered= 0
+nlquery.py             params=   6 lands=   6 dropped= 0 dead_result= 0 registered= 0
+repository.py          params=  77 lands=  77 dropped= 0 dead_result= 0 registered= 0
+---- 判红清单（DROPPED / DEAD-RESULT）----
+  ! InsightService:anomaly_report(query) -> DROPPED  [api.py:707 读取落在死赋值行 -]
+FINDINGS=1

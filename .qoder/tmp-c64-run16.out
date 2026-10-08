@@ -1,0 +1,234 @@
+REMOTE_SYNTAX_RC=0
+SELF_SYNTAX_RC=0
+.qoder/tmp-c64-remote16.sh UNESCAPED=0 ODD_QUOTE_LINES=[]
+LINT_RC=0
+LINT_RC=0
+MUT64_VERIFY_RC=0
+PARSE_ONLY_RC=0 MUTANTS_PARSED=24
+DEADSHAPE_COUNT=0
+SYNTAX_BAD=0
+VERIFY_BAD=0
+MUT63_VERIFY_RC=0
+PARSE_ONLY_RC=0 MUTANTS_PARSED=22
+DEADSHAPE_COUNT=0
+SYNTAX_BAD=0
+VERIFY_BAD=0
+MUT64_PARSE_RC=0
+MUT63_PARSE_RC=0
+HEAD=38192eb
+FILES=394
+IN_SNAP_t64if=1
+IN_SNAP_t64bp=1
+IN_SNAP_if=1
+IN_SNAP_ms=1
+IN_SNAP_ms=1
+IN_SNAP_a3p22=1
+IN_SNAP_bp=1
+IN_SNAP_t63=1
+IN_SNAP_br=1
+IN_SNAP_repo=1
+IN_SNAP_qbscan=1
+IN_SNAP_attic=9
+TAR_RC=0 SIZE=2368334
+SCP_RC=0
+REMOTE_SCP_RC=0
+MUT64_SCP_RC=0
+MUT63_SCP_RC=0
+STAGE_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+SYNC_RC=0
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+Python 3.11.16
+TOOLCHAIN_RC=0
+SOURCES_RC=0
+SCAN_DAY=3
+HOUR_BUCKET=3
+SUBSTR_WHOLE=7
+HOUR_STMT_LINES=32
+INTENT_NOW=0
+INTENT_EVENT_DT=2
+UTILS_KD_DEF=1
+UTILS_CD_DEF=2
+SRC_LEARNING=0
+ATTIC_LEARNING=8
+API_ANOM_DAYS=1
+API_ANOM_D2R=0
+NL_ANOM_CALL=1
+SVC_REPORTS_MOUNT=1
+API_CORE_REPORTS=4
+DWM_IMPORT=1
+NUM_BOOL_GUARD=1
+NUM_LO_MSG=1
+NUM_HI_MSG=1
+BAD_LIMIT_NUM=1
+INTENT_LIMIT_NUM=1
+CAUSAL_ENTRY_GATE=1
+CF_GATE=1
+AUDIT_LIMIT_NUM=1
+MIN_COUNT_NUM=1
+TRIGGER_NUM=1
+AUDIT_SWALLOW_ASSIGN=0
+BARE_EXCEPT_VE=1
+RAW_TRIGGER_INT=0
+RAW_WMIN_PASS=0
+WMIN_NUM_GUARD=1
+AUDIT_TRAIL_GATE=1
+LEGACY_INT_BODY_PROSE=2
+LEGACY_INT_BODY_CODE=0
+LEGACY_QUERY_INT=12
+OFFLOAD_TO_THREAD_TOTAL=49
+OFFLOAD_PREDICT=1
+OFFLOAD_INFER=1
+OFFLOAD_PROFILE=1
+OFFLOAD_WRITE=1
+HEAVY_NESTED=2
+CA_WINDOW_DAYS=1
+CA_DELTA_WD=1
+CA_HALF_LIFE_WD=1
+CA_HALF_LIFE_RAW=0
+CA_DESC_WD=2
+T63_TESTDEFS=46
+T63_HEAVY_NAMES=2
+T63_PROD_SHAPE=1
+R5_BLINDSPOT=1
+  1227 src/memory_agent/api/behavior_routes.py
+   695 src/memory_agent/change_attribution.py
+   896 tests/test_vma_task63_routes_input_boundary.py
+   382 tests/test_vma_r5_event_loop_offload.py
+  3200 total
+SOURCES_B64_RC=0
+IF_MORE_SEVERE=7
+IF_CAPMORE=5
+IF_MIN_INDEX=0
+IF_ASSIGN_MED=0
+IF_ASSIGN_LOW=0
+IF_ASSIGN_HIGH=1
+IF_ROSTER_DOC=1
+IF_FLOOR_NOTE=1
+IF_K_GATE=1
+IF_CLIP=1
+IF_ELIM_CAP=1
+IF_ROOM_GATE=1
+IF_VOTE=1
+BP_WEEKDAY=1
+BP_DICTSHAPE=1
+BP_LENGTH_GATE=1
+BP_SEVERITY=1
+BP_INBAND=1
+BP_SETDEDUP=1
+MS_GATE=1
+MS_MSG=1
+MS_SENTINEL=1
+T64IF_DEFS=29
+T64BP_DEFS=22
+T64IF_MCP_SKIPGATE=0
+T64BP_MCP_SKIPGATE=2
+IF_LOGODDS_OLDLABEL=0
+IF_LOGODDS_DENY=1
+IF_KDOC_RECORDS=1
+IF_REFHELPER=3
+IF_RAWSCALE=1
+BP_UNWIREDLOCK=1
+BP_MIDNIGHTLOCK=1
+BP_PERSONLOCK=1
+G_FRAC=3
+G_FN=1
+G_SELFCHECK=1
+G_OLDABS=0
+   403 src/memory_agent/identity_fusion.py
+   279 src/memory_agent/behavior_predictor.py
+  3359 src/memory_agent/mcp_server.py
+   413 tests/test_vma_task64_identity_fusion.py
+   322 tests/test_vma_task64_behavior_predictor.py
+   343 tests/test_vma_a3_p22_auth_loop_blocking.py
+  5119 total
+SCANS_RC=0
+FINDINGS=0
+QBLAND_RC=0
+CALLSITE_RC=0
+扫描 src/memory_agent/insights/api.py：门面引擎指向 39（含多跳链 4），空指向 0，未登记 0
+ATTRS_RC=0
+GATE_RC=1
+[gates] ❌ 新增 pyflakes 问题（必须为零）：
+memory_agent/insights/service.py: '.models.TimeRange' imported but unused
+memory_agent/insights/service.py: '.parser.entity.normalize_state' imported but unused
+GATE_MENTIONS_ATTIC=0
+SUITE_RC=1
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:198: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+7 failed, 1614 passed, 10 skipped in 345.56s (0:05:45)
+SUITE_FAILNAMES_RC=1
+TARGETED_RC=0
+........................................................................ [ 94%]
+....                                                                     [100%]
+76 passed in 10.88s
+TARGETED_SKIPNAMES_RC=1
+PREVBATCH_RC=0
+........................................................................ [ 87%]
+................................                                         [100%]
+248 passed in 42.61s
+TOUCHED_RC=1
+
+tests/test_vma_insights_callsite_binding.py:400: AssertionError
+2 failed, 397 passed in 62.15s (0:01:02)
+MUT64_RC=0
+NOTHING 什么都不改档 -> RC=0 FAILED=0 | 69 passed in 4.58s
+M1 R5 封顶退回改前的 min-by-index（会松档） -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 66 passed in 5.01s
+M2 R6 封顶退回改前的 min-by-index -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.94s
+M3 R4 退回直接赋值覆盖 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.66s
+M4 R3 封顶失效（改回 HIGH 即不封顶） -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 65 passed in 4.76s
+M5 R2 封顶失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.72s
+M6 _more_severe 取反（判据本身坏掉） -> RC=1 FAILED=11 咬住了 restored=OK | 11 failed, 58 passed in 5.28s
+M7 prior_boost 的 k<=1 门失效 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 67 passed in 4.94s
+M8 prior_boost 的样本量门失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.78s
+M9 log-odds 裁剪失效 -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 66 passed in 4.60s
+M10 消除法不再限置信度上限 0.65 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.55s
+M11 房间为空的那一档失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.73s
+M12 时序衰减整体失效（年龄不再降权） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 67 passed in 4.68s
+M13 VOTE 档不抬升 MANUAL 权重 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.74s
+M14 MCP 侧 weekday 边界守卫失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.87s
+M15 weekday 过滤失效（改前传 99 也不报错那一族） -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 66 passed in 4.84s
+M16 persons 为 dict 的那一代形状不认 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.74s
+M17 house_dt 的短串门放宽（残缺串被当日期） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 67 passed in 4.76s
+M18 偏离严重度写死 mild -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 65 passed in 4.77s
+M19 带内判据只看下界（早退也被判正常） -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 65 passed in 4.79s
+M20 同窗口去重失效（集合改列表 ⇒ 频次按事件计） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.89s
+M21 有人给 identity_fusion 接线（零调用者锁的负控） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 67 passed in 4.58s
+M22 score_raw 的分母改成按记录数（重复上报不再放大） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.69s
+M23 偏离判据补上跨午夜环形距离（那条现状登记失效） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.68s
+M24 person 形参开始影响判档 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 5.10s
+MUT_COUNT=24 MUTATION_BAD=0
+MUT63_RC=0
+NOTHING 什么都不改档 -> RC=0 FAILED=0 | 85 passed in 22.13s
+M1 丢掉 bool 判定 -> RC=1 FAILED=5 咬住了 restored=OK | 5 failed, 80 passed in 23.26s
+M2 下界门失效 -> RC=1 FAILED=13 咬住了 restored=OK | 13 failed, 72 passed in 26.27s
+M3 上界门失效 -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 79 passed in 22.72s
+M4 转换失败退回默认档（改前的 int(x or 3)） -> RC=1 FAILED=14 咬住了 restored=OK | 14 failed, 71 passed in 24.04s
+M5 min_variant_support 顶死字面量 3 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 23.44s
+M6 mine_process 的合法 bucket_sec=0 被吞 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 28.39s
+M7 min_score 的合法 0.0 被吞 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 24.85s
+M8 causal_analyze 窗口门失效 -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 81 passed in 24.47s
+M9 causal_counterfactual 窗口门失效 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 23.23s
+M10 bad-cases 的 limit 拒绝分支摘掉 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 23.02s
+M11 predictions 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 25.46s
+M12 intent 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 22.79s
+M13 home_profile 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 22.13s
+M14 半衰期回到原值（两个口径） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 21.83s
+M15 intent 的 limit 上下界失效 -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 82 passed in 22.47s
+M16 mine_drift 的合法 bucket_sec=0 被吞 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 21.76s
+M17 rule_channel_audit 回到吞异常改 100 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 22.80s
+M18 min_count 回到 `or 3` 静默改值 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 21.69s
+M19 trigger_id 回到裸 int（无守卫） -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 82 passed in 22.74s
+M20 window_minutes 回到原样透传（改前的 500 路） -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 79 passed in 21.67s
+M21 人工审核不再留痕（R3 红线的留痕步） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 22.84s
+M22 规则视图的冷却位写死 False -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 21.12s
+MUT_COUNT=22 MUTATION_BAD=0
+REMOTE_BATCH_RC=0
+REMOTE_DRIVER_RC=0
+CONTAINER_BATCH_RC=0

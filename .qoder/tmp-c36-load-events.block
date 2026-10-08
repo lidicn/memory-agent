@@ -1,0 +1,129 @@
+    # ------------------------------------------------------------ 事件读取
+    #: 日内分层的小时格数（DCD 20261005 §二.1 乙′）
+    SCAN_HOURS = 24
+    #: ISO `YYYY-MM-DDTHH:MM:SS` 里 `HH` 的取值位（SQLite 的 substr 是 1 基）
+    _HOUR_EXPR = "substr(ts, 12, 2)"
+
+    def load_events(self, tr: Any, entity_ids: Any = None, rooms: Any = None,
+                    domains: Any = None, behavior_only: bool = False,
+                    exclude_entity_ids: Any = None,
+                    exclude_domains: Any = None,
+                    states: Any = None, order: str = "asc") -> List[EventRecord]:
+        """查 events 表，按「天 × 小时」分层扫描，返回 EventRecord 列表。
+
+        两代裁定叠在这一个方法上，形状必须说清：
+
+        * **裁6 Q6-2=A**（DCD 20261004）：不许一条 `LIMIT scan_limit` 打完 30 天窗
+          （旧实现只覆盖窗口前 20 小时）。预算按**日**分摊，日配额
+          `max(1, scan_limit // n_days)`，**不新增预算**（约束①）。
+        * **DCD 20261005 §二.1 乙′**：日配额再按**小时**切——每天一条语句，内含 24 个
+          各带 `LIMIT k` 的子查询 `UNION ALL`，`k = 日配额 // 24`（生产 967//24≈40）。
+          **驳回甲**（按天倒序分摊：30 天窗退化成"看昨天"，趋势线失去历史）、
+          **驳回丙**（扫描下推到聚合：超出本件射程）。
+
+        为什么是真 `LIMIT` 而不是窗口函数：乙′ 明写"分层但不算窗口函数"，每个小时格
+        自带 `LIMIT`，SQL 侧不必为当日全部行算排名；代价是一条语句做 24 次
+        `day`+`substr(ts,12,2)` 扫描（语句数仍是 1 条/天）。
+
+        **口径（裁定 :43 认这一条）**：「总读取量硬上限」重述为「**返回行数**硬上限」——
+        Python 侧收到的行数仍 ≤ `scan_limit`，但**引擎内部扫描行数不再受限**。
+        这是乙′ 的必要代价，不是放宽；引用这一格必须带上口径。
+
+        `states` / `order` 是裁5 追加 Q-B（Q3-1 六个过滤/排序位）里的两位：
+        前者下推进 `new_state IN (...)`，后者决定**小时格内取哪一段**（`asc` 留该小时
+        最早、`desc` 留最晚）；小时配额、日配额与总预算都不因此改变。
+        """
+        from datetime import date, timedelta
+
+        where, params = self._event_where(tr, entity_ids, rooms, domains, behavior_only,
+                                          exclude_entity_ids, exclude_domains, states)
+        limit = self._scan_limit()
+        start_iso, end_iso, start_day, end_day = self._bounds(tr)
+        direction = "DESC" if str(order or "").strip().lower() in ("desc", "descending") else "ASC"
+        order_by = " ORDER BY ts " + direction + ", id " + direction
+
+        base_sql = ("SELECT id, ts, day, room, entity_id, domain, action, person, "
+                    "old_state, new_state, attrs_json FROM events WHERE ")
+
+        def _day_statement(day_str: str, hour_cap: int) -> Tuple[str, List[Any]]:
+            """一天 = 一条语句 = 24 个带 LIMIT 的小时格。
+
+            `hour_bucket` 是每格自带的字面量列，只给判据回读用（哪一格被砍满），
+            `_to_record` 不认它、也不往 `EventRecord` 里带。
+            """
+            branches: List[str] = []
+            branch_params: List[Any] = []
+            for h in range(self.SCAN_HOURS):
+                hh = "%02d" % h          # 只由 range(24) 生成，不是外部输入
+                branches.append(
+                    "(SELECT '" + hh + "' AS hour_bucket, id, ts, day, room, entity_id, "
+                    "domain, action, person, old_state, new_state, attrs_json FROM events WHERE "
+                    + " AND ".join(where + ["day = ?", self._HOUR_EXPR + " = ?"])
+                    + order_by + " LIMIT ?)")
+                branch_params += [day_str, hh, hour_cap]
+            return " UNION ALL ".join(branches), params + branch_params
+
+        # 边界解析不出来时退回一条不分层的查询：宁可少覆盖，也不猜窗口。
+        d0: Optional[date]
+        try:
+            d0 = date.fromisoformat(start_day)
+            d1 = date.fromisoformat(end_day)
+            n_days = max(1, (d1 - d0).days + 1)
+        except (ValueError, TypeError):
+            d0 = None
+            n_days = 1
+
+        daily_limit = max(1, limit // n_days)
+        hour_cap = max(1, daily_limit // self.SCAN_HOURS)
+        all_rows: List[Dict[str, Any]] = []
+        truncated = False
+
+        if d0 is None:
+            rows = self._execute(base_sql + " AND ".join(where) + order_by + " LIMIT ?",
+                                 params + [limit])
+            all_rows = rows
+            truncated = len(rows) >= limit
+        else:
+            current = d0
+            while current <= d1 and len(all_rows) < limit:
+                day_limit = min(daily_limit, limit - len(all_rows))
+                sql, sql_params = _day_statement(current.isoformat(), hour_cap)
+                rows = self._execute(sql, sql_params)
+                # 判据落在「任一小时格命中配额」：分层之后"当天被砍"表现为某个小时格只
+                # 回来 hour_cap 条，而日总量可能仍低于日配额——只看日总量会漏报。
+                per_hour: Dict[str, int] = {}
+                for row in rows:
+                    bucket = str(row.get("hour_bucket") or "")
+                    per_hour[bucket] = per_hour.get(bucket, 0) + 1
+                if any(count >= hour_cap for count in per_hour.values()):
+                    truncated = True
+                if len(rows) > day_limit:
+                    # 只有 day_limit < 24（窗口跨 1250 天以上，或调用方把 max_scan 压到
+                    # 极小）才会走到这里。多出来的行按小时升序截掉，并如实标记截断——
+                    # 约束①「不新增预算」不认"差不多"。
+                    rows = rows[:day_limit]
+                    truncated = True
+                all_rows.extend(rows)
+                current += timedelta(days=1)
+
+        self._scan_state.truncated = truncated
+        if truncated:
+            self.log.warning(
+                "load_events 分层扫描命中小时配额 %s/小时（日配额 %s，共 %s 天），结果可能被截断",
+                hour_cap, daily_limit, n_days,
+            )
+        records = [self._to_record(row) for row in all_rows]
+        records.sort(key=lambda e: e.ts, reverse=(direction == "DESC"))
+        return records
+
+    @property
+    def last_scan_truncated(self) -> bool:
+        """分层扫描下的截断判据（线程局部，见 `__init__` 注释）。
+
+        三代判据的演进要连着读，否则这一格永远像"漏报"：旧判据
+        `len(events) >= scan_limit` 在按天分摊下失效（总数远低于上限但某天已被砍）；
+        裁6 的"任一天命中日配额"在乙′ 下又漏报一层（当天被砍表现为**某个小时格**被砍满，
+        日总量可能仍低于日配额）。**现判据：任一小时格返回条数 >= 小时配额。**
+        还没跑过任何 `load_events` 的线程读到 False。
+        """
+        return bool(getattr(self._scan_state, "truncated", False))

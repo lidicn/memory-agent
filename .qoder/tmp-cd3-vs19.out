@@ -1,0 +1,28 @@
+TAR_RC=0 size=45661301
+SCP_RC=0
+STAGE_RC=0
+SYNC_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+PYTEST_RC=0
+........................................................................ [ 73%]
+........................................................................ [ 79%]
+........................................................................ [ 85%]
+........................................................................ [ 91%]
+........................................................................ [ 98%]
+......................                                                   [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_algo_kernel.py:91: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:119: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:154: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:165: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:179: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_signal_learning.py:173: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+SKIPPED [1] tests/test_signal_learning.py:216: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+SKIPPED [1] tests/test_signal_learning.py:257: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+1162 passed, 12 skipped in 176.84s (0:02:56)

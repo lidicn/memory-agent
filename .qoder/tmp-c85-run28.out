@@ -1,0 +1,116 @@
+HEAD=800c17b
+GUARD_OK CODE_CLEAN=0
+DOC_DIRTY=1
+GUARD_OK HEAD_IS_85=800c17b
+GUARD_OK BASE_LINES=174
+GUARD_OK BASE_STALE_TEACH=0
+GUARD_OK REMOTE_SYNTAX_RC=0
+GUARD_OK AST_tmp-c85-mut=0
+GUARD_OK AST_tmp-c81-mut=0
+GUARD_OK AST_tmp-c82-mut=0
+GUARD_OK AST_tmp-r20-mut=0
+GUARD_OK AST_tmp-c68-hashes=0
+GUARD_OK AST_tmp-c85-anchorcheck=0
+GUARD_OK AST_tmp-c85-linecheck=0
+GUARD_OK AST_llm_client.py=0
+GUARD_OK AST_mcp_server.py=0
+GUARD_OK AST_agent_memory.py=0
+GUARD_OK AST_signal_learning.py=0
+GUARD_OK AST_nr_routes.py=0
+GUARD_OK AST_runtime.py=0
+GUARD_OK AST_config.py=0
+GUARD_OK AST_store.py=0
+GUARD_OK AST_test_rounds11_19_ma25_35_fixes.py=0
+GUARD_OK AST_test_vma_phase2_batch3_shared_ruler.py=0
+.qoder/tmp-c85-remote28.sh UNESCAPED=0 ODD_QUOTE_LINES=[]
+LINT_RC=0
+GUARD_OK LINT_RC=0
+FILES28=408
+GUARD_OK SUITE_OUT=0
+2023 passed, 25 skipped in 257.83s (0:04:17)
+LOCAL_SUITE_RC=0
+GUARD_OK LOCAL_SUITE_RC=0
+GUARD_OK LOCAL_SUITE_FAILED=0
+GUARD_OK LOCAL_SUITE_PASSED=2023 passed
+GUARD_OK M85_OUT=0
+GUARD_OK M85_KILLED=10
+GUARD_OK M85_SURVIVED=1
+GUARD_OK M85_INVALID=0
+GUARD_OK M85_WT=True
+GUARD_OK M85_TOTALS=totals: killed=10 survived=1 invalid=0 legs=11
+GUARD_OK M85_LEGS=11
+GUARD_OK M81_LEGS=22
+GUARD_OK M82_LEGS=14
+[Q-0] 对照腿（什么都不改）rc=0 summary='27 passed, 1 skipped in 4.39s' failed=[]
+[Q02] SURVIVED !! src\memory_agent\mcp_server.py :: MA-26 回归：版本基数只从入参 frontmatter 取 ⇒ 入参不带版本号时把盘上 v5 覆盖成 v1 :: 27 passed, 1 skipped in 2.71s
+GUARD_OK M85_Q02_TARGET=mcp_server.py
+GUARD_OK LOCK_SKIP_RC=0
+GUARD_OK LOCK_SKIP_N=1
+SKIPPED [1] tests\test_rounds11_19_ma25_35_fixes.py:108: 本机 mcp SDK 过旧，取不到已注册工具函数（容器内有，权威门会跑）
+27 passed, 1 skipped in 2.60s
+GUARD_OK ANCHORCHECK=0
+GUARD_OK ANCHOR_BAD=0
+GUARD_OK ANCHOR_OK_N=53
+GUARD_OK LINECHECK_BAD=0
+GUARD_OK LINECHECK_OK_N=45
+GUARD_OK HASHES_LOCAL_RC=0
+HASH_LISTED=408 HASH_FILES=408 HASH_MISSING=0
+HASH_AGGREGATE=b377f79c0d198f64af329e38375d6626c01835200dbdcc223f35836fc01eb3c2
+GUARD_OK HASH_MISSING=0
+ANCHOR_LOCAL LLM_STALE_LOOP=1 LLM_KEEP_STALE=1 MCP_PREV_MAX=1 MCP_FAKE_RETURN=1 SIG_ENUM_GATE=1 AGENT_SCOPE_ECHO=1 NR_NOTIMPL=1 RT_RETENTION_SHORT=1 CFG_RETENTION_KEY=1
+GUARD_OK L85_DEFS=25
+GUARD_OK L85_COLLECTED=28 tests collected
+GUARD_OK CR_llm_client.py=0
+GUARD_OK CR_mcp_server.py=0
+GUARD_OK CR_agent_memory.py=0
+GUARD_OK CR_signal_learning.py=0
+GUARD_OK CR_runtime.py=0
+GUARD_OK CR_config.py=0
+GUARD_OK CR_store.py=0
+GUARD_OK CR_test_rounds11_19_ma25_35_fixes.py=0
+GUARD_OK CR_.gates-baseline.txt=0
+GUARD_OK CR_tmp-c85-mut.py=0
+GUARD_OK CR_tmp-c85-remote28.sh=0
+GUARD_OK CRBLOB_nr_routes=0
+GUARD_OK CRLF_WORKCOPY_nr_routes=218
+IN_SNAP_checked=16
+GUARD_OK R20_DISJOINT=0
+GUARD_OK MR20_LEGS=6
+TOUCHED28=.gates-baseline.txt
+TOUCHED28=src/memory_agent/agent_memory.py
+TOUCHED28=src/memory_agent/api/nr_routes.py
+TOUCHED28=src/memory_agent/config.py
+TOUCHED28=src/memory_agent/llm_client.py
+TOUCHED28=src/memory_agent/mcp_server.py
+TOUCHED28=src/memory_agent/runtime.py
+TOUCHED28=src/memory_agent/signal_learning.py
+TOUCHED28=src/memory_agent/store.py
+TOUCHED28=tests/test_rounds11_19_ma25_35_fixes.py
+TOUCHED28=tests/test_vma_phase2_batch3_shared_ruler.py
+PREFLIGHT_OK=1
+GUARD_OK TAR_RC=0
+TAR_SIZE=2501426
+GUARD_OK SCP_RC=0
+GUARD_OK REMOTE_SCP_RC=0
+GUARD_OK M85_SCP_RC=0
+GUARD_OK M81_SCP_RC=0
+GUARD_OK M82_SCP_RC=0
+GUARD_OK HASHES_SCP_RC=0
+GUARD_OK FILELIST_SCP_RC=0
+STAGE_SNAP_RC=0
+STAGE_FILELIST_RC=0
+NORM_mut85_RC=0
+NORM_mut81_RC=0
+NORM_mut82_RC=0
+NORM_hashes_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+408
+SNAP_FILELIST_LINES_RC=0
+SYNC_RC=0
+REMOTE_LAUNCHED_PID=678017
+2026-10-08T04:16:04+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+CONTAINER_BATCH_LAUNCHED=1
+POLL_CMD="$SSH" "${OPTS[@]}" "$NAS" "tail -40 /tmp/ma_c85_run28.log"
+DRIVER_RC=0

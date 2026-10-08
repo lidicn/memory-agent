@@ -1,0 +1,25 @@
+HEAD=353979d
+FILES=354
+TAR_RC=0 SIZE=2221335
+SCP_RC=0
+STAGE_RC=0
+SYNC_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_algo_kernel.py:91: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:119: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:154: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:165: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:179: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:198: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1302 passed, 10 skipped in 226.01s (0:03:46)
+[DEP-AUDIT] ❌ 快照里一个包都没解析出来（格式不对？要 `name==version`）
+IN_CONTAINER_RC=2
+CONTAINER_BATCH_RC=0

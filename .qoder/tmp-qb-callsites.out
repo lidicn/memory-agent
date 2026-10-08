@@ -1,0 +1,5 @@
+扫描根 src\memory_agent：调用点 30，硬伤 0，advisory 2
+[ADV ] src\memory_agent\api\llm_routes.py:538 device_usage :: SLOT entity_id<-eid
+       args=(eid,'','','',7,<expr>,<expr>)
+[ADV ] src\memory_agent\api\llm_routes.py:548 device_usage :: SLOT query<-query_label
+       args=('','','',query_label,7,<expr>,<expr>)

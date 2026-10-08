@@ -1,0 +1,4 @@
+..s.........................                                             [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_rounds11_19_ma25_35_fixes.py:108: 本机 mcp SDK 过旧，取不到已注册工具函数（容器内有，权威门会跑）
+27 passed, 1 skipped in 2.60s

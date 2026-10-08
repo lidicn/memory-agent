@@ -1,0 +1,8 @@
+...................                                                      [100%]
+============================== warnings summary ===============================
+C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\site-packages\_pytest\cacheprovider.py:469
+  C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\site-packages\_pytest\cacheprovider.py:469: PytestCacheWarning: could not create cache path E:\NAS\memory-agent\.qoder\tmp-c23-ec\.pytest_cache\v\cache\nodeids: [WinError 5] 拒绝访问。: 'E:\\NAS\\memory-agent\\.qoder\\tmp-c23-ec\\pytest-cache-files-iltalcth' -> 'E:\\NAS\\memory-agent\\.qoder\\tmp-c23-ec\\.pytest_cache'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+19 passed, 1 warning in 1.30s

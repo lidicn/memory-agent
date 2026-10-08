@@ -1,0 +1,547 @@
+"""ACP server：会话管理 + 复用 _execute_run + 内部事件→ACP content block 映射。
+
+设计要点
+--------
+* 复用 ``api.debug_routes._execute_run``（既有的 agent 推理循环），零重写。
+  仅做两处向后兼容的可选参数注入：``tools`` 与 ``run_tool``，使 ACP agent
+  能使用 builtin 工具集 + ``delegate_to_autoflow``。
+* ACP session 直接复用 ``_CONV``（以 sessionId 作为 conversation_id），天然多轮连续。
+* 内部 ``tool_call/done/aborted/error`` 事件经订阅队列翻译为 ACP content blocks，
+  由 ``prompt`` 的 SSE 流（event: message）下发。
+"""
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from typing import Any, AsyncIterator, Optional
+
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response, StreamingResponse
+
+from . import tool_schema
+from .store import safe_json_loads
+from .task_registry import task_registry
+from .acp_protocol import (
+    ERR_INVALID_PARAMS,
+    ERR_METHOD_NOT_FOUND,
+    ERR_SESSION_NOT_FOUND,
+    M_CANCEL,
+    M_INITIALIZE,
+    M_PROMPT,
+    M_SESSION_DELETE,
+    M_SESSION_HISTORY,
+    M_SESSION_LIST,
+    M_SESSION_NEW,
+    M_SESSION_UPDATE,
+    make_error,
+    make_notification,
+    make_response,
+    sse_message,
+    status_block,
+    text_block,
+    tool_call_block,
+)
+from .api.debug_routes import (
+    DebugRun,
+    _CONV,
+    _execute_run,
+    _register,
+    _RUNS,
+    _TERMINAL,
+    new_subscriber_queue,
+)
+from .api.llm_routes import _run_memory_tool
+from .runtime import get_runtime
+
+AGENT_VERSION = "1.0.0"
+DEFAULT_MAX_ROUNDS = 6
+
+# SSE 防缓冲头（镜像 MCP 的处理，避免反向代理攒批）
+NO_BUFFER_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+
+# ── 会话存储 ───────────────────────────────────────────────────────────
+class SessionStore:
+    """轻量内存会话表（单进程，无单点；上限镜像 _MAX_RUNS 思想）。"""
+
+    def __init__(self, max_sessions: int = 200) -> None:
+        self._sessions: dict[str, dict] = {}
+        self._max = max_sessions
+
+    def new(self, session_id: Optional[str] = None, owner_token: str = "") -> str:
+        sid = session_id or f"acp_{uuid.uuid4().hex}"
+        self._sessions[sid] = {"run_id": None, "created_at": time.time(), "owner_token": owner_token}
+        self._trim()
+        return sid
+
+    def bind(self, sid: str, run_id: str, owner_token: str = "") -> None:
+        self._sessions.setdefault(sid, {"run_id": None, "created_at": time.time(), "owner_token": owner_token})
+        self._sessions[sid]["run_id"] = run_id
+
+    def get(self, sid: str) -> Optional[dict]:
+        return self._sessions.get(sid)
+
+    def delete(self, sid: str) -> None:
+        self._sessions.pop(sid, None)
+        _CONV.pop(sid, None)
+
+    def check_owner(self, sid: str, owner_token: str) -> bool:
+        """P0-9 owner check (fail-close): unknown/empty owner_token is DENIED.
+        Centralized helper to avoid drift across history/delete/cancel.
+       经 HTTP 入口时 acp_auth 只在 verify 成功后写 acp_token_name，故 _owner 非空；
+        此处 fail-close 是为了防止未来新增 dispatch 入口时默认静默跳过属主校验。"""
+        if not owner_token:
+            return False
+        meta = self.get(sid)
+        if meta is None:
+            return False
+        return meta.get("owner_token") == owner_token
+
+    def list(self, owner_token: str = "") -> list[dict]:
+        # P0-9 修复：只返回当前 owner 的会话
+        items = self._sessions.items()
+        if owner_token:
+            items = [(s, m) for s, m in items if m.get("owner_token") == owner_token]
+        return [
+            {"sessionId": s, **meta}
+            for s, meta in sorted(items, key=lambda kv: kv[1].get("created_at", 0))
+        ]
+
+    def _trim(self) -> None:
+        if len(self._sessions) <= self._max:
+            return
+        oldest = sorted(
+            self._sessions.items(), key=lambda kv: kv[1].get("created_at", 0)
+        )
+        for s, _ in oldest[: len(self._sessions) - self._max]:
+            self._sessions.pop(s, None)
+
+
+_STORE = SessionStore()
+
+
+# ── 工具目录 ───────────────────────────────────────────────────────────
+# 竞技场专用工具（仅对 arena_ 令牌开放），与 builtin/delegate 隔离
+_ARENA_TOOL_NAMES = {
+    "get_arena_inspiration",
+    "evaluate_creativity",
+    "record_arena_result",
+}
+
+
+def _acp_kind(rt, scope) -> str:
+    """从 ACP middleware 写入的 token 名推导令牌种类（arena/acp/...）。"""
+    # P1-2：scope 可能为 None（ACP 初始化阶段），缺守卫会 AttributeError 崩掉入口
+    name = ((scope or {}).get("state") or {}).get("acp_token_name")
+    if name:
+        try:
+            k = rt.tokens.kind(name)
+            if k:
+                return k
+        except Exception:
+            pass
+    return "acp"
+
+
+def _make_arena_run_tool(rt, kind):
+    """按令牌作用域生成工具执行器：arena 令牌只能调 3 个竞技场工具，越权一律拒绝。"""
+
+    async def _run(_rt, name, args):
+        if kind == "arena":
+            if name not in _ARENA_TOOL_NAMES:
+                return {"error": f"竞技场令牌无权调用工具：{name}"}
+            method = getattr(rt.arena, name, None)
+            if method is None:
+                return {"error": f"未知竞技场工具: {name}"}
+            try:
+                return await method(**(args or {}))
+            except Exception as exc:  # noqa: BLE001
+                return {"error": f"竞技场工具执行失败：{exc}"}
+        return await _run_acp_tool(rt, name, args)
+
+    return _run
+
+
+def build_acp_tools(kind: str = "acp") -> list[dict]:
+    """ACP initialize 暴露的工具。
+
+    * kind=="arena"：仅返回 3 个竞技场窄工具（get_arena_inspiration /
+      evaluate_creativity / record_arena_result），不含 delegate_to_autoflow，
+      保证竞技场令牌不能越权调用生产写操作。
+    * 其它（默认 acp）：builtin 集 + delegate_to_autoflow。
+    """
+    if kind == "arena":
+        tools: list[dict] = []
+        for t in tool_schema.build_openai_tools(("arena",)):
+            fn = t["function"]
+            tools.append(
+                {
+                    "name": fn["name"],
+                    "description": fn["description"],
+                    "inputSchema": fn["parameters"],
+                }
+            )
+        return tools
+
+    tools: list[dict] = []
+    for t in tool_schema.build_openai_tools(("builtin",)):
+        fn = t["function"]
+        tools.append(
+            {
+                "name": fn["name"],
+                "description": fn["description"],
+                "inputSchema": fn["parameters"],
+            }
+        )
+    tools.append(
+        {
+            "name": "delegate_to_autoflow",
+            "description": (
+                "将当前任务委派给 autoflow agent 处理（peer-to-peer 拓扑 X）。"
+                "当任务更适合由 autoflow 执行时调用，返回 autoflow 的最终文本结果。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "用自然语言描述要交给 autoflow 的任务",
+                    },
+                    "context": {
+                        "type": "object",
+                        "description": "可选的补充上下文（任意 JSON）",
+                    },
+                },
+                "required": ["task"],
+            },
+        }
+    )
+    return tools
+
+
+def build_acp_llm_tools(kind: str = "acp") -> list[dict]:
+    """P1-21: ACP 循环 LLM 调用用的 OpenAI 格式工具表。
+
+    build_acp_tools() 返回的是 ACP 协议格式（name/description/inputSchema），
+    用于 initialize 响应；但 _execute_run 里 rt.llm.chat() 需要 OpenAI 格式
+    （type:function + function:{name,description,parameters}）。
+    之前把 ACP 格式直接传给 LLM，导致模型看不到工具，表现为「agent 只会聊天」。
+    """
+    if kind == "arena":
+        return tool_schema.build_openai_tools(("arena",))
+    return ACP_TOOLS
+
+
+# ACP 循环用的 OpenAI 工具表：builtin 集 + delegate
+ACP_TOOLS: list[dict] = tool_schema.build_openai_tools(("builtin",)) + [
+    {
+        "type": "function",
+        "function": {
+            "name": "delegate_to_autoflow",
+            "description": (
+                "将当前任务委派给 autoflow agent 处理（peer-to-peer 拓扑 X）。"
+                "当任务更适合由 autoflow 执行时调用，返回 autoflow 的最终文本结果。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string"},
+                    "context": {"type": "object"},
+                },
+                "required": ["task"],
+            },
+        },
+    }
+]
+
+
+async def _run_acp_tool(rt: Any, name: str, args: dict) -> dict:
+    """ACP 循环的自定义工具 runner：内置工具走 dispatch，delegate 走 ACP client。"""
+    if name == "delegate_to_autoflow":
+        from .acp_client import delegate_to_autoflow as _delegate
+
+        return await _delegate(rt, args or {})
+    return await _run_memory_tool(rt, name, args)
+
+
+# ── 内部事件 → ACP 通知 映射 ───────────────────────────────────────────
+def _parse_packed(packed: str) -> tuple[str, dict]:
+    ev = None
+    data_str = None
+    for line in packed.split("\n"):
+        if line.startswith("event: "):
+            ev = line[len("event: "):].strip()
+        elif line.startswith("data: "):
+            data_str = line[len("data: "):].strip()
+    data = safe_json_loads(data_str, None) if data_str else None
+    # 通知映射一律用 data.get()，坏 payload 退成 {} 让这条事件空转，而不是打断整条 SSE 流
+    return ev, data if isinstance(data, dict) else {}
+
+
+def _event_to_notification(ev: str, data: dict, session_id: str, req_id: Any):
+    base = {"sessionId": session_id, "id": req_id}
+    if ev == "backend":
+        base["status"] = "running"
+        base["content"] = [
+            status_block("running", f"后端: {data.get('model')} ({data.get('provider')})")
+        ]
+        return make_notification(M_SESSION_UPDATE, base)
+    if ev == "tool_call":
+        base["status"] = "running"
+        base["content"] = [
+            tool_call_block(
+                data.get("name", ""),
+                data.get("arguments", {}),
+                data.get("result"),
+            )
+        ]
+        return make_notification(M_SESSION_UPDATE, base)
+    if ev == "done":
+        base["status"] = "completed"
+        base["content"] = [text_block(data.get("answer") or "")]
+        return make_notification(M_SESSION_UPDATE, base)
+    if ev == "aborted":
+        base["status"] = "aborted"
+        base["content"] = [status_block("aborted", data.get("message", ""))]
+        return make_notification(M_SESSION_UPDATE, base)
+    if ev == "error":
+        base["status"] = "error"
+        base["content"] = [status_block("error", data.get("message", ""))]
+        return make_notification(M_SESSION_UPDATE, base)
+    return None
+
+
+# ── 指令提取 ───────────────────────────────────────────────────────────
+def _extract_instruction(params: dict) -> str:
+    if params.get("prompt"):
+        return str(params["prompt"]).strip()
+    msgs = params.get("messages") or []
+    for m in reversed(msgs):
+        if m.get("role") == "user":
+            return str(m.get("content") or "").strip()
+    if msgs:
+        return str(msgs[-1].get("content") or "").strip()
+    return ""
+
+
+# ── 分发 ───────────────────────────────────────────────────────────────
+async def acp_handle(
+    rt: Any, payload: dict, scope: dict | None = None
+) -> tuple[Optional[dict], Optional[AsyncIterator]]:
+    # P0-1 修复：scope 从参数传入，不再引用未定义变量
+    # P0-9 修复：从 scope 获取当前令牌名，用于会话属主绑定
+    _owner = ""
+    if scope and isinstance(scope.get("state"), dict):
+        _owner = scope["state"].get("acp_token_name", "") or ""
+    """解析 JSON-RPC，返回 (json 响应 dict | None, SSE 生成器 | None)。"""
+    method = payload.get("method")
+    req_id = payload.get("id")
+    params = payload.get("params") or {}
+
+    if method == M_INITIALIZE:
+        return make_response(
+            req_id,
+            {
+                "agent": {
+                    "name": "memory-agent",
+                    "version": AGENT_VERSION,
+                    "vendor": {"name": "memory-agent"},
+                },
+                "capabilities": {
+                    "streaming": True,
+                    "cancellation": True,
+                    "sessions": True,
+                    "tools": True,
+                },
+                "tools": build_acp_tools(_acp_kind(rt, scope)),
+            },
+        ), None
+
+    if method == M_SESSION_NEW:
+        sid = _STORE.new(params.get("sessionId"), owner_token=_owner)
+        return make_response(req_id, {"sessionId": sid}), None
+
+    if method == M_SESSION_LIST:
+        return make_response(req_id, {"sessions": _STORE.list(owner_token=_owner)}), None
+
+    if method == M_SESSION_HISTORY:
+        sid = params.get("sessionId")
+        if not sid:
+            return make_error(req_id, ERR_INVALID_PARAMS, "缺少 sessionId"), None
+        # P0-9 修复：先查会话存储+属主校验，再查 _CONV（新会话无历史不能短路属主校验）
+        _meta = _STORE.get(sid)
+        if not _meta:
+            return make_error(req_id, ERR_SESSION_NOT_FOUND, "session 不存在"), None
+        if not _STORE.check_owner(sid, _owner):
+            return make_error(req_id, ERR_INVALID_PARAMS, "无权访问该会话（属主不匹配）"), None
+        if sid not in _CONV:
+            return make_error(req_id, ERR_SESSION_NOT_FOUND, "session 无对话历史"), None
+        return (
+            make_response(req_id, {"sessionId": sid, "messages": _CONV.get(sid, [])}),
+            None,
+        )
+
+    if method == M_SESSION_DELETE:
+        sid = params.get("sessionId")
+        if not sid:
+            return make_error(req_id, ERR_INVALID_PARAMS, "缺少 sessionId"), None
+        # P0-9 owner check (centralized helper)
+        if not _STORE.check_owner(sid, _owner):
+            return make_error(req_id, ERR_INVALID_PARAMS, "无权删除该会话（属主不匹配）"), None
+        _STORE.delete(sid)
+        return make_response(req_id, {"sessionId": sid, "deleted": True}), None
+
+    if method == M_CANCEL:
+        sid = params.get("sessionId")
+        # P0-9 owner check 必须在 run_id 查询之前：避免 B 通过不同错误码探测
+        # A 的会话是否有 in-flight run（跨 principal 运行态 oracle）。
+        if not _STORE.check_owner(sid, _owner):
+            return make_error(req_id, ERR_INVALID_PARAMS, "无权取消该会话（属主不匹配）"), None
+        meta = _STORE.get(sid) if sid else None
+        if not meta or not meta.get("run_id"):
+            return (
+                make_error(req_id, ERR_SESSION_NOT_FOUND, "session 无进行中的任务"),
+                None,
+            )
+        run = _RUNS.get(meta["run_id"])
+        if run is not None:
+            run.abort()
+        return make_response(req_id, {"sessionId": sid, "status": "cancelling"}), None
+
+    if method == M_PROMPT:
+        session_id = params.get("sessionId") or _STORE.new()
+        instruction = _extract_instruction(params)
+        if not instruction:
+            return (
+                make_error(
+                    req_id,
+                    ERR_INVALID_PARAMS,
+                    "prompt 缺少指令（messages 或 prompt）",
+                ),
+                None,
+            )
+        try:
+            max_rounds = int(params.get("maxRounds") or DEFAULT_MAX_ROUNDS)
+        except (TypeError, ValueError):
+            max_rounds = DEFAULT_MAX_ROUNDS
+        max_rounds = max(1, min(max_rounds, 20))
+        model = params.get("model")
+        run = DebugRun(
+            run_id=uuid.uuid4().hex,
+            instruction=instruction,
+            model=model,
+            mode="run",
+            max_rounds=max_rounds,
+            conversation_id=session_id,
+            temperature=None,
+        )
+        _register(run)
+        _STORE.bind(session_id, run.run_id, owner_token=_owner)
+        task_registry.create(
+            _execute_run(
+                rt, run,
+                tools=build_acp_llm_tools(_acp_kind(rt, scope)),  # P1-21: LLM 需要 OpenAI 格式
+                run_tool=_make_arena_run_tool(rt, _acp_kind(rt, scope)),
+            ),
+            name=f"acp.run.{run.run_id}",
+        )
+
+        async def gen() -> AsyncIterator[str]:
+            # 订阅范式与 debug_stream 对齐：先追加队列、回放历史、再消费实时，
+            # 以 _TERMINAL 哨兵结束。
+            own: asyncio.Queue = new_subscriber_queue()
+            run.subscribers.append(own)
+            snapshot = list(run.history)
+            try:
+                for packed in snapshot:
+                    ev, data = _parse_packed(packed)
+                    notif = _event_to_notification(ev, data, session_id, req_id)
+                    if notif is not None:
+                        yield sse_message(notif)
+                if run.terminal:
+                    return
+                while True:
+                    item = await own.get()
+                    if item is _TERMINAL:
+                        break
+                    ev, data = _parse_packed(item)
+                    notif = _event_to_notification(ev, data, session_id, req_id)
+                    if notif is not None:
+                        yield sse_message(notif)
+                    if ev in ("done", "aborted", "error"):
+                        break
+            except asyncio.CancelledError:
+                # 客户端断开：gen() 是 SSE 流式响应体，已发 http.response.start，
+                # 禁止 re-raise，否则 Starlette 重复发 start -> RuntimeError -> 前端空白。
+                run.abort()
+                return
+            finally:
+                try:
+                    run.subscribers.remove(own)
+                except ValueError:
+                    pass
+
+        return None, gen()
+
+    return make_error(req_id, ERR_METHOD_NOT_FOUND, f"未知方法: {method}"), None
+
+
+# ── 原始 ASGI 分发器（供 Mount 包裹） ──────────────────────────────────
+async def acp_dispatcher(scope, receive, send) -> None:
+    """/acp 的原始 ASGI 入口：解析 JSON-RPC，prompt 走 SSE，其余走 JSON。"""
+    if scope.get("type") != "http":
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 405,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b""})
+        return
+
+    request = Request(scope, receive=receive)
+    if request.method == "GET":
+        resp = JSONResponse(
+            {
+                "service": "memory-agent-acp",
+                "transport": "json-rpc-2.0-over-http+sse",
+                "note": "ACP 仅接受 JSON-RPC POST；详见 docs/acp-integration.md",
+            }
+        )
+        await resp(scope, receive, send)
+        return
+
+    rt = get_runtime()
+    try:
+        body = await request.json()
+    except Exception:
+        resp = JSONResponse(make_error(None, -32700, "无效的 JSON"), status_code=400)
+        await resp(scope, receive, send)
+        return
+
+    if not isinstance(body, dict) or body.get("jsonrpc") != "2.0":
+        resp = JSONResponse(
+            make_error(
+                body.get("id") if isinstance(body, dict) else None,
+                -32600,
+                "非 JSON-RPC 2.0 请求",
+            ),
+            status_code=400,
+        )
+        await resp(scope, receive, send)
+        return
+
+    json_resp, sse_gen = await acp_handle(rt, body, scope)
+    if sse_gen is not None:
+        resp: Response = StreamingResponse(
+            sse_gen, media_type="text/event-stream", headers=NO_BUFFER_HEADERS
+        )
+    else:
+        resp = JSONResponse(json_resp, status_code=200)
+    await resp(scope, receive, send)

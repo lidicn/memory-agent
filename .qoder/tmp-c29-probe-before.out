@@ -1,0 +1,18 @@
+S1_compare_labelings n=3 agreement=1.0 raised=no
+S2_map_states voted_states=2 raised=no
+S3_cosine_dim_mismatch raised=ValueError detail=ValueError('shapes (3,) and (2,) not aligned: 3 (dim 0) != 2 (dim 0)')
+S3b_cosine_fallback value=0.5976 raised=no
+S3c_cosine_equal_len value=1.0
+S4_semantic_search_ragged returned_rows=2 expected_docs=3
+S4b_semantic_search_aligned returned_rows=3
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\c29zipwqjwqkp1\t.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+S5_schema table=voice_answer_cache cols=6
+S5_schema table=candidate_rules cols=13
+S5_schema table=bug_reports cols=10
+S5_schema table=agent_memories cols=24
+S5b_list_bug_reports rows=1 keys=10 table_cols=10
+S5c_list_answer_cache rows=0 keys=0
+S5d_list_negative_feedback rows=0 keys=0 table_cols=24
+PROBE_RC=0

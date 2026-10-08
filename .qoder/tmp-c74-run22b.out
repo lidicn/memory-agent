@@ -1,0 +1,133 @@
+HEAD=fec2c2c
+UNPUSHED=2
+GUARD_OK TREE_CLEAN=0
+GUARD_OK REMOTE_SYNTAX_RC=0
+GUARD_OK SELF_SYNTAX_RC=0
+GUARD_OK MUT74_PARSE_RC=0
+GUARD_OK HASHES_PARSE_RC=0
+GUARD_OK LOCK_PARSE_RC=0
+.qoder/tmp-c74-remote22.sh UNESCAPED=0 ODD_QUOTE_LINES=[]
+LINT_RC=0
+GUARD_OK LINT_RC=0
+GUARD_OK MUT74_VERIFY_RC=0
+MUTANTS_PARSED=6 VERIFY_BAD=0
+GUARD_OK MUT74_PARSED=6
+GUARD_OK MUT74_VERIFYBAD=0
+GUARD_OK MUT74_LOCAL_OUT_EXISTS=0
+M-0 什么都不改（基线：证明门自己没坏） -> RC=0 基线 | 23 passed in 4.15s
+L1 文案回滚到承诺 has_data/first-last 的那版 -> RC=1 failed=2 咬住了 restored=OK | 2 failed, 21 passed in 3.75s
+L2 载荷不再给 peak_hours（文案说有、实现没有） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 22 passed in 3.95s
+L3 start_day 写成首个有数据日（边界与数据边界混掉） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 22 passed in 3.81s
+L4 技能包 SKILL.md 的承诺回滚到死键版（模型读的那份） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 22 passed in 3.86s
+L5 用户手册 user_manual.js 的承诺回滚到死键版（人读的那份） -> RC=1 failed=2 咬住了 restored=OK | 2 failed, 21 passed in 3.97s
+MUT_COUNT=6 MUTATION_BAD=0
+GUARD_OK MUT74_LOCAL_BAD=0
+GUARD_OK HASHES_LOCAL_RC=0
+HASH_LISTED=401 HASH_FILES=401 HASH_MISSING=0
+HASH_AGGREGATE=934f2beeceae3614e86d9231f379b833bf86dd092dc487d492cfdafb204caf70
+GUARD_OK HASH_MISSING=0
+GUARD_OK PATH_APPEND=1
+GUARD_OK STDERR_TAIL=1
+GUARD_OK VERIFY_FLAG=2
+GUARD_OK OLD_CLOBBER=0
+GUARD_OK FAILED_GUARD=1
+GUARD_OK NEW_HEADLINE=1
+GUARD_OK OLD_HEADLINE=0
+GUARD_OK MCP_HAS_DATA_OTHER=2
+GUARD_OK SVC_START_DAY=1
+GUARD_OK SVC_PEAK=1
+GUARD_OK WITH_WINDOW=5
+GUARD_OK SKILL_HAS_DATA=0
+GUARD_OK SKILL_FIRSTLAST=0
+GUARD_OK SKILL_DAYCOV=1
+GUARD_OK JS_HAS_DATA=0
+GUARD_OK JS_FIRSTLAST=0
+GUARD_OK PROSE_SURFACES=5
+GUARD_OK PROSE_TESTS=2
+GUARD_OK FILELIST_SAME=401
+FILES22=401
+IN_SNAP_checked=16
+PREFLIGHT_OK=1
+GUARD_OK TAR_RC=0
+TAR_SIZE=2438159
+GUARD_OK SCP_RC=0
+GUARD_OK REMOTE_SCP_RC=0
+GUARD_OK MUT74_SCP_RC=0
+GUARD_OK HASHES_SCP_RC=0
+GUARD_OK FILELIST_SCP_RC=0
+STAGE_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+401
+SNAP_FILELIST_LINES_RC=0
+SYNC_RC=0
+2026-10-07T07:21:46+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+Python 3.11.16
+TOOLCHAIN_RC=0
+SNAP_RC=0
+HASH_LISTED=401 HASH_FILES=401 HASH_MISSING=0
+HASH_AGGREGATE=934f2beeceae3614e86d9231f379b833bf86dd092dc487d492cfdafb204caf70
+NEW_HEADLINE=1
+OLD_HEADLINE=0
+MCP_HAS_DATA_OTHER=2
+SVC_START_DAY=1
+SVC_PEAK=1
+WITH_WINDOW=5
+ANCHOR_RC=0
+SKILL_HAS_DATA=0
+SKILL_FIRSTLAST=0
+SKILL_DAYCOV=1
+JS_HAS_DATA=0
+JS_FIRSTLAST=0
+ANCHOR_PROSE_RC=0
+PROSE_SURFACES=5
+PROSE_TESTS=2
+ANCHOR_TEST_RC=0
+PATH_APPEND=1
+STDERR_TAIL=1
+VERIFY_FLAG=2
+OLD_CLOBBER=0
+FAILED_GUARD=1
+HARNESS_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:206: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1920 passed, 10 skipped in 467.20s (0:07:47)
+SUITE_FAILNAMES_RC=1
+TARGETED_RC=0
+...................................                                      [100%]
+35 passed in 23.73s
+FACES_RC=0
+........................................................................ [ 68%]
+........................................................................ [ 91%]
+...........................                                              [100%]
+315 passed in 179.12s (0:02:59)
+FACES_FAILNAMES_RC=1
+VERIFY_RC=0
+MUTANTS_PARSED=6 VERIFY_BAD=0
+MUT74_RC=0
+M-0 什么都不改（基线：证明门自己没坏） -> RC=0 基线 | 23 passed in 9.60s
+L1 文案回滚到承诺 has_data/first-last 的那版 -> RC=1 failed=2 咬住了 restored=OK | 2 failed, 21 passed in 8.56s
+L2 载荷不再给 peak_hours（文案说有、实现没有） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 22 passed in 9.29s
+L3 start_day 写成首个有数据日（边界与数据边界混掉） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 22 passed in 8.27s
+L4 技能包 SKILL.md 的承诺回滚到死键版（模型读的那份） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 22 passed in 9.26s
+L5 用户手册 user_manual.js 的承诺回滚到死键版（人读的那份） -> RC=1 failed=2 咬住了 restored=OK | 2 failed, 21 passed in 9.75s
+MUT_COUNT=6 MUTATION_BAD=0
+POST_RC=0
+.......................                                                  [100%]
+23 passed in 8.90s
+2026-10-07T07:34:35+08:00
+REMOTE_BATCH_RC=0
+REMOTE_DRIVER_RC=0
+CONTAINER_BATCH_RC=0
+DRIVER_RC=0
+2026-10-07T07:34:35+08:00

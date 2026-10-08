@@ -1,0 +1,82 @@
+db=/data/memory_agent.db rooms=17 tz=8.0 max_scan=30000
+events 表跨度: {'min_day': '2026-09-04', 'max_day': '2026-10-05', 'rows': 998145}
+behavior_events 表跨度: {'min_day': '2026-08-30', 'max_day': '2026-10-03', 'rows': 4023}
+
+=== Q3-1 六个过滤/排序位是否真的生效（新引擎）===
+load_events 按天分批命中日配额 967/天（共 31 天），结果可能被截断
+load_events 按天分批命中日配额 967/天（共 31 天），结果可能被截断
+  room    : 无过滤 scan=29012 count=950799 | 客厅 scan=28529 count=148215 -> 生效
+  domain  : light count=1186 -> 生效
+  repo.load_events 形参: ['tr', 'entity_ids', 'rooms', 'domains', 'behavior_only', 'exclude_entity_ids', 'exclude_domains']
+load_events 按天分批命中日配额 3750/天（共 8 天），结果可能被截断
+load_events 按天分批命中日配额 3750/天（共 8 天），结果可能被截断
+load_events 按天分批命中日配额 3750/天（共 8 天），结果可能被截断
+  category: 传 climate total=144143 vs 不传 total=144143 -> 接收但不生效
+  query   : 传 灯 total=144143 -> 接收但不生效
+  state    : 门面收=True 新引擎有对应物=False -> 无处可去（Q3-1/Q3-5 不齐）
+  order    : 门面收=True 新引擎有对应物=False -> 无处可去（Q3-1/Q3-5 不齐）
+  summarize: 门面收=True 新引擎有对应物=False -> 无处可去（Q3-1/Q3-5 不齐）
+  `_search`（新引擎扫描路径）形参=['behavior_only', 'category', 'end', 'entity_id', 'limit', 'offset', 'query', 'room', 'self', 'start']
+  门面收得下、但 `_search` 里连位置都没有的过滤/排序位：['domain', 'order', 'state', 'summarize']
+
+=== Q3-2 days 是否真按天窗口（同一 room，days=1 / 7 / 30）===
+  days= 1 room=客厅: 扫描=5403 全量匹配=5403
+load_events 按天分批命中日配额 3750/天（共 8 天），结果可能被截断
+  days= 7 room=客厅: 扫描=21667 全量匹配=32138
+load_events 按天分批命中日配额 967/天（共 31 天），结果可能被截断
+  days=30 room=客厅: 扫描=28529 全量匹配=148210
+  -> 窗口随 days 单调（是）：[5403, 32138, 148210]
+  legacy 同口径：
+  days= 1 legacy total=5403
+  days=30 legacy total=148210
+
+=== Q3-3/Q4 total 有没有被 MAX_SCAN 截断，截断时是否如实上报 ===
+load_events 按天分批命中日配额 967/天（共 31 天），结果可能被截断
+  30 天全量匹配=950781 门面报 total=950781 truncated=True scan_limit=30000 total_exact=True
+  -> 未截断或未如实上报（读数见上，结论以行为准）
+
+=== Q3-4 legacy 的分页/窗口键在新引擎有没有对应物 ===
+load_events 按天分批命中日配额 3750/天（共 8 天），结果可能被截断
+  behavior_insights legacy 分页/窗口键：缺 ['count', 'next_offset'] | 新引擎键数=16 legacy 键数=16 | 交集=16
+  device_health     legacy 分页/窗口键：缺 ['count', 'next_offset', 'window'] | 新引擎键数=18 legacy 键数=18 | 交集=18
+  device_usage      legacy 分页/窗口键：缺 ['count', 'next_offset'] | 新引擎键数=8 legacy 键数=6 | 交集=6
+  entity_catalog    legacy 分页/窗口键：缺 ['count', 'next_offset'] | 新引擎键数=12 legacy 键数=10 | 交集=10
+  search_events     legacy 分页/窗口键：缺 ['next_offset', 'ok', 'window'] | 新引擎键数=10 legacy 键数=9 | 交集=5
+
+=== Q3-5 「接收但不生效」的入参清单（新引擎无对应物的都要么实现要么下架）===
+  route_question               -> plan_question        门面收的过滤位=-（新引擎同法对应物：无）
+  get_entity_catalog           -> entity_catalog       门面收的过滤位=['category', 'domain', 'only_enabled', 'query']（新引擎同法对应物：有）
+  get_behavior_insights        -> behavior_insights    门面收的过滤位=-（新引擎同法对应物：有）
+  get_behavior_insights_compare -> get_behavior_insights 门面收的过滤位=-（新引擎同法对应物：无）
+  get_device_usage             -> device_usage         门面收的过滤位=['category', 'debounce_seconds', 'include_timeline', 'on_states', 'query']（新引擎同法对应物：无）
+  search_events                -> search_events        门面收的过滤位=['category', 'domain', 'order', 'query', 'state', 'summarize']（新引擎同法对应物：无）
+  get_device_health            -> device_health        门面收的过滤位=['category', 'only_enabled', 'query', 'stale_days']（新引擎同法对应物：有）
+  get_data_coverage            -> data_coverage        门面收的过滤位=-（新引擎同法对应物：无）
+  get_climate_sessions         -> climate_sessions     门面收的过滤位=['query']（新引擎同法对应物：无）
+  infer_activities             -> infer_activities     门面收的过滤位=-（新引擎同法对应物：有）
+  get_user_persona             -> get_user_persona     门面收的过滤位=-（新引擎同法对应物：无）
+  explain_insight              -> explain_insight      门面收的过滤位=-（新引擎同法对应物：无）
+  ask_memory                   -> ask_memory           门面收的过滤位=-（新引擎同法对应物：无）
+  get_data_quality             -> get_data_quality     门面收的过滤位=-（新引擎同法对应物：无）
+  define_activity              -> define_activity      门面收的过滤位=-（新引擎同法对应物：无）
+  get_last_event               -> get_last_event       门面收的过滤位=['domain']（新引擎同法对应物：无）
+  query_behavior_events        -> query_behavior_events 门面收的过滤位=-（新引擎同法对应物：无）
+  逐项参数级判定需要人工核对新引擎的实现语义；本行只给方法级候选清单：13 个方法在新引擎无同名实现 ['route_question->plan_question', 'get_behavior_insights_compare->get_behavior_insights', 'get_device_usage->device_usage', 'search_events->search_events', 'get_data_coverage->data_coverage', 'get_climate_sessions->climate_sessions', 'get_user_persona->get_user_persona', 'explain_insight->explain_insight', 'ask_memory->ask_memory', 'get_data_quality->get_data_quality', 'define_activity->define_activity', 'get_last_event->get_last_event', 'query_behavior_events->query_behavior_events']
+
+=== Q3-6 切换时要交的三项对比读数（本脚本即该项的量具）===
+  search_events: ① 返回键集合 新引擎/legacy/并集 = 10/9/14（仅新引擎 5、仅 legacy 4）
+  entity_catalog: ① 返回键集合 新引擎/legacy/并集 = 12/10/12（仅新引擎 2、仅 legacy 0）
+  device_usage: ① 返回键集合 新引擎/legacy/并集 = 8/6/8（仅新引擎 2、仅 legacy 0）
+  behavior_insights: ① 返回键集合 新引擎/legacy/并集 = 16/16/16（仅新引擎 0、仅 legacy 0）
+  device_health: ① 返回键集合 新引擎/legacy/并集 = 18/18/18（仅新引擎 0、仅 legacy 0）
+load_events 按天分批命中日配额 3750/天（共 8 天），结果可能被截断
+  ② 语义枚举值集合：domain=['binary_sensor', 'event', 'media_player', 'sensor', 'switch', 'water_heater']（共 6 个） state=['0', '0.0', '0.61', '0.63', '1', '10', '10.0', '11']（共 259 个）；person/action 只报去重数（不外露姓名）：0/0
+  ③ 旁挂依赖：activity_rules=5 signal_exclusions=1 config.excluded_entities=0 项
+
+=== 验收单收口（六条全部有读数；判定只按上面对勾，不做乐观折算）===
+  Q3-1 过滤/排序位：生效=['domain', 'room'] 不生效=['category', 'query'] 未量到=['order', 'state', 'summarize'] -> 不齐
+  Q3-2 days 窗口单调：齐（[5403, 32138, 148210]）
+  Q3-3 截断如实上报：不齐（生产库未到上限，需人工按 max_scan 配置复验）
+  Q3-4 legacy 分页/窗口键对应物：不齐（['behavior_insights', 'device_health', 'device_usage', 'entity_catalog', 'search_events']）
+  Q3-5 接收但不生效入参：不齐（13 个方法无新引擎实现）
+  Q3-6 三项对比读数：①②③ 已全部打印 -> 齐

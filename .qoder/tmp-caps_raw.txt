@@ -1,0 +1,5 @@
+/tmp/adm_probe.py:46: DeprecationWarning: Callback API version 1 is deprecated, update to latest version
+  client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id="ma-adm-probe")
+CONN rc=0 (ok)
+02:33:04 MSG retain=1 qos=1 adm/memory-agent/caps :: {"mcp": true, "tools": ["route_question", "get_entity_catalog", "get_behavior_insights", "get_behavior_insights_compare", "get_device_usage", "get_device_usage_summary", "get_room_behavior_summary", "get_member_daily_pattern", "search_events", "get_device_health", "get_data_coverage", "get_climate_sessions", "infer_activities", "get_user_persona", "get_member_persona", "analyze_behavior_change", "
+SUMMARY {"window_s": 30.0, "topics_seen": ["adm/memory-agent/caps"], "retained_adm": ["adm/memory-agent/caps::{\"mcp\": true, \"tools\": [\"route_question\", \"get_entity_catalog\", \"get_behavior_insights\", \"get_behavior_insights_compare\""], "count": 1}

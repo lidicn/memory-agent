@@ -1,0 +1,85 @@
+import io
+
+SEC = """
+## 五十四、第二十轮批次吸收：MA-25~MA-37 十三条（任务表 #84~#85）
+
+这一节兑现目标里那句「审计会不断往里新增审计报告」：第十一轮~第二十轮**十份报告一次性落地**，
+共 13 条确认缺陷（MA-25~MA-37），其中**一条 Critical**（MA-36）。本轮先修 Critical 那条并出门，
+其余十一条逐条按当前树重锚并登记状态，修法排队在 #85。
+
+### 一、先把行号重锚（报告行号锚在审计快照，不在当前树）
+
+`mcp_server.py` 在 #78 被删过 439 行 ⇒ **那份文件里所有报告行号一律作废**，按符号重新定位。
+下表右两列是本轮当场量的，不是抄报告的：
+
+| 条目 | 级 | 报告落点 | 当前树实测落点 | 状态 |
+| --- | --- | --- | --- | --- |
+| MA-25 | High | `llm_client.reconfigure` 整表重建 providers 不 close | `llm_client.py:432` `self.providers = [LLMProvider(b, config) for b in ...]` **覆盖旧表**；同文件 `LLMClient.close()`（:434）只关**当前**表、`LLMProvider.close()`（:158）存在但没有第二个调用点 ⇒ 重配置一次漏一批 `httpx.AsyncClient` | 待修 |
+| MA-26 | High | `mcp_server.py:3058 save_skill` | 重锚 `mcp_server.py:2638`；docstring（:2644-2648）仍写「自增 version」 | 待修 |
+| MA-27 | Medium | `agent_memory.py:522` | 当前 `:524` `"member_id": member_id or "all"`，同函数 fail-closed 只回公共记忆（注释 :514-515） | 待修 |
+| MA-28 | High | `mcp_server.py:2155 teach_signal` | 重锚 `mcp_server.py:1696`；`:1716-1717` `if dry_run: return {"ok": True, ... "参数校验通过"}` —— **一行校验都没有** | 待修 |
+| MA-29 | High | `rule_engine.py:1035-1105` 五动作桩 | 当前 `rule_engine.py:1005-1015` 五支 `alert/webhook/tts/light/camera` | 待修（涉功能面，口径走 DCD） |
+| MA-30 | High | `api/nr_routes.py:52-56` | 当前同号：`:52` 零实现、`:56` 返回「动作已执行」、`:199` 路由已注册 | 待修 |
+| MA-31 | High | `runtime.py:277-345` | 当前 `:280-350`；**机制更正见下节** | 待修 |
+| MA-32 | Medium | `config.py:187` 等三处 | 当前 `config.py:208` 定义 / `api/config_routes.py:36` 可写 / `:192` 回显 / `static/js/pages/settings.js:274` UI 开关；全仓 grep（含 `web/`）**无业务消费点** | 二选一 → 呈 DCD |
+| MA-33 | High | `mcp_server.py:658 seed_builtin_skills` | 重锚 `mcp_server.py:219`，同步判据仍只有 `os.path.isfile(dst)`（:234） | 待修 |
+| MA-34 | Medium | `activity_inference.py:538` | 当前三处默认可写：`:548` / `:756` / `:887` `persist: bool = True` | 待修 |
+| MA-35 | High | `runtime.py:179-182` | 当前 `:137` 定义 `_run_retention_cleanup`，`:181` 是**唯一调用点**（startup 里 `create_task` 一次）⇒ 运行期再无调用 | 待修 |
+| MA-36 | **Critical** | `acp_server.py:416 M_PROMPT` | 重锚 `:428` 分支 | ✅ **本轮已修** |
+| MA-37 | High | `SessionStore.new` 属主改写 | `:80` | ✅ **本轮已修** |
+
+### 二、MA-31 的机制更正（结论仍成立，描述与当前树不符）
+
+报告写「循环推进语句在 try 之外裸奔；外层 `except` 只捕 `CancelledError`」。当前树实测：
+
+- 推进语句 `now_dt = now_local(self.config.tz_offset_hours)` 在 **runtime.py:287，位于外层 try 之内**（try 起于 :282）；
+- 外层兜的是 **`except Exception as e: print(...)`（:349-350）**，不是只捕 `CancelledError`。
+
+⇒ 所以异常会被接住、**接住之后函数直接返回**：日记任务就此结束，`self.tasks` 里那条变成已完成态，
+只留下一行 print，**无自愈、无重启、无告警**。结论（一次异常 ⇒ 永久停摆）与报告一致，
+机制是"接住了但不重跑"而不是"没接住"。这一条差异要带进 #85 的修法（修在任务结构：
+外层 `while` 包 try + 退避重启，与 MA-18 那批常驻任务同口径），否则会出现"照报告改完了但没改到点上"。
+
+### 三、MA-36 / MA-37 落了什么（commit `af3e0fe`）
+
+- **M_PROMPT**：显式传入的 `sessionId` 先过 `_STORE.check_owner(requested, _owner)`，不过则 `-32602`；
+  未传时新建**带上发起者属主**（原代码 `_STORE.new()` 建成 `owner_token=""`，
+  于是 A 随后读自己的历史反被 fail-close 拒掉 —— 报告回归清单第 6 条正是这个）。
+- **SessionStore.new**：`sid` 已存在且属主不同 ⇒ `SessionOwnerConflict`（类定义 :69，判据 :85），
+  路由层转 `-32602`（:377）。不再允许"再 new 一次就把属主改掉"。
+- 8 条回归锁 = 报告回归清单 1~6 条 + 两条自找缺口；全量本机档 `1996 passed, 24 skipped in 272.98s`、
+  `LOCAL_SUITE_RC=0`（`.qoder/tmp-r20-suite-local.out`）。
+
+### 四、报告之外自找的两条缺口（都已上锁）
+
+1. **`_trim()` 逐出会话但 `_CONV` 历史仍在**：若按报告原方案写成
+   「会话表里有这条才校验」（`and _STORE.get(...) is not None`），被裁剪掉会话条目、
+   历史还留在 `_CONV` 的 sid 就成了新的越权入口。变异腿 P05 就是这条，锁名
+   `test_prompt_denies_a_session_whose_store_entry_is_gone_but_history_remains`。
+2. **未认证主体**：若判据写成 `... and _owner`（空主体放行），不带 scope 的派发能绕过属主校验。
+   四种 scope 形状全部实测拒绝，变异腿 P06 对应这条，锁名
+   `test_prompt_from_an_unauthenticated_principal_is_denied_for_existing_session`。
+
+### 五、六腿变异自证（本机 3.13 档，容器 3.11 读数见 run27）
+
+`.qoder/tmp-r20-mut-local1.out`：控制腿 `[P-0] rc=0 '28 passed in 4.56s'`（副本树基线先绿，
+否则整表无信息量），P01~P06 **全部 KILLED**，`totals: killed=6 survived=0 invalid=0 legs=6`，
+`WT_UNTOUCHED=True`（变异只打在一次性副本树 `.qoder/tmp-r20-mut/`，工作树逐文件哈希前后一致）。
+六腿逐条对应：MA-36 不校验 / MA-37 无条件覆盖 / 接错异常类型 / 新建不带属主 /
+只校验表内会话（trim 缺口）/ 空主体放行。
+
+### 六、入口对等门 —— 这个缺陷族第一次有了门
+
+`test_every_entry_that_reads_session_id_enforces_ownership`（AST，非按名字 grep）：
+断言 `acp_handle` 里**读 `sessionId` 的分支集合 == {session.new, session.history, session.delete, cancel, prompt}**，
+其中 4 条必须调 `check_owner`，`session.new` 走冲突异常通道；豁免以 `_PARITY_EXEMPT` 显式登记（session.list / session.update）。
+报告 §五 建议的第 3 条门禁 `check_entry_parity.py` 目前**先以用例形式落**（改一处就红，不需要单独跑脚本），
+独立脚本 + 覆盖 MCP/HTTP 面留到 #85。这一族横向已确认五次（AutoForge R20-01 / R15-01 / R18-01 + 本仓 MA-34/MA-36），
+"服务层有护栏、旁路没有"从此是可复用的判据，不是本轮的一次性观察。
+
+### 七、辅攻负结果（登记以免重跑）
+
+第二十轮 §六 的六个方向**全部闭合、无一新增缺陷**：B4 TTL 方向 6 条 / B5 锁跨 I/O 1 条（`purge_old` 锁间 commit
+是审计 P0-7 的有意优化）/ B6 除零空序列 8 条 / B7 优雅退出 0 条 / B8 编码 3 条（全为假阳性：
+`subprocess.Popen`、`tarfile.open('w:gz')`、`urlopen`）/ B9 导出通道 9 条（均为内部函数或经令牌 scope 的 MCP 工具）。
+**B10 去重键稳定性 23 条候选噪音偏高、未分诊** ⇒ 挂在 #85 遗留队列，不当作缺陷、也不当作"已排除"。

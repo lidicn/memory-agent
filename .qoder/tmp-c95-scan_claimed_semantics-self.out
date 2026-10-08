@@ -1,0 +1,9 @@
+SELFTEST_HIT DECLARED_UNREGISTERED（f_declared_unregistered 有声明却没进任何台账）
+SELFTEST_HIT CLAIM_NOT_DECLARED（close_it 的 docstring 不再声明 fail-closed）
+SELFTEST_HIT CONTRACT_ORPHANED（登记的 f_gone::vanished 在源码里已不存在）
+SELFTEST_HIT REGISTRY_WITHOUT_CASE（cache_it 登记了契约却没有用例）
+SELFTEST_HIT UNVERIFIED_ORPHANED（基线里的 f_baseline_gone::removed 函数已删）
+SELFTEST_HIT UNVERIFIED_UNDECLARED（plain_result 文案改写后不再声明，基线该删行）
+SELFTEST_CLEAN 在册用例全部现读得到（含类内缩进与中文名）
+SELFTEST_CLEAN 基线正例不误报
+SELFTEST_CLEAN 候选=3（注释不计，只算 docstring）

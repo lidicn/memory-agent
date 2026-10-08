@@ -1,0 +1,2 @@
+ROOT=src/memory_agent guard_bounded=42 guard_lo_only=0 guard_unguarded=53 label_config=2 label_date_math=6 label_external=44 label_literal=41 label_local=2 marked=2 total_timedelta_days=95
+SCAN_RC=0 每个 timedelta(days=) 站点都有归属

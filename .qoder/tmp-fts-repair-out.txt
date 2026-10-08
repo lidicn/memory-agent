@@ -1,0 +1,53 @@
+copy ok, size: 568221696
+
+=== 0. 副本现状 ===
+  main count: [(247,)] (1 row)
+  fts count: [(247,)] (1 row)
+  docsize count: [(0,)] (1 row)
+  data count: [(2,)] (1 row)
+  config rows: [('version', 4)] (1 row)
+   integrity-check FAIL: DatabaseError: database disk image is malformed
+   UPDATE FAIL: DatabaseError: database disk image is malformed
+
+=== 1. 复现启动序列：DROP 触发器 + DROP TABLE + CREATE(trigram) ===
+
+### drop trigger agent_memories_fts_ai
+    ok, rowcount = -1
+
+### drop trigger agent_memories_fts_ad
+    ok, rowcount = -1
+
+### drop trigger agent_memories_fts_au
+    ok, rowcount = -1
+
+### drop table agent_memories_fts
+    ok, rowcount = -1
+  shadow tables left after DROP TABLE:
+    sqlite_master like %fts%: [('behavior_drifts',), ('sqlite_autoindex_behavior_drifts_1',), ('idx_behavior_drifts_key',), ('idx_behavior_drifts_day',)] (4 row)
+
+### create virtual table (trigram)
+    ok, rowcount = -1
+
+### recreate trigger ai
+    ok, rowcount = -1
+
+### recreate trigger ad
+    ok, rowcount = -1
+
+### recreate trigger au
+    ok, rowcount = -1
+  fts count right after CREATE: [(247,)] (1 row)
+  docsize count right after CREATE: [(0,)] (1 row)
+   integrity-check FAIL: DatabaseError: database disk image is malformed
+   UPDATE FAIL: DatabaseError: database disk image is malformed
+
+=== 2. rebuild 能否修好 ===
+
+### INSERT … ('rebuild')
+    ok, rowcount = 1
+  fts count after rebuild: [(247,)] (1 row)
+   integrity-check PASS
+   UPDATE PASS
+removed /tmp/qoder-fts-repair-copy.db
+removed /tmp/qoder-fts-repair-copy.db-wal
+removed /tmp/qoder-fts-repair-copy.db-shm

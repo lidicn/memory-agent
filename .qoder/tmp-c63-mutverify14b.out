@@ -1,0 +1,25 @@
+PARSE_ONLY_RC=0 MUTANTS_PARSED=22
+OK  anchor=1 residue=0 M1 丢掉 bool 判定
+OK  anchor=1 residue=0 M2 下界门失效
+OK  anchor=1 residue=0 M3 上界门失效
+OK  anchor=1 residue=0 M4 转换失败退回默认档（改前的 int(x or 3)）
+OK  anchor=1 residue=0 M5 min_variant_support 顶死字面量 3
+OK  anchor=1 residue=0 M6 mine_process 的合法 bucket_sec=0 被吞
+OK  anchor=1 residue=0 M7 min_score 的合法 0.0 被吞
+OK  anchor=1 residue=0 M8 causal_analyze 窗口门失效
+OK  anchor=1 residue=0 M9 causal_counterfactual 窗口门失效
+OK  anchor=1 residue=deletion-shaped M10 bad-cases 的 limit 拒绝分支摘掉
+OK  anchor=1 residue=0 M11 predictions 回到主线程
+OK  anchor=1 residue=0 M12 intent 回到主线程
+OK  anchor=1 residue=0 M13 home_profile 回到主线程
+OK  anchor=1 residue=0 M14 半衰期回到原值（两个口径）
+OK  anchor=1 residue=0 M15 intent 的 limit 上下界失效
+OK  anchor=1 residue=0 M16 mine_drift 的合法 bucket_sec=0 被吞
+OK  anchor=1 residue=0 M17 rule_channel_audit 回到吞异常改 100
+OK  anchor=1 residue=0 M18 min_count 回到 `or 3` 静默改值
+OK  anchor=1 residue=0 M19 trigger_id 回到裸 int（无守卫）
+OK  anchor=1 residue=0 M20 window_minutes 回到原样透传（改前的 500 路）
+OK  anchor=1 residue=0 M21 人工审核不再留痕（R3 红线的留痕步）
+OK  anchor=1 residue=0 M22 规则视图的冷却位写死 False
+DEADSHAPE_COUNT=0
+VERIFY_BAD=0

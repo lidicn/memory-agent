@@ -1,0 +1,19 @@
+COPY_TREE_READY=E:/NAS/memory-agent/.qoder/tmp-c90mut30-local files=85
+[Q-0] 对照腿（什么都不改）rc=0 summary='43 passed, 3 skipped in 3.99s' failed=[] skipped=3
+[Q-0] SKIPPED SKIPPED [1] tests\test_rounds11_19_ma25_35_fixes.py:108: 本机 mcp SDK 过旧，取不到已注册工具函数（容器内有，权威门会跑）
+[Q-0] SKIPPED SKIPPED [1] tests\test_rounds11_19_ma25_35_fixes.py:198: 本机 mcp 为旧 SDK，取不到已注册工具函数（容器权威档实跑）
+[Q-0] SKIPPED SKIPPED [1] tests\test_rounds11_19_ma25_35_fixes.py:217: 本机 mcp 为旧 SDK，取不到已注册工具函数（容器权威档实跑）
+Q-0 绿：副本树与快照树同口径，后续红都是注入造成的。
+[R01] KILLED src\memory_agent\insights\repository.py :: health 恒 True ⇒ 库不可达时探活照样报健康
+        4 failed, 39 passed, 3 skipped in 2.42s :: 红用例 4 条: test_health_true_only_when_select_one_roundtrips_exactly[rows1-False], test_health_true_only_when_select_one_roundtrips_exactly[rows2-False], test_health_true_only_when_select_one_roundtrips_exactly[rows3-False], test_health_true_only_when_select_one_roundtrips_exactly[rows4-False]
+[R02] KILLED src\memory_agent\insights\repository.py :: health 只数行不看探针值 ⇒ SELECT 1 被换成别的形状也算健康
+        3 failed, 40 passed, 3 skipped in 2.41s :: 红用例 3 条: test_health_true_only_when_select_one_roundtrips_exactly[rows2-False], test_health_true_only_when_select_one_roundtrips_exactly[rows3-False], test_health_true_only_when_select_one_roundtrips_exactly[rows4-False]
+[R03] KILLED src\memory_agent\insights\repository.py :: health 把异常上抛 ⇒ 不是 fail-closed，而是让调用方崩
+        1 failed, 42 passed, 3 skipped in 2.47s :: 红用例 1 条: test_health_is_false_when_the_query_raises_not_true_and_not_a_crash
+[R04] KILLED src\memory_agent\insights\repository.py :: activity_rules 的 enabled_only 失效 ⇒ 禁用规则混进引擎输入
+        1 failed, 42 passed, 3 skipped in 2.43s :: 红用例 1 条: test_activity_rules_enabled_only_adds_the_where_clause
+[R05] SURVIVED !! src\memory_agent\mcp_server.py :: retrieve_agent_memories 的 403 门拆掉 ⇒ 普通令牌不点名成员也能召回 :: 43 passed, 3 skipped in 2.43s
+[R06] SURVIVED !! src\memory_agent\mcp_server.py :: 空 question 放行 ⇒ 拿空串去召回全库 :: 43 passed, 3 skipped in 2.50s
+WT_UNTOUCHED=True
+totals: killed=4 survived=2 invalid=0 legs=6
+python: 3.13.2 harness-exe=C:/Users/lidicn/AppData/Local/Programs/Python/Python313/python.exe

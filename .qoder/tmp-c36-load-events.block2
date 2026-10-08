@@ -1,0 +1,76 @@
+        def _day_statement(day_str: str, probe_cap: int) -> Tuple[str, List[Any]]:
+            """一天 = 一条语句 = 24 个带 LIMIT 的小时格。
+
+            `hour_bucket` 是每格自带的字面量列，只给判据回读用（哪一格被砍满），
+            `_to_record` 不认它、也不往 `EventRecord` 里带。
+
+            每格 `LIMIT` 绑的是 `hour_cap + 1`（多要一行）。**判据要的是证据不是猜测**：
+            按配额整数取，"这一小时本来只有 k 条"和"这一小时被砍到 k 条"回来的是同一个
+            形状，截断位就恒真（对照组锁抓到了这一次假红）。多要一行之后，
+            真被砍的格子会回来 k+1 条，能分开。
+            """
+            branches: List[str] = []
+            branch_params: List[Any] = []
+            for h in range(self.SCAN_HOURS):
+                hh = "%02d" % h          # 只由 range(24) 生成，不是外部输入
+                # `SELECT * FROM (…) UNION ALL …`：SQLite 不接受把带 ORDER BY/LIMIT 的
+                # 子查询**整体**加括号当作 compound 的一项（`near "(": syntax error`），
+                # 必须包成 `FROM (...)`。这一格踩过一次，6 条测试同时炸。
+                branches.append(
+                    "SELECT * FROM (SELECT '" + hh + "' AS hour_bucket, id, ts, day, room, "
+                    "entity_id, domain, action, person, old_state, new_state, attrs_json "
+                    "FROM events WHERE "
+                    + " AND ".join(where + ["day = ?", self._HOUR_EXPR + " = ?"])
+                    + order_by + " LIMIT ?)")
+                # 每个分支都自带完整 where，占位符必须按分支重复绑定（只在外层绑一次
+                # 会撞 `Incorrect number of bindings`：语句 168 个、参数 76 个）。
+                branch_params += params + [day_str, hh, probe_cap]
+            return " UNION ALL ".join(branches), branch_params
+
+        # 边界解析不出来时退回一条不分层的查询：宁可少覆盖，也不猜窗口。
+        d0: Optional[date]
+        try:
+            d0 = date.fromisoformat(start_day)
+            d1 = date.fromisoformat(end_day)
+            n_days = max(1, (d1 - d0).days + 1)
+        except (ValueError, TypeError):
+            d0 = None
+            n_days = 1
+
+        daily_limit = max(1, limit // n_days)
+        hour_cap = max(1, daily_limit // self.SCAN_HOURS)
+        all_rows: List[Dict[str, Any]] = []
+        truncated = False
+
+        if d0 is None:
+            rows = self._execute(base_sql + " AND ".join(where) + order_by + " LIMIT ?",
+                                 params + [limit])
+            all_rows = rows
+            truncated = len(rows) >= limit
+        else:
+            current = d0
+            while current <= d1 and len(all_rows) < limit:
+                day_limit = min(daily_limit, limit - len(all_rows))
+                day_hour_cap = max(1, day_limit // self.SCAN_HOURS)
+                sql, sql_params = _day_statement(current.isoformat(), day_hour_cap + 1)
+                rows = self._execute(sql, sql_params)
+                # 按小时格归位后再砍：SQLite 按分支顺序返回，但这一层不依赖那个实现细节。
+                buckets: Dict[str, List[Dict[str, Any]]] = {}
+                for row in rows:
+                    buckets.setdefault(str(row.get("hour_bucket") or ""), []).append(row)
+                day_rows: List[Dict[str, Any]] = []
+                for hh in sorted(buckets):
+                    held = buckets[hh]
+                    if len(held) > day_hour_cap:
+                        # 这一格被配额砍断（多要的那一行真的回来了）——判据只看这个证据。
+                        truncated = True
+                        held = held[:day_hour_cap]
+                    day_rows.extend(held)
+                if len(day_rows) > day_limit:
+                    # 只有 day_limit < 24（窗口跨 1250 天以上，或调用方把 max_scan 压到极小）
+                    # 才会走到这里。按小时升序截掉并如实标记截断——约束①「不新增预算」
+                    # 不认"差不多"。
+                    day_rows = day_rows[:day_limit]
+                    truncated = True
+                all_rows.extend(day_rows)
+                current += timedelta(days=1)

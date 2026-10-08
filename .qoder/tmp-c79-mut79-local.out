@@ -1,0 +1,19 @@
+腿                                    RC   读数
+M-0                                  0    对照 failed=0 20 passed in 6.55s
+L1-block-dropped                     1    该响 failed=5 5 failed, 15 passed in 6.07s
+     红在=test_blowing_up_provider_degrades_only_the_climate_block, test_climate_comparison_carries_the_measured_numbers, test_climate_comparison_is_the_legacy_block_verbatim, test_climate_comparison_reads_each_window_from_the_provider, test_missing_provider_is_a_visible_failure_not_an_absent_block
+L2-engine-reads-self-legacy          1    该响 failed=6 6 failed, 14 passed in 6.44s
+     红在=test_blowing_up_provider_degrades_only_the_climate_block, test_climate_comparison_carries_the_measured_numbers, test_climate_comparison_is_the_legacy_block_verbatim, test_climate_comparison_reads_each_window_from_the_provider, test_engine_never_touches_self_legacy, test_missing_provider_is_a_visible_failure_not_an_absent_block
+L3-hotreload-site-loses-injection    1    该响 failed=1 1 failed, 19 passed in 6.93s
+     红在=test_every_facade_construction_injects_the_climate_provider
+L4-provider-ignores-window           1    该响 failed=3 3 failed, 17 passed in 6.00s
+     红在=test_climate_comparison_carries_the_measured_numbers, test_climate_comparison_is_the_legacy_block_verbatim, test_climate_comparison_reads_each_window_from_the_provider
+L5-error-swallowed-into-empty        1    该响 failed=1 1 failed, 19 passed in 6.23s
+     红在=test_blowing_up_provider_degrades_only_the_climate_block
+L6-hand-rolled-keys                  1    该响 failed=2 2 failed, 18 passed in 6.08s
+     红在=test_climate_comparison_carries_the_measured_numbers, test_climate_comparison_is_the_legacy_block_verbatim
+L7-envelope-loses-block              1    该响 failed=1 1 failed, 19 passed in 6.79s
+     红在=test_degraded_envelope_still_carries_the_climate_block
+MUT79_COUNT=8 MUTATION_BAD=0
+SRC_UNCHANGED=True servic_SHA=a3dbd7e88b1c api.py_SHA=b9a8862c527e
+MUT79_RC=0

@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "E:\NAS\memory-agent\scripts\scan_insights_callsites.py", line 153, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "E:\NAS\memory-agent\scripts\scan_insights_callsites.py", line 134, in main
+    sigs = facade_signatures()
+  File "E:\NAS\memory-agent\scripts\scan_insights_callsites.py", line 31, in facade_signatures
+    from memory_agent.insights import InsightService
+ModuleNotFoundError: No module named 'memory_agent'

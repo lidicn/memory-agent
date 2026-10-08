@@ -1,0 +1,91 @@
+............................ssssssssss..s............................... [  3%]
+........................................................................ [  6%]
+........................................................................ [ 10%]
+........................................................................ [ 13%]
+........................................................................ [ 16%]
+........................................................................ [ 20%]
+........................................................................ [ 23%]
+.................................................ss..................... [ 26%]
+........................................................................ [ 30%]
+.......................................................................F [ 33%]
+............s..ss....................................................... [ 36%]
+........................................................................ [ 40%]
+................................................................sss..... [ 43%]
+...............sss.ss................................................... [ 46%]
+........................................................................ [ 50%]
+........................................................................ [ 53%]
+........................................................................ [ 57%]
+........................................................................ [ 60%]
+........................................................................ [ 63%]
+........................................................................ [ 67%]
+........................................................................ [ 70%]
+........................................................................ [ 73%]
+........................................................................ [ 77%]
+.................................................................F...... [ 80%]
+........................................................................ [ 83%]
+........................................................................ [ 87%]
+.....................................s.................................. [ 90%]
+........................................................................ [ 93%]
+......................................................................ss [ 97%]
+..........................................................               [100%]
+================================== FAILURES ===================================
+__________________ test_baseline_shrinks_when_you_fix_things __________________
+
+    def test_baseline_shrinks_when_you_fix_things():
+        """修好了却不删基线条目 = 红。这条测试存在的唯一理由是防止基线肥化。"""
+        report = _report()
+>       assert not report.stale, (
+            f"{len(report.stale)} 条基线条目已不再命中，请从 `.gates-baseline.txt` 删掉：\n"
+            + "\n".join(report.stale)
+        )
+E       AssertionError: 5 条基线条目已不再命中，请从 `.gates-baseline.txt` 删掉：
+E         src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_alert
+E         src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_camera
+E         src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_light
+E         src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_tts
+E         src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_webhook
+E       assert not ('src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_alert', 'src/memory_agent/rule_engine.py#fake...-const#ActiveRuleEngine._action_tts', 'src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_webhook')
+E        +  where ('src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_alert', 'src/memory_agent/rule_engine.py#fake...-const#ActiveRuleEngine._action_tts', 'src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_webhook') = Report(active=(), baselined=(Violation(rule='except-pass-broad', rel_path='src/memory_agent/acp_server.py', line=155, ...eRuleEngine._action_webhook'), counts=(('except-pass-broad', 28), ('fake-ok-const', 166), ('swallow-and-claim-ok', 7))).stale
+
+tests\test_quality_gates.py:77: AssertionError
+_______________ test_stub_claims_gate_green_and_sees_the_stubs ________________
+
+    def test_stub_claims_gate_green_and_sees_the_stubs():
+        gate = _load("scan_stub_claims_success")
+        rows = gate.scan(_SRC)
+>       assert len(rows) >= 5, "只扫到 %d 个桩 = 量具失效，不是通过" % len(rows)
+E       AssertionError: 只扫到 0 个桩 = 量具失效，不是通过
+E       assert 0 >= 5
+E        +  where 0 = len([])
+
+tests\test_vma_phase2_claims_gauge.py:75: AssertionError
+=========================== short test summary info ===========================
+SKIPPED [1] tests\contract\test_ma_db_contract.py:281: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:291: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:303: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:314: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:328: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:339: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:349: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:362: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:372: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:403: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:440: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\test_mcp_surface_parity.py:213: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+SKIPPED [1] tests\test_mcp_surface_parity.py:241: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+SKIPPED [1] tests\test_rounds11_19_ma25_35_fixes.py:108: 本机 mcp SDK 过旧，取不到已注册工具函数（容器内有，权威门会跑）
+SKIPPED [1] tests\test_rounds11_19_ma25_35_fixes.py:198: 本机 mcp 为旧 SDK，取不到已注册工具函数（容器权威档实跑）
+SKIPPED [1] tests\test_rounds11_19_ma25_35_fixes.py:217: 本机 mcp 为旧 SDK，取不到已注册工具函数（容器权威档实跑）
+SKIPPED [1] tests\test_tool_schema.py:92: MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查
+SKIPPED [1] tests\test_tool_schema.py:110: MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查
+SKIPPED [1] tests\test_tool_schema.py:136: MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查
+SKIPPED [1] tests\test_unified_view.py:71: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:79: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:94: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:190: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:198: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_vma_r7_seam_fixes.py:358: could not import 'chromadb': No module named 'chromadb'
+SKIPPED [1] tests\test_vma_task64_behavior_predictor.py:242: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+SKIPPED [1] tests\test_vma_task64_behavior_predictor.py:259: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+2 failed, 2117 passed, 27 skipped in 224.04s (0:03:44)
+SUITE_LOCAL_RC=1

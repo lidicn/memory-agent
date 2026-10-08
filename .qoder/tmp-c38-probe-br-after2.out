@@ -1,0 +1,59 @@
+[MCP] 未安装 mcp SDK（cannot import name 'MCPServer' from 'mcp.server' (C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\site-packages\mcp\server\__init__.py)）。请在 Dockerfile 中加入 'mcp>=2.0' 并重新 docker compose build 后再启动。
+--- P1 /api/behaviors/bad-cases limit 口径（表内 7 条）
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpl9hmz6av.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P1a limit=abc -> 400 b'{"ok":false,"error":"limit \xe5\xbf\x85\xe9\xa1\xbb\xe6\x98\xaf\xe6\x95\xb4\xe6\x95\xb0"}'
+P1b 对照 limit=2 -> count= 2
+P1c limit=-1 -> 400 count=None （SQLite 的 LIMIT -1 = 无上限：比 limit=2 给得多、又不受 100 夹紧约束）
+P1d limit=0 -> 400 b'{"ok":false,"error":"limit \xe4\xb8\x8d\xe5\xbe\x97\xe5\xb0\x8f\xe4\xba\x8e 1"}'
+--- P2 事件循环：DB / CPU 是否离开主线程
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmphofi61sq.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P2a home-profile -> 200
+P2a2 阻塞期间心跳 tick：3（handler 内有 50ms 同步占用；卸载到线程则应 >0）
+P2b 线程记录： [('build_profile', 'asyncio_0'), ('list_agent_memories', 'asyncio_0')]
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpeqftjbtl.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P2c predictions -> 200 线程记录： [('predict_arrival_time', 'asyncio_0'), ('predict_daily_routine', 'asyncio_0')]
+--- P3 数字入参守卫缺口（days 有守卫，其余没有）
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpptp1ri3z.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P3 behaviors_mine_process {'min_variant_support': 'abc'} -> 400
+P3 behaviors_mine_process {'bucket_sec': 'abc'} -> 400
+P3 behaviors_mine_process {'min_cases_per_room': 'abc'} -> 400
+P3 behaviors_mine_process {'min_case_events': 'abc'} -> 400
+P3 behaviors_mine_process {'min_variant_support': 0, 'bucket_sec': 0, 'days': 3} -> 400
+P3 behaviors_mine_process {'bucket_sec': 0, 'days': 3} -> 200
+P3 behaviors_mine_drift {'min_score': 0.0, 'days': 14} -> 200
+P3 behaviors_mine_drift {'window_size': 0, 'days': 14} -> 400
+P3 behaviors_audit_rule_recall {'min_near_miss': 0} -> 400
+P3 behaviors_audit_rule_recall {'min_near_miss': 'abc'} -> 400
+P3 behaviors_mine_drift {'window_size': 'abc'} -> 400
+P3 behaviors_mine_drift {'min_score': 'abc'} -> 400
+P3 behaviors_mine_process {'days': 'abc'} -> 400
+P3y 收到的值（证明 0 被静默改成默认档）：
+    mine_process kw= {'persist': True, 'emit_rules': True, 'min_variant_support': None, 'bucket_sec': 0, 'min_cases_per_room': None, 'min_case_events': None}
+    mine_drift kw= {'bucket_sec': None, 'window_size': None, 'min_score': 0.0, 'persist': True}
+--- P4 causal_analyze 的 lookback：一个数两种口径
+P4a clamp_days(10**9) = 3650  而 search_candidate_causes 的 half_life 用的是原值：lookback/2.0 = 500000000.0
+P4b 317: delta = timedelta(days=clamp_days(lookback_days))
+P4b 325: half_life = lookback_days / 2.0
+P4b 364: prox = _temporal_proximity(action_dts.get(action, []), cdt, half_life)
+P4b 385: prox = _temporal_proximity(sched_dts, cdt, half_life)
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpfv4bgchx.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P4c days/lookback 极值 -> 400 b'{"ok":false,"error":"days \xe5\xbf\x85\xe9\xa1\xbb\xe5\x9c\xa8 1-3650 \xe4\xb9\x8b\xe9\x97\xb4"}'
+--- P5 causal_counterfactual 的 days 极值（改前回显 1e9 天窗口、实算 3650 天）
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmp1jq9ka8p.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P5 person=Member0&event_type=tv_on&days=1000000000 -> 400 b'{"ok":false,"error":"days \xe5\xbf\x85\xe9\xa1\xbb\xe5\x9c\xa8 1-3650 \xe4\xb9\x8b\xe9\x97\xb4"}'
+P5 person=Member0&event_type=tv_on&days=0 -> 400 b'{"ok":false,"error":"days \xe5\xbf\x85\xe9\xa1\xbb\xe5\x9c\xa8 1-3650 \xe4\xb9\x8b\xe9\x97\xb4"}'
+P5 person=Member0&event_type=tv_on&days=abc -> 400 b'{"ok":false,"error":"days \xe5\xbf\x85\xe9\xa1\xbb\xe6\x98\xaf\xe6\x95\xb4\xe6\x95\xb0"}'
+P5 person=Member0&event_type=tv_on&days=30 -> 400 b'{"ok":false,"error":"\xe4\xba\x8b\xe4\xbb\xb6\xe6\x95\xb0\xe6\x8d\xae\xe4\xb8\x8d\xe8\xb6\xb3\xef\xbc\x880 \xe6\x9d\xa1 < 14 \xe5\xa4\xa9\xe6\x9c\x80\xe4\xbd\x8e\xe8\xa6\x81\xe6\xb1\x82\xef\xbc\x89"}'
+PROBE_DONE

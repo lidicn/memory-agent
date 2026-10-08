@@ -1,0 +1,17 @@
+NOTHING 什么都不改档 -> RC=0 FAILED=0 | 49 passed in 34.35s
+M1 list_memories 退回协程直调（agent_memory 面） -> RC=1 FAILED=7 咬住了 restored=OK | 7 failed, 42 passed in 28.58s
+M2 member_list 退回协程直调（store 面） -> RC=1 FAILED=8 咬住了 restored=OK | 8 failed, 41 passed in 24.79s
+M3 events_face 退回协程直调（vision 面） -> RC=1 FAILED=5 咬住了 restored=OK | 5 failed, 44 passed in 36.88s
+M4 signal list_rules 退回协程直调 -> RC=1 FAILED=5 咬住了 restored=OK | 5 failed, 44 passed in 35.79s
+M5 mcp list_audit 退回协程直调 -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 43 passed in 29.90s
+M6 llm_cache_clear 退回协程直调 -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 43 passed in 30.30s
+M7 外观档案的归一化不再进线程（两跳合一被拆掉） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 47 passed in 34.60s
+M8 insight_feedback 的第一步取数回到协程里 -> RC=1 FAILED=8 咬住了 restored=OK | 8 failed, 41 passed in 29.72s
+M9 list_audit 的上限摘掉（1001 会下推到 SQLite） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 34.85s
+M10 list_audit 的下界放松到 0（0 档不再被拒） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 35.62s
+M11 member_tag 的 confidence 上界摘掉（1.5 一路写进库） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 35.33s
+M12 给内存 token 校验加线程跳转（#51 裁定被推翻） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 34.68s
+M13 量具身体门摘掉：叫 store 一律判红（纯内存也响） -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 43 passed in 25.84s
+M14 量具一层口径失效（真 SQL 也要等展开才响） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 33.97s
+M15 subsys 面退化：不再按属性解析到类 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 36.53s
+MUT_COUNT=15 MUTATION_BAD=0

@@ -1,0 +1,41 @@
+[MCP] 未安装 mcp SDK（cannot import name 'MCPServer' from 'mcp.server' (C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\site-packages\mcp\server\__init__.py)）。请在 Dockerfile 中加入 'mcp>=2.0' 并重新 docker compose build 后再启动。
+--- P1 /api/behaviors/bad-cases limit 口径
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpxpsr9w_a.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P1a limit=abc -> 未捕获 ValueError: invalid literal for int() with base 10: 'abc'
+P1b limit=-1 -> 200 count=6 （表里共 6 条；上限本应是 100，但 0/负数没有夹紧）
+P1c limit=0 -> 0
+--- P2 事件循环：DB / CPU 是否离开主线程
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpxu2jr0sc.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P2a home-profile -> 200
+P2a2 阻塞期间心跳 tick：0（handler 内有 50ms 同步占用；卸载到线程则应 >0）
+P2b 线程记录： [('build_profile', 'MainThread'), ('list_agent_memories', 'MainThread')]
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpp56t2688.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P2c predictions -> 200 线程记录： [('predict_arrival_time', 'MainThread'), ('predict_daily_routine', 'MainThread')]
+--- P3 数字入参守卫缺口（days 有守卫，其余没有）
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpc1enyhp5.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P3 behaviors_mine_process {'min_variant_support': 'abc'} -> 未捕获 AttributeError: 'NoneType' object has no attribute 'mine_process'
+P3 behaviors_mine_process {'bucket_sec': 'abc'} -> 未捕获 AttributeError: 'NoneType' object has no attribute 'mine_process'
+P3 behaviors_audit_rule_recall {'min_near_miss': 'abc'} -> 未捕获 AttributeError: 'NoneType' object has no attribute 'audit_rule_recall'
+P3 behaviors_mine_drift {'window_size': 'abc'} -> 未捕获 AttributeError: 'NoneType' object has no attribute 'mine_drift'
+P3 behaviors_mine_drift {'min_score': 'abc'} -> 未捕获 AttributeError: 'NoneType' object has no attribute 'mine_drift'
+P3 behaviors_mine_process {'days': 'abc'} -> 400 b'{"ok":false,"error":"days \xe5\xbf\x85\xe9\xa1\xbb\xe6\x98\xaf\xe6\x95\xb4\xe6\x95\xb0"}'
+P3z min_variant_support=0 的落点：int(0 or 3) = 3
+--- P4 causal_analyze 的 lookback：一个数两种口径
+P4a clamp_days(10**9) = 3650  而 search_candidate_causes 的 half_life 用的是原值：lookback/2.0 = 500000000.0
+P4b 317: delta = timedelta(days=clamp_days(lookback_days))
+P4b 325: half_life = lookback_days / 2.0
+P4b 364: prox = _temporal_proximity(action_dts.get(action, []), cdt, half_life)
+P4b 385: prox = _temporal_proximity(sched_dts, cdt, half_life)
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpx0s4zavw.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P4c days/lookback 极值 -> 400 b'{"ok":false,"error":"\xe4\xba\x8b\xe4\xbb\xb6\xe6\x95\xb0\xe6\x8d\xae\xe4\xb8\x8d\xe8\xb6\xb3\xef\xbc\x880 \xe6\x9d\xa1 < 14 \xe5\xa4\xa9\xe6\x9c\x80\xe4\xbd\x8e\xe8\xa6\x81\xe6\xb1\x82\xef\xbc\x89"}'
+PROBE_DONE

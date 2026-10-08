@@ -1,0 +1,16 @@
+FILES=333
+TAR_RC=0 SIZE=2144591
+SCP_RC=0
+STAGE_RC=0
+SYNC_RC=0
+GATE_RC=1
+[gates] ❌ 基线文件缺失：/tmp/c6snap20261004a/.gates/pyflakes-baseline.txt —— 需要重建请显式加 --bless，不要靠删文件放行
+SUITE_RC=0
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_signal_learning.py:173: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+SKIPPED [1] tests/test_signal_learning.py:216: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+SKIPPED [1] tests/test_signal_learning.py:257: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+SKIPPED [1] tests/test_vma123_pyflakes_zero.py:32: 非仓库根运行，取不到 /tmp/c6snap20261004a/.gates/pyflakes-baseline.txt；由 CI 与本地口径负责拦
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:198: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1182 passed, 14 skipped in 176.87s (0:02:56)

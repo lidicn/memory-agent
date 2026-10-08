@@ -1,0 +1,26 @@
+NOTHING 什么都不改档 -> RC=0 FAILED=0 | 67 passed, 2 skipped in 13.24s
+M1 R5 封顶退回改前的 min-by-index（会松档） -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 64 passed, 2 skipped in 10.72s
+M2 R6 封顶退回改前的 min-by-index -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 7.68s
+M3 R4 退回直接赋值覆盖 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 6.43s
+M4 R3 封顶失效（改回 HIGH 即不封顶） -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 63 passed, 2 skipped in 10.97s
+M5 R2 封顶失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 8.31s
+M6 _more_severe 取反（判据本身坏掉） -> RC=1 FAILED=11 咬住了 restored=OK | 11 failed, 56 passed, 2 skipped in 13.23s
+M7 prior_boost 的 k<=1 门失效 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 65 passed, 2 skipped in 5.78s
+M8 prior_boost 的样本量门失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 6.16s
+M9 log-odds 裁剪失效 -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 64 passed, 2 skipped in 4.25s
+M10 消除法不再限置信度上限 0.65 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 3.78s
+M11 房间为空的那一档失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 5.39s
+M12 时序衰减整体失效（年龄不再降权） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 65 passed, 2 skipped in 4.35s
+M13 VOTE 档不抬升 MANUAL 权重 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 4.98s
+M14 MCP 侧 weekday 边界守卫失效 -> RC=0 FAILED=0 没咬住 restored=OK | 67 passed, 2 skipped in 3.73s
+M15 weekday 过滤失效（改前传 99 也不报错那一族） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 65 passed, 2 skipped in 4.64s
+M16 persons 为 dict 的那一代形状不认 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 4.38s
+M17 house_dt 的短串门放宽（残缺串被当日期） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 65 passed, 2 skipped in 4.49s
+M18 偏离严重度写死 mild -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 63 passed, 2 skipped in 7.48s
+M19 带内判据只看下界（早退也被判正常） -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 63 passed, 2 skipped in 5.91s
+M20 同窗口去重失效（集合改列表 ⇒ 频次按事件计） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 5.05s
+M21 有人给 identity_fusion 接线（零调用者锁的负控） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 65 passed, 2 skipped in 4.23s
+M22 score_raw 的分母改成按记录数（重复上报不再放大） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 7.10s
+M23 偏离判据补上跨午夜环形距离（那条现状登记失效） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 5.84s
+M24 person 形参开始影响判档 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 66 passed, 2 skipped in 4.80s
+MUT_COUNT=24 MUTATION_BAD=1

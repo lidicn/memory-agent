@@ -1,0 +1,23 @@
+### 证据1 debug_routes _CONV 无界增长 + 驱逐不同步 ###
+MCP 写工具完整性断言通过：未发现疑似写工具漏登记
+=== 初始 ===
+  _MAX_RUNS=200  _ZOMBIE_RUN_TTL_S=600
+  _RUNS=0  _CONV=0
+
+=== 模拟 5000 个不同 conversation_id 的调试会话依次进入 ===
+  _RUNS =    200   ← 上限 200 生效 ✅（有淘汰）
+  _CONV =   5000   ← 无任何上限 ❌（无淘汰、无 TTL）
+  内存 基线=0KB 当前=5502KB 峰值=5505KB
+  净增长 = 5.37 MB
+
+=== 驱逐不同步验证 ===
+  被驱逐出 _RUNS 的 run 数        = 4800
+  其 conversation 仍驻留 _CONV 的 = 4800  (100%)
+  >>> _register() 只 pop _RUNS，从不清理 _CONV（debug_routes.py:117-130）
+
+=== 单 conversation 内部单调增长 ===
+  10 轮后 messages 条数: 1 -> 21  （无上下文裁剪）
+
+=== 附带：DebugRun.history 也持有完整 SSE 文本 ===
+  50 次 emit 后 history 条数=50  字节≈6700
+  >>> history 同样无上限，随 run 内事件数增长

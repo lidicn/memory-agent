@@ -1,0 +1,701 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""历史行为门面层
+
+重构说明
+--------
+原实现把每一条事件单独 ``collection.add()`` 进 Chroma，一次调用 =
+一次 HTTP 请求 + 一次本地 ONNX 向量计算。上千实体回填几天数据会产生
+数万条事件，耗时以小时计 —— 这是「采集不可用」的深层原因之一。
+
+现在：
+* **写**：事件批量落 SQLite（真正的主存储），Chroma 仅按「天 × 房间」
+  镜像少量聚合摘要文档，供语义检索，且失败不影响采集主流程。
+* **读**：区间查询、行为摘要、统计全部走 SQLite 索引。
+
+对外方法签名保持不变（MCP 工具与 API 均依赖），返回结构亦不变。
+"""
+
+import time
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from .store import TELEMETRY_DOMAINS, Store, make_event_id, now_local, parse_ts
+
+if TYPE_CHECKING:
+    import numpy as np  # 仅用于 __call__ 的字符串注解；运行时按需在函数内导入
+
+
+class EmbeddingEndpointError(RuntimeError):
+    """嵌入端点调用失败（非 2xx / 不可达）。
+
+    刻意继承 `RuntimeError`（单参构造）而不是往外抛 `httpx.HTTPStatusError`：
+    chromadb 0.5.23 的 `CollectionCommon._validate_and_prepare_*` 兜底包装是
+    `raise type(e)(msg).with_traceback(...)`（`CollectionCommon.py:93`），
+    而 httpx ≥0.27 把 `HTTPStatusError.__init__` 改成关键字专用
+    （`(message, *, request, response)`）——单次参数的重建直接抛
+    `TypeError: HTTPStatusError.__init__() missing 2 required keyword-only arguments`，
+    真实状态码在"重新抛出"这一步就被吞了（生产 `conflict_scan` 只打出这行 TypeError）。
+    换成单参可构造的类，chroma 的包装照常工作，状态码留在消息里。
+    """
+
+
+# DCD 20261004 裁 Q1=B：未配置外部嵌入端点时向量面不可用，不回退本地 MiniLM。
+# 用哨兵对象而非 None：None 会被调用方省略 kwarg 静默落到 chroma 默认 MiniLM（384 维），
+# 而生产集合是外部网关 1024 维，且 MiniLM 在容器内运行时 PermissionError（/.cache 不可写）。
+# 哨兵让调用方能显式判定"不可用"并跳过集合创建，同时不阻断进程启动。
+_EMBEDDING_UNAVAILABLE = object()
+
+
+class _OpenAICompatEmbeddingFunction:
+    """OpenAI 兼容 ``/v1/embeddings`` 嵌入函数。
+
+    用于接入第三方嵌入端点（SiliconFlow bge-m3 / Qwen3-Embedding / new-api 网关），
+    提升中文语义检索质量。未配置时向量面不可用（DCD 20261004 Q1=B：不回退本地 MiniLM）。
+    """
+
+    def __init__(self, base_url: str, model: str, api_key: str = ""):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+
+    def __call__(self, input: list) -> "np.ndarray":
+        import httpx
+        import numpy as np
+
+        # chroma 的 EmbeddingFunction 协议期望 numpy 数组（与默认 MiniLM 一致）。
+        # 早期版本此处返回纯 Python list，导致下游对嵌入结果调用 .tolist() 时
+        # 抛 'list' object has no attribute 'tolist'。统一返回 float32 的 ndarray。
+        if isinstance(input, str):
+            input = [input]
+        texts = [t if isinstance(t, str) else str(t) for t in input]
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        body = {"model": self.model, "input": texts}
+        try:
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(f"{self.base_url}/embeddings", json=body, headers=headers)
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+        except httpx.HTTPStatusError as exc:
+            # 状态码留在消息里，异常类换成单参可构造的（见 EmbeddingEndpointError 文档）；
+            # 端点地址与凭据不进消息，日志可能被反馈包带走。
+            raise EmbeddingEndpointError(
+                f"embedding 端点返回 HTTP {exc.response.status_code}（model={self.model}）"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise EmbeddingEndpointError(
+                f"embedding 端点不可达: {type(exc).__name__}（model={self.model}）"
+            ) from exc
+        # 按 index 排序，保证与输入顺序一致（部分网关不保序）
+        data = sorted(data, key=lambda d: d.get("index", 0))
+        return np.array([d["embedding"] for d in data], dtype=np.float32)
+
+
+def resolve_embedding_function(config):
+    """按配置解析向量嵌入函数；**HistoryManager 与 PatternManager 必须走这一个口子**。
+
+    配置了外部 embedding 端点（``embedding_base_url``+``embedding_model``）
+    则用 OpenAI 兼容接口；否则返回 ``_EMBEDDING_UNAVAILABLE`` 哨兵（DCD 20261004 Q1=B：
+    不回退本地 MiniLM，未配端点时向量面不可用）。
+
+    为什么不许回退 MiniLM（2026-10-04 容器实测）：`patterns.py` 原先自己
+    `get_or_create_collection("behavior_patterns")` **不传 embedding_function**，
+    于是它落进 chroma 默认 MiniLM（384 维），而生产两个集合
+    （`behavior_history` / `agent_memory`）实测都是外部网关的 **1024 维**——
+    同一套 chroma 里两套维度，且 MiniLM 在本容器运行时**不可用**：
+    `onnx_mini_lm_l6_v2.py:219` 走到 `os.makedirs('/.cache')` 直接
+    `PermissionError: [Errno 13] Permission denied: '/.cache'`（运行时用户 10001，HOME 不可写，
+    镜像里 Dockerfile 那次 root 预热落在 root 的缓存目录，运行时读不到）。
+    不同源 = 模式库的语义路一接上就是静默死路。
+
+    为什么用哨兵而非 None：None 会被调用方省略 kwarg 静默落到 chroma 默认 MiniLM，
+    哨兵让调用方能显式判定"不可用"并跳过集合创建，同时不阻断进程启动。
+
+    ⚠️ 换嵌入模型会改维度，必须配套跑 `scripts/reindex_embeddings.py` 重建集合。
+    """
+    base = (getattr(config, "embedding_base_url", "") or "").strip()
+    model = (getattr(config, "embedding_model", "") or "").strip()
+    if base and model:
+        key = (getattr(config, "embedding_api_key", "") or "").strip()
+        return _OpenAICompatEmbeddingFunction(base, model, key)
+    # DCD 20261004 Q1=B：未配置外部端点 ⇒ 向量面不可用，不回退本地 MiniLM。
+    print("[Vector] 未配置嵌入端点 ⇒ 向量面不可用（不回退本地 MiniLM）")
+    return _EMBEDDING_UNAVAILABLE
+
+
+class HistoryManager:
+    """行为历史门面：SQLite 主存储 + Chroma 语义索引。"""
+
+    COLLECTION_NAME = "behavior_history"
+    AGENT_COLLECTION = "agent_memory"  # Agent 参与式写回记忆（命名空间隔离）
+    #: 连接失败后的重试冻结时长：启动竞争不该决定进程一生的降级状态（第七轮 CRITICAL-2）。
+    _CHROMA_RETRY_SECONDS = 30.0
+
+    def __init__(self, config, store: Optional[Store] = None):
+        self.config = config
+        self.store = store or Store(config.db_path, config.tz_offset_hours)
+        self._client = None
+        self._collection = None
+        self._chroma_error: str = ""
+        self._chroma_retry_after: float = 0.0
+        self._embed_fn_cache = None
+        self._embed_resolved = False
+
+    # ── Chroma（可选） ───────────────────────────────────────────────────
+
+    def _embedding_function(self):
+        """返回嵌入函数（解析逻辑与 PatternManager 同源，见 `resolve_embedding_function`）。"""
+        if self._embed_resolved:
+            return self._embed_fn_cache
+        self._embed_fn_cache = resolve_embedding_function(self.config)
+        self._embed_resolved = True
+        return self._embed_fn_cache
+
+    @property
+    def collection(self):
+        """惰性连接向量库。不可用时返回 None，绝不让采集或启动失败。
+
+        第七轮审计 CRITICAL-2：失败缓存原本**永久**生效（`_chroma_tried and _chroma_error`
+        直接 return None）。MA 与 chroma 在 compose 里是并列服务、启动顺序不保证，
+        于是「首次那一撞」把整个进程生命周期钉死在无向量降级态，且日志只有启动期那一行。
+        现在失败只冻结 `_CHROMA_RETRY_SECONDS`，到期后允许再试——服务恢复即自愈。
+        """
+        if self._collection is not None:
+            return self._collection
+        if self._chroma_error and time.monotonic() < self._chroma_retry_after:
+            return None
+        # DCD 20261004 Q1=B：未配置嵌入端点时向量面不可用，跳过集合创建。
+        # 不阻断进程启动——采集主流程走 SQLite，语义检索降级为不可用。
+        embed_fn = self._embedding_function()
+        if embed_fn is _EMBEDDING_UNAVAILABLE:
+            self._chroma_error = "embedding_endpoint_not_configured"
+            self._chroma_retry_after = time.monotonic() + self._CHROMA_RETRY_SECONDS
+            return None
+        try:
+            import chromadb
+
+            self._client = chromadb.HttpClient(
+                host=self.config.chroma_host, port=self.config.chroma_port
+            )
+            self._collection = self._client.get_or_create_collection(
+                name=self.COLLECTION_NAME,
+                metadata={"description": "家庭行为历史摘要"},
+                embedding_function=embed_fn,
+            )
+            self._chroma_error = ""
+            self._chroma_retry_after = 0.0
+            print(f"[History] 向量库已连接: {self.COLLECTION_NAME}")
+        except Exception as exc:
+            self._chroma_error = str(exc)
+            self._collection = None
+            # 0.0 初值是「还没冻结」而不是「上次失败时刻」：单调时钟从 0 起算，
+            # 用 0.0 当哨兵在这里方向正确（首帧即可尝试），不会重现 P1-1 那种
+            # 「冷却期比进程 uptime 长就永不首触发」的形态。
+            self._chroma_retry_after = time.monotonic() + self._CHROMA_RETRY_SECONDS
+            print(f"[History] 向量库不可用（{self._CHROMA_RETRY_SECONDS:.0f}s 后重试）: {exc}")
+        return self._collection
+
+    @property
+    def agent_collection(self):
+        """Agent 记忆专用集合（命名空间隔离）。不可用时返回 None，绝不抛错。
+
+        复用 ``collection`` 已建立的 chroma client；若 chroma 整体不可用，
+        ``self._client`` 为 None，这里同样返回 None。
+        """
+        if self._collection is None:
+            _ = self.collection  # 触发一次连接，建立 self._client
+        if self._client is None:
+            return None
+        try:
+            return self._client.get_or_create_collection(
+                name=self.AGENT_COLLECTION,
+                metadata={"description": "Agent 参与式写回记忆"},
+                embedding_function=self._embedding_function(),
+            )
+        except Exception as exc:
+            print(f"[History] agent_memory 集合不可用: {exc}")
+            return None
+
+    @property
+    def arena_collection(self):
+        """竞技场题目库专用集合（命名空间隔离）。不可用时返回 None，绝不抛错。
+
+        复用 ``collection`` 已建立的 chroma client；题目去重向量索引落在这里，
+        与行为历史（behavior_history）/ Agent 记忆（agent_memory）各自独立。
+        """
+        if self._collection is None:
+            _ = self.collection  # 触发一次连接，建立 self._client
+        if self._client is None:
+            return None
+        try:
+            return self._client.get_or_create_collection(
+                name="arena_titles",
+                metadata={"description": "竞技场题目库（向量去重）"},
+                embedding_function=self._embedding_function(),
+            )
+        except Exception as exc:
+            print(f"[History] arena_titles 集合不可用: {exc}")
+            return None
+
+    def chroma_status(self) -> Dict[str, Any]:
+        col = self.collection
+        if col is None:
+            return {
+                "connected": False,
+                "error": self._chroma_error or "未连接",
+                "host": f"{self.config.chroma_host}:{self.config.chroma_port}",
+            }
+        try:
+            return {
+                "connected": True,
+                "host": f"{self.config.chroma_host}:{self.config.chroma_port}",
+                "documents": col.count(),
+            }
+        except Exception as exc:
+            return {"connected": False, "error": str(exc)}
+
+    def embedding_status(self) -> Dict[str, Any]:
+        """嵌入模型状态：未配置 / 可达性 + 维度。供 /api/health 暴露。"""
+        base = (getattr(self.config, "embedding_base_url", "") or "").strip()
+        model = (getattr(self.config, "embedding_model", "") or "").strip()
+        if not base or not model:
+            return {
+                "configured": False,
+                "reason": "未配置 embedding 端点 ⇒ 向量面不可用（不回退本地 MiniLM）",
+            }
+        try:
+            ef = self._embedding_function()
+            vec = ef(["健康检查探针：书房 空调 开启"])
+            # vec 可能是 list 或 numpy ndarray
+            if vec is None or len(vec) == 0:
+                dim = 0
+            else:
+                first = vec[0]
+                # numpy ndarray 或 list 都可以取 len
+                dim = len(first) if first is not None else 0
+            return {"configured": True, "base_url": base, "model": model, "dimension": dim}
+        except Exception as exc:
+            return {
+                "configured": True,
+                "base_url": base,
+                "model": model,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    def chroma_selftest(self, host=None, port=None) -> Dict[str, Any]:
+        """向量库端到端自检：写入探针 → 语义检索 → 清理。
+
+        只查 ``count()`` 说明不了向量库「真的在工作」—— 连接得上但写不进、
+        或写得进但检索不出，都是常见故障。这里跑一次完整往返，
+        把每一步的耗时和结果都摊开给用户看。
+
+        ``host`` / ``port`` 可选：不传则用运行时配置；传入则用前端表单里的
+        当前值（还没保存也能先测）。无论是否传入，都使用**临时 client**，
+        绝不会被运行时惰性连接的失败缓存（``_chroma_error``）卡死——
+        这正是之前「测试按钮没用」的根因：首次连失败被记住后，``self.collection``
+        永远返回 None，``chroma_selftest`` 也永远走 ``col is None`` 分支直接失败。
+        """
+        import chromadb
+        import time
+        import uuid
+
+        host = host or self.config.chroma_host
+        port = port or self.config.chroma_port
+        steps: List[Dict[str, Any]] = []
+
+        def step(name: str, fn):
+            begin = time.perf_counter()
+            try:
+                detail = fn()
+                steps.append(
+                    {
+                        "step": name,
+                        "ok": True,
+                        "ms": round((time.perf_counter() - begin) * 1000, 1),
+                        "detail": detail or "",
+                    }
+                )
+                return True
+            except Exception as exc:
+                steps.append(
+                    {
+                        "step": name,
+                        "ok": False,
+                        "ms": round((time.perf_counter() - begin) * 1000, 1),
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                return False
+
+        # 临时 client：隔离运行时惰性连接的失败缓存，确保测试永远用最新参数重试
+        try:
+            client = chromadb.HttpClient(host=host, port=port)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "connected": False,
+                "host": f"{host}:{port}",
+                "error": str(exc),
+                "steps": [
+                    {
+                        "step": "连接向量库",
+                        "ok": False,
+                        "ms": 0,
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                ],
+                "hint": "确认 chroma 容器已启动，且 chroma_host / chroma_port 配置正确",
+            }
+
+        step("连接向量库", lambda: f"{host}:{port}")
+
+        # DCD 20261004 Q1=B：自检也不许成为 MiniLM 的落点。
+        # 这里原先不传 embedding_function，未配端点时集合会静默落到 chroma 默认
+        # MiniLM（本容器运行时因 `/.cache` 不可写根本用不了），自检于是「因为错误的
+        # 原因失败」。未配端点就直接判定向量面不可用，不再建集合。
+        embed_fn = self._embedding_function()
+        if embed_fn is _EMBEDDING_UNAVAILABLE:
+            steps.append(
+                {
+                    "step": "解析嵌入端点",
+                    "ok": False,
+                    "ms": 0,
+                    "detail": "未配置 embedding_base_url / embedding_model ⇒ 向量面不可用"
+                    "（不回退本地 MiniLM）",
+                }
+            )
+            return {
+                "ok": False,
+                "connected": False,
+                "host": f"{host}:{port}",
+                "error": "embedding_endpoint_not_configured",
+                "steps": steps,
+                "summary": "未配置嵌入端点 ⇒ 向量面不可用，请先填 embedding_base_url 与 embedding_model",
+                "hint": "向量面不再回退本地 MiniLM（DCD 20261004 Q1=B）；配置外部嵌入端点后重试",
+            }
+
+        try:
+            col = client.get_or_create_collection(
+                name=self.COLLECTION_NAME,
+                metadata={"description": "家庭行为历史摘要"},
+                embedding_function=embed_fn,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "connected": False,
+                "host": f"{host}:{port}",
+                "error": str(exc),
+                "steps": steps,
+                "hint": "连接成功但无法获取集合，可能是 chroma 版本不兼容或服务异常",
+            }
+
+        probe_id = f"__selftest__{uuid.uuid4().hex[:12]}"
+        marker = uuid.uuid4().hex[:8]
+        probe_text = f"Memory Agent向量库自检探针 {marker}：书房 空调 开启"
+        before = 0
+        hit_id = ""
+
+        def _count():
+            nonlocal before
+            before = col.count()
+            return f"当前文档数 {before}"
+
+        ok_all = step("读取文档数", _count)
+        ok_all &= step(
+            "写入探针文档",
+            lambda: col.add(
+                ids=[probe_id],
+                documents=[probe_text],
+                metadatas=[{"selftest": True, "marker": marker}],
+            )
+            or f"id={probe_id}",
+        )
+
+        def _query():
+            nonlocal hit_id
+            res = col.query(query_texts=["书房空调自检探针"], n_results=3)
+            ids = (res.get("ids") or [[]])[0]
+            hit_id = probe_id if probe_id in ids else (ids[0] if ids else "")
+            if probe_id not in ids:
+                raise RuntimeError(f"检索未命中刚写入的探针，返回 ids={ids}")
+            return f"命中 {len(ids)} 条，探针排名第 {ids.index(probe_id) + 1}"
+
+        ok_all &= step("语义检索探针", _query)
+        step("清理探针", lambda: col.delete(ids=[probe_id]) or "已删除")
+
+        return {
+            "ok": ok_all,
+            "connected": True,
+            "host": f"{host}:{port}",
+            "collection": self.COLLECTION_NAME,
+            "documents": before,
+            "mirror_enabled": bool(getattr(self.config, "chroma_mirror", True)),
+            "steps": steps,
+            "summary": (
+                f"读写检索全部通过，集合 {self.COLLECTION_NAME} 现有 {before} 条文档"
+                if ok_all
+                else "存在失败步骤，请看 steps 明细"
+            ),
+        }
+
+    def reset_chroma(self) -> None:
+        self._client = None
+        self._collection = None
+        self._chroma_error = ""
+        self._chroma_retry_after = 0.0
+        self._embed_fn_cache = None
+        self._embed_resolved = False
+
+    # ── 写入 ─────────────────────────────────────────────────────────────
+
+    def add_events(self, events: List[Dict[str, Any]]) -> int:
+        """批量写入事件（采集主路径）。返回写入条数。"""
+        if not events:
+            return 0
+        written = self.store.insert_events(events)
+        days = {e.get("day") or str(e.get("ts", ""))[:10] for e in events}
+        self.store.recount_days([d for d in days if d])
+        return written
+
+    def add_event(self, event: Dict[str, Any]) -> str:
+        """单条写入（兼容旧签名）。新代码请用 ``add_events``。"""
+        normalized = self._normalize_legacy_event(event)
+        self.add_events([normalized])
+        return normalized["id"]
+
+    def _normalize_legacy_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        raw_ts = event.get("timestamp") or event.get("ts")
+        dt = parse_ts(raw_ts, self.config.tz_offset_hours) or now_local(
+            self.config.tz_offset_hours
+        )
+        entity_id = event.get("entity_id") or event.get("device") or ""
+        action = event.get("action", "")
+        old_state, new_state = "", ""
+        if "->" in str(action):
+            old_state, _, new_state = str(action).partition("->")
+        return {
+            "id": make_event_id(entity_id, raw_ts or dt.isoformat()),
+            "ts": dt.isoformat(sep="T"),
+            "day": dt.strftime("%Y-%m-%d"),
+            "room": event.get("room", ""),
+            "entity_id": entity_id,
+            "domain": entity_id.split(".")[0] if entity_id else "",
+            "action": action,
+            "person": event.get("person") or "",
+            "old_state": event.get("old_state", old_state),
+            "new_state": event.get("new_state", new_state),
+            "attrs": event.get("params") or event.get("attrs") or {},
+        }
+
+    # ── Chroma 镜像 ──────────────────────────────────────────────────────
+
+    def mirror_days(self, days: List[str]) -> int:
+        """把指定日期的「天 × 房间」聚合摘要写入向量库。
+
+        由采集任务在批次结束后调用（``asyncio.to_thread`` 包裹），
+        失败仅记录日志，不影响已入库的事件数据。
+        """
+        col = self.collection
+        if col is None or not days:
+            return 0
+        ids: List[str] = []
+        docs: List[str] = []
+        metas: List[Dict[str, Any]] = []
+        for day in sorted(set(days)):
+            start, end = f"{day}T00:00:00", f"{day}T23:59:59"
+            tops = self.store.top_entities(start, end, limit=200)
+            by_room: Dict[str, List[Dict[str, Any]]] = {}
+            for item in tops:
+                by_room.setdefault(item["room"] or "未分区", []).append(item)
+            for room, items in by_room.items():
+                total = sum(i["count"] for i in items)
+                head = "、".join(f"{i['entity_id']}({i['count']}次)" for i in items[:12])
+                ids.append(f"summary_{day}_{room}")
+                docs.append(f"{day} {room} 共 {total} 次设备状态变化，主要活动：{head}")
+                metas.append(
+                    {"day": day, "room": room, "events": total, "kind": "daily_summary"}
+                )
+        if not ids:
+            return 0
+        try:
+            col.upsert(ids=ids, documents=docs, metadatas=metas)
+            return len(ids)
+        except Exception as exc:
+            print(f"[History] 向量库镜像失败（已忽略）: {exc}")
+            return 0
+
+    def semantic_search(
+        self,
+        query: str,
+        n_results: int = 5,
+        state: Optional[str] = None,
+        kind: Optional[str] = None,
+        trust_min: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        col = self.collection
+        if col is None:
+            return []
+        where = None
+        if state is not None or kind is not None or trust_min is not None:
+            where = {}
+            if state is not None:
+                where["state"] = state
+            if kind is not None:
+                where["kind"] = kind
+            if trust_min is not None:
+                where["trust"] = {"$gte": trust_min}
+        try:
+            res = col.query(
+                query_texts=[query],
+                n_results=max(1, min(n_results, 20)),
+                where=where,
+            )
+            docs = (res.get("documents") or [[]])[0]
+            metas = (res.get("metadatas") or [[]])[0]
+            return [
+                {"document": d, "metadata": m or {}} for d, m in zip(docs, metas)
+            ]
+        except Exception as exc:
+            print(f"[History] 语义检索失败: {exc}")
+            return []
+
+    # ── 读取 ─────────────────────────────────────────────────────────────
+
+    def _range(self, days: int) -> tuple[str, str]:
+        end = now_local(self.config.tz_offset_hours)
+        start = end - timedelta(days=max(1, days))
+        return start.isoformat(sep="T"), end.isoformat(sep="T")
+
+    @staticmethod
+    def _to_legacy(row: Dict[str, Any]) -> Dict[str, Any]:
+        import json as _json
+
+        params: Any = {}
+        if row.get("attrs_json"):
+            try:
+                params = _json.loads(row["attrs_json"])
+            except (TypeError, ValueError):
+                params = {}
+        return {
+            "timestamp": row.get("ts", ""),
+            "person": row.get("person", ""),
+            "room": row.get("room", ""),
+            "device": row.get("entity_id", ""),
+            "entity_id": row.get("entity_id", ""),
+            "domain": row.get("domain", ""),
+            "action": row.get("action", ""),
+            "old_state": row.get("old_state", ""),
+            "new_state": row.get("new_state", ""),
+            "params": params,
+        }
+
+    def get_person_history(
+        self, person: str, days: int = 7, limit: int = 500
+    ) -> Dict[str, Any]:
+        start, end = self._range(days)
+        rows = self.store.query_events(
+            start=start,
+            end=end,
+            person=person if person and person != "all" else None,
+            limit=limit,
+            order="desc",
+        )
+        known = self.get_all_persons()
+        total = self.store.count_events(
+            start, end, person=person if person and person != "all" else None
+        )
+        out = {
+            "person": person,
+            "period": f"最近{days}天",
+            "range": {"start": start, "end": end},
+            "total": total,
+            "count": len(rows),
+            "has_more": len(rows) < total,
+            "total_events": len(rows),  # 兼容旧字段
+            "known_persons": known,
+            "events": [self._to_legacy(r) for r in rows],
+        }
+        if not known:
+            out["notice"] = (
+                "当前数据源未提供人员归属（HA 状态历史不含操作者），"
+                "person 字段全为空。需要按人分析请改用 get_behavior_insights 按房间/设备维度。"
+            )
+        return out
+
+    def get_all_persons(self) -> List[str]:
+        return self.store.distinct_persons()
+
+    def get_behavior_summary(
+        self, days: int = 7, behavior_only: bool = True
+    ) -> Dict[str, Any]:
+        """行为总览。
+
+        ``behavior_only=True``（默认）会剔除 ``sensor``/``number`` 等纯遥测域：
+        功率、温湿度每分钟一条，会把小时分布拍成均匀的「电表节拍」，
+        完全掩盖真实作息。需要看原始全量时显式传 ``False``。
+        """
+        start, end = self._range(days)
+        excl = list(TELEMETRY_DOMAINS) if behavior_only else None
+        total = self.store.count_events(start, end, exclude_domains=excl)
+        total_raw = self.store.count_events(start, end)
+        tops = self.store.top_entities(start, end, limit=20, exclude_domains=excl)
+        hist = self.store.hour_histogram(start, end, exclude_domains=excl)
+        by_room: Dict[str, int] = {}
+        for room, buckets in hist.items():
+            by_room[room] = sum(buckets)
+        hourly = [0] * 24
+        for buckets in hist.values():
+            for i, v in enumerate(buckets):
+                hourly[i] += v
+        return {
+            "period": f"最近{days}天",
+            "days": days,
+            "range": {"start": start, "end": end},
+            "behavior_only": behavior_only,
+            "total_events": total,
+            "total_events_raw": total_raw,
+            "telemetry_excluded": total_raw - total if behavior_only else 0,
+            "rooms": by_room,
+            "top_entities": tops,
+            "hourly_distribution": hourly,
+            "persons": self.get_all_persons(),
+        }
+
+    def export_history(
+        self, days: int = 30, person: Optional[str] = None, limit: int = 5000
+    ) -> Dict[str, Any]:
+        start, end = self._range(days)
+        rows = self.store.query_events(
+            start=start,
+            end=end,
+            person=person if person and person != "all" else None,
+            limit=limit,
+        )
+        return {
+            "exported_at": now_local(self.config.tz_offset_hours).isoformat(),
+            "period": f"最近{days}天",
+            "person": person or "all",
+            "total": len(rows),
+            "events": [self._to_legacy(r) for r in rows],
+        }
+
+    def get_stats(self) -> Dict[str, Any]:
+        stats = self.store.stats()
+        stats["chroma"] = self.chroma_status()
+        return stats
+
+    def query_range(
+        self,
+        start: str,
+        end: str,
+        rooms: Optional[List[str]] = None,
+        entities: Optional[List[str]] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        rows = self.store.query_events(
+            start=start, end=end, rooms=rooms, entities=entities, limit=limit
+        )
+        return [self._to_legacy(r) for r in rows]

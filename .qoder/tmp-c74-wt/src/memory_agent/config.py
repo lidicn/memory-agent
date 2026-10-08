@@ -1,0 +1,600 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""配置管理
+
+配置文件是本项目最重要的持久化资产（含 HA 长期令牌与 LLM 密钥），
+因此写入必须原子化，读取必须对未知字段容错 —— 否则一次版本升级
+或一次写入中断就会让整个服务起不来。
+"""
+import json
+import os
+import tempfile
+from dataclasses import asdict, dataclass, field, fields
+from typing import Any, Dict, List
+
+CONFIG_FILE = "/data/config.json"
+
+# WO-MA-004 ③：JWT 密钥不再有源码默认值。未显式配置（环境变量 / config.json）
+# 时 get_config() 直接拒绝启动，避免"可预测默认密钥"或"自动生成制造已配错觉"。
+# 部署者必须通过 JWT_SECRET 环境变量或 config.json 显式设置。
+
+
+@dataclass
+class Config:
+    # HA配置
+    hass_server: str = "http://192.168.2.200:8123"
+    hass_token: str = ""
+
+    # NR配置
+    nr_url: str = "http://192.168.2.200:1990"
+    nr_user: str = "lidicn"
+    nr_pass: str = ""
+
+    # Redis配置
+    redis_host: str = "redis"
+    redis_port: int = 6379
+
+    # Chroma配置
+    chroma_host: str = "chroma"
+    chroma_port: int = 8000
+    chroma_mirror: bool = True  # 是否把事件镜像到向量库供语义检索
+
+    # LLM配置（OpenAI 兼容）
+    llm_provider: str = "openai-compatible"
+    llm_api_url: str = "https://api.deepseek.com/v1"
+    llm_api_key: str = ""
+    llm_model: str = "deepseek-chat"
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 4096
+    llm_timeout: int = 120
+    # 多厂商代理池（fallback 池）：每条 = 一个后端（厂商 + key + 模型），
+    # 按列表顺序作为优先级，上游调用遇 429/5xx/超时/鉴权失败自动切到下一个。
+    # 旧版单组 llm_* 字段会在 get_config() 自动迁移成这里的第一条。
+    llm_backends: List[dict] = field(default_factory=list)
+
+    # ── 向量嵌入模型（OpenAI 兼容 /v1/embeddings，可选）──────────────────────
+    # 缺省留空 → 向量面不可用（DCD 20261004 Q1=B：不回退本地 MiniLM）。
+    # 配置后，history 三集合注入该嵌入函数，提升中文语义检索质量
+    # （SiliconFlow bge-m3 / Qwen3-Embedding / new-api 网关等）。
+    # 切换模型后请运行 scripts/reindex_embeddings.py 重建集合（维度会变）。
+    embedding_base_url: str = ""
+    embedding_model: str = ""
+    embedding_api_key: str = ""
+
+    # JWT配置（WO-MA-004 ③：无默认值，未显式配置则拒绝启动）
+    jwt_secret: str = ""
+
+    # MCP配置
+    mcp_auth_token: str = ""
+    # 升级后结构：{name: {"hash": sha256, "prefix": "mcp_xxxx", "created_at": ..., "last_used_at": ...}}
+    # 兼容旧结构：{name: "mcp_明文"}，启动时由 MCPTokenStore.migrate_legacy() 一次性迁移
+    agent_tokens: Dict[str, Any] = field(default_factory=dict)
+
+    # ── ACP（Agent Client Protocol，拓扑 X peer-to-peer）出站委派配置 ──────
+    # 本端作为 ACP client 主动委派任务给对端 autoflow 时使用的对端地址与令牌。
+    # 入站（对端调本端）复用 agent_tokens 中 kind=acp 的 acp_ 令牌，不在此处。
+    autoflow_acp_url: str = ""
+    autoflow_acp_token: str = ""
+
+    # 数据采集配置
+    polling_enabled: bool = False
+    polling_mode: str = "scheduled"  # "interval" | "scheduled" | "manual"
+    polling_interval: int = 3600  # 采集间隔（秒），仅 interval 模式
+    polling_time: str = "01:00"  # 每天采集时间 HH:MM，仅 scheduled 模式
+    rooms: Dict[str, Any] = field(default_factory=dict)
+    excluded_entities: List[str] = field(default_factory=list)
+    last_poll_time: str = ""  # 上次采集时间
+    data_retention_days: int = 90  # 数据保留天数
+    first_run_lookback_hours: int = 24  # 首次采集回溯窗口，避免起点=当前时刻导致采到 0 条
+
+    # ── 记忆研究员（v0.8：定向洞察 LLM 生成）全局安全闸 ─────────────────────
+    researcher_enabled: bool = False                  # 总开关（默认关，v0.7.5 收口后开启）
+    researcher_daily_token_budget: int = 80000        # 全局日 token 预算断路器
+    researcher_scheduler_time: str = "03:00"          # 每日定时洞察时刻 HH:MM（低峰）
+    researcher_unit_cap: int = 50                     # 单 Job 分析单元上限（4轴笛卡尔积截断）
+    researcher_call_timeout: int = 30                 # 单次 LLM 调用超时（秒）
+    researcher_max_consecutive_failures: int = 3      # 连败暂停阈值
+    researcher_staging_ttl_days: int = 30             # staging 洞察自动归档天数
+
+    # ── 主动感知·行为推断（v0.9.5：canonical 行为状态 + 序列规则）──────────────
+    activity_inference_enabled: bool = True           # 周期行为推断总开关
+    activity_window_minutes: int = 15                 # 序列匹配滑动窗口（分钟）
+    activity_interval_seconds: int = 300              # 周期推断间隔（秒，默认 5min）
+    pir_debounce_sec: int = 30                        # PIR/同实体连续触发去抖窗口（秒）
+    activity_conf_threshold: float = 0.6              # 写权威状态的最低置信度（低于仅进候选）
+
+    # ── P1.1 过程挖掘（行为过程模型 + 一致性检验 → 行为异常）──────────────────
+    process_mining_enabled: bool = True               # 每日一次过程挖掘（异常落库）
+    process_mining_days: int = 7                      # 过程挖掘回溯天数
+    process_mining_min_edge_support: float = 0.1      # 稀有直接跟随边阈值（低于即判异常）
+    process_mining_min_activity_support: float = 0.1  # 稀有活动阈值（低于即判异常）
+    process_mining_min_variant_support: int = 3       # 变体产出候选规则的最低支持度
+    process_mining_bucket_sec: int = 600              # 轨迹时间桶粒度（秒，抗秒级交替噪声）
+    process_mining_min_cases_per_room: int = 4        # 房间最少样本天数（不足不做一致性检验）
+    process_mining_min_case_events: int = 2           # 一条轨迹最少步数（桶聚合后轨迹较短）
+
+    # ── P1.2 在线异常 + 概念漂移（river：HST + ADWIN）────────────────────────
+    drift_enabled: bool = True                        # 每日一次在线异常/漂移检测
+    drift_days: int = 14                              # 回溯天数（1h 分桶 14 天 ≈ 336 点）
+    drift_bucket_sec: int = 3600                      # 时间桶粒度（秒；1h 对应"作息"量级）
+    drift_window_size: int = 0                        # HST 窗口（0=按样本量自适应）
+    drift_min_score: float = 0.9                      # HST 相对排名阈值（仅参考）
+    drift_k: float = 3.0                              # 同小时偏离判据：|z| >= k 视为异常时段
+    drift_min_delta: float = 10.0                     # 同小时偏离的绝对量下限（防凌晨起夜式噪声）
+    drift_retention_days: int = 90                    # 漂移点保留天数
+
+    # ── P1.4 规则召回审计（用统计补召回，而非替换规则）──────────────────────
+    rule_recall_enabled: bool = True                  # 每日一次规则召回审计
+    rule_recall_days: int = 14                        # 审计回溯天数
+    rule_recall_min_near_miss: int = 2                # 产出放宽建议所需的最少缺口天数
+    process_mining_retention_days: int = 90           # 行为异常保留天数（confirmed 不清理）
+
+    # ── Phase 4.2 建议语义去重（复用 embedding 端点）──────────────────────────
+    semantic_dedup_enabled: bool = True               # 建议/洞察语义去重总开关
+    semantic_dedup_threshold: float = 0.85            # 余弦相似度阈值（0-1），超过视为重复
+
+    # ── Phase 4.3 反馈闭环 fail-closed（VLM 误识别 bad-case）──────────────────
+    vlm_fail_closed: bool = True                    # VLM 识别失败时不自动晋升，保存 bad-case 待审核
+    vlm_bad_case_retention_days: int = 30           # bad-case 保留天数
+
+    # ── 主动感知 v2.0 · 客厅盒侧 AI 事件接入（Phase 0.1）──────────────────────
+    livingroom_ai_enabled: bool = True                # 客厅盒侧 AI 事件轮询总开关
+    livingroom_ai_interval_seconds: int = 10          # 轮询间隔（秒，默认 10s）
+    livingroom_ai_omni_enabled: bool = False          # Phase 1.3 Omni 层：事件驱动 VLM 补语义（默认关）
+
+    # ── 主动感知 v2.0 · 感知事件记录（Phase 0.4；语音播报已决策不做）────────────
+    # 决策（2026-09-17）：人脸识别不稳定不可靠，**不做语音播报**（避免错误打扰），
+    # 感知事件仅落库记录（perception_events）供人工/离线回溯。以下 Announcer 配置
+    # 保留为"识别稳定后的可选能力"，默认关闭。
+    announce_enabled: bool = False                    # 主动播报总开关（默认关，需配 tts 实体+播放设备）
+    announce_tts_entity: str = ""                     # HA 的 tts 实体，如 "tts.doubao_tts" / "tts.edgetts_*"
+    announce_target: str = ""                         # 播放设备 media_player.*（tts.speak 必需，否则只合成不发声）
+    announce_cooldown_sec: int = 30                   # 同类事件最小播报间隔，防刷屏
+
+    # ── 主动感知 v2.0 · VLM 取帧降级（Phase 0.3）────────────────────────────
+    vlm_gate_enabled: bool = True                      # 边缘已有信号/无运动时跳过 VLM 取帧
+    vlm_gate_window_sec: int = 120                    # 边缘信号视为"新鲜"的时间窗（秒）
+    room_motion_entities: Dict[str, str] = field(default_factory=dict)  # 房间→motion 实体，用于静止跳过
+
+    # ── 授权规则服务端化（v0.9）：Agent(MCP) 写回成员标签需管理员显式开启 ─────────
+    member_tag_agent_writeback: bool = False          # 默认关；开启后 confirm_member_tag 才被放行
+
+    # ── MCP 可维护性（v0.9 任务3）：响应体上限与故障注入 ──────────────────────
+    mcp_response_max_bytes: int = 65536              # 单工具响应正文上限（0=不限制），超限截断并附摘要
+
+    # ── HA MariaDB 直读（方案B 采集源，可选；未启用时回退 REST）─────────────
+    ha_db_enabled: bool = False
+    ha_db_host: str = "192.168.2.200"
+    ha_db_port: int = 3306
+    ha_db_name: str = "homeassistant"
+    ha_db_user: str = "memory_agent_ro"
+    ha_db_password: str = ""
+    ha_db_query_batch: int = 500      # 单次 SQL 查询的实体批量大小
+    ha_db_query_timeout: int = 30     # 单条查询读超时（秒）
+
+    # ── Agent 记忆（参与式写回向量库）阈值 ─────────────────────────────────
+    agent_promote_min_days: int = 2          # 跨 N 天反复观测才自动晋升（主路径 (b) 备选）
+    agent_trust_step: float = 0.2            # feedback 单次信任分增减
+    trust_strict_threshold: float = -0.3     # 低于此值的 session 记忆锁自动晋升
+    agent_corroborate_min_conf: float = 0.6  # 佐证 insight 晋升的最低置信度（主路径 (a)）
+    agent_retrieve_k: int = 20               # 检索过取量（再重排）
+    agent_dup_sim: float = 0.92              # 同 topic_key 相似度高于此值判重复
+    agent_conflict_sim: float = 0.85         # 同 topic_key 相似度低于此值且主张相左判冲突
+    agent_default_ttl_days: int = 30         # agent 记忆默认 TTL
+    agent_sweep_interval_seconds: int = 86400  # 自动晋升 + 镜像 reconcile 扫描间隔
+
+    # ── 家庭成员 / 生活习惯档案 ───────────────────────────────────────────
+    auto_discover_persona: bool = False  # 是否主动把发现的标签推送给用户（默认关闭：仅记录、需确认才存档）
+
+    # ── 电视截屏多模态（按需调用，docs/电视截屏多模态识别功能_交接单.md）────
+    # 截图来自 xiaomi_miot 的 media_player 实体：attributes.capture 是电视
+    # 自身的带签名 URL（有时效），因此**绝不能缓存**，每次都要重新取状态。
+    tv_media_player_entity: str = "media_player.xiaomi_rmh1_6103_play_control"
+    tv_capture_timeout_s: float = 15          # 从电视 6095 端口拉截图的超时
+    tv_capture_refresh_wait_s: float = 2.0    # 强制 HA 刷新实体后，等其写出新 capture 属性的时间
+    # TV 端状态广播（TV Cam 项目每 5s 发的 retained MQTT 消息），可选上下文
+    tv_mqtt_enabled: bool = False
+    tv_mqtt_host: str = "192.168.2.200"
+    tv_mqtt_port: int = 1883
+    tv_mqtt_user: str = ""
+    tv_mqtt_pass: str = ""
+    tv_mqtt_topic: str = "tv/livingroom/state"
+
+    # ── MQTT 实时推送（v0.4：向 TVPilot / DeskPilot 推事件，见 docs/交接卡_v0.4_MQTT实时推送.md）──
+    # broker 连接参数复用上面的 tv_mqtt_host/port/user/pass（与 TV Cam 同一 broker）。
+    # 未启用时 publish() 直接空转返回 False，不影响任何主流程。
+    ma_mqtt_enabled: bool = False
+    ma_mqtt_topic_prefix: str = "ma"        # 主题前缀：ma/presence、ma/device-health
+    ma_mqtt_presence_interval: int = 60     # 在场快照推送间隔（秒，最小 15）
+    ma_mqtt_reconnect_interval: int = 30    # broker 不可达时重试建连的退避间隔（秒）
+    tv_mqtt_timeout_s: float = 3.0            # 连上后等 retained 消息的时间
+
+    # ── 豆包管家对接（外部服务调用本服务的窄接口，见 docs/交接单_MA对接_成员档案与在场查询.md）──
+    # Bearer 令牌：管家凭它读写成员档案 + 查在场。未配置则该通道关闭。
+    # 只允许访问 BUTLER_ENDPOINTS 白名单内的路径，拿不到 WebUI 其他接口。
+    butler_token: str = ""
+
+    # ── TVPilot / DeskPilot 对接（应用层消费者，见 docs/交接卡_v0.3_对外查询接口.md）──
+    # Bearer 令牌：TV / PC 端凭它调用结构化洞察查询（POST /api/insights/query）。
+    # 与 butler_token 同款隔离：只放行 APP_ENDPOINTS 白名单，未配置则通道关闭。
+    app_token: str = ""
+    # v0.6：多应用令牌（TVPilot / DeskPilot 各持一个），落盘为 {name: {hash, prefix, ...}}。
+    # 与单 app_token 并存：校验时多令牌优先，遗留单令牌作为兜底。
+    app_tokens: Dict[str, Any] = field(default_factory=dict)
+    # vMA-1.2.3 3.3.3（DCD 20261001 Q1-Q5）：统一服务令牌 {name: {hash, prefix, scopes, ...}}。
+    # 与 butler_token / app_token **并行接受**（additive，不设 expiry、不下线旧凭据）；
+    # 差别是每条自带「方法:路径」作用域、一实例一令牌、可单独吊销并计数。
+    service_tokens: Dict[str, Any] = field(default_factory=dict)
+    # v0.6 #3：记忆来源（source）取值白名单，防止来源伪造。可在此扩展新来源。
+    agent_memory_sources: List[str] = field(default_factory=lambda: ["ma", "butler", "vision", "manual"])
+
+    # ── HA Assist 集成（v1.0-2：MA 作为 HA conversation agent 后端，见 docs/HA_Assist接入.md）──
+    # Bearer 令牌：HA 的会话集成（extended_openai_conversation 等）用它调用 MA 的
+    # /v1/chat/completions，返回带家庭记忆的回答。未配置则通道关闭（/v1/* 一律 401）。
+    ha_assist_token: str = ""
+    # 回答时注入的家庭记忆条数（0 = 不注入，退化为普通 LLM）
+    ha_assist_memory_top_k: int = 6
+
+    # ── AutoFlow 竞技场对接（外部服务调用本服务的竞技场窄接口，见 docs/交接单_AutoFlow竞技场对接.md）──
+    # 专用 arena_ 令牌（kind=arena）：仅能调用 3 个 arena ACP 工具 + 快照接口，
+    # 与生产 / butler / ACP 令牌三者隔离。脱敏映射可选，缺省按 arena 内稳定生成通用名。
+    # 脱敏规则：{真实设备名/成员名: 通用名}；为空时 arena 服务按出现顺序自动生成「设备N/成员N」。
+    arena_desensitize: Dict[str, Any] = field(default_factory=dict)
+
+    # ── 视觉识别（多模态行为识别，vision-behavior-spec）───────────────────
+    vision_enabled: bool = False
+    vision_device_token: str = ""            # TV/巡检设备上报令牌（Bearer）
+    go2rtc_base_url: str = "http://192.168.2.200:1984"
+    go2rtc_user: str = ""
+    go2rtc_pass: str = ""
+    # 多模态 LLM（doubao2api 网关，独立于 llm_backends）
+    vlm_base_url: str = "http://192.168.2.200:9090"
+    vlm_api_key: str = ""
+    vlm_model: str = "doubao"
+    vlm_timeout_s: int = 25
+    vlm_max_retries: int = 2
+    # 多模态 VLM 端点路径：默认 OpenAI 兼容 /v1/chat/completions；
+    # 使用 doubao2api 时可填其私有端点 /v1/images/analyses。
+    vlm_endpoint_path: str = "/v1/chat/completions"
+    # 会话归集（交接单_顾安恒专属对话整合 2026-09-16）：设置后 MA 调 VLM 会带上
+    # conversation_id + keep_conversation，使巡检/分析汇聚到同一豆包对话，不再每次
+    # 新建「家庭监控画面人物分析」对话刷屏。留空则维持默认（每次新建）。
+    vlm_conversation_id: str = ""
+    vlm_keep_conversation: bool = True
+    # 摄像头注册表：[{room, stream, enabled, no_tv, light_gate, light_entities: []}]
+    vision_cameras: List[dict] = field(default_factory=list)
+    # 频率与门槛
+    vision_cooldown_s: int = 60              # 同房间两次 VLM 最小间隔
+    vision_max_per_hour: int = 20            # 每房间每小时硬上限
+    vision_no_tv_interval_s: int = 300       # 无 TV 房间巡检周期
+    vision_light_gate: bool = True           # 光线门槛全局总闸：房间开灯才轮询
+    vision_snapshot_retention_days: int = 7
+    # 巡检异常 MQTT 推送（Phase 2，默认关）：发现陌生人等异常时，向 MA 域名告警
+    # 主题推送 {type, source, trace_id, room, alert_type, message, snapshot_url}。
+    vision_alert_mqtt_enabled: bool = False
+    vision_alert_mqtt_topic: str = "ma/insights"  # DCD: 各仓只推自己域名，历史越权主题已收口至 ma/insights
+
+    # ── vMA-1.2.0 场景图与空间记忆 ────────────────────────────────────────
+    # VLM 在行为识别之外结构化输出 objects/relations，落 behavior_events.scene_graph_json。
+    # 开关关闭则完全不解析；开启时只对通过运动 gate 的帧按 sample_rate 抽样解析
+    # （force 帧不计），每次解析记一条 token 用量日志。
+    scene_graph_enabled: bool = True
+    scene_graph_sample_rate: float = 1.0
+
+    # ── 人脸识别节点池（ArcFace 可插拔，face_node_pool_plan）────────────────
+    # memory-agent 持有节点注册表与统一识别路由；节点按权重选路，失败降级 VLM。
+    face_node_timeout_s: float = 3.0          # 转发到 Arcface 节点的调用超时（秒）
+    face_min_conf: float = 0.6               # 生物识别覆盖 VLM 外观匹配的最低置信度
+
+    # ── 设备事件 feed（DCD 裁定 20261001-MA-service_token与设备事件feed §二）────
+    # Q1=B：独立批量扫描器（不压在感知链路同进程），按周期读 events 表把设备
+    # 状态翻转聚成 kind="device" 事件喂引擎。代价是响应滞后一个轮询周期——
+    # 裁定已接受：候选规则是「建议」不是「实时触发器」。
+    # Q3=(i)「通道建好、推进等人」：反馈面为 0 时通道结构性停在 dry_run，
+    # 所以**总开关默认关**，开启后**首轮亦默认 dry_run**（照常匹配、只记录不派发）。
+    device_feed_enabled: bool = False
+    device_feed_dry_run: bool = True
+    device_feed_interval_seconds: int = 3600
+
+    # 存储
+    db_path: str = "/data/memory_agent.db"
+    tz_offset_hours: float = 8.0  # 容器内通常无 TZ，显式声明本地时区偏移
+
+    # 调试模式：仅 debug_mode=True 时 dbg_ 调试令牌才生效，且仅限 loopback/内网段访问。
+    # 生产环境必须保持 False，防止调试令牌被利用获得全接口访问。
+    debug_mode: bool = False
+
+    # ── 备份 / 灾难恢复（先于 v0.8 存量记忆改写就位）──────────────────────────
+    # SQLite 主库 VACUUM 快照 + chroma 数据目录快照（可选）+ 14 份轮转。
+    backup_enabled: bool = False
+    backup_dir: str = "/data/backups"
+    backup_retention: int = 14
+    # chroma 数据目录（可选）：若 MA 容器能访问 chroma 持久卷则整目录快照；
+    # 否则跳过（chroma 可由 SQLite 通过 mirror + reindex 重建）。
+    chroma_data_dir: str = ""
+
+    # ── 在线更新（从 GitHub 拉取最新代码并自重启）──────────────────
+    # 容器内需把宿主机仓库根挂载到 REPO_DIR（见 docker-compose.yml 的 .:/repo）。
+    update_repo_url: str = "https://github.com/lidicn/memory-agent.git"
+    update_branch: str = "main"
+    restart_cmd: str = ""  # 更新后执行的重启命令；为空则通过 re-exec 重启本进程
+
+    # 数据目录
+    data_dir: str = "/data"
+    exports_dir: str = "/data/exports"
+    templates_dir: str = "/data/templates"
+    imported_dir: str = "/data/imported"
+    skills_dir: str = "/data/skills"  # 洞察 skill（SKILL.md）持久化目录，可被 MCP 工具读写
+
+    # 用户数据
+    users_file: str = "/data/users.json"
+
+    # ── 持久化 ────────────────────────────────────────────────────────────
+
+    def save(self) -> None:
+        """原子写入：先写临时文件再 os.replace，避免中断导致配置损坏。"""
+        directory = os.path.dirname(CONFIG_FILE) or "."
+        os.makedirs(directory, exist_ok=True)
+        payload = json.dumps(asdict(self), ensure_ascii=False, indent=2)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            prefix=".config-", suffix=".tmp", dir=directory
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, CONFIG_FILE)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            raise
+
+    @classmethod
+    def load(cls) -> "Config":
+        """从文件加载，忽略未知字段（旧版本 config 不应导致启动失败）。"""
+        if not os.path.exists(CONFIG_FILE):
+            return cls()
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            print(f"[Config] 读取配置失败，使用默认值: {exc}")
+            return cls()
+        if not isinstance(data, dict):
+            return cls()
+
+        known = {f.name for f in fields(cls)}
+        unknown = set(data) - known
+        if unknown:
+            print(f"[Config] 忽略未知配置字段: {', '.join(sorted(unknown))}")
+        try:
+            return cls(**{k: v for k, v in data.items() if k in known})
+        except Exception as exc:
+            print(f"[Config] 配置字段类型异常，使用默认值: {exc}")
+            return cls()
+
+
+# ── HTTP 可写数值键的合法区间（第二期审计 MA-18/MA-19）────────────────────────
+# 唯一真源：`/api/config`（`api/config_routes.update_config_api`，越界 → 400）和
+# `/api/collect/config` + `/api/poller/config`（`api/collect_routes.collect_config`，
+# 沿用其既有的夹紧语义）都从这里取数。改前 `/api/config` 只做**类型**收敛
+# （`int()`/`float()` 成功就写），24 个数值键全部没有范围校验——MA-19 实测同输入
+# 不同结果：`polling_interval=0` 走 `/api/config` 存成 0（忙循环），走采集端点被钳到 900。
+#
+# 每个区间的出处写在行尾；`insights/models.py:82` 一类同仓既有校验是正面对照，
+# `collect_routes` 的 `max(900/15/0, …)` 是下界对照。区间判据不看"能不能算出来"，
+# 看的是**消费函数拿到这个值会做什么**（lesson 108）：`tz_offset_hours` 的 ±24h 限制
+# 藏在 `datetime.timezone` 内部，只算 `timedelta(hours=1e6)` 永远看不出问题。
+#
+# 覆盖面（实测）：`Config` 共 71 个数值字段，其中 `WRITABLE_FIELDS` 允许 HTTP 写的
+# 恰好这 24 个 ⇒ 本表 = 可写面的全集，不多不少。其余 47 个只能经 config.json / 环境变量
+# 进来，`update_config_api` 那侧本就会拒（不在白名单），这里不替它们预设区间。
+NUMERIC_BOUNDS: dict = {
+    "redis_port": (1, 65535),
+    "chroma_port": (1, 65535),
+    "ha_db_port": (1, 65535),
+    "tv_mqtt_port": (1, 65535),                    # 同上：端口域
+    "tz_offset_hours": (-12.0, 14.0),              # 对齐 insights/models.py:82
+    "llm_temperature": (0.0, 2.0),                 # OpenAI/兼容端点的采样温度域
+    "llm_max_tokens": (1, 200000),
+    "llm_timeout": (1, 600),                       # 秒；上界对齐 HTTP 侧最长可接受等待
+    "vlm_timeout_s": (1, 600),                     # 改前 0/-1 = HTTP 挂死到底（无超时）
+    "vlm_max_retries": (0, 10),
+    "ha_db_query_timeout": (1, 600),
+    "ha_db_query_batch": (1, 5000),
+    "tv_capture_timeout_s": (1, 600),
+    "tv_mqtt_timeout_s": (0.1, 600.0),
+    "polling_interval": (900, 86400),              # 下界对齐 collect_routes:158；上界=一天
+    "data_retention_days": (0, 3650),              # 下界对齐 collect_routes:163；上界=DAY_WINDOW_MAX
+    "first_run_lookback_hours": (1, 720),          # 30 天；改前 1e9 = 首跑回溯全部历史
+    "mcp_response_max_bytes": (1024, 50_000_000),   # 改前 -1 = 裁剪阈值失效
+    "ha_assist_memory_top_k": (0, 100),
+    "vision_cooldown_s": (0, 3600),
+    "vision_max_per_hour": (0, 10000),              # 改前 1e9 = 限流失效
+    "vision_no_tv_interval_s": (1, 3600),
+    "vision_snapshot_retention_days": (0, 3650),
+    "scene_graph_sample_rate": (0.0, 1.0),          # 采样比例，不是计数
+}
+
+
+def bounded(key: str, value):
+    """区间内的值原样返回；越界返回收敛后的值，区间外的一端被夹住。
+
+    给"夹紧"口径的入口用（采集端点历史上就是 `max(900, …)`），
+    与 `update_config_api` 的"拒"口径共用同一张表，两个入口对"什么是合法区间"取同一数。
+    """
+    lo_hi = NUMERIC_BOUNDS.get(key)
+    if lo_hi is None:
+        return value
+    lo, hi = lo_hi
+    return min(max(value, lo), hi)
+
+
+def get_config() -> Config:
+    """获取配置（优先配置文件，环境变量仅作为初始默认值）"""
+    config = Config.load()
+
+    env_map = {
+        "hass_server": "HASS_SERVER",
+        "hass_token": "HASS_TOKEN",
+        "nr_url": "NR_URL",
+        "nr_user": "NR_USER",
+        "nr_pass": "NR_PASS",
+        "redis_host": "REDIS_HOST",
+        "redis_port": "REDIS_PORT",
+        "chroma_host": "CHROMA_HOST",
+        "chroma_port": "CHROMA_PORT",
+        "llm_provider": "LLM_PROVIDER",
+        "llm_api_url": "LLM_API_URL",
+        "llm_api_key": "LLM_API_KEY",
+        "llm_model": "LLM_MODEL",
+        "jwt_secret": "JWT_SECRET",
+        "db_path": "DB_PATH",
+        "skills_dir": "SKILLS_DIR",
+        "ha_db_enabled": "HA_DB_ENABLED",
+        "ha_db_host": "HA_DB_HOST",
+        "ha_db_port": "HA_DB_PORT",
+        "ha_db_name": "HA_DB_NAME",
+        "ha_db_user": "HA_DB_USER",
+        "ha_db_password": "HA_DB_PASSWORD",
+        "ha_db_query_batch": "HA_DB_QUERY_BATCH",
+        "ha_db_query_timeout": "HA_DB_QUERY_TIMEOUT",
+        "autoflow_acp_url": "AUTOFLOW_ACP_URL",
+        "autoflow_acp_token": "AUTOFLOW_ACP_TOKEN",
+        "vlm_endpoint_path": "VLM_ENDPOINT_PATH",
+        "update_repo_url": "UPDATE_REPO_URL",
+        "update_branch": "UPDATE_BRANCH",
+        "restart_cmd": "RESTART_CMD",
+        "butler_token": "BUTLER_TOKEN",
+        "ha_assist_token": "HA_ASSIST_TOKEN",
+        "app_token": "APP_TOKEN",
+        "tv_media_player_entity": "TV_MEDIA_PLAYER_ENTITY",
+        "tv_mqtt_host": "TV_MQTT_HOST",
+        "tv_mqtt_topic": "TV_MQTT_TOPIC",
+        "ma_mqtt_enabled": "MA_MQTT_ENABLED",
+        "ma_mqtt_topic_prefix": "MA_MQTT_TOPIC_PREFIX",
+        "ma_mqtt_presence_interval": "MA_MQTT_PRESENCE_INTERVAL",
+        "ma_mqtt_reconnect_interval": "MA_MQTT_RECONNECT_INTERVAL",
+        "tv_mqtt_user": "TV_MQTT_USER",
+        # v0.7 修复：此前只映射了 user 未映射 pass，导致配了用户名却永远拿不到密码，
+        # broker 一律返回「未授权」，ma/presence 推送形同虚设。
+        "tv_mqtt_pass": "TV_MQTT_PASS",
+        "embedding_base_url": "EMBEDDING_BASE_URL",
+        "embedding_model": "EMBEDDING_MODEL",
+        "embedding_api_key": "EMBEDDING_API_KEY",
+        "backup_enabled": "BACKUP_ENABLED",
+        "backup_dir": "BACKUP_DIR",
+        "backup_retention": "BACKUP_RETENTION",
+        "chroma_data_dir": "CHROMA_DATA_DIR",
+        "researcher_enabled": "RESEARCHER_ENABLED",
+        "researcher_daily_token_budget": "RESEARCHER_DAILY_TOKEN_BUDGET",
+        "researcher_scheduler_time": "RESEARCHER_SCHEDULER_TIME",
+        "researcher_unit_cap": "RESEARCHER_UNIT_CAP",
+        "researcher_call_timeout": "RESEARCHER_CALL_TIMEOUT",
+        "researcher_max_consecutive_failures": "RESEARCHER_MAX_CONSECUTIVE_FAILURES",
+        "researcher_staging_ttl_days": "RESEARCHER_STAGING_TTL_DAYS",
+        "debug_mode": "DEBUG_MODE",
+    }
+
+    for field_name, env_name in env_map.items():
+        env_value = os.getenv(env_name)
+        current = getattr(config, field_name)
+        # 只在当前值为空时使用环境变量，不覆盖用户在 WebUI 保存的配置
+        if env_value and (not current or current == ""):
+            if isinstance(current, bool):
+                setattr(config, field_name, env_value.lower() in ("1", "true", "yes", "on"))
+            elif isinstance(current, int):
+                try:
+                    setattr(config, field_name, int(env_value))
+                except ValueError:
+                    pass
+            elif isinstance(current, float):
+                try:
+                    setattr(config, field_name, float(env_value))
+                except ValueError:
+                    pass
+            else:
+                setattr(config, field_name, env_value)
+
+    # 数值型环境变量即便已有默认值也允许覆盖（这些不属于「用户配置」范畴）
+    for field_name, env_name in (
+        ("llm_temperature", "LLM_TEMPERATURE"),
+        ("tz_offset_hours", "TZ_OFFSET_HOURS"),
+    ):
+        raw = os.getenv(env_name)
+        if raw:
+            try:
+                setattr(config, field_name, float(raw))
+            except ValueError:
+                pass
+
+    # 设备事件 feed 三个开关走**独立覆盖段**，不进 env_map：env_map 的口径是
+    # 「只在当前值为空时使用环境变量」，而 ``device_feed_dry_run=True`` /
+    # ``device_feed_interval_seconds=3600`` 都是非空默认值——进了 env_map 就等于
+    # ``DEVICE_FEED_DRY_RUN=false`` 与 ``DEVICE_FEED_INTERVAL_SECONDS`` 永不过效，
+    # 一个只能单向收紧、不能放开的开关不是可用的开关。
+    # 判定与 env_map 同口径（``1/true/yes/on``），不另立一套真值表。
+    for field_name, env_name in (
+        ("device_feed_enabled", "DEVICE_FEED_ENABLED"),
+        ("device_feed_dry_run", "DEVICE_FEED_DRY_RUN"),
+    ):
+        raw = os.getenv(env_name)
+        if raw:
+            setattr(config, field_name, raw.strip().lower() in ("1", "true", "yes", "on"))
+    raw = os.getenv("DEVICE_FEED_INTERVAL_SECONDS")
+    if raw:
+        try:
+            setattr(config, "device_feed_interval_seconds", int(float(raw)))
+        except ValueError:
+            pass
+
+    # 向后兼容：旧版只有单组 llm_* 字段（无 llm_backends），
+    # 自动迁移成代理池的第一条，保证升级后对话不中断。
+    if not config.llm_backends and config.llm_model and config.llm_api_key and config.llm_api_url:
+        config.llm_backends = [{
+            "name": "默认模型",
+            "provider": config.llm_provider or "",
+            "model": config.llm_model,
+            "api_url": config.llm_api_url,
+            "api_key": config.llm_api_key,
+            "temperature": config.llm_temperature,
+            "max_tokens": config.llm_max_tokens,
+            "timeout": config.llm_timeout,
+            "enabled": True,
+        }]
+
+    # ── WO-MA-004 ③：JWT 密钥未显式配置则拒绝启动 ──────────────────────
+    # 不再自动生成随机密钥（那会制造"已经配了"的错觉，且重启后密钥变化
+    # 会使所有已签发 JWT 失效）。部署者必须通过 JWT_SECRET 环境变量
+    # 或 config.json 显式设置一个强随机密钥。
+    if not config.jwt_secret:
+        raise RuntimeError(
+            "JWT 密钥未配置：请通过 JWT_SECRET 环境变量或 config.json 的 "
+            "jwt_secret 字段显式设置一个强随机密钥（如 python -c \"import secrets; print(secrets.token_urlsafe(48))\"）。"
+            "WO-MA-004 ③ 不再接受默认值或自动生成。"
+        )
+
+    # 家庭墙钟口径单点注入（DCD 裁定 20261001-DB六格与MA五题 §五）：
+    # Config.tz_offset_hours 是唯一配置项，insights 层里那个 +8 从此只是 fallback。
+    # 懒导入：insights.models 只依赖标准库，不会形成环。
+    from .insights.models import set_house_tz_offset
+
+    # 契约 §四 + ADM 联动计划第 0 步 ③：家庭时区被按 IANA 名声明（HOMESDK_TZ/TZ）时
+    # homesdk.time 是主路径，Config.tz_offset_hours 同步成它当前的小时快照——
+    # 那些仍在做 `utc + timedelta(hours=tz_offset_hours)` 显示的点因此不会停在 8.0 上。
+    # 主路径不当家（未装库、或只给了 TZ_OFFSET_HOURS）时返回 None，配置值原样保留。
+    from .house_time import set_fallback_hours, utc_offset_hours
+
+    synced_offset = utc_offset_hours()
+    if synced_offset is not None:
+        config.tz_offset_hours = float(synced_offset)
+    # 每次重建配置都刷新快照：house_time 的换算路径不能回头读 config.json。
+    set_fallback_hours(config.tz_offset_hours)
+
+    set_house_tz_offset(config.tz_offset_hours)
+
+    return config

@@ -1,0 +1,27 @@
+BASELINE(什么都不改): 13 passed in 2.29s RC=0 FAILED=[]
+M1 语义实体位失效                                     咬到 1 failed, 12 passed in 2.91s RESTORED=True
+      红(1): test_query_position_matches_by_friendly_name
+M2 domain 位失效                                  咬到 1 failed, 12 passed in 2.95s RESTORED=True
+      红(1): test_category_position_narrows_the_scan
+M3 state 位失效（扫描与计数两侧都不下推）                      咬到 1 failed, 12 passed in 2.64s RESTORED=True
+      红(1): test_state_position_pushes_into_sql
+M4 order 位失效（恒 asc）                            咬到 2 failed, 11 passed in 2.84s RESTORED=True
+      红(2): test_order_alias_normalises_to_the_same_direction, test_order_position_changes_which_events_survive_the_quota
+M5 回声与取数不同源                                    咬到 1 failed, 12 passed in 2.81s RESTORED=True
+      红(1): test_order_alias_normalises_to_the_same_direction
+M6 summarize 位失效                               咬到 1 failed, 12 passed in 2.51s RESTORED=True
+      红(1): test_summarize_position_emits_summary_without_faking_count
+M7 fail-open（解析不出回落成全量）                        咬到 1 failed, 12 passed in 2.78s RESTORED=True
+      红(1): test_unresolvable_query_fails_closed_instead_of_returning_the_house
+M8 分页/窗口键退化（window/next_offset/ok 下架）          咬到 5 failed, 8 passed in 3.43s RESTORED=True
+      红(5): test_category_position_narrows_the_scan, test_envelope_carries_legacy_pagination_keys, test_next_offset_tracks_has_more_and_stops_at_the_end, test_ok_is_derived_from_envelope_invariants, test_truncated_slice_and_exact_total_coexist
+M9 total 被切片行数冒充                               咬到 2 failed, 11 passed in 2.95s RESTORED=True
+      红(2): test_order_position_changes_which_events_survive_the_quota, test_truncated_slice_and_exact_total_coexist
+M10 total_exact 说谎                             咬到 1 failed, 12 passed in 3.17s RESTORED=True
+      红(1): test_truncated_slice_and_exact_total_coexist
+M11 ok 恒真（total 与本页矛盾也报 ok）                    咬到 1 failed, 12 passed in 2.83s RESTORED=True
+      红(1): test_ok_is_derived_from_envelope_invariants
+M12 ok 不看 count 与样本是否对得上                       咬到 1 failed, 12 passed in 2.81s RESTORED=True
+      红(1): test_ok_is_derived_from_envelope_invariants
+BITTEN=12/12 SKIPPED=0
+RESTORED_FINAL=True

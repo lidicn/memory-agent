@@ -1,0 +1,38 @@
+加载实体目录失败，InsightService 将以空实体表运行
+Traceback (most recent call last):
+  File "E:\NAS\memory-agent\src\memory_agent\insights\api.py", line 224, in _safe_entities
+    entities = self.repo.list_entities()
+  File "E:\NAS\memory-agent\src\memory_agent\insights\repository.py", line 880, in list_entities
+    rows = self._execute(sql, (self._top_n(None, 5000),))
+  File "E:\NAS\memory-agent\src\memory_agent\insights\repository.py", line 118, in _execute
+    rows = self.store.db_query(sql, tuple(params))
+  File "E:\NAS\memory-agent\src\memory_agent\store.py", line 693, in db_query
+    cur = conn.execute(sql, params)
+sqlite3.OperationalError: no such table: events
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\ma_c75_t6uy6m0a\c75.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+[Config] 忽略未知配置字段: privileged_sessions
+get_data_quality TOP=['agent_memory', 'checks', 'filters', 'issues', 'missing_days', 'noise_ratio', 'ok', 'sample_size', 'score', 'summary', 'total_events', 'window']
+get_data_quality   agent_memory.NESTED=['error', 'ok']
+get_data_quality   checks[]ITEM=['detail', 'name', 'ok', 'ratio', 'value']
+get_data_quality   filters.NESTED=['category', 'entity_id', 'room']
+get_data_quality   summary.NESTED=['active_days', 'bad_attrs', 'empty_domain', 'empty_room', 'empty_state']
+get_data_quality   window.NESTED=['days', 'end', 'end_ts', 'label', 'start', 'start_ts']
+get_data_quality   >>> 顶层命中 issues
+ask_memory(hints=True) TOP=['answer', 'data', 'has_more', 'hints', 'intent', 'offset', 'plan', 'query', 'question', 'room', 'route', 'time_range', 'total']
+ask_memory(hints=True)   data.NESTED=['actions', 'by_domain', 'by_room', 'filters', 'items', 'ok', 'span_days', 'states', 'total_entities', 'total_events', 'truncated', 'window']
+ask_memory(hints=True)   plan.NESTED=['activity', 'category', 'days', 'entity_ids', 'hints', 'intent', 'params', 'query', 'question', 'room', 'route', 'time_range']
+ask_memory(hints=True)   time_range.NESTED=['days', 'end', 'end_ts', 'label', 'start', 'start_ts']
+ask_memory(hints=True)   >>> 顶层命中 hints
+ask_memory plan.NESTED=['activity', 'category', 'days', 'entity_ids', 'hints', 'intent', 'params', 'query', 'question', 'room', 'route', 'time_range']
+ask_memory plan.JSON={"question": "书房电脑昨天用了多久", "intent": "device_usage", "route": "device_usage", "room": "书房", "category": "", "query": "电脑", "entity_ids": ["binary_sensor.study_pc"], "days": 7, "activity": "", "params": {"has_room": true, "has_query": true}, "hints": ["试试：上周空调用了多久", "试试：最近 3 天客厅灯用了多久"], "time_range": {"start": "2026-10-06 00:00:00", "end": "2026-10-07 00:00:00", "start_ts": 1791216000.0, "end_ts": 
+plan_question TOP=['activity', 'category', 'days', 'entity_ids', 'has_more', 'hints', 'intent', 'offset', 'params', 'query', 'question', 'room', 'route', 'time_range', 'total']
+plan_question   params.NESTED=['has_query', 'has_room']
+plan_question   time_range.NESTED=['days', 'end', 'end_ts', 'label', 'start', 'start_ts']
+plan_question   >>> 顶层命中 hints
+plan_question.JSON={"question": "书房电脑昨天用了多久", "intent": "device_usage", "route": "device_usage", "room": "书房", "category": "", "query": "电脑", "entity_ids": ["binary_sensor.study_pc"], "days": 7, "activity": "", "params": {"has_room": true, "has_query": true}, "hints": ["试试：上周空调用了多久", "试试：最近 3 天客厅灯用了多久"], "time_range": {"start": "2026-10-06 00:00:00", "end": "2026-10-07 00:00:00", "start_ts": 1791216000.0, "end_ts": 1791302400.0, "days": 1.0, "label": "昨天"}, "total": 1, "offset": 0, "has_more": false}
+ask_memory(hints=False) TOP=['answer', 'data', 'has_more', 'intent', 'offset', 'plan', 'query', 'question', 'room', 'route', 'time_range', 'total']
+ask_memory(hints=False)   data.NESTED=['actions', 'by_domain', 'by_room', 'filters', 'items', 'ok', 'span_days', 'states', 'total_entities', 'total_events', 'truncated', 'window']
+ask_memory(hints=False)   plan.NESTED=['activity', 'category', 'days', 'entity_ids', 'hints', 'intent', 'params', 'query', 'question', 'room', 'route', 'time_range']
+ask_memory(hints=False)   time_range.NESTED=['days', 'end', 'end_ts', 'label', 'start', 'start_ts']

@@ -1,0 +1,2 @@
+ROOT=src/memory_agent DECLARED=9 SKIP_GUARD=1 NEED_COMPARE=0 OK=2 PROBLEM=0 EXEMPT_STALE=0
+SCAN_RC=0 声明真源的同步函数都带版本比较（或有在册豁免）

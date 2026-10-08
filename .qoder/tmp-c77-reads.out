@@ -1,0 +1,7 @@
+FACES api_methods=100 unparsed=0 route_entries=208 handler_defs=292 js_callsites=6
+  getConfig      cfg vision.js:315 keys=vision_cameras nested=
+  haRooms        d   vision.js:339 keys=rooms nested=
+  revealSecret   d   vision.js:385 keys= nested=
+  visionCameraTest d   vision.js:413 keys= nested=
+  visionTestLlm  d   vision.js:426 keys=answer,message nested=
+  visionAnalyze  d   vision.js:444 keys=message,scene nested=

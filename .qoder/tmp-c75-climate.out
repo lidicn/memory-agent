@@ -1,0 +1,14 @@
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\ma_c75c_4lyiv1a_\c75c.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+RC_INSERT=7
+CLIMATE_TOP=['events_scanned', 'events_state_unknown', 'has_more', 'limit', 'offset', 'ok', 'sessions', 'sessions_with_temperature', 'temperature_note', 'time_range', 'total', 'total_sessions', 'window']
+HAS_current_temperature_in_TOP=False
+HAS_temperature=False HAS_setpoint=False
+TOTAL_SESSIONS=2 SCANNED=7 IGNORED=1 WITH_TEMP=1
+NOTE=温度取自事件 attrs 的 current_temperature / temperature；采集端在本次修复后才开始全量快照温度，早于修复时间的历史会话仍会是 null
+sessions[]ITEM=['duration_minutes', 'end', 'entity_id', 'hvac_actions', 'notes', 'room', 'room_temp_c', 'room_temp_range_c', 'samples', 'setpoint_c', 'setpoint_range_c', 'start', 'still_on']
+  sess[0] state=['cool'] sp=25.5 rt=28.0 rng=[26.5, 29.5] samples={'setpoint': 3, 'room_temp': 3} dur=90 still_on=False notes=[]
+  sess[1] state=['heat'] sp=22.0 rt=None rng=None samples={'setpoint': 1, 'room_temp': 0} dur=30 still_on=False notes=[]
+CLIMATE_QUERY(total_sessions)=2 ids=['climate.master_ac', 'climate.master_ac']
+AGG_ERR='InsightService' object has no attribute 'aggregate_climate_sessions'

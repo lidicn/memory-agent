@@ -1,0 +1,8 @@
+MUTANTS_PARSED=6 VERIFY_BAD=0
+M-0 什么都不改（基线：证明门自己没坏） -> RC=0 基线 | 23 passed in 4.15s
+L1 文案回滚到承诺 has_data/first-last 的那版 -> RC=1 failed=2 咬住了 restored=OK | 2 failed, 21 passed in 3.75s
+L2 载荷不再给 peak_hours（文案说有、实现没有） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 22 passed in 3.95s
+L3 start_day 写成首个有数据日（边界与数据边界混掉） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 22 passed in 3.81s
+L4 技能包 SKILL.md 的承诺回滚到死键版（模型读的那份） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 22 passed in 3.86s
+L5 用户手册 user_manual.js 的承诺回滚到死键版（人读的那份） -> RC=1 failed=2 咬住了 restored=OK | 2 failed, 21 passed in 3.97s
+MUT_COUNT=6 MUTATION_BAD=0

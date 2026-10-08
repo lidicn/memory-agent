@@ -1,0 +1,93 @@
+CONSUMER_FILES=26
+
+== anomaly_report [FWD_CORE+LITERAL] legacy-only=checks -> no-reader (0)
+
+== ask_memory [OTHER] legacy-only=error,ok,question,window -> READ (89)
+   error  acp_routes.py:154  return error(res.get("error", "创建失败"))
+   error  acp_routes.py:225  if data.get("error"):
+   error  acp_routes.py:226  return error(f"对端握手失败：{data['error']}")
+   error  agent_memory_routes.py:62  return error(result.get("error", "写入失败"), result.get("code", 400), result)
+   error  agent_memory_routes.py:111  return error(result.get("error", "晋升失败"), result.get("code", 400), result)
+   error  agent_memory_routes.py:126  return error(result.get("error", "撤销失败"))
+   error  agent_memory_routes.py:141  return error(result.get("error", "回滚失败"))
+   error  agent_memory_routes.py:163  return error(result.get("error", "反馈失败"))
+
+== climate_sessions [FWD_LEGACY+LITERAL] legacy-only=events_scanned,events_state_unknown,ok,sessions,sessions_with_temperature,temperature_note,total_sessions,window -> READ (42)
+   ok  mcp_server.py:1467  # 换成 payload["ok"] = True 会让那条基线条目"凭空消失"——债没还，只是扫描器看不见。
+   ok  mcp_server.py:2704  result["ok"] = True
+   ok  mcp_server.py:2891  if result.get("ok"):
+   ok  acp_routes.py:119  ok_all = steps[0]["ok"] and steps[1]["ok"]
+   ok  acp_routes.py:153  if not res.get("ok"):
+   ok  agent_memory_routes.py:61  if not result.get("ok"):
+   ok  agent_memory_routes.py:110  if not result.get("ok"):
+   ok  agent_memory_routes.py:125  if not result.get("ok"):
+
+== data_coverage [FWD_CORE] legacy-only=days,days_total,days_with_data,first_day_with_data,last_day_with_data,missing_days,note,total_events,window -> READ (12)
+   days  behavior_routes.py:301  days = int(request.query_params.get("days") or 14)
+   days  behavior_routes.py:940  days = int(request.query_params.get("days") or 14)
+   days  behavior_routes.py:1092  days = int(request.query_params.get("days") or 30)
+   days  behavior_routes.py:1130  days = int(request.query_params.get("days") or 30)
+   days  config_routes.py:425  f"覆盖 {stats.get('days', 0)} 天"
+   note  mcp_server.py:878  保留键不是啰嗦：键不存在时消费端的 ``row["note"]`` 会 KeyError，而
+   note  mcp_server.py:894  d["note"] = ""
+   total_events  collect_routes.py:320  "total_events": stats.get("total_events", 0),
+
+== define_activity [FWD_LEGACY+LITERAL] legacy-only=coverage_unverified,coverage_warning,missing_tags,ok,rule -> READ (42)
+   ok  mcp_server.py:1467  # 换成 payload["ok"] = True 会让那条基线条目"凭空消失"——债没还，只是扫描器看不见。
+   ok  mcp_server.py:2704  result["ok"] = True
+   ok  mcp_server.py:2891  if result.get("ok"):
+   ok  acp_routes.py:119  ok_all = steps[0]["ok"] and steps[1]["ok"]
+   ok  acp_routes.py:153  if not res.get("ok"):
+   ok  agent_memory_routes.py:61  if not result.get("ok"):
+   ok  agent_memory_routes.py:110  if not result.get("ok"):
+   ok  agent_memory_routes.py:125  if not result.get("ok"):
+
+== device_usage [FWD_CORE] legacy-only=device_count,devices,error,hint,ok,total_on_human,total_on_seconds,window -> READ (93)
+   devices  mcp_server.py:1824  "devices": member.get("devices", []),
+   error  acp_routes.py:154  return error(res.get("error", "创建失败"))
+   error  acp_routes.py:225  if data.get("error"):
+   error  acp_routes.py:226  return error(f"对端握手失败：{data['error']}")
+   error  agent_memory_routes.py:62  return error(result.get("error", "写入失败"), result.get("code", 400), result)
+   error  agent_memory_routes.py:111  return error(result.get("error", "晋升失败"), result.get("code", 400), result)
+   error  agent_memory_routes.py:126  return error(result.get("error", "撤销失败"))
+   error  agent_memory_routes.py:141  return error(result.get("error", "回滚失败"))
+
+== entity_catalog [FWD_LEGACY+LITERAL] legacy-only=categories_available,duplicate_candidates,duplicates_merged,hint,no_data_entities,ok,raw_entity_count,rooms,total,window -> READ (50)
+   hint  mcp_server.py:2705  result["hint"] = (
+   hint  insight_routes.py:155  data["hint"] = f"指定窗口内没有 {name} 的识别记录（可能未在成员库或摄像头未覆盖）"
+   ok  mcp_server.py:1467  # 换成 payload["ok"] = True 会让那条基线条目"凭空消失"——债没还，只是扫描器看不见。
+   ok  mcp_server.py:2704  result["ok"] = True
+   ok  mcp_server.py:2891  if result.get("ok"):
+   ok  acp_routes.py:119  ok_all = steps[0]["ok"] and steps[1]["ok"]
+   ok  acp_routes.py:153  if not res.get("ok"):
+   ok  agent_memory_routes.py:61  if not result.get("ok"):
+
+== get_behavior_insights [FWD_CORE] legacy-only=climate_comparison,compare_days,comparison,current_window,previous_window,summary -> READ (3)
+   summary  mcp_server.py:1225  {"name": t["name"], "summary": t["summary"]}
+   summary  config_routes.py:375  "message": result.get("summary") or result.get("error", ""),
+   summary  config_routes.py:387  result.get("summary") or result.get("error") or "向量库自检失败",
+
+== get_data_quality [FWD_CORE+LITERAL] legacy-only=data_quality_issues,days -> READ (5)
+   days  behavior_routes.py:301  days = int(request.query_params.get("days") or 14)
+   days  behavior_routes.py:940  days = int(request.query_params.get("days") or 14)
+   days  behavior_routes.py:1092  days = int(request.query_params.get("days") or 30)
+   days  behavior_routes.py:1130  days = int(request.query_params.get("days") or 30)
+   days  config_routes.py:425  f"覆盖 {stats.get('days', 0)} 天"
+
+== get_user_persona [FWD_CORE] legacy-only=most_active_room,persona,summary,top_rooms,total_events,window_days -> READ (8)
+   summary  mcp_server.py:1225  {"name": t["name"], "summary": t["summary"]}
+   summary  config_routes.py:375  "message": result.get("summary") or result.get("error", ""),
+   summary  config_routes.py:387  result.get("summary") or result.get("error") or "向量库自检失败",
+   total_events  collect_routes.py:320  "total_events": stats.get("total_events", 0),
+   total_events  config_routes.py:424  f"数据库正常，事件总量 {stats['total_events']}，"
+   total_events  llm_routes.py:322  "total_events": digest["total_events"],
+   total_events  llm_routes.py:328  if digest["total_events"] <= 0:
+   total_events  llm_routes.py:381  "total_events": digest["total_events"],
+
+== infer_activities [FWD_CORE] legacy-only=activities,activity_types,behavior_only,detector_report,signal_inventory,total_activities,window -> no-reader (0)
+
+== plan_question [LITERAL] legacy-only=answer,device,error,intent,matched_templates,ok,question,recommended_tool,room,room_scope,rooms_available,steps,suggested_args,window -> READ (111)
+   answer  llm_routes.py:535  answer, speak, data = blob.get("answer"), blob.get("speak"), blob.get("data", {})
+   answer  llm_routes.py:555  rendered["answer"], rendered["speak"],
+   answer  llm_routes.py:588  answer, speak, data = blob.get("answer"), blob.get("speak"), blob.get("data", {})
+   answer  llm_routes.py:647  "answer"

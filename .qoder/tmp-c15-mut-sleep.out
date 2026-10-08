@@ -1,0 +1,25 @@
+...F...                                                                  [100%]
+================================== FAILURES ===================================
+________________ test_rhythm_route_answers_with_sleep_and_wake ________________
+
+store = <memory_agent.store.Store object at 0x0000016D8A0CD480>
+
+    def test_rhythm_route_answers_with_sleep_and_wake(store):
+        """rhythm：`sleep`/`wake`/`samples` 必须由引擎给出来，不能再是「未知…0 天样本」。"""
+        svc = _svc(store, _nightly())
+        answer, data = _execute(svc.nl, "我一般几点睡觉")
+        assert data.get("ok"), f"rhythm 降级了：{data.get('error')}"
+>       assert data["sleep"] == "22:00", f"夜窗里最后活动是 22 点，实得 {data['sleep']}"
+E       AssertionError: 夜窗里最后活动是 22 点，实得 
+E       assert '' == '22:00'
+E         
+E         - 22:00
+
+tests\test_vma_insights_nlquery_routes.py:138: AssertionError
+---------------------------- Captured stdout setup ----------------------------
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\ma_nlq_iijn0u33\nlq.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+=========================== short test summary info ===========================
+FAILED tests/test_vma_insights_nlquery_routes.py::test_rhythm_route_answers_with_sleep_and_wake
+1 failed, 6 passed in 2.48s

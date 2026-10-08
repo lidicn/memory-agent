@@ -1,0 +1,10 @@
+copy tree ready: E:\NAS\memory-agent\.qoder\tmp-c81-mut
+[M-0] 对照腿（什么都不改）rc=0 summary='207 passed in 29.00s' failed=[]
+M-0 绿：副本树与工作树同口径，后续红都是注入造成的。
+[M01] KILLED src\memory_agent\auth.py :: 开关失效：MA_TRUST_PROXY 关着（默认）也去读 XFF
+        3 failed, 204 passed in 25.43s :: 红用例 3 条: test_basic_path_with_switch_off_uses_tcp_peer, test_route_reads_the_switch_from_runtime_config, test_the_switch_is_the_master_gate_even_with_a_registered_peer
+[M17] KILLED src\memory_agent\api\auth_routes.py :: /login 入口硬开信任，不读运行时 config
+        1 failed, 206 passed in 28.02s :: 红用例 1 条: test_route_reads_the_switch_from_runtime_config
+WT_UNTOUCHED=True
+totals: killed=2 survived=0 invalid=0 legs=2
+python: 3.13.2 harness-exe=C:/Users/lidicn/AppData/Local/Programs/Python/Python313/python.exe

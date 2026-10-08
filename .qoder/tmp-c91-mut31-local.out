@@ -1,0 +1,32 @@
+COPY_TREE_READY=E:/NAS/memory-agent/.qoder/tmp-c91mut31-local src_files=85
+[Q-0] 对照腿（什么都不改）rc=0 summary='41 passed in 3.96s' failed=[] skipped=0
+Q-0 绿：副本树与快照树同口径，后续红都是注入造成的。
+[T01] KILLED src\memory_agent\app.py :: 缺 client_ip 放行 ⇒ dbg_ 令牌在无来源信息时也能用（fail-open）
+        2 failed, 39 passed in 2.52s :: 红用例 2 条: test_is_trusted_source_fails_closed_when_the_ip_is_absent_or_unparsable[None], test_is_trusted_source_fails_closed_when_the_ip_is_absent_or_unparsable[]
+[T02] KILLED src\memory_agent\app.py :: 坏 IP 放行 ⇒ 传不成 IP 的字符串被当成内网
+        4 failed, 37 passed in 2.56s :: 红用例 4 条: test_is_trusted_source_fails_closed_when_the_ip_is_absent_or_unparsable[, test_is_trusted_source_fails_closed_when_the_ip_is_absent_or_unparsable[1.2.3.4/24], test_is_trusted_source_fails_closed_when_the_ip_is_absent_or_unparsable[192.168.2.999], test_is_trusted_source_fails_closed_when_the_ip_is_absent_or_unparsable[garbage]
+[T03] KILLED src\memory_agent\app.py :: 退回 is_private ⇒ 文档段/保留段/链路本地段（203.0.113.7、169.254.1.1、2001:db8::1）都算可信
+        8 failed, 33 passed in 2.46s :: 红用例 7 条: 1], test_is_trusted_source_rejects_reserved_documented_and_link_local_ranges[0.0.0.0], test_is_trusted_source_rejects_reserved_documented_and_link_local_ranges[169.254.1.1], test_is_trusted_source_rejects_reserved_documented_and_link_local_ranges[192.0.2.1], test_is_trusted_source_rejects_reserved_documented_and_link_local_ranges[198.51.100.1], test_is_trusted_source_rejects_reserved_documented_and_link_local_ranges[203.0.113.7] ...
+[T04] KILLED src\memory_agent\app.py :: 不拆 IPv4-mapped ⇒ ::ffff:10.1.2.3 这类真实内网来源被拒（口径不对称）
+        1 failed, 40 passed in 2.43s :: 红用例 1 条: ffff:10.1.2.3]
+[T05] KILLED src\memory_agent\app.py :: 网表少 10.0.0.0/8 ⇒ 一段 RFC1918 内网不再可信
+        2 failed, 39 passed in 2.45s :: 红用例 2 条: ffff:10.1.2.3], test_is_trusted_source_accepts_only_loopback_rfc1918_and_ula[10.1.2.3]
+[T06] KILLED src\memory_agent\app.py :: ULA 换成 IPv6 文档段 ⇒ 该拒的放行、该放的拒
+        3 failed, 38 passed in 2.51s :: 红用例 1 条: 1]
+[T07] KILLED src\memory_agent\auth.py :: 坏 CIDR 换来 0.0.0.0/0 ⇒ 配置出错退化成「谁都信」
+        1 failed, 40 passed in 2.73s :: 红用例 1 条: test_trusted_proxy_networks_skips_unparsable_items_without_trusting_everyone
+[T08] KILLED src\memory_agent\auth.py :: 缓存短路失效 ⇒ 改配置后仍拿旧网表（缓存与配置脱钩）
+        1 failed, 40 passed in 2.48s :: 红用例 1 条: test_trusted_proxy_networks_cache_follows_the_config_string
+[T09] KILLED src\memory_agent\mcp_tokens.py :: 判重拆掉 ⇒ migrate_legacy 重复执行会再加一格（不幂等）
+        1 failed, 40 passed in 2.40s :: 红用例 1 条: test_migrate_legacy_does_not_duplicate_the_default_token_on_rerun
+[T10] KILLED src\memory_agent\mcp_tokens.py :: prefix 存整串明文 ⇒ 迁移后配置里仍留有可用的完整令牌
+        1 failed, 40 passed in 2.47s :: 红用例 1 条: test_migrate_legacy_replaces_plaintext_with_hash_and_never_keeps_the_secret
+[T11] KILLED src\memory_agent\task_record.py :: 同键不更新而插第二行 ⇒ upsert 不再幂等
+        1 failed, 40 passed in 2.41s :: 红用例 1 条: test_upsert_task_record_same_key_twice_stays_one_row_and_takes_the_new_data
+[T12] KILLED src\memory_agent\store.py :: payload 去掉原始时间戳 ⇒ 同秒事件相互覆盖
+        3 failed, 38 passed in 2.80s :: 红用例 3 条: test_make_event_id_is_a_stable_sha1_for_the_same_input, test_make_event_id_keeps_events_that_differ_only_by_subsecond_timestamp, test_make_event_id_survives_non_string_timestamps_without_raising
+[T13] KILLED src\memory_agent\store.py :: id 掺入进程内计时 ⇒ 同输入不再同输出，重复投递会写两行
+        1 failed, 40 passed in 2.61s :: 红用例 1 条: test_make_event_id_is_a_stable_sha1_for_the_same_input
+WT_UNTOUCHED=True
+totals: killed=13 survived=0 invalid=0 legs=13
+python: 3.13.2 harness-exe=C:/Users/lidicn/AppData/Local/Programs/Python/Python313/python.exe

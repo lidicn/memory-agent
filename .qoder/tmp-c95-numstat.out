@@ -1,0 +1,14 @@
+0	5	.gates-baseline.txt
+268	0	scripts/scan_session_owner_parity.py
+3	7	scripts/scan_stub_claims_success.py
+8	6	src/memory_agent/activity_inference.py
+8	6	src/memory_agent/api/behavior_routes.py
+0	2	src/memory_agent/api/config_routes.py
+0	3	src/memory_agent/config.py
+36	26	src/memory_agent/rule_engine.py
+4	0	src/memory_agent/runtime.py
+0	15	src/memory_agent/static/js/pages/settings.js
+1	1	tests/test_drift.py
+1	1	tests/test_process_mining.py
+249	0	tests/test_vma_dcd_20261008_rulings.py
+24	10	tests/test_vma_phase2_claims_gauge.py

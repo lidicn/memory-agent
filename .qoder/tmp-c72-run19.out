@@ -1,0 +1,86 @@
+HEAD=8b11437
+UNPUSHED=1
+GUARD_OK TREE_CLEAN=0
+GUARD_OK REMOTE_SYNTAX_RC=0
+GUARD_OK SELF_SYNTAX_RC=0
+GUARD_OK MUT72_PARSE_RC=0
+GUARD_OK HASHES_PARSE_RC=0
+.qoder/tmp-c72-remote19.sh UNESCAPED=0 ODD_QUOTE_LINES=[]
+LINT_RC=0
+GUARD_OK LINT_RC=0
+GUARD_OK MUT72_VERIFY_RC=0
+MUTANTS_PARSED=3 VERIFY_BAD=0
+GUARD_OK MUT72_PARSED=3
+GUARD_OK MUT72_VERIFYBAD=0
+GUARD_OK MUT72_LOCAL_OUT_EXISTS=0
+NOTHING 什么都不改档 -> RC=0 | 12 passed in 3.95s
+L1 丢键整格（改前形状：只回 core.data_quality） -> RC=1 咬住了 restored=OK | 3 failed, 9 passed in 3.25s
+L2 格还在但恒空（谎从「没有」变成「镜像永远干净」） -> RC=1 咬住了 restored=OK | 3 failed, 9 passed in 3.23s
+L3 摘掉附属块的保护（附属块炸掉时整页被 _degrade 打空） -> RC=1 咬住了 restored=OK | 2 failed, 10 passed in 3.33s
+MUT_COUNT=3 MUTATION_BAD=0
+GUARD_OK MUT72_LOCAL_BAD=0
+FILES=400
+IN_SNAP_checked=12
+GUARD_OK HASHES_LOCAL_RC=0
+HASH_LISTED=400 HASH_FILES=400 HASH_MISSING=0
+HASH_AGGREGATE=b750ca638fd1ec79f9054cce3b365c7ab05c71288ca30b3af45dda9df1a0cdbd
+GUARD_OK HASH_MISSING=0
+PREFLIGHT_OK=1
+GUARD_OK TAR_RC=0
+TAR_SIZE=2433586
+GUARD_OK SCP_RC=0
+GUARD_OK REMOTE_SCP_RC=0
+GUARD_OK MUT72_SCP_RC=0
+GUARD_OK HASHES_SCP_RC=0
+GUARD_OK FILELIST_SCP_RC=0
+STAGE_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+400
+SNAP_FILELIST_LINES_RC=0
+SYNC_RC=0
+2026-10-07T06:06:32+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+Python 3.11.16
+TOOLCHAIN_RC=0
+SNAP_RC=0
+HASH_LISTED=400 HASH_FILES=400 HASH_MISSING=0
+HASH_AGGREGATE=b750ca638fd1ec79f9054cce3b365c7ab05c71288ca30b3af45dda9df1a0cdbd
+MERGE_LINE=1
+PRE_FIX_LEGS=0
+FAIL_SHAPE=2
+NEW_LOCKS=3
+ANCHOR_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:206: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1907 passed, 10 skipped in 485.90s (0:08:05)
+SUITE_FAILNAMES_RC=1
+TARGETED_RC=0
+............                                                             [100%]
+12 passed in 4.87s
+FACES_RC=0
+........................................................................ [ 34%]
+........................................................................ [ 69%]
+................................................................         [100%]
+208 passed in 175.00s (0:02:55)
+FACES_FAILNAMES_RC=1
+MUT72_RC=1
+NOTHING 什么都不改档 -> RC=1 | 
+CONTROL_BAD：控制腿就不绿，整档作废
+POST_RC=0
+............                                                             [100%]
+12 passed in 4.22s
+2026-10-07T06:18:02+08:00
+REMOTE_BATCH_RC=0
+REMOTE_DRIVER_RC=0
+CONTAINER_BATCH_RC=0
+DRIVER_RC=0

@@ -1,0 +1,11 @@
+[baseline] RC=0 failed=[]
+[M1 anon 拿 S3 的结果冒充（分层变成一句空话）] RC=1 red=5 ['TestOutboundLayering::test_anon_layer_is_still_made_when_s3_is_disabled', 'TestOutboundLayering::test_anon_layer_is_the_real_s1_output', 'TestOutboundLayering::test_both_layers_present_and_trace_txt_keeps_the_ruled_shape', 'TestOutboundLayering::test_s1_failure_omits_the_anon_file_but_keeps_the_pack', 'TestOutboundLayering::test_s1_returning_empty_is_not_shipped_as_anonymized'] RESTORED=True
+[M2 trace.txt 也过 S1（改了已交付产物的口径）] RC=1 red=2 ['TestOutboundLayering::test_anon_layer_is_the_real_s1_output', 'TestOutboundLayering::test_both_layers_present_and_trace_txt_keeps_the_ruled_shape'] RESTORED=True
+[M3 去掉成员姓名这一维校验] RC=1 red=1 ['TestLabelWhitelist::test_name_bearing_labels_are_rejected_and_the_reason_stays_nameless'] RESTORED=True
+[M4 段落正则去掉 re.ASCII（全角数字过关）] RC=1 red=1 ['TestLabelWhitelist::test_fullwidth_digits_are_not_a_valid_segment'] RESTORED=True
+[M5 段落白名单放宽成任意字符] RC=1 red=3 ['TestLabelWhitelist::test_cjk_segment_has_to_be_a_named_room', 'TestLabelWhitelist::test_fullwidth_digits_are_not_a_valid_segment', 'TestLabelWhitelist::test_separators_are_single_and_never_trailing'] RESTORED=True
+[M6 尾分隔符检查删除] RC=1 red=1 ['TestLabelWhitelist::test_separators_are_single_and_never_trailing'] RESTORED=True
+[M7 白名单拒收后照样落盘] RC=1 red=2 ['TestBuildFeedbackPack::test_label_path_traversal', 'TestLabelWhitelist::test_rejected_label_writes_no_file_at_all'] RESTORED=True
+[M8 调用点把真 S1 入口换成 None] RC=1 red=1 ['TestLabelWhitelist::test_both_export_endpoints_wire_the_whitelist_and_the_real_s1'] RESTORED=True
+[M9 调用点把打包放回事件循环] RC=1 red=1 ['TestLabelWhitelist::test_both_export_endpoints_wire_the_whitelist_and_the_real_s1'] RESTORED=True
+MUT_RC=0

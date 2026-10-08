@@ -1,0 +1,48 @@
+[MCP] 未安装 mcp SDK（cannot import name 'MCPServer' from 'mcp.server' (C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\site-packages\mcp\server\__init__.py)）。请在 Dockerfile 中加入 'mcp>=2.0' 并重新 docker compose build 后再启动。
+--- P1 /api/behaviors/bad-cases limit 口径（表内 7 条）
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmp3saqaavz.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P1a limit=abc -> 未捕获 ValueError: invalid literal for int() with base 10: 'abc'
+P1b 对照 limit=2 -> count= 2
+P1c limit=-1 -> 200 count=7 （SQLite 的 LIMIT -1 = 无上限：比 limit=2 给得多、又不受 100 夹紧约束）
+P1d limit=0 -> 0
+--- P2 事件循环：DB / CPU 是否离开主线程
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpygkm36mp.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P2a home-profile -> 200
+P2a2 阻塞期间心跳 tick：0（handler 内有 50ms 同步占用；卸载到线程则应 >0）
+P2b 线程记录： [('build_profile', 'MainThread'), ('list_agent_memories', 'MainThread')]
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpe190p2zj.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P2c predictions -> 200 线程记录： [('predict_arrival_time', 'MainThread'), ('predict_daily_routine', 'MainThread')]
+--- P3 数字入参守卫缺口（days 有守卫，其余没有）
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpo97fx_p0.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P3 behaviors_mine_process {'min_variant_support': 'abc'} -> 未捕获 ValueError: invalid literal for int() with base 10: 'abc'
+P3 behaviors_mine_process {'bucket_sec': 'abc'} -> 未捕获 ValueError: invalid literal for int() with base 10: 'abc'
+P3 behaviors_mine_process {'min_cases_per_room': 'abc'} -> 未捕获 ValueError: invalid literal for int() with base 10: 'abc'
+P3 behaviors_mine_process {'min_case_events': 'abc'} -> 未捕获 ValueError: invalid literal for int() with base 10: 'abc'
+P3 behaviors_mine_process {'min_variant_support': 0, 'bucket_sec': 0, 'days': 3} -> 200
+P3 behaviors_audit_rule_recall {'min_near_miss': 0} -> 200
+P3 behaviors_audit_rule_recall {'min_near_miss': 'abc'} -> 未捕获 ValueError: invalid literal for int() with base 10: 'abc'
+P3 behaviors_mine_drift {'window_size': 'abc'} -> 未捕获 ValueError: invalid literal for int() with base 10: 'abc'
+P3 behaviors_mine_drift {'min_score': 'abc'} -> 未捕获 ValueError: could not convert string to float: 'abc'
+P3 behaviors_mine_process {'days': 'abc'} -> 400
+P3y 收到的值（证明 0 被静默改成默认档）：
+    mine_process kw= {'persist': True, 'emit_rules': True, 'min_variant_support': 3, 'bucket_sec': 0, 'min_cases_per_room': None, 'min_case_events': None}
+    audit_rule_recall kw= {'persist': True, 'min_near_miss': 2}
+--- P4 causal_analyze 的 lookback：一个数两种口径
+P4a clamp_days(10**9) = 3650  而 search_candidate_causes 的 half_life 用的是原值：lookback/2.0 = 500000000.0
+P4b 317: delta = timedelta(days=clamp_days(lookback_days))
+P4b 325: half_life = lookback_days / 2.0
+P4b 364: prox = _temporal_proximity(action_dts.get(action, []), cdt, half_life)
+P4b 385: prox = _temporal_proximity(sched_dts, cdt, half_life)
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpsi9euq3p.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+P4c days/lookback 极值 -> 400 b'{"ok":false,"error":"\xe4\xba\x8b\xe4\xbb\xb6\xe6\x95\xb0\xe6\x8d\xae\xe4\xb8\x8d\xe8\xb6\xb3\xef\xbc\x880 \xe6\x9d\xa1 < 14 \xe5\xa4\xa9\xe6\x9c\x80\xe4\xbd\x8e\xe8\xa6\x81\xe6\xb1\x82\xef\xbc\x89"}'
+PROBE_DONE

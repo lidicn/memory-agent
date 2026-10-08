@@ -1,0 +1,18 @@
+copy tree ready: E:\NAS\memory-agent\.qoder\tmp-r20-mut
+[P-0] 对照腿（什么都不改）rc=0 summary='28 passed in 4.56s' failed=[]
+P-0 绿：副本树与工作树同口径，后续红都是注入造成的。
+[P01] KILLED src\memory_agent\acp_server.py :: MA-36 回归：prompt 完全不校验属主（B 可读可写 A 的会话）
+        4 failed, 24 passed in 2.79s :: 红用例 4 条: test_every_entry_that_reads_session_id_enforces_ownership, test_prompt_cross_owner_is_denied_and_writes_nothing, test_prompt_denies_a_session_whose_store_entry_is_gone_but_history_remains, test_prompt_from_an_unauthenticated_principal_is_denied_for_existing_session
+[P02] KILLED src\memory_agent\acp_server.py :: MA-37 回归：new() 回到无条件覆盖 ⇒ 后来者改写属主
+        2 failed, 26 passed in 2.63s :: 红用例 2 条: test_session_new_by_another_owner_is_refused_and_keeps_original_owner, test_store_new_raises_conflict_instead_of_silent_takeover
+[P03] KILLED src\memory_agent\acp_server.py :: 接错异常类型：属主冲突不再回错误信封，而是炸穿成 500
+        2 failed, 26 passed in 2.86s :: 红用例 2 条: test_every_entry_that_reads_session_id_enforces_ownership, test_session_new_by_another_owner_is_refused_and_keeps_original_owner
+[P04] KILLED src\memory_agent\acp_server.py :: 新建会话不带属主：A 随后读自己的历史被 fail-close 拒掉
+        1 failed, 27 passed in 2.64s :: 红用例 1 条: test_prompt_without_session_id_leaves_the_creator_an_readable_history
+[P05] KILLED src\memory_agent\acp_server.py :: 只对会话表里存在的会话校验：被 _trim 裁掉、历史仍在的会话成了越权入口
+        1 failed, 27 passed in 2.85s :: 红用例 1 条: test_prompt_denies_a_session_whose_store_entry_is_gone_but_history_remains
+[P06] KILLED src\memory_agent\acp_server.py :: 空主体放行：未带 scope 的入口直接绕过属主校验
+        1 failed, 27 passed in 2.85s :: 红用例 1 条: test_prompt_from_an_unauthenticated_principal_is_denied_for_existing_session
+WT_UNTOUCHED=True
+totals: killed=6 survived=0 invalid=0 legs=6
+python: 3.13.2 harness-exe=C:\Users\lidicn\AppData\Local\Programs\Python\Python313\python.exe

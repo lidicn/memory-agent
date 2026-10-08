@@ -1,0 +1,5 @@
+NOTHING 什么都不改档 -> RC=0 | 12 passed in 3.95s
+L1 丢键整格（改前形状：只回 core.data_quality） -> RC=1 咬住了 restored=OK | 3 failed, 9 passed in 3.25s
+L2 格还在但恒空（谎从「没有」变成「镜像永远干净」） -> RC=1 咬住了 restored=OK | 3 failed, 9 passed in 3.23s
+L3 摘掉附属块的保护（附属块炸掉时整页被 _degrade 打空） -> RC=1 咬住了 restored=OK | 2 failed, 10 passed in 3.33s
+MUT_COUNT=3 MUTATION_BAD=0

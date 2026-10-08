@@ -1,0 +1,6 @@
+MUTANTS_PARSED=4 VERIFY_BAD=0
+M-0 什么都不改（基线：证明门自己没坏） -> RC=0 基线 | 19 passed in 3.72s
+L1 文案回滚到承诺 has_data/first-last 的那版 -> RC=1 failed=2 咬住了 restored=OK | 2 failed, 17 passed in 3.82s
+L2 载荷不再给 peak_hours（文案说有、实现没有） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 18 passed in 4.22s
+L3 start_day 写成首个有数据日（边界与数据边界混掉） -> RC=1 failed=1 咬住了 restored=OK | 1 failed, 18 passed in 4.06s
+MUT_COUNT=4 MUTATION_BAD=0

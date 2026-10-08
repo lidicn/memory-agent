@@ -1,0 +1,35 @@
+# memory-agent 质量门禁口径（复制到仓库根，改名 `.gates.toml`）
+# 依据 `doc/审计与横评-202609/03-审计-memory-agent.md`。
+
+source_roots = ["src"]
+
+smoke_targets = ["memory_agent", "memory_agent.acp_server", "memory_agent.mcp_server"]
+
+critical_globs = [
+    "src/memory_agent/auth.py",
+    "src/memory_agent/mcp_auth.py",
+    "src/memory_agent/acp_auth.py",
+    "src/memory_agent/app_tokens.py",       # 令牌校验（P0-4 的正当实现所在）
+    "src/memory_agent/mcp_scopes.py",       # scope 表（P0-6：未知工具默认可读）
+    "src/memory_agent/api/deps.py",         # require_user / require_admin
+    "src/memory_agent/api/face_routes.py",  # P0-4 未修：`auth == f"Bearer …"`
+    "src/memory_agent/api/vision_routes.py",
+    "src/memory_agent/api/system_routes.py",# P0-10：容器内 git 写宿主源码
+    "src/memory_agent/backup.py",
+    "src/memory_agent/circuit_breaker.py",
+]
+
+write_path_globs = [
+    "src/memory_agent/agent_memory.py",     # 三副本一致性主写路径
+    "src/memory_agent/store*.py",
+    "src/memory_agent/api/*_routes.py",
+    "src/memory_agent/insights.py",
+]
+
+forbid_local_consent_tables = true   # WO-GATE-001 §八：入口只能收窄，防止日后在 MA 长自己的同意词表
+
+extra_skip_globs = [
+    "src/__pycache__/*",
+    "scripts/*",   # 一次性脚本不参与门禁（repro_debug500.py 等）
+    "src/memory_agent/static/*",  # 前端静态资源目录，不参与 Python AST 门禁
+]

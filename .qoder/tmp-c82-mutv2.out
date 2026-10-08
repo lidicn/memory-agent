@@ -1,0 +1,14 @@
+copy tree ready: E:\NAS\memory-agent\.qoder\tmp-c82-mut
+[M-0] 对照腿（什么都不改）rc=0 summary='70 passed in 5.70s' failed=[]
+M-0 绿：副本树与工作树同口径，后续红都是注入造成的。
+[N09] KILLED src\memory_agent\announcer.py :: 总闸那一行改读 HA 就绪：HA 没配起来时连回落都被当场拦掉。（原腿 `if False:` 是**等价变异**——enabled/inbox_ready 两个因子都已含 switch，删掉这行行为不变，任何用例都不该响；换成这个不等价读法才有判据）
+        5 failed, 65 passed in 5.11s :: 红用例 5 条: test_cooldown_applies_on_the_fallback_path_too, test_fallback_carries_a_real_trace_id, test_inbox_fallback_when_ha_route_is_not_configured, test_inbox_rejection_is_reported_as_not_announced, test_missing_target_falls_back_too
+[N10] KILLED src\memory_agent\announcer.py :: HA 回了 ok=False 也报成播报成功
+        2 failed, 68 passed in 4.53s :: 红用例 2 条: test_ha_non_dict_reply_is_not_announced_and_does_not_escape, test_ha_rejection_is_reported_as_not_announced
+[N12] KILLED src\memory_agent\announcer.py :: 不判 HA 回包形状：非 dict 时 AttributeError 抛穿采集主链路
+        1 failed, 69 passed in 4.31s :: 红用例 1 条: test_ha_non_dict_reply_is_not_announced_and_does_not_escape
+[N14] KILLED src\memory_agent\runtime.py :: 运行面构造 Announcer 时不投桥：回落路在 production 永远不在场
+        1 failed, 69 passed in 4.44s :: 红用例 1 条: test_the_production_announcer_is_wired_to_the_bridge
+WT_UNTOUCHED=True
+totals: killed=4 survived=0 invalid=0 legs=4
+python: 3.13.2 harness-exe=C:/Users/lidicn/AppData/Local/Programs/Python/Python313/python.exe

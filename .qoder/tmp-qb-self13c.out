@@ -1,0 +1,5 @@
+SELFTEST_HIT InsightService.broken_days.days -> DEAD-RESULT
+SELFTEST_HIT InsightService.broken_query.query -> DROPPED
+SELFTEST_HIT InsightService.broken_query.room -> DROPPED
+SELFTEST_HIT clean -> FINDINGS=0（rows=4）
+SELFTEST=OK

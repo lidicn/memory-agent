@@ -1,0 +1,55 @@
+F.................F.........                                             [100%]
+================================== FAILURES ===================================
+____________ test_fixtures_and_window_share_the_house_clock_frame _____________
+
+    def test_fixtures_and_window_share_the_house_clock_frame():
+        """量具自证（本批容器 run16 的教训）：事件 epoch 必须和 `TimeRange` 用同一个时框。
+    
+        `TimeRange.start_ts/end_ts` 走 `house_ts`（按**家庭墙钟**解释 naive），而
+        `datetime(...).timestamp()` 走**机器时区**——混用会让用例在 UTC 容器里整段落到窗口外：
+        本机（+8）全绿、容器 5 条读成 `sessions=0`。这条锁在任何机器时区都成立；
+        只有当机器偏移恰好为零时，两种写法才给出同一个 epoch。
+        """
+        tr = _tr(48, 48)
+        t0 = house_ts(datetime(2026, 10, 6, 8, 0, 0))
+        assert tr.contains(t0), "用例的 epoch 落到了窗口外 ⇒ 时框不一致"
+        offset = datetime.now().astimezone().utcoffset()
+        if offset and offset.total_seconds() != 0:
+>           assert t0 != datetime(2026, 10, 6, 8, 0, 0).timestamp(), \
+                "机器偏移非零时，house_ts 与 .timestamp() 必须给出不同的 epoch"
+E           AssertionError: 机器偏移非零时，house_ts 与 .timestamp() 必须给出不同的 epoch
+E           assert 1791244800.0 != 1791244800.0
+E            +  where 1791244800.0 = <built-in method timestamp of datetime.datetime object at 0x000002BE6AB90C60>()
+E            +    where <built-in method timestamp of datetime.datetime object at 0x000002BE6AB90C60> = datetime.datetime(2026, 10, 6, 8, 0).timestamp
+E            +      where datetime.datetime(2026, 10, 6, 8, 0) = datetime(2026, 10, 6, 8, 0, 0)
+
+tests\test_device_usage_core.py:91: AssertionError
+_______________ test_device_usage_reports_items_and_honors_room _______________
+
+    def test_device_usage_reports_items_and_honors_room():
+        st, svc = _live()
+        try:
+            out = svc.device_usage(entity_id="light.shufang_desk,media_player.living_tv",
+                                   start=W0, end=W1)
+            assert out.get("error") is None, out
+            assert out["total"] == out["device_count"] == 2, out
+            assert [d["entity_id"] for d in out["items"]] == [d["entity_id"] for d in out["devices"]]
+            study = svc.device_usage(room="书房", start=W0, end=W1)
+            assert [d["entity_id"] for d in study["items"]] == ["light.shufang_desk"], study
+            assert study["items"][0]["total_on_seconds"] > 0, study["items"][0]
+            assert study["total_on_seconds"] > 0 and "total_on_human" in study, sorted(study)
+            # legacy 的既有约定：无定位方式不算"全屋"，算用错参数
+            none = svc.device_usage(start=W0, end=W1)
+>           assert none["ok"] is False and "定位" in str(none.get("error")), none
+E           AssertionError: {'window': {'start': '2026-01-01 00:00:00', 'end': '2026-01-01 23:59:59', 'start_ts': 1767196800.0, 'end_ts': 1767283199.0, ...}, 'device_count': 2, 'total_on_seconds': 7200.0, 'total_on_human': '2小时0分', ...}
+E           assert (True is False)
+
+tests\test_vma_insights_callsite_binding.py:333: AssertionError
+---------------------------- Captured stdout call -----------------------------
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmp0qwodr3m.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+=========================== short test summary info ===========================
+FAILED tests/test_device_usage_core.py::test_fixtures_and_window_share_the_house_clock_frame
+FAILED tests/test_vma_insights_callsite_binding.py::test_device_usage_reports_items_and_honors_room
+2 failed, 26 passed in 20.51s

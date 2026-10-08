@@ -1,0 +1,4 @@
+root: E:/NAS/memory-agent | python: C:\Users\lidicn\AppData\Local\Programs\Python\Python313\python.exe
+machine date: 中国标准时间 +0800
+last_line: ['1 passed in 1.76s']
+MUT_RC=0 RESTORED=True

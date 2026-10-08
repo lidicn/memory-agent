@@ -1,0 +1,48 @@
+...F                                                                     [100%]
+================================== FAILURES ===================================
+_____ test_two_concurrent_bootstrap_registrations_only_create_one_account _____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000022A14309EB0>
+
+    def test_two_concurrent_bootstrap_registrations_only_create_one_account(monkeypatch):
+        """`register` 里那条「has_users 检查 → 建号」留在同一线程内跑完，是有语义后果的：
+        引导期（无任何账号）两个匿名并发注册，HEAD 只让第一个成号、第二个拿 403。
+        若把前置检查卸载进线程，两次检查会同时在空表上返回 False ⇒ 攻击者能在管理员初始化那一刻
+        顺手多塞一个账号。这条锁防的就是"顺手把 register 也卸载了"。"""
+        class _RmwAuth:
+            def __init__(self):
+                self.users = {}
+    
+            def has_users(self):
+                return bool(self.users)
+    
+            def register(self, username, password):
+                snapshot = dict(self.users)      # 读
+                time.sleep(0.05)                 # 真实实现里是文件 IO，放大窗口用
+                snapshot[username] = {"password_hash": "h"}
+                self.users = snapshot            # 整份写回（覆盖）
+                return {"ok": True, "is_admin": len(snapshot) == 1}
+    
+            def login(self, username, password):
+                return {"ok": True, "token": "t"}
+    
+        auth = _RmwAuth()
+        monkeypatch.setattr(ar, "runtime", lambda request=None: _RT(auth))
+    
+        async def main():
+            return await asyncio.gather(
+                ar.register(_request({"username": "a", "password": "pw"})),
+                ar.register(_request({"username": "b", "password": "pw"})),
+            )
+    
+        responses = asyncio.run(main())
+>       assert sorted(auth.users) == ["a"]
+E       AssertionError: assert ['a', 'b'] == ['a']
+E         
+E         Left contains one more item: 'b'
+E         Use -v to get more diff
+
+tests\test_vma_a3_p22_auth_loop_blocking.py:176: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_vma_a3_p22_auth_loop_blocking.py::test_two_concurrent_bootstrap_registrations_only_create_one_account
+1 failed, 3 passed in 5.23s

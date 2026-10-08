@@ -1,0 +1,6 @@
+ROOT=src handler_shaped=195 mounted=190 parse_fail=0 referenced=1 unmounted=4 problems=4
+PROBLEM UNMOUNTED-HANDLER src/memory_agent/api/behavior_routes.py:382 behaviors_add_rule
+PROBLEM UNMOUNTED-HANDLER src/memory_agent/api/behavior_routes.py:430 behaviors_delete_rule
+PROBLEM UNMOUNTED-HANDLER src/memory_agent/api/behavior_routes.py:370 behaviors_list_rules
+PROBLEM UNMOUNTED-HANDLER src/memory_agent/api/behavior_routes.py:412 behaviors_update_rule
+SCAN_RC=1 共 4 个失联 handler

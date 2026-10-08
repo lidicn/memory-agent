@@ -1,0 +1,107 @@
+services:
+  memory-agent:
+    build: .
+    container_name: memory-agent
+    restart: unless-stopped
+    ports:
+      # 只绑 LAN 网卡，避免与 tailscaled 在 Tailscale 网卡上的 `tailscale serve :8086` 冲突
+      - "192.168.2.200:8086:8000"
+    env_file:
+      - .env
+    environment:
+      # HA连接
+      HASS_SERVER: "${HASS_SERVER:-http://192.168.2.200:8123}"
+      HASS_TOKEN: "${HASS_TOKEN:-}"
+      # NR连接
+      NR_URL: "${NR_URL:-http://192.168.2.200:1990}"
+      NR_USER: "${NR_USER:-lidicn}"
+      NR_PASS: "${NR_PASS:-}"
+      # Redis
+      REDIS_HOST: "${REDIS_HOST:-redis}"
+      REDIS_PORT: "${REDIS_PORT:-6379}"
+      # Chroma
+      CHROMA_HOST: "${CHROMA_HOST:-chroma}"
+      CHROMA_PORT: "${CHROMA_PORT:-8000}"
+      # LLM (OpenAI兼容)
+      LLM_API_URL: "${LLM_API_URL:-https://api.deepseek.com/v1}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-deepseek-chat}"
+      # HA MariaDB 直读（方案B 采集源，未启用时回退 REST）
+      HA_DB_ENABLED: "${HA_DB_ENABLED:-false}"
+      HA_DB_HOST: "${HA_DB_HOST:-192.168.2.200}"
+      HA_DB_PORT: "${HA_DB_PORT:-3306}"
+      HA_DB_NAME: "${HA_DB_NAME:-homeassistant}"
+      HA_DB_USER: "${HA_DB_USER:-memory_agent_ro}"
+      # 密码不在此处明文注入；以 config.json 的 ha_db_password 为准
+      # JWT密钥
+      JWT_SECRET: "${JWT_SECRET:-change_this_to_random_string}"
+      # 豆包管家对接令牌（外部服务窄接口：成员档案读写 + 在场查询）
+      BUTLER_TOKEN: "${BUTLER_TOKEN:-}"
+      PYTHONPATH: "/app/src"
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/data
+      - ./.env:/app/.env:ro
+      # 在线更新已停用：改由宿主 deploy_nas.sh 承担（WO-MA-001 / 审计 P0-10）
+    depends_on:
+      - redis
+      - chroma
+    # DCD 20261005 §二.3 Q1=乙：MA 同时在默认网（与 caddy 通信）和 ma_internal（与 chroma/redis 通信）
+    networks:
+      - default
+      - ma_internal
+
+  # Caddy 反向代理 + TLS 终止，用于 iOS/iPad PWA（HTTPS 必需）
+  # 证书准备见 scripts/gen-certs.sh 或 Tailscale `tailscale cert`
+  caddy:
+    image: caddy:2-alpine
+    container_name: memory-caddy
+    restart: unless-stopped
+    ports:
+      # DCD 20261005 Q3=A：NAS 宿主 80/443 被孤儿端点占用，8443 被 homelab-dashboard 占用
+      # caddy 换端口 9080/9443，PWA 访问地址改为 https://192.168.2.200:9443
+      - "192.168.2.200:9080:80"
+      - "192.168.2.200:9443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+      - caddy_data:/data
+    depends_on:
+      - memory-agent
+    # caddy 只在默认网，不可达 chroma/redis（CVE 网络隔离）
+    networks:
+      - default
+
+  redis:
+    image: redis:alpine
+    container_name: memory-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    # DCD 20261005 §二.3 Q1=乙：redis 只在 ma_internal，外部容器不可达
+    networks:
+      - ma_internal
+
+  chroma:
+    image: docker.m.daocloud.io/chromadb/chroma:0.5.23
+    container_name: memory-chroma
+    restart: unless-stopped
+    # 端口已摘除：chroma 明文向量库无鉴权，只走 compose 内部网络
+    # MA 主服务经 chroma:8000 访问（WO-MA-001 / 审计 P0-10）
+    volumes:
+      - chroma_data:/data
+    # DCD 20261005 §二.3 Q1=乙：chroma 只在 ma_internal，外部容器不可达
+    networks:
+      - ma_internal
+
+# DCD 20261005 §二.3 Q1=乙：MA 专用内部网，internal=true 禁止对外路由
+# 有效读数：docker network inspect ma_internal 可达 chroma 的容器 = MA + chroma（redis 同网但不主动访问 chroma）
+networks:
+  ma_internal:
+    internal: true
+    name: memory-agent_internal
+
+volumes:
+  redis_data:
+  chroma_data:
+  caddy_data:

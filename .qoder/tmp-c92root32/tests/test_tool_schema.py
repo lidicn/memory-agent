@@ -1,0 +1,139 @@
+"""tool_schema 一致性测试：保证内置 LLM 与 MCP 共用同一份工具定义、不再漂移。
+
+运行环境：需在能 import memory_agent 的环境执行（容器 / 安装依赖后）。
+- 基础断言（无需 mcp）：规格完整性、内置 ⊆ MCP、build_openai_tools 数量正确。
+- 进阶断言（import mcp 成功时）：每个 catalogued MCP 工具都有对应的已注册函数，
+  且内置与 MCP 共享工具的参数名完全对齐，防止"同名不同参"的割裂。
+"""
+
+import inspect
+import os
+import sys
+
+import pytest
+
+# 让 tests/ 能 import src 下的 memory_agent 包
+_SRC = os.path.join(os.path.dirname(__file__), "..", "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, os.path.abspath(_SRC))
+
+from memory_agent.tool_schema import (  # noqa: E402
+    TOOL_NAMES,
+    TOOL_SPECS,
+    SPEC_BY_NAME,
+    build_catalog,
+    build_openai_tools,
+)
+
+# ── 基础断言（不依赖 mcp）────────────────────────────────────────────────────
+
+
+def test_specs_nonempty_metadata():
+    for s in TOOL_SPECS:
+        assert s.name, "工具名不能为空"
+        assert s.summary and s.description, f"{s.name} 缺 summary/description"
+        assert s.example, f"{s.name} 缺 example"
+        assert s.pitfall, f"{s.name} 缺 pitfall"
+        assert s.expose, f"{s.name} 未设置 expose"
+
+
+def test_names_unique_and_tool_names_consistent():
+    names = [s.name for s in TOOL_SPECS]
+    assert len(names) == len(set(names)), f"工具名重复：{names}"
+    mcp_spec_names = [n for n in names if "mcp" in SPEC_BY_NAME[n].expose]
+    assert set(TOOL_NAMES) == set(mcp_spec_names), "TOOL_NAMES 与 expose='mcp' 的工具集合不一致"
+
+
+def test_builtin_is_subset_of_mcp():
+    builtin = {s.name for s in TOOL_SPECS if "builtin" in s.expose}
+    mcp = {s.name for s in TOOL_SPECS if "mcp" in s.expose}
+    assert builtin <= mcp, f"内置暴露了 MCP 未暴露的工具：{builtin - mcp}"
+
+
+def test_openai_tools_for_builtin():
+    tools = build_openai_tools(("builtin",))
+    names = {t["function"]["name"] for t in tools}
+    builtin = {s.name for s in TOOL_SPECS if "builtin" in s.expose}
+    assert names == builtin, "build_openai_tools(('builtin',)) 与 builtin 暴露集合不一致"
+    for t in tools:
+        fn = t["function"]
+        assert fn["parameters"]["type"] == "object"
+        assert "properties" in fn["parameters"]
+
+
+def test_catalog_matches_spec():
+    cat = build_catalog()
+    cat_names = {c["name"] for c in cat}
+    mcp = {s.name for s in TOOL_SPECS if "mcp" in s.expose}
+    assert cat_names == mcp
+    for c in cat:
+        s = SPEC_BY_NAME[c["name"]]
+        assert c["summary"] == s.summary
+        assert [p["name"] for p in c["params"]] == [p.name for p in s.params]
+
+
+# ── 进阶断言（依赖 mcp 可用）──────────────────────────────────────────────────
+
+mcp_server = None
+try:
+    import memory_agent.mcp_server as mcp_server  # noqa: E402
+except Exception:  # pragma: no cover - 本地无 mcp 时跳过
+    mcp_server = None
+
+skip_mcp = pytest.mark.skipif(
+    mcp_server is None or getattr(mcp_server, "mcp_server", None) is None,
+    # 判据是「服务器实例是否建成」，不是「模块能否 import」：本机 mcp 是旧 SDK 时
+    # `_build_server()` 返回 None，模块 import 却照样成功——旧写法让这两条测试
+    # 长期以「本机专属红」的身份存在，而红久了就没人看，正是 P2 类回归保护失效的形态。
+    reason="MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查",
+)
+
+
+@skip_mcp
+def test_every_catalogued_mcp_tool_is_registered():
+    # generated=True 的工具由 register_simple_tools 动态注册，必须提升为模块级属性
+    # （hasattr 可检测）；手写工具在 _build_server() 内以嵌套函数定义并 @mcp.tool() 注册，
+    # 不在模块级，故通过 TOOL_CATALOG（build_catalog 同源）验证其 schema 登记。
+    catalog_names = {t["name"] for t in build_catalog()}
+    for name in TOOL_NAMES:
+        spec = SPEC_BY_NAME.get(name)
+        if spec is not None and spec.generated:
+            assert hasattr(mcp_server, name), (
+                f"generated 工具 {name} 未被 register_simple_tools 注册为模块级函数"
+            )
+        else:
+            assert name in catalog_names, (
+                f"TOOL_NAMES 包含 {name}，但 TOOL_CATALOG 中无对应登记"
+            )
+
+
+@skip_mcp
+def test_shared_tool_params_aligned_with_mcp():
+    """内置与 MCP 共享工具（builtin+mcp）的参数名必须与 spec 对齐。
+
+    generated 工具：从模块级函数读签名验证；
+    手写工具（_build_server 内嵌套）：直接从 TOOL_SPECS 的 params 验证定义完整性，
+    不依赖 hasattr（嵌套函数非模块级）。
+    """
+    for s in TOOL_SPECS:
+        if "builtin" not in s.expose or "mcp" not in s.expose:
+            continue
+        spec_params = [p.name for p in s.params]
+        if s.generated:
+            assert hasattr(mcp_server, s.name), f"generated 共享工具 {s.name} 未注册到 MCP"
+            fn = getattr(mcp_server, s.name)
+            sig_params = list(inspect.signature(fn).parameters.keys())
+            assert sig_params == spec_params, (
+                f"共享工具 {s.name} 的 MCP 函数参数 {sig_params} 与 spec 参数 {spec_params} 不一致"
+            )
+        else:
+            # 手写工具：验证 spec 参数定义非空且与 catalog 一致即可
+            assert s.params is not None, f"手写共享工具 {s.name} 的 params 为空"
+            catalog_entry = next((t for t in build_catalog() if t["name"] == s.name), None)
+            assert catalog_entry is not None, f"手写共享工具 {s.name} 不在 TOOL_CATALOG 中"
+
+
+@skip_mcp
+def test_catalog_from_spec_used_by_help():
+    # help 工具依赖的 TOOL_CATALOG 应来自 build_catalog（与 spec 同源）
+    assert mcp_server.TOOL_CATALOG is build_catalog() or mcp_server.TOOL_CATALOG == build_catalog()

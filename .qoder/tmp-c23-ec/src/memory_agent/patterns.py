@@ -1,0 +1,472 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""模板管理"""
+import json
+import logging
+import os
+import uuid
+from datetime import datetime
+from typing import Optional, Dict, Any
+import chromadb
+
+from .store import safe_json_loads, _FEEDBACK_TEXT_MAX, _FEEDBACK_OUTCOMES
+
+logger = logging.getLogger("memory_agent.patterns")
+
+
+def _safe_json_loads(raw, default=None):
+    """NEW-P1-1：安全解析 JSON，失败返回默认值（委托 store 版本，坏数据留 WARNING）。"""
+    return safe_json_loads(raw, default)
+
+
+def _json_object(raw, label: str, pattern_id: str = "") -> Optional[dict]:
+    """Chroma metadata 里的 JSON 列 → dict；读不通返回 None，调用方跳过该条模板。
+
+    坏 ``condition`` 不能退化成 ``{}``：房间/时间/季节三道检查会全部变成「不限」，
+    一条读不出来的模板就此匹配全屋所有时段（第七轮审计 · 一条脏记录打断整批）。
+    """
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning("[Patterns] 模板 %s 的 %s 解析失败，跳过该条: %s",
+                       pattern_id or "?", label, exc)
+        return None
+    if not isinstance(value, dict):
+        logger.warning("[Patterns] 模板 %s 的 %s 不是对象，跳过该条",
+                       pattern_id or "?", label)
+        return None
+    return value
+
+
+def _clean_metadata(source: Dict[str, Any]) -> Dict[str, Any]:
+    """把 get_pattern() 的返回值收敛为 Chroma 可接受的扁平 metadata。
+
+    Chroma 只接受 str/int/float/bool 标量，且 'ok' 是接口包装字段不应落库。
+    """
+    cleaned: Dict[str, Any] = {}
+    for key, value in source.items():
+        if key == 'ok':
+            continue
+        if value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            cleaned[key] = value
+        else:
+            cleaned[key] = json.dumps(value, ensure_ascii=False)
+    cleaned.setdefault('person', '')
+    cleaned.setdefault('category', '')
+    return cleaned
+
+
+class PatternManager:
+    """模板管理器"""
+    
+    def __init__(self, config):
+        self.config = config
+        self.client = chromadb.HttpClient(
+            host=config.chroma_host,
+            port=config.chroma_port
+        )
+        # 嵌入函数与 HistoryManager 同源：原先这里不传 embedding_function，
+        # 集合会落到 chroma 默认 MiniLM（384 维，且本容器运行时不可用 → 写读皆静默失败），
+        # 而 behavior_history / agent_memory 实测是外部网关的 1024 维。判据见
+        # `history.resolve_embedding_function` 文档。
+        _embed = None
+        try:
+            from .history import resolve_embedding_function
+
+            _embed = resolve_embedding_function(config)
+        except Exception as exc:  # pragma: no cover - 解析失败退回 chroma 默认，不阻断构造
+            logger.warning("模式库嵌入函数解析失败，退回 chroma 默认: %s", exc)
+        _kwargs = {"name": "behavior_patterns", "metadata": {"hnsw:space": "cosine"}}
+        if _embed is not None:
+            _kwargs["embedding_function"] = _embed
+        self.collection = self.client.get_or_create_collection(**_kwargs)
+        # 确保目录存在
+        os.makedirs(config.templates_dir, exist_ok=True)
+        os.makedirs(config.imported_dir, exist_ok=True)
+    
+    def _generate_id(self) -> str:
+        """生成唯一ID"""
+        return f"pattern_{uuid.uuid4().hex[:12]}"
+    
+    def list_patterns(
+        self,
+        person: Optional[str] = None,
+        category: Optional[str] = None,
+        status: str = "active"
+    ) -> Dict[str, Any]:
+        """列出模板"""
+        # 构建查询条件
+        where = {}
+        if person:
+            where["person"] = person
+        if category:
+            where["category"] = category
+        if status != "all":
+            where["status"] = status
+        
+        # 查询
+        if where:
+            results = self.collection.query(
+                query_texts=["pattern"],
+                n_results=1000,
+                where=where
+            )
+        else:
+            results = self.collection.get()
+        
+        # 格式化结果
+        patterns = []
+        for i, metadata in enumerate(results.get('metadatas', [[]])[0] if results.get('metadatas') else []):
+            pattern = {
+                "id": results['ids'][0][i] if results.get('ids') else "",
+                "person": metadata.get('person', ''),
+                "category": metadata.get('category', ''),
+                "description": metadata.get('description', ''),
+                "status": metadata.get('status', ''),
+                "confidence": float(metadata.get('confidence', 0)),
+                "sample_count": int(metadata.get('sample_count', 0)),
+                "created_at": metadata.get('created_at', ''),
+                "last_verified": metadata.get('last_verified', ''),
+            }
+            patterns.append(pattern)
+        
+        return {
+            "total": len(patterns),
+            "patterns": patterns
+        }
+    
+    def get_pattern(self, pattern_id: str) -> Dict[str, Any]:
+        """获取单个模板"""
+        try:
+            result = self.collection.get(ids=[pattern_id])
+            if result and result['metadatas']:
+                metadata = result['metadatas'][0]
+                return {
+                    "ok": True,
+                    "id": pattern_id,
+                    "person": metadata.get('person', ''),
+                    "category": metadata.get('category', ''),
+                    "description": metadata.get('description', ''),
+                    "condition": _safe_json_loads(metadata.get('condition', '{}'), {}),
+                    "action": _safe_json_loads(metadata.get('action', '{}'), {}),
+                    "status": metadata.get('status', ''),
+                    "confidence": float(metadata.get('confidence', 0)),
+                    "sample_count": int(metadata.get('sample_count', 0)),
+                    "source": metadata.get('source', ''),
+                    "created_at": metadata.get('created_at', ''),
+                    "last_verified": metadata.get('last_verified', ''),
+                }
+            return {"ok": False, "error": "模板不存在"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    
+    def save_pattern(self, pattern: Dict[str, Any]) -> Dict[str, Any]:
+        """保存新模板"""
+        # 验证必填字段
+        required = ['person', 'category', 'condition', 'action']
+        for field in required:
+            if field not in pattern:
+                return {"ok": False, "error": f"缺少必填字段: {field}"}
+        
+        # 生成ID
+        pattern_id = pattern.get('id', self._generate_id())
+        
+        # 构建元数据
+        now = datetime.now().isoformat()
+        metadata = {
+            "person": pattern['person'],
+            "category": pattern['category'],
+            "description": pattern.get('description', ''),
+            "condition": json.dumps(pattern['condition'], ensure_ascii=False),
+            "action": json.dumps(pattern['action'], ensure_ascii=False),
+            "status": pattern.get('status', 'pending'),
+            "confidence": pattern.get('confidence', 0.5),
+            "sample_count": pattern.get('sample_count', 0),
+            "source": pattern.get('source', 'master_analysis'),
+            "created_at": pattern.get('created_at', now),
+            "last_verified": pattern.get('last_verified', now),
+        }
+        
+        # 构建文档（用于向量检索）
+        doc = f"{pattern['person']} {pattern['category']} {pattern.get('description', '')}"
+        
+        # 保存到Chroma
+        self.collection.upsert(
+            ids=[pattern_id],
+            documents=[doc],
+            metadatas=[metadata]
+        )
+        
+        return {"ok": True, "id": pattern_id}
+    
+    def update_pattern(self, pattern_id: str, pattern: Dict[str, Any]) -> Dict[str, Any]:
+        """更新模板"""
+        # 检查模板是否存在
+        existing = self.get_pattern(pattern_id)
+        if not existing.get('ok'):
+            return {"ok": False, "error": "模板不存在"}
+        
+        # 更新字段
+        now = datetime.now().isoformat()
+        metadata = existing.copy()
+        metadata.update({
+            "person": pattern.get('person', existing.get('person', '')),
+            "category": pattern.get('category', existing.get('category', '')),
+            "description": pattern.get('description', existing.get('description', '')),
+            "condition": json.dumps(pattern.get('condition', existing.get('condition', {})), ensure_ascii=False),
+            "action": json.dumps(pattern.get('action', existing.get('action', {})), ensure_ascii=False),
+            "confidence": pattern.get('confidence', existing.get('confidence', 0)),
+            "sample_count": pattern.get('sample_count', existing.get('sample_count', 0)),
+            "last_verified": now,
+        })
+        
+        # 构建文档
+        doc = f"{metadata['person']} {metadata['category']} {metadata.get('description', '')}"
+        
+        # 更新到Chroma
+        self.collection.update(
+            ids=[pattern_id],
+            documents=[doc],
+            metadatas=[metadata]
+        )
+        
+        return {"ok": True, "id": pattern_id}
+    
+    def delete_pattern(self, pattern_id: str, reason: str = "") -> Dict[str, Any]:
+        """删除模板"""
+        try:
+            self.collection.delete(ids=[pattern_id])
+            return {"ok": True, "id": pattern_id, "reason": reason}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    
+    def confirm_pattern(self, pattern_id: str) -> Dict[str, Any]:
+        """确认模板（使其生效）"""
+        existing = self.get_pattern(pattern_id)
+        if not existing.get('ok'):
+            return {"ok": False, "error": "模板不存在"}
+        
+        metadata = _clean_metadata(existing)
+        metadata['status'] = 'active'
+        metadata['last_verified'] = datetime.now().isoformat()
+        
+        # 构建文档
+        doc = f"{metadata['person']} {metadata['category']} {metadata.get('description', '')}"
+        
+        # Chroma 要求 metadatas 为 list，传 dict 会直接报错
+        self.collection.update(
+            ids=[pattern_id],
+            documents=[doc],
+            metadatas=[metadata]
+        )
+        
+        return {"ok": True, "id": pattern_id, "status": "active"}
+    
+    def reject_pattern(self, pattern_id: str, reason: str = "") -> Dict[str, Any]:
+        """拒绝模板"""
+        existing = self.get_pattern(pattern_id)
+        if not existing.get('ok'):
+            return {"ok": False, "error": "模板不存在"}
+        
+        metadata = _clean_metadata(existing)
+        metadata['status'] = 'rejected'
+        metadata['reject_reason'] = reason
+        
+        # 构建文档
+        doc = f"{metadata['person']} {metadata['category']} {metadata.get('description', '')}"
+        
+        self.collection.update(
+            ids=[pattern_id],
+            documents=[doc],
+            metadatas=[metadata]
+        )
+        
+        return {"ok": True, "id": pattern_id, "status": "rejected"}
+    
+    def import_patterns(self, file_path: str) -> Dict[str, Any]:
+        """从文件导入模板"""
+        try:
+            # 读取文件
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # 验证格式
+            if 'patterns' not in data:
+                return {"ok": False, "error": "文件格式错误：缺少patterns字段"}
+            
+            # 导入模板
+            success_count = 0
+            error_count = 0
+            errors = []
+            
+            for pattern in data['patterns']:
+                result = self.save_pattern(pattern)
+                if result.get('ok'):
+                    success_count += 1
+                else:
+                    error_count += 1
+                    errors.append({"pattern": pattern.get('description', ''), "error": result.get('error', '')})
+            
+            # 移动文件到已导入目录
+            filename = os.path.basename(file_path)
+            imported_path = os.path.join(self.config.imported_dir, filename)
+            os.rename(file_path, imported_path)
+            
+            return {
+                "ok": True,
+                "success_count": success_count,
+                "error_count": error_count,
+                "errors": errors,
+                "imported_to": imported_path
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    
+    def match_pattern(
+        self,
+        person: str,
+        room: str,
+        time: Optional[str] = None,
+        season: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """匹配当前场景的模板"""
+        # 查询该人员的所有active模板
+        results = self.collection.query(
+            query_texts=[f"{person} {room}"],
+            n_results=100,
+            where={"person": person, "status": "active"}
+        )
+        
+        matched = []
+        for i, metadata in enumerate(results.get('metadatas', [[]])[0] if results.get('metadatas') else []):
+            # 解析条件
+            pattern_id = results['ids'][0][i] if results.get('ids') else ""
+            condition = _json_object(metadata.get('condition'), 'condition', pattern_id)
+            action = _json_object(metadata.get('action'), 'action', pattern_id)
+            if condition is None or action is None:
+                continue
+            
+            # 检查房间
+            if condition.get('room') and condition['room'] != room:
+                continue
+            
+            # 检查时间（支持跨午夜时段，如 '22:00-02:00'）
+            if time and condition.get('time_range'):
+                try:
+                    a, b = condition['time_range'].split('-', 1)
+                    sh, sm = (int(x) for x in a.split(':'))
+                    eh, em = (int(x) for x in b.split(':'))
+                    th, tm = (int(x) for x in str(time).split(':')[:2])
+                    smin, emin, tmin = sh * 60 + sm, eh * 60 + em, th * 60 + tm
+                except Exception:
+                    pass
+                else:
+                    ok = (smin <= tmin <= emin) if smin <= emin else (tmin >= smin or tmin <= emin)
+                    if not ok:
+                        continue
+            
+            # 检查季节
+            if season and condition.get('season'):
+                if season not in condition['season']:
+                    continue
+            
+            # 匹配成功
+            pattern = {
+                "id": pattern_id,
+                "person": metadata.get('person', ''),
+                "category": metadata.get('category', ''),
+                "description": metadata.get('description', ''),
+                "action": action,
+                "confidence": float(metadata.get('confidence', 0)),
+            }
+            matched.append(pattern)
+        
+        # 按置信度排序
+        matched.sort(key=lambda x: x['confidence'], reverse=True)
+        
+        return {
+            "person": person,
+            "room": room,
+            "matched_count": len(matched),
+            "matched": matched
+        }
+    
+    def record_feedback(
+        self,
+        pattern_id: str,
+        outcome: str,
+        details: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """记录模板执行反馈。
+
+        ``outcome`` 只认 ``_FEEDBACK_OUTCOMES`` 三个白名单值；其余（含空串与自由文本）
+        **一律不动置信度**，并把 ``outcome_applied=False`` 如实回报——审计 P7 实测过：
+        唯一调用方曾把用户自由文本当第 2 个位置参传进来，于是这条反馈既没改置信度也没被记录，
+        接口却回「反馈已记录」。自由文本的正确落点是 ``details``，且**必须由调用方先脱敏**
+        （这里只做长度收口，不让一段任意长的文本进 Chroma metadata）。
+        """
+        existing = self.get_pattern(pattern_id)
+        if not existing.get('ok'):
+            return {"ok": False, "error": "模板不存在"}
+        
+        # 更新置信度
+        confidence = existing.get('confidence', 0.5)
+        applied = outcome in _FEEDBACK_OUTCOMES
+        if applied:
+            if outcome == 'success':
+                confidence = min(1.0, confidence + 0.05)
+            elif outcome == 'override':
+                confidence = max(0.0, confidence - 0.1)
+            elif outcome == 'failed':
+                confidence = max(0.0, confidence - 0.05)
+        
+        # 更新模板
+        metadata = _clean_metadata(existing)
+        metadata['confidence'] = confidence
+        # last_verified 语义是「这条模板被真实反馈验证过」，仅存档备注不算验证
+        if applied:
+            metadata['last_verified'] = datetime.now().isoformat()
+        safe_details = "" if details is None else str(details)[:_FEEDBACK_TEXT_MAX]
+        if safe_details:
+            metadata['last_feedback'] = safe_details
+        
+        # 构建文档
+        doc = f"{metadata['person']} {metadata['category']} {metadata.get('description', '')}"
+        
+        self.collection.update(
+            ids=[pattern_id],
+            documents=[doc],
+            metadatas=[metadata]
+        )
+        
+        return {
+            "ok": True,
+            "id": pattern_id,
+            "outcome": outcome,
+            "outcome_applied": applied,
+            "details_recorded": bool(safe_details),
+            "new_confidence": confidence
+        }
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        count = self.collection.count()
+
+        # collection.get() 返回的 ids 是扁平列表，取 [0] 会得到单个 id 字符串，
+        # len() 结果是字符串长度而非条数 —— 这里直接对列表取长度
+        def _count_by_status(status: str) -> int:
+            try:
+                result = self.collection.get(where={"status": status})
+            except Exception:
+                return 0
+            return len(result.get('ids') or [])
+
+        return {
+            "total_patterns": count,
+            "active": _count_by_status("active"),
+            "pending": _count_by_status("pending")
+        }

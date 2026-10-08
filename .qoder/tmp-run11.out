@@ -1,0 +1,210 @@
+REMOTE_SYNTAX_RC=0
+SELF_SYNTAX_RC=0
+MUT11_PARSE_RC=0
+HEAD=c3f2719
+FILES=371
+IN_SNAP_attic=9
+IN_SNAP_p25=1
+IN_SNAP_p28=1
+IN_SNAP_bom=1
+IN_SNAP_repo=1
+TAR_RC=0 SIZE=2313966
+SCP_RC=0
+REMOTE_SCP_RC=0
+MUT10_SCP_RC=0
+MUT11_SCP_RC=0
+STAGE_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+SYNC_RC=0
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+Python 3.11.16
+TOOLCHAIN_RC=0
+SOURCES_RC=0
+SCAN_DAY=3
+HOUR_BUCKET=3
+OFFSET_BIND=1
+TS_GE=1
+SCAN_HOURS=4
+WINDOW_HI=5
+SUBSTR_WHOLE=7
+SUBSTR_IN_HOUR_STMT=0
+BRANCH_FROM_FILT=1
+HOUR_STMT_LINES=32
+TEST_DEFS=13
+SCAN_CLASS_CONST=2
+SCAN_RECEIVERS=1
+SCAN_DUP_RETURN=1
+INTENT_NOW=0
+INTENT_EVENT_DT=2
+UTILS_KD_DEF=1
+UTILS_CD_DEF=2
+SRC_LEARNING=0
+ATTIC_LEARNING=8
+BOM_PY=0
+P28_TESTDEFS=6
+P25_TESTDEFS=6
+BOM_TESTDEFS=3
+   375 src/memory_agent/intent_inference.py
+  1309 src/memory_agent/insights/utils.py
+   595 tests/test_vma121_intent_and_pii.py
+   280 tests/test_vma_behavior_predictor_shapes.py
+   127 tests/test_vma_p25_keyword_domains_single_definition.py
+   140 tests/test_vma_p28_learning_attic_unreachable.py
+    77 tests/test_vma_gate_scanners_read_every_py.py
+  2903 total
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+GATE_MENTIONS_ATTIC=0
+SUITE_RC=0
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:198: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1449 passed, 10 skipped in 307.81s (0:05:07)
+TARGETED_RC=0
+.............................................................            [100%]
+61 passed in 17.34s
+PREVBATCH_RC=0
+.....................................................................    [100%]
+69 passed in 32.33s
+TOUCHED_RC=0
+........................................................................ [ 84%]
+.....................................................                    [100%]
+338 passed, 3 skipped in 79.93s (0:01:19)
+DAYBATCH_RC=0
+Python 3.11.16
+SELFTEST_HIT core/p1_param_unguarded.py -> UNGUARDED-EXTERNAL (param-tainted:days)
+SELFTEST_HIT core/p2_param_renamed.py -> UNGUARDED-EXTERNAL (param-tainted:span)
+SELFTEST_HIT core/p3_regex_from_question.py -> UNGUARDED-EXTERNAL (param-tainted:n)
+SELFTEST_HIT core/p4_lo_only.py -> UNGUARDED-EXTERNAL (param-tainted:days)
+SELFTEST_HIT core/p5_marked_and_bounded.py -> CONFLICT:marked+bounded (param-tainted:days)
+SELFTEST_HIT core/p6_tuple_target.py -> UNGUARDED-EXTERNAL (param-tainted:a)
+SELFTEST_HIT core/p7_half_bounded.py -> UNGUARDED-EXTERNAL (param-tainted:cd,other)
+SELFTEST_HIT core/p8_bounded_only_after_site.py -> UNGUARDED-EXTERNAL (param-tainted:n)
+SELFTEST_HIT core/p9_class_const_overwritten.py -> UNGUARDED-EXTERNAL (param-tainted:self)
+SELFTEST_HIT core/p10_class_const_nonliteral.py -> UNGUARDED-EXTERNAL (param-tainted:self)
+SELFTEST_HIT core/p11_self_attr_only.py -> UNGUARDED-EXTERNAL (param-tainted:self)
+SELFTEST_CLEAN core/n1_literal.py label=literal
+SELFTEST_CLEAN core/n2_bounded.py label=external
+SELFTEST_CLEAN core/n3_clamp_helper.py label=external
+SELFTEST_CLEAN core/n4_date_math.py label=date_math
+SELFTEST_CLEAN core/n5_config.py label=config
+SELFTEST_CLEAN core/n6_marked_external.py label=external
+SELFTEST_CLEAN core/n7_module_level_no_func.py label=literal
+SELFTEST_CLEAN core/n9_class_const.py label=literal
+SELFTEST_CLEAN core/n8_bounded_var.py label=external
+SELFTEST_HIT writable/w1_writable_attr.py -> UNGUARDED-EXTERNAL (writable-config:window_days)
+SELFTEST_HIT writable/w2_writable_via_var.py -> UNGUARDED-EXTERNAL (writable-config:window_days)
+SELFTEST_HIT writable/w3_writable_getattr.py -> UNGUARDED-EXTERNAL (writable-config:window_days)
+SELFTEST_CLEAN writable/w4_nonwritable_attr.py label=config
+SELFTEST_CLEAN writable/w6_not_app_config_clamped.py label=external
+SELFTEST_HIT app-config/w5_not_app_config.py -> UNGUARDED-EXTERNAL (not-app-config:foreign_days)
+SELFTEST_HIT unreadable/w1_writable_attr.py -> UNGUARDED-EXTERNAL (config-list-unreadable:window_days)
+SELFTEST_HIT unreadable/w2_writable_via_var.py -> UNGUARDED-EXTERNAL (config-list-unreadable:window_days)
+SELFTEST_HIT unreadable/w3_writable_getattr.py -> UNGUARDED-EXTERNAL (config-list-unreadable:window_days)
+SELFTEST_HIT unreadable/w4_nonwritable_attr.py -> UNGUARDED-EXTERNAL (config-list-unreadable:other_days)
+SELFTEST_HIT unreadable/w5_not_app_config.py -> UNGUARDED-EXTERNAL (config-list-unreadable:foreign_days)
+SELFTEST_REALSOURCE_KEYS writable=77 app_config_fields=167 writable_not_in_config=0
+SELFTEST_HIT real-source/r1_real_writable.py -> UNGUARDED-EXTERNAL (writable-config:vision_snapshot_retention_days)
+SELFTEST_CLEAN real-source/r2_real_ops_key.py label=config
+SELFTEST_RC=0
+---SRC---
+ROOT=src guard_bounded=42 guard_lo_only=0 guard_unguarded=55 label_config=2 label_date_math=6 label_external=44 label_literal=43 label_local=2 marked=2 total_timedelta_days=97
+SCAN_RC=0 每个 timedelta(days=) 站点都有归属
+DAYSCAN_RC=0
+---ATTIC---
+ROOT=attic/learning guard_bounded=2 guard_lo_only=0 guard_unguarded=2 label_config=0 label_date_math=0 label_external=4 label_literal=0 label_local=0 marked=2 total_timedelta_days=4
+SCAN_RC=0 每个 timedelta(days=) 站点都有归属
+ATTICSCAN_RC=0
+SELFTEST_STATES called_directly=referenced-elsewhere h=UNMOUNTED h1=mounted h2=mounted handler_missing=UNMOUNTED handler_ok=mounted ok=mounted use_it=mounted
+SELFTEST_HIT p1_unmounted.py -> handler_missing
+SELFTEST_HIT p2_path_param_shape.py -> h
+SELFTEST_CLEAN n3_referenced_elsewhere -> referenced-elsewhere
+SELFTEST_CLEAN n1_mounted -> mounted（含跨模块属性形式）
+SELFTEST_CLEAN n2_not_handler_shape -> 候选形状外
+SELFTEST_RC=0
+ROOT=src handler_shaped=197 mounted=196 parse_fail=0 referenced=1 unmounted=0 problems=0
+SCAN_RC=0 每个 handler 形状的函数都挂在 ROUTES 上（或有明确的其他引用）
+ROUTESCAN_RC=0
+ROUTEBATCH_RC=0
+learning_api ModuleNotFoundError No module named 'learning_analyzer'
+learning_store ModuleNotFoundError No module named 'learning_models'
+learning_models IMPORTED
+learning_analyzer ModuleNotFoundError No module named 'learning_models'
+learning_evaluator ModuleNotFoundError No module named 'learning_models'
+learning_feedback ModuleNotFoundError No module named 'learning_models'
+learning_optimizer ModuleNotFoundError No module named 'learning_models'
+learning_report ModuleNotFoundError No module named 'learning_analyzer'
+LIVE_APP_OK
+P28_LIVE_RC=0
+ModuleNotFoundError No module named 'memory_agent.learning_api'
+ATTIC_ModuleNotFoundError No module named 'learning_models'
+P28_SNAP_RC=0
+MUT11_RC=0
+N1 P4-3 坏 ts 兜回容器墙钟
+    RC=1 -> 咬住了
+    2 failed, 24 passed in 6.93s
+N2 P4-3 拆掉非字符串守卫（500 路径回来）
+    RC=1 -> 咬住了
+    2 failed, 24 passed in 6.20s
+N3 P2-4 去掉按天分组后的排序（顺序依赖回来）
+    RC=1 -> 咬住了
+    1 failed, 10 passed in 0.20s
+N4 P2-5 再加一处模块级 KEYWORD_DOMAINS（词表分叉回来）
+    RC=1 -> 咬住了
+    2 failed, 4 passed in 0.36s
+N5 P2-8 src 里放回 learning 模块
+    RC=1 -> 咬住了
+    2 failed, 11 passed in 3.63s
+N6 P2-8 attic 裸导入改成包内相对（登记口径变了）
+    RC=1 -> 咬住了
+    1 failed, 12 passed in 3.74s
+N7 给在册文件加回 UTF-8 BOM（量具静默漏审的形状）
+    RC=1 -> 咬住了
+    3 failed, 2 passed in 2.50s
+N8 P2-5 两份 CATEGORY_DOMAINS 只改后一份（静默覆盖）
+    RC=1 -> 咬住了
+    1 failed, 5 passed in 0.32s
+restored_identical=OK
+MUTATION_BAD=0
+MUT10_RC=0
+M1 分层整体停用=裁6 首版的按天前缀
+    RC=1 -> 咬住了
+    5 failed, 29 passed in 13.81s
+M2 小时配额当天花板（删掉缺口补读）
+    RC=1 -> 咬住了
+    6 failed, 28 passed in 12.99s
+M3 判据退回「砍满即截断」（嫌疑当证据）
+    RC=1 -> 咬住了
+    5 failed, 29 passed in 11.79s
+M4 去掉探针行（LIMIT 只绑配额）
+    RC=1 -> 咬住了
+    8 failed, 26 passed in 11.44s
+M5 分摊变成新增预算（日限额=整窗剩余）
+    RC=1 -> 咬住了
+    3 failed, 31 passed in 12.63s
+M6 小时格上界改成闭区间（带毫秒的尾行两头都不沾）
+    RC=1 -> 咬住了
+    2 failed, 32 passed in 12.38s
+M7 补读的 OFFSET 恒 0（原地重取，重复交行）
+    RC=1 -> 咬住了
+    4 failed, 30 passed in 11.04s
+M8 不夹紧：窗口首尾两截交给分支里的宽区间（本批已删掉那条宽谓词）
+    RC=1 -> 咬住了
+    1 failed, 33 passed in 11.77s
+M9 上界朝内取整（窗口终点那一秒的行被挤出去）
+    RC=1 -> 咬住了
+    1 failed, 33 passed in 11.20s
+M10 分支带回 `day = ?`（规划器弃 idx_events_ts 改选 idx_events_day：408ms/天）
+    RC=1 -> 咬住了
+    24 failed, 10 passed, 2 warnings in 20.76s
+restored_identical=OK
+MUTATION_BAD=0
+REMOTE_BATCH_RC=0
+REMOTE_DRIVER_RC=0
+CONTAINER_BATCH_RC=0

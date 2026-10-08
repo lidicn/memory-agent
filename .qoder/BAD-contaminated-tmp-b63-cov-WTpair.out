@@ -1,0 +1,96 @@
+............................ssssssssss..s............................... [  4%]
+........................................................................ [  9%]
+........................................................................ [ 13%]
+........................................................................ [ 18%]
+........................................................................ [ 23%]
+........................................................................ [ 27%]
+........................................................................ [ 32%]
+.........ss............................................................. [ 37%]
+........................................................................ [ 41%]
+........................................................................ [ 46%]
+........................................................................ [ 50%]
+.....................................................sss................ [ 55%]
+....sss.ss.............................................................. [ 60%]
+........................................................................ [ 64%]
+........................................................................ [ 69%]
+........................................................................ [ 74%]
+........................................................................ [ 78%]
+........................................................................ [ 83%]
+........................................................................ [ 88%]
+...................................s.................................... [ 92%]
+........................................................................ [ 97%]
+.......................F.....F............                               [100%]
+================================== FAILURES ===================================
+______ test_current_behaviors_minutes_and_states_limit_reach_the_reader _______
+
+store = <memory_agent.store.Store object at 0x0000025242EE37E0>
+
+    
+    def test_current_behaviors_minutes_and_states_limit_reach_the_reader(store):
+        """两条查询 handler 改前根本没人调过：这里既补落点证据，也把 500 的路堵上。"""
+        store.add_behavior_state(PERSON, "客厅", "就寝", 0.9,
+                                 ts="2026-10-01T19:05:00")
+        act = _StubActivity()
+        resp = _get(br.behaviors_current, store, "minutes=120", activity=act)
+        assert resp.status_code == 200
+        assert act.calls[-1] == ("current_behaviors", {"minutes": 120})
+    
+        # 越界档：这两条走的是 handler 内的 `max(1, min(…))` 夹紧（在册的"会静默改值"那一族），
+        # 本文件只锁"夹紧后的值确实到了读取方"，不改它的口径。
+        act2 = _StubActivity()
+        assert _get(br.behaviors_current, store, "minutes=99999", activity=act2).status_code == 200
+        assert act2.calls[-1][1]["minutes"] == 1440
+        act3 = _StubActivity()
+        resp = _get(br.behaviors_current, store, "minutes=abc", activity=act3)
+        assert resp.status_code == 400
+        assert "minutes" in _payload(resp)["error"]
+        assert act3.calls == [], "被拒的值不该再传给读取方"
+    
+        resp = _get(br.behaviors_states, store, f"member=Member0&room={quote('客厅')}&limit=5")
+        assert resp.status_code == 200
+>       body = _payload(resp)
+E       AssertionError: {'ok': True, 'states': [], 'count': 0}
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests\test_vma_task63_routes_input_boundary.py:712: AssertionError
+---------------------------- Captured stdout setup ----------------------------
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmpx7zadng8.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+___________________ test_anomaly_list_and_review_round_trip ___________________
+
+store = <memory_agent.store.Store object at 0x0000025242EE0980>
+
+>   ???
+E   assert (0 == 1)
+
+tests\test_vma_task63_routes_input_boundary.py:787: AssertionError
+---------------------------- Captured stdout setup ----------------------------
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\tmp34po7eyv.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+=========================== short test summary info ===========================
+SKIPPED [1] tests\contract\test_ma_db_contract.py:281: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:291: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:303: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:314: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:328: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:339: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:349: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:362: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:372: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:403: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:440: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\test_mcp_surface_parity.py:213: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+SKIPPED [1] tests\test_mcp_surface_parity.py:241: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+SKIPPED [1] tests\test_tool_schema.py:92: MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查
+SKIPPED [1] tests\test_tool_schema.py:110: MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查
+SKIPPED [1] tests\test_tool_schema.py:136: MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查
+SKIPPED [1] tests\test_unified_view.py:71: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:79: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:94: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:190: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:198: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_vma_r7_seam_fixes.py:358: could not import 'chromadb': No module named 'chromadb'
+2 failed, 1530 passed, 22 skipped in 574.12s (0:09:34)

@@ -1,0 +1,11 @@
+SELFTEST_HIT purge_stale（p1 只在 startup 调一次）档位=NOT_SCHEDULED ⇒ 判红
+SELFTEST_HIT prune_orphans（p2 一个引用都没有）档位=NO_CALLSITE ⇒ 判红
+SELFTEST_HIT purge_nested（p3 循环里定义的嵌套函数体内部调用）档位=NOT_SCHEDULED ⇒ 判红
+SELFTEST_CLEAN prune_old（n1 循环内 to_thread 传引用）档位=DIRECT_LOOP
+SELFTEST_CLEAN _run_retention_cleanup（n2 任务挂载 + 自带 while）档位=RESIDENT_TASK
+SELFTEST_CLEAN purge_events（n2 常驻循环体内的清理调用）档位=DIRECT_LOOP
+SELFTEST_CLEAN purge_rule_history（n3 调用方已在循环里被调）档位=VIA_CALLER
+SELFTEST_CLEAN purge_deep（n5 两层链条（expire 那一族的形状））档位=VIA_CALLER
+SELFTEST_CLEAN fetch_old 名字不在清理族前缀里 ⇒ 不进候选
+SELFTEST_CLEAN purge_deep 链条层数=3 ⇒ 多跳传递有效
+SELFTEST_CLEAN 判红恰好来自三条种子（PROBLEM=3）

@@ -1,0 +1,32 @@
+......F.                                                                 [100%]
+================================== FAILURES ===================================
+_________________ test_list_entities_logs_the_row_it_dropped __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000171048F3350>
+caplog = <_pytest.logging.LogCaptureFixture object at 0x0000017104753250>
+
+    def test_list_entities_logs_the_row_it_dropped(monkeypatch, caplog):
+        """`list_entities` 里那行 `except Exception: continue` 会让一个实体**凭空缺掉**：
+        返回形状完全合法、条数只少 1，消费方无从知道是哪一行、为什么被丢。
+        口径与 tags_json 那格一致——一行坏不许掀掉整张目录，但降级要留痕到具体 entity_id。"""
+        class _Explodes:
+            def __init__(self, **kw):
+                if kw.get("entity_id") == "light.goes_missing":
+                    raise TypeError("模拟单行构造失败")
+                self.__dict__.update(kw)
+    
+        monkeypatch.setattr(m, "EntityInfo", _Explodes)
+        repo = StoreRepository(_FakeStore([_entity_row("light.goes_missing"),
+                                           _entity_row("sensor.temp")]), None)
+        with caplog.at_level(logging.WARNING, logger="insights.repository"):
+            rows = repo.list_entities()
+        assert [r.entity_id for r in rows] == ["sensor.temp"]   # 行为不变：坏行不进目录
+>       assert "light.goes_missing" in caplog.text              # 但被丢的是哪一行要说得出
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert 'light.goes_missing' in ''
+E        +  where '' = <_pytest.logging.LogCaptureFixture object at 0x0000017104753250>.text
+
+tests\test_vma_a8_insights_clock_and_tags.py:134: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_vma_a8_insights_clock_and_tags.py::test_list_entities_logs_the_row_it_dropped
+1 failed, 7 passed in 0.97s

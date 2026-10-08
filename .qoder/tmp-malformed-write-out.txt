@@ -1,0 +1,60 @@
+Traceback (most recent call last):
+  File "/tmp/w.py", line 58, in step
+    for line in fn():
+                ^^^^
+  File "/tmp/w.py", line 80, in expire_update
+    c.execute("""UPDATE agent_memories SET state='revoked', updated_at=?, mirror_dirty=1
+sqlite3.DatabaseError: database disk image is malformed
+Traceback (most recent call last):
+  File "/tmp/w.py", line 58, in step
+    for line in fn():
+                ^^^^
+  File "/tmp/w.py", line 92, in mark_dirty_one
+    c.execute("UPDATE agent_memories SET mirror_dirty=1, updated_at=? WHERE memory_id=?",
+sqlite3.DatabaseError: database disk image is malformed
+Traceback (most recent call last):
+  File "/tmp/w.py", line 58, in step
+    for line in fn():
+                ^^^^
+  File "/tmp/w.py", line 103, in set_state_live_one
+    c.execute("UPDATE agent_memories SET state='live', mirror_dirty=0 WHERE memory_id=?", (mid,))
+sqlite3.DatabaseError: database disk image is malformed
+Traceback (most recent call last):
+  File "/tmp/w.py", line 58, in step
+    for line in fn():
+                ^^^^
+  File "/tmp/w.py", line 112, in delete_one
+    c.execute("DELETE FROM agent_memories WHERE memory_id=?", (mid,))
+sqlite3.DatabaseError: database disk image is malformed
+copy target: /tmp/qoder-malformed-copy.db src size: 568221696
+backup ok
+sqlite version: 3.46.1
+
+### integrity_check (full)
+    ok
+
+### FTS integrity-check
+    integrity-check raised: DatabaseError: database disk image is malformed
+
+### fts/main rowcount
+    fts=247 main=247
+
+### fts MATCH
+
+### expire_overdue UPDATE
+    !! FAILED
+
+### mark_mirror_dirty UPDATE x20
+    !! FAILED
+
+### set_agent_memory_state UPDATE x10
+    !! FAILED
+
+### DELETE (fires _ad trigger)
+    !! FAILED
+
+### FTS integrity-check (again after writes)
+    integrity-check raised: DatabaseError: database disk image is malformed
+removed /tmp/qoder-malformed-copy.db
+removed /tmp/qoder-malformed-copy.db-wal
+removed /tmp/qoder-malformed-copy.db-shm

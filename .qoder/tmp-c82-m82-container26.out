@@ -1,0 +1,36 @@
+# run26 容器 3.11 权威档：mut82（#82 vendored 0.3.2 + 播报两条路 14 腿）——从容器内 /tmp/c82snap20261008_m82.log 原样取回
+# 取回时刻（本机）：2026-10-08 03:05:30
+copy tree ready: /tmp/c82snap20261008_m82
+[M-0] 对照腿（什么都不改）rc=0 summary='70 passed in 7.03s' failed=[]
+M-0 绿：副本树与工作树同口径，后续红都是注入造成的。
+[N01] KILLED src/memory_agent/announcer.py :: HA 就绪判定丢掉播放设备：只配实体也算会发声（实际只合成不出声，回落路还被挤掉）
+        2 failed, 68 passed in 6.28s :: 红用例 2 条: test_announce_disabled_without_target, test_missing_target_falls_back_too
+[N02] KILLED src/memory_agent/announcer.py :: 「两条都不通」写成「任一条不通」：HA 没配起来时连回落都不走
+        9 failed, 61 passed in 6.42s :: 红用例 9 条: test_announce_cooldown_suppresses_repeat, test_announce_enabled_face_known, test_announce_unknown_and_cry_messages, test_cooldown_applies_on_the_fallback_path_too, test_fallback_carries_a_real_trace_id, test_ha_rejection_is_reported_as_not_announced ...
+[N03] KILLED src/memory_agent/announcer.py :: 路由倒装：没配 HA 的两键时反而往 HA 打，配齐了却去投收件箱
+        11 failed, 59 passed in 6.15s :: 红用例 11 条: test_announce_cooldown_suppresses_repeat, test_announce_enabled_face_known, test_announce_unknown_and_cry_messages, test_cooldown_applies_on_the_fallback_path_too, test_fallback_carries_a_real_trace_id, test_ha_rejection_is_reported_as_not_announced ...
+[N04] KILLED src/memory_agent/announcer.py :: 优先级翻成并行：HA 就绪时另投一份，同一次事件两处说话
+        3 failed, 67 passed in 6.19s :: 红用例 3 条: test_announce_cooldown_suppresses_repeat, test_announce_enabled_face_known, test_ha_route_wins_and_inbox_stays_silent
+[N05] KILLED src/memory_agent/announcer.py :: trace_id 给空串：契约 §七 E 必填非空，桥会当场拒发
+        1 failed, 69 passed in 6.10s :: 红用例 1 条: test_fallback_carries_a_real_trace_id
+[N06] KILLED src/memory_agent/announcer.py :: 少交契约必填键（`trace_id` 是 keyword-only，漏传当场 TypeError）
+        5 failed, 65 passed in 6.17s :: 红用例 5 条: test_cooldown_applies_on_the_fallback_path_too, test_fallback_carries_a_real_trace_id, test_inbox_fallback_when_ha_route_is_not_configured, test_inbox_rejection_is_reported_as_not_announced, test_missing_target_falls_back_too
+[N07] KILLED src/memory_agent/announcer.py :: 总开关硬置开：`announce_enabled=False` 也照样往外发声
+        1 failed, 69 passed in 6.06s :: 红用例 1 条: test_master_switch_blocks_both_routes
+[N08] KILLED src/memory_agent/announcer.py :: 回落路不看桥的 enabled：桥停着也往里投，投了没人收
+        1 failed, 69 passed in 5.94s :: 红用例 1 条: test_no_route_means_false_not_true
+[N09] KILLED src/memory_agent/announcer.py :: 总闸那一行改读 HA 就绪：HA 没配起来时连回落都被当场拦掉。（原腿 `if False:` 是**等价变异**——enabled/inbox_ready 两个因子都已含 switch，删掉这行行为不变，任何用例都不该响；换成这个不等价读法才有判据）
+        5 failed, 65 passed in 5.91s :: 红用例 5 条: test_cooldown_applies_on_the_fallback_path_too, test_fallback_carries_a_real_trace_id, test_inbox_fallback_when_ha_route_is_not_configured, test_inbox_rejection_is_reported_as_not_announced, test_missing_target_falls_back_too
+[N10] KILLED src/memory_agent/announcer.py :: HA 回了 ok=False 也报成播报成功
+        2 failed, 68 passed in 5.90s :: 红用例 2 条: test_ha_non_dict_reply_is_not_announced_and_does_not_escape, test_ha_rejection_is_reported_as_not_announced
+[N11] KILLED src/memory_agent/announcer.py :: 桥按契约码拒发也报成 True
+        1 failed, 69 passed in 5.97s :: 红用例 1 条: test_inbox_rejection_is_reported_as_not_announced
+[N12] KILLED src/memory_agent/announcer.py :: 不判 HA 回包形状：非 dict 时 AttributeError 抛穿采集主链路
+        1 failed, 69 passed in 5.98s :: 红用例 1 条: test_ha_non_dict_reply_is_not_announced_and_does_not_escape
+[N13] KILLED src/memory_agent/announcer.py :: 冷却表每次被清空：同一类事件刷屏（冷却只活一次调用）
+        2 failed, 68 passed in 6.16s :: 红用例 2 条: test_announce_cooldown_suppresses_repeat, test_cooldown_applies_on_the_fallback_path_too
+[N14] KILLED src/memory_agent/runtime.py :: 运行面构造 Announcer 时不投桥：回落路在 production 永远不在场
+        1 failed, 69 passed in 5.99s :: 红用例 1 条: test_the_production_announcer_is_wired_to_the_bridge
+WT_UNTOUCHED=True
+totals: killed=14 survived=0 invalid=0 legs=14
+python: 3.11.16 harness-exe=/usr/local/bin/python

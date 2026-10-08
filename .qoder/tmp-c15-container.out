@@ -1,0 +1,78 @@
+HEAD=4ae51c9 ORIGIN=4ae51c9
+FILES=350
+TAR_POST_RC=0 SIZE=2200676
+TAR_PRE_RC=0 SIZE=1878255
+SCP_c15snap20261005a_RC=0
+STAGE_RC=0
+SYNC_c15snap20261005a_RC=0
+SCP_c15pre20261005a_RC=0
+STAGE_RC=0
+SYNC_c15pre20261005a_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+........................................................................ [ 96%]
+...................................................                      [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_algo_kernel.py:91: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:119: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:154: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:165: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:179: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:198: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1265 passed, 10 skipped in 192.95s (0:03:12)
+PRE_PROBE_RC=0
+db=/data/memory_agent.db tz=8.0 entities=495
+
+=== 六条路由 × 生产窗（问题正文即探针入参，不含真实实体名）===
+-- days=7 --
+  expect=device_usage  route=              answer_chars=0    degraded=Y 3ms match=N TypeError: BehaviorService.usage() got an unexpected keyword argument 'query'
+  expect=behavior      route=              answer_chars=0    degraded=Y 1ms match=N TypeError: BehaviorService.usage() got an unexpected keyword argument 'query'
+  expect=anomaly       route=              answer_chars=0    degraded=Y 1ms match=N TypeError: BehaviorService.anomaly_report() got an unexpected keyword argument 'query'
+  expect=rhythm        route=rhythm        answer_chars=30   degraded=N 450ms match=Y sleep=None wake=None samples=None
+  expect=persona       route=persona       answer_chars=5    degraded=N 908ms match=Y traits=5 events=144143
+load_events 按天分批命中日配额 3750/天（共 8 天），结果可能被截断
+  expect=activity      route=activity      answer_chars=58   degraded=N 4128ms match=Y activities=17
+  小计：降级 3/6
+
+-- days=30 --
+  expect=device_usage  route=              answer_chars=0    degraded=Y 1ms match=N TypeError: BehaviorService.usage() got an unexpected keyword argument 'query'
+  expect=behavior      route=              answer_chars=0    degraded=Y 1ms match=N TypeError: BehaviorService.usage() got an unexpected keyword argument 'query'
+  expect=anomaly       route=              answer_chars=0    degraded=Y 1ms match=N TypeError: BehaviorService.anomaly_report() got an unexpected keyword argument 'query'
+  expect=rhythm        route=rhythm        answer_chars=30   degraded=N 2757ms match=Y sleep=None wake=None samples=None
+  expect=persona       route=persona       answer_chars=5    degraded=N 7328ms match=Y traits=5 events=950919
+load_events 按天分批命中日配额 967/天（共 31 天），结果可能被截断
+  expect=activity      route=activity      answer_chars=58   degraded=N 8798ms match=Y activities=39
+  小计：降级 3/6
+
+PROBE_DONE
+POST_PROBE_RC=0
+db=/data/memory_agent.db tz=8.0 entities=495
+
+=== 六条路由 × 生产窗（问题正文即探针入参，不含真实实体名）===
+-- days=7 --
+  expect=device_usage  route=device_usage  answer_chars=125  degraded=N 553ms match=Y entities=5 events=811 by_room=1
+  expect=behavior      route=behavior      answer_chars=76   degraded=N 56ms match=Y entities=47 events=12125 by_room=1
+  expect=anomaly       route=anomaly       answer_chars=55   degraded=N 1909ms match=Y anomalies=1
+  expect=rhythm        route=rhythm        answer_chars=36   degraded=N 362ms match=Y sleep='23:00' wake='07:00' samples=3
+  expect=persona       route=persona       answer_chars=48   degraded=N 1006ms match=Y traits=5 events=144143
+load_events 按天分批命中日配额 3750/天（共 8 天），结果可能被截断
+  expect=activity      route=activity      answer_chars=58   degraded=N 4103ms match=Y activities=17
+  小计：降级 0/6
+
+-- days=30 --
+  expect=device_usage  route=device_usage  answer_chars=127  degraded=N 4317ms match=Y entities=8 events=11399 by_room=1
+  expect=behavior      route=behavior      answer_chars=77   degraded=N 511ms match=Y entities=72 events=123931 by_room=1
+  expect=anomaly       route=anomaly       answer_chars=56   degraded=N 13417ms match=Y anomalies=1
+  expect=rhythm        route=rhythm        answer_chars=36   degraded=N 2750ms match=Y sleep='23:00' wake='04:00' samples=5
+  expect=persona       route=persona       answer_chars=51   degraded=N 6984ms match=Y traits=5 events=950902
+load_events 按天分批命中日配额 967/天（共 31 天），结果可能被截断
+  expect=activity      route=activity      answer_chars=58   degraded=N 8947ms match=Y activities=39
+  小计：降级 0/6
+
+PROBE_DONE

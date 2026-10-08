@@ -1,0 +1,22 @@
+version: 1
+repowiki:
+  template: architecture
+  notes:
+    - text: "本仓 E:\\NAS\\memory-agent 是**作者树（断开副本）**，不是现网运行体。现网在 NAS 192.168.2.200 的 /vol1/1000/docker/memory-agent，另有裸库 /vol1/1000/git/memory-agent.git。任何文档不得把本树的文件状态写成「线上/现网正在跑」。"
+    - text: "本仓在**活跃提交中**：2026-09-21 一小时内 HEAD 从 e86d5bb 推进到 16322bb。因此所有「文件:行号」引用都只是导航辅助，必须在卡头标注采集时刻与所在 ref；行号漂移不算事实错误，也不为此重写结论。"
+    - text: "现网容器把代码与配置挂成**只读**：docker-compose.yml:42 `./src:/app/src:ro`、:44 `./.env:/app/.env:ro`，只有 :43 `./data:/data` 可持久写。⇒ 容器内改不落盘，改代码只能从宿主侧改文件再重启；文档不得写「热重载」或「进容器改一下」。"
+    - text: "本仓**运行时不 import homesdk**（2026-09-21T15:07:04Z 本机 `grep -rn homesdk src/ --include=*.py` 命中 0 行）。它只在质量门禁里出现：.github/workflows/gates.yml:36-42 与 gates.sh:12 的 `homesdk-gates`。不要把 homesdk 写成本仓的运行时依赖。"
+    - text: "同意词表的单一权威在共享库 homesdk.consent，本仓 .gates.toml:29 `forbid_local_consent_tables = true`（2026-09-21T15:07:04Z 实测，且该文件 `git status --porcelain` 返回 0 行=已提交）。文档不得描述或建议在本仓新建本地同意判断表。"
+    - text: "本仓与 AutoForge、doubao-butler、homesdk 是一个生态链（合称 ADM）的三个面，不是独立产品。跨仓契约与已知口径冲突集中登记在 E:\\NAS\\AgentOps\\doc\\ADM知识库\\X-01-三仓通讯契约.md。"
+    - text: "版本口径必须分四层报：镜像层／容器可写层／磁盘文件／活进程内存。现网容器启动命令无 --reload（2026-09-21 两口径实测：Config.Cmd 与容器内 /proc/1/cmdline 均 0 命中）⇒ 改动需 restart 才进活进程。"
+    - text: "正文一律不得出现口令/token/设备钥匙/家人姓名的值；涉及配置项只写「键名 + 文件:行号 + 长度或 fp8」。密钥清单在 E:\\NAS\\AgentOps\\doc\\轮换台账-20260920.md。"
+    - text: "测试纪律：工作流与集成测试一律零设备——不得打真实音箱/电视/摄像头；仓内出现的设备地址类字符串均为 mock。文档描述测试路径时以此为准。"
+    - text: "计数类事实（MCP 工具数、scope 数、存储表数）必须从代码权威源枚举（mcp_server.py 的注册点、mcp_scopes.py、tool_schema.py、store 的建表语句），不得抄文档计数——本仓文档口径与实码存在过差异。写出时必须带读数时刻与所用命令。"
+  documents: []
+knowledgecard:
+  notes:
+    - text: "模块按 src/memory_agent/ 下的职责聚分（MCP/ACP 服务层、api/、存储与向量、感知与行为推断、HA 集成、鉴权与 scope、前端 static/ 与 templates/），不要把 tests/、benchmarks/、nodered/、scripts/ 各拆成独立架构模块。"
+    - text: "仓根有约 205 个 `tmp_*.py` / `tmp_*.txt`（2026-09-21T15:08:10Z 实测 `ls tmp_* | wc -l`）一次性脚本与探针输出。它们不是产品代码：不要为它们生成模块卡，不要把里面的 mock 设备地址、临时 token 当真实配置写进文档。"
+    - text: "感知规则是数据驱动的：静态规则集中在 src/memory_agent/perception_rules.py:17 的 STATIC_RULES（当前 2 条：stranger_alert、day_night_log，各带 cooldown_seconds）。文档讲规则引擎时以该定义为准，不要把规则散写成多处来源。"
+    - text: "存储层是 SQLite 为主（含 FTS5 虚表与向量扩展路径），表数量类断言一律从建表语句枚举；向量侧 Chroma、缓存侧 Redis 由 docker-compose.yml 提供，属依赖而非本仓模块。"
+    - text: "质量门禁本地入口 gates.sh（`homesdk-gates . --no-smoke`），CI 在 .github/workflows/gates.yml；基线文件允许逐条写理由放行 ⇒ 「基线里有记录」不等于「没问题」。"

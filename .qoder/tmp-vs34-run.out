@@ -1,0 +1,14 @@
+ARCHIVE_RC=0
+SCP_RC=0
+STAGE_RC=0
+SYNC_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_signal_learning.py:173: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+SKIPPED [1] tests/test_signal_learning.py:216: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+SKIPPED [1] tests/test_signal_learning.py:257: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+1126 passed, 12 skipped in 178.70s (0:02:58)

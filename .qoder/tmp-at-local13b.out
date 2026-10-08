@@ -1,0 +1,24 @@
+Traceback (most recent call last):
+  File "E:\NAS\memory-agent\scripts\scan_insights_engine_attrs.py", line 100, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "E:\NAS\memory-agent\scripts\scan_insights_engine_attrs.py", line 83, in main
+    targets = load_targets()
+  File "E:\NAS\memory-agent\scripts\scan_insights_engine_attrs.py", line 43, in load_targets
+    out[owner] = getattr(importlib.import_module(module), cls)
+                         ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\importlib\__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1310, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1310, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1324, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'memory_agent'

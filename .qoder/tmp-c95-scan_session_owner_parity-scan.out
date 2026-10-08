@@ -1,0 +1,2 @@
+FILE=src/memory_agent/acp_server.py BRANCHES=7 READERS=5 GUARDED=5 EXEMPT_TOTAL=0 EXEMPT_HIT=0 PROBLEM=0 STALE=0
+SCAN_RC=0 读 sessionId 的入口与登记集合逐一对上，每一支都有闸

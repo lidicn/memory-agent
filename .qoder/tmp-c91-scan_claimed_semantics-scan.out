@@ -1,0 +1,2 @@
+SRC=src/memory_agent DECLARED=41 REGISTERED=23 CASES=36 UNVERIFIED=18 PROBLEM=0
+SCAN_RC=0 每条声明语义都在台账内（登记带用例，或基线写明缺哪一半）

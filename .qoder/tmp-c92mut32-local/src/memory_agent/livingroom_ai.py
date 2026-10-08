@@ -1,0 +1,276 @@
+"""客厅盒侧 AI 事件接入（主动感知 v2.0 · Phase 0.1）。
+
+MA 没有 HA WebSocket 订阅，统一走 REST 轮询。本模块是一个**轻量常驻轮询器**：
+周期性拉取客厅小米摄像机的 ``event.chuangmi_*`` 实体当前状态，按 ``last_changed``
+去重后，经 ``perception_ingest`` 归一化写入 ``perception_events``（source=edge_ai）。
+
+与既有 CollectService 的批量历史采集互不干扰：本模块只盯这几路盒侧 AI 事件，
+不写 ``behavior_events``，避免污染行为统计；低延迟（默认 10s）靠独立轻量轮询实现，
+而非依赖默认关闭/间隔 900s 的自动采集。
+"""
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any, Optional
+
+from . import perception_ingest as pi
+from .store import Store
+from .announcer import Announcer
+from .away_mode import AwayModeManager
+from . import daily_profile as dp
+
+logger = logging.getLogger("memory_agent.livingroom_ai")
+
+# 盒侧 AI 事件实体只来自小米摄像机；排除其他 event 实体（如 HA 自动化事件）。
+# 实测实体 id 有两种形态：``event.chuangmi_camera_051a01_*``（旧集成）与
+# ``event.chuangmi_cn_1072229835_051a01_*``（米家集成，线上实际形态），
+# 因此前缀只取到 ``event.chuangmi``，靠 perception_ingest 的后缀映射区分语义。
+_EVENT_PREFIX = "event.chuangmi"
+
+# 有意**不入库**的高频环境事件（后缀）：物体/人形移动、昼夜切换每次检测都触发，
+# 入库会淹没语义事件并让 VLM Gate 恒判"边缘信号新鲜"→ 过度跳过取帧。
+# 需要时再按房间降频采样，不要简单加进 _CHUANGMI_KIND_MAP。
+_SKIP_SUFFIXES = ("object_motion_e_8_1", "people_motion_e_8_2")
+
+# 实体列表发现缓存刷新间隔（秒）：discover_entities 较重，10 分钟刷一次足够
+_DISCOVER_TTL = 600
+
+
+class LivingRoomAIIngest:
+    def __init__(
+        self,
+        ha_client: Any,
+        store: Store,
+        room_keywords: Optional[list[str]] = None,
+        interval_seconds: int = 10,
+        announcer: Optional[Announcer] = None,
+        vision: Any = None,
+        omni_enabled: bool = False,
+        agent_memory: Any = None,
+        away_mode: AwayModeManager | None = None,
+        alert_dispatcher=None,
+    ) -> None:
+        self.ha = ha_client
+        self.store = store
+        self.room_keywords = room_keywords or ["客厅"]
+        self.interval_seconds = max(1, int(interval_seconds))
+        self.announcer = announcer
+        # Phase 1.3 Omni 层：事件驱动补语义。默认关，启用后 cry/baby_woke/pet
+        # 等「需要在干嘛」的语义事件会触发一次 VLM analyze_room（复用现有冷却门控）。
+        self.vision = vision
+        self.omni_enabled = bool(omni_enabled)
+        # Phase 2.1 候选晋升：同房间+同 action 跨天 ≥3 天自动写 staging 候选。
+        self.agent_memory = agent_memory
+        # Phase 5.1 离家模式状态机：no_human→离家，face_known→回家，离家时face_unknown立即告警。
+        self.away_mode = away_mode or AwayModeManager(store, room="客厅", alert_dispatcher=alert_dispatcher)
+        self._entity_ids: list[str] = []
+        self._entity_rooms: dict[str, str] = {}
+        self._seen: dict[str, Optional[str]] = {}
+        self._discovered_at: float = 0.0
+
+    # -- 实体发现（带缓存） ------------------------------------------------
+    def _discover(self) -> None:
+        now = time.monotonic()
+        if self._entity_ids and (now - self._discovered_at) < _DISCOVER_TTL:
+            return
+        try:
+            res = self.ha.discover_entities()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("livingroom_ai: discover_entities 失败: %s", exc)
+            return
+        if not isinstance(res, dict) or not res.get("ok"):
+            return
+        rooms = res.get("rooms", {})
+        ids: list[str] = []
+        room_map: dict[str, str] = {}
+        for room, info in rooms.items():
+            if room not in self.room_keywords and "客厅" not in room:
+                # 仅关注客厅（含「客厅」关键词的房间名）
+                if not any(k in room for k in self.room_keywords):
+                    continue
+            ents = info.get("entities", {})
+            for eid in ents:
+                if not eid.startswith(_EVENT_PREFIX):
+                    continue
+                if eid.endswith(_SKIP_SUFFIXES):
+                    continue  # 高频环境事件，有意不入库（见 _SKIP_SUFFIXES 注释）
+                ids.append(eid)
+                room_map[eid] = room
+        self._entity_ids = ids
+        self._entity_rooms = room_map
+        self._discovered_at = now
+        if ids:
+            logger.info("livingroom_ai: 发现 %d 个盒侧 AI 事件实体", len(ids))
+
+    # -- 单次轮询 ----------------------------------------------------------
+    def _states_index(self) -> dict:
+        """一次 ``/api/states`` 批量取回全部实体状态，避免逐实体 N 次请求。
+
+        现场有 ~14 个盒侧 AI 事件实体，10s 轮询若逐个 GET 会是 ~84 req/min；
+        批量只需 1 req。HA 客户端未提供 ``get_states`` 时返回空字典，
+        自动回退到逐实体 ``get_state``（单测的 FakeHA 即走该路径）。
+        """
+        bulk = getattr(self.ha, "get_states", None)
+        if not callable(bulk):
+            return {}
+        try:
+            states = bulk()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("livingroom_ai: 批量取状态失败，回退逐实体: %s", exc)
+            return {}
+        if not isinstance(states, list):
+            return {}
+        out: dict = {}
+        for s in states:
+            if isinstance(s, dict) and s.get("entity_id"):
+                out[s["entity_id"]] = s
+        return out
+
+    def poll_once(self) -> int:
+        """拉取一次客厅盒侧 AI 事件，返回本次新写入条数。"""
+        self._discover()
+        if not self._entity_ids:
+            return 0
+        index = self._states_index()
+        ingested = 0
+        for eid in self._entity_ids:
+            if eid in index:
+                state = index[eid]
+            else:
+                try:
+                    state = self.ha.get_state(eid)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("livingroom_ai: get_state %s 失败: %s", eid, exc)
+                    continue
+            if not isinstance(state, dict):
+                continue
+            last = state.get("last_changed") or state.get("last_updated")
+            if not last:
+                continue
+            # 首次见到该实体：仅记录基线，不回填历史，避免启动洪泛
+            if self._seen.get(eid) is None:
+                self._seen[eid] = last
+                continue
+            if self._seen[eid] == last:
+                continue  # 未变化
+            self._seen[eid] = last
+            room = self._entity_rooms.get(eid)
+            ev = pi.from_ha_event(eid, state, room=room)
+            if ev is None:
+                continue
+            # 时间规范化：HA last_changed 是 UTC 带时区 ISO，直接落库会让
+            # perception_events / behavior_events 与 patrol/VLM 巡检行（本地 naive）
+            # 混存，按天聚合与"最近 N 天"查询错位。统一转本地 naive。
+            from .store import parse_ts as _parse_ts
+            _dt = _parse_ts(last, getattr(self.store, "tz_offset_hours", 8.0))
+            if _dt is not None:
+                ev.server_ts = _dt.isoformat(sep="T")
+            if pi.ingest_event(self.store, ev) > 0:
+                ingested += 1
+                # Phase 1.1 Gate 层：edge_ai 事件即"已发生事实"，直接结构化进
+                # behavior_events（零 VLM 调用）；非行为类 kind 本函数内部忽略。
+                bid = pi.gate_promote_to_behavior(self.store, ev)
+                # Phase 1.2 Identity 层：face_unknown 即时裁决（名册消除法）
+                if bid and ev.kind == "face_unknown":
+                    pi.identity_resolve_unknown(self.store, ev, bid)
+                # Phase 2.1 候选晋升：同房间+同 action 跨天 ≥3 天写 staging 候选
+                if bid and self.agent_memory is not None and ev.room:
+                    try:
+                        action = pi._GATE_BEHAVIOR_KINDS.get(ev.kind, {}).get("action", "")
+                        if action:
+                            days = self.store.count_room_action_days(ev.room, action, 7)
+                            if days >= 3:
+                                person = ""
+                                if ev.kind == "face_known":
+                                    person = pi._known_person_name(ev)
+                                elif ev.kind == "face_unknown":
+                                    person = "陌生人"
+                                text = f"{ev.room}：{action}"
+                                if person:
+                                    text += f"（{person}）"
+                                res = self.agent_memory.add_semantic_memory(
+                                    session_id="perception_auto",
+                                    text=text,
+                                    tags=[f"habit:/vision/{ev.room}"],
+                                    source_refs=[f"event:{bid}"],
+                                    topic_key=f"habit:/vision/{ev.room}",
+                                    dry_run=False,
+                                    source="perception",
+                                    observed_at=ev.server_ts or "",
+                                )
+                                if res.get("ok"):
+                                    logger.info(
+                                        "Phase 2.1 候选晋升：%s@%s 跨天 %d 天 → staging",
+                                        action, ev.room, days,
+                                    )
+                    except Exception as exc:  # 候选晋升失败不影响主流程
+                        logger.warning("Phase 2.1 候选晋升异常: %s", exc)
+                # Phase 1.3 Omni 层：事件驱动补语义。cry/baby_woke/pet 等
+                # 「需要在干嘛」的语义事件触发一次 VLM analyze_room（复用冷却门控，
+                # 冷却内自动 skipped；face_* 已由 Gate/Identity 覆盖，不重复触发）。
+                if (self.omni_enabled and self.vision is not None
+                        and ev.kind in ("cry", "baby_woke", "pet") and ev.room):
+                    try:
+                        res = self.vision.analyze_room(ev.room, trigger="omni")
+                        if res.get("skipped"):
+                            logger.debug("Omni %s@%s 冷却/门控拦截", ev.kind, ev.room)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Omni analyze_room 异常: %s", exc)
+                # Phase 5.1 离家模式状态机：no_human→离家，face_known→回家，
+                # 离家模式下 face_unknown 立即告警（不等名册消除法）。
+                if self.away_mode is not None and ev.kind in ("no_human", "face_known", "face_unknown"):
+                    try:
+                        ar = self.away_mode.handle_event(ev.kind, ev.room or "", ev.server_ts or "")
+                        if ar.get("state_changed"):
+                            logger.info("离家模式状态变化: %s", ar.get("reason"))
+                        if ar.get("alert"):
+                            logger.warning("离家模式告警: %s", ar.get("reason"))
+                    except Exception as exc:
+                        logger.warning("离家模式处理异常: %s", exc)
+                # Phase 5.2 家庭日常画像：face_known 时检查回家时间是否偏离基线
+                if ev.kind == "face_known" and ev.room == "客厅":
+                    try:
+                        from .perception_ingest import _known_person_name
+                        person = _known_person_name(ev)
+                        if person:
+                            profile = dp.get_return_time_profile(self.store, person, days=14)
+                            if profile.get("anomaly_today"):
+                                anom = profile["anomaly_today"]
+                                logger.warning(
+                                    "回家时间异常: %s 偏离基线 %.2fh（基线中位数 %.2f, MAD %.2f）",
+                                    person, anom.get("deviation_hours", 0),
+                                    anom.get("baseline_median", 0), anom.get("baseline_mad", 0),
+                                )
+                    except Exception as exc:
+                        logger.warning("回家时间画像检测异常: %s", exc)
+                # Phase 3 主动规则引擎：STATIC 快路径（不等 VLM，毫秒级）
+                try:
+                    from .rule_engine import get_rule_engine
+                    engine = get_rule_engine(self.store)
+                    event = {
+                        "kind": ev.kind,
+                        "room": ev.room or "",
+                        "person": getattr(ev, "person", None),
+                        "confidence": getattr(ev, "confidence", 0.8),
+                        "server_ts": ev.server_ts or "",
+                    }
+                    triggered = engine.match_event(event, rule_type="static")
+                    for rule in triggered:
+                        engine.execute_action(rule, event)
+                        if rule["action"].get("type") == "alert":
+                            logger.warning("规则告警[%s]: %s", rule["rule_id"], rule["name"])
+                        elif rule["action"].get("type") == "log":
+                            logger.info("规则记录[%s]: %s", rule["rule_id"], rule["name"])
+                except Exception as exc:
+                    logger.warning("规则引擎评估异常: %s", exc)
+                # Phase 0.4 主动播报闭环：人脸/看护类事件经 doubao_tts 播报
+                if self.announcer is not None and ev.kind in pi.ANNOUNCE_KINDS:
+                    self.announcer.announce(ev)
+        if ingested:
+            logger.info("livingroom_ai: 本次写入 %d 条盒侧 AI 事件", ingested)
+        return ingested
+
+    def run(self) -> int:
+        """供 runtime 周期任务调用的同步入口。"""
+        return self.poll_once()

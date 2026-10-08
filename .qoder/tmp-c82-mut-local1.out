@@ -1,0 +1,30 @@
+copy tree ready: E:\NAS\memory-agent\.qoder\tmp-c82-mut
+[M-0] 对照腿（什么都不改）rc=0 summary='67 passed in 4.60s' failed=[]
+M-0 绿：副本树与工作树同口径，后续红都是注入造成的。
+[N01] KILLED src\memory_agent\announcer.py :: HA 就绪判定丢掉播放设备：只配实体也算会发声（实际只合成不出声，回落路还被挤掉）
+        2 failed, 65 passed in 4.26s :: 红用例 2 条: test_announce_disabled_without_target, test_missing_target_falls_back_too
+[N02] KILLED src\memory_agent\announcer.py :: 「两条都不通」写成「任一条不通」：HA 没配起来时连回落都不走
+        8 failed, 59 passed in 7.87s :: 红用例 8 条: test_announce_cooldown_suppresses_repeat, test_announce_enabled_face_known, test_announce_unknown_and_cry_messages, test_cooldown_applies_on_the_fallback_path_too, test_fallback_carries_a_real_trace_id, test_inbox_fallback_when_ha_route_is_not_configured ...
+[N03] KILLED src\memory_agent\announcer.py :: 路由倒装：没配 HA 的两键时反而往 HA 打，配齐了却去投收件箱
+        10 failed, 57 passed in 3.91s :: 红用例 10 条: test_announce_cooldown_suppresses_repeat, test_announce_enabled_face_known, test_announce_unknown_and_cry_messages, test_cooldown_applies_on_the_fallback_path_too, test_fallback_carries_a_real_trace_id, test_ha_route_wins_and_inbox_stays_silent ...
+[N04] KILLED src\memory_agent\announcer.py :: 优先级翻成并行：HA 就绪时另投一份，同一次事件两处说话
+        3 failed, 64 passed in 3.08s :: 红用例 3 条: test_announce_cooldown_suppresses_repeat, test_announce_enabled_face_known, test_ha_route_wins_and_inbox_stays_silent
+[N05] KILLED src\memory_agent\announcer.py :: trace_id 给空串：契约 §七 E 必填非空，桥会当场拒发
+        1 failed, 66 passed in 3.22s :: 红用例 1 条: test_fallback_carries_a_real_trace_id
+[N06] KILLED src\memory_agent\announcer.py :: 少交契约必填键（`trace_id` 是 keyword-only，漏传当场 TypeError）
+        5 failed, 62 passed in 3.67s :: 红用例 5 条: test_cooldown_applies_on_the_fallback_path_too, test_fallback_carries_a_real_trace_id, test_inbox_fallback_when_ha_route_is_not_configured, test_inbox_rejection_is_reported_as_not_announced, test_missing_target_falls_back_too
+[N07] KILLED src\memory_agent\announcer.py :: 总开关硬置开：`announce_enabled=False` 也照样往外发声
+        1 failed, 66 passed in 3.06s :: 红用例 1 条: test_master_switch_blocks_both_routes
+[N08] KILLED src\memory_agent\announcer.py :: 回落路不看桥的 enabled：桥停着也往里投，投了没人收
+        1 failed, 66 passed in 3.31s :: 红用例 1 条: test_no_route_means_false_not_true
+[N09] SURVIVED !! src\memory_agent\announcer.py :: announce() 不查总闸（与 N07 不同的位置：闸在 ctor 还是在使用点） :: 67 passed in 3.20s
+[N10] SURVIVED !! src\memory_agent\announcer.py :: HA 回了 ok=False 也报成播报成功 :: 67 passed in 3.29s
+[N11] KILLED src\memory_agent\announcer.py :: 桥按契约码拒发也报成 True
+        1 failed, 66 passed in 3.21s :: 红用例 1 条: test_inbox_rejection_is_reported_as_not_announced
+[N12] SURVIVED !! src\memory_agent\announcer.py :: 不判 HA 回包形状：非 dict 时 AttributeError 抛穿采集主链路 :: 67 passed in 3.09s
+[N13] KILLED src\memory_agent\announcer.py :: 冷却表每次被清空：同一类事件刷屏（冷却只活一次调用）
+        2 failed, 65 passed in 3.03s :: 红用例 2 条: test_announce_cooldown_suppresses_repeat, test_cooldown_applies_on_the_fallback_path_too
+[N14] SURVIVED !! src\memory_agent\runtime.py :: 运行面构造 Announcer 时不投桥：回落路在 production 永远不在场 :: 67 passed in 2.95s
+WT_UNTOUCHED=True
+totals: killed=10 survived=4 invalid=0 legs=14
+python: 3.13.2 harness-exe=C:/Users/lidicn/AppData/Local/Programs/Python/Python313/python.exe

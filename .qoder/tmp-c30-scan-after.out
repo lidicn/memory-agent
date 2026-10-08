@@ -1,0 +1,2 @@
+ROOT=src guard_bounded=41 guard_lo_only=0 guard_unguarded=58 label_config=5 label_date_math=6 label_external=45 label_literal=41 label_local=2 marked=4 total_timedelta_days=99
+SCAN_RC=0 每个 timedelta(days=) 站点都有归属

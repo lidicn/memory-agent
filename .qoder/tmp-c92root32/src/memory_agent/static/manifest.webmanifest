@@ -1,0 +1,20 @@
+{
+  "name": "Memory Agent · 家庭行为记忆中枢",
+  "short_name": "Memory Agent",
+  "description": "家庭行为记忆中枢：采集、洞察、助手一体化 PWA",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1120",
+  "theme_color": "#0EA5E9",
+  "icons": [
+    {
+      "src": "/static/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

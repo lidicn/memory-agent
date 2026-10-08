@@ -1,0 +1,6 @@
+anchor_hits= 1
+FAILED tests/test_vma_r8_chroma_error_masking.py::test_non_2xx_becomes_single_arg_error_carrying_the_status_code
+FAILED tests/test_vma_r8_chroma_error_masking.py::test_4xx_from_gateway_also_keeps_the_code
+2 failed, 9 passed in 2.38s
+RC= 1
+RESTORED= True

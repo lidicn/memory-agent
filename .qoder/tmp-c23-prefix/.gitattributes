@@ -1,0 +1,9 @@
+# 统一换行符为 LF（部署目标为 Linux 容器）
+* text=auto eol=lf
+
+# 二进制资源
+*.png binary
+*.ico binary
+*.svg text
+*.woff binary
+*.woff2 binary

@@ -1,0 +1,31 @@
+== HEAD=b241c7d 侧成对读数（git show HEAD:… 实测）==
+-- src/memory_agent/identity_fusion.py
+397
+-- src/memory_agent/behavior_predictor.py
+279
+-- src/memory_agent/mcp_server.py
+3355
+IF_MORE_SEVERE=2
+IF_MIN_INDEX=2
+IF_CAPMORE=0
+IF_ASSIGN_MED=1
+IF_ASSIGN_LOW=1
+IF_ASSIGN_HIGH=1
+IF_ROSTER_DOC=0
+IF_FLOOR_NOTE=0
+MS_GATE=0
+MS_MSG=0
+MS_OLDBG=0
+BP_* 六条锚点 HEAD 侧（本批未改 BP 源码，应全 =1）:
+  [weekday is not None and dt.weekday() \!= weekday]=1
+  [raw = \[raw\]]=1
+  [if len(text) < 16:]=1
+  [mild" if delta < 1.0]=1
+  [if lower <= actual_hour <= upper:]=1
+  [labels = {]=1
+T64IF_AT_HEAD=no
+T64BP_AT_HEAD=no
+== 补正（上一条 MS_OLDBG 是我猜的形状，HEAD 侧不存在）==
+HEAD 侧 mcp_server 里 -1<=weekday<=6 全形态=0（即 HEAD 根本没有上界判断，只有 :2736 的哨兵行）
+WD_SENTINEL_LINE HEAD=1 TREE=1（两侧都 =1：哨兵本身没动，本批只在它前面加了上界守卫）
+HEAD wc: identity_fusion 397 / behavior_predictor 279 / mcp_server 3355；改后 398 / 279 / 3359 ⇒ BP 源码一格未动，只有测试在补

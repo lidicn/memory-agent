@@ -1,0 +1,6 @@
+SELFTEST_HIT clean 判红0 失效0
+SELFTEST_HIT missing 判红1 失效0
+SELFTEST_HIT unregistered 判红1 失效1
+SELFTEST_HIT stale 判红0 失效1
+SELFTEST_CLEAN conflict/check_owner 两种闸分得开
+SELFTEST_CLEAN 不读会话 id 的分支不进读数（initialize）

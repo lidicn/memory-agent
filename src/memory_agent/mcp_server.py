@@ -1042,6 +1042,14 @@ def _build_server():
         identity = getattr(rt, "identity", None)
         if identity is None:
             return {"ok": False, "error": "身份层未启用"}
+        # D1 修复：非法枚举值返回错误，不静默返回空集
+        _VALID_STATES = {"", "active", "unknown", "stale"}
+        if state not in _VALID_STATES:
+            return {
+                "ok": False,
+                "error": f"INVALID_PARAM: state 必须是 active/unknown/stale 或留空（全部），收到 '{state}'",
+                "valid_states": ["active", "unknown", "stale"],
+            }
         rows_limit = max(1, min(int(limit), DEVICE_HEALTH_PAGE_LIMIT_MAX))
         rows_offset = max(0, int(offset))
 

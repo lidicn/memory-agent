@@ -1,0 +1,46 @@
+OK      src/memory_agent/llm_client.py:438 :: for p in stale:
+OK      src/memory_agent/llm_client.py:442 :: print(f"[LLMRouter] 旧 provider 关闭失败（{getattr(p, 'name', '?')}）: {exc}")
+OK      src/memory_agent/mcp_server.py:2716 :: prev_version = max(prev_version, int(src["version"]))
+OK      src/memory_agent/mcp_server.py:219 :: def seed_builtin_skills(rt: "AppRuntime") -> int:
+OK      src/memory_agent/mcp_server.py:1749 :: # MA-28：这里原来有一句 `if dry_run: return {"ok": True, ... "参数校验通过"}`，
+OK      src/memory_agent/agent_memory.py:525 :: "member_id": member_id or "",
+OK      src/memory_agent/agent_memory.py:526 :: "member_scope": "member" if member_id else "public_only",
+OK      src/memory_agent/signal_learning.py:119 :: if not entity_id:
+OK      src/memory_agent/signal_learning.py:141 :: return {
+OK      src/memory_agent/api/nr_routes.py:56 :: async def nr_execute_action(request: Request):
+OK      src/memory_agent/api/nr_routes.py:70 :: 501,
+OK      src/memory_agent/runtime.py:137 :: async def _run_retention_cleanup(self) -> None:
+OK      src/memory_agent/runtime.py:166 :: await asyncio.sleep(min(interval, 600))
+OK      src/memory_agent/runtime.py:298 :: async def _periodic_self_diary(self) -> None:
+OK      src/memory_agent/runtime.py:318 :: async def _self_diary_round(self) -> None:
+OK      src/memory_agent/config.py:107 :: data_retention_interval_seconds: int = 86400  # 保留期清理的重跑间隔（MA-35：原来只在启动跑一次）
+OK      src/memory_agent/acp_server.py:85 :: if prev is not None and prev.get("owner_token") != owner_token:
+OK      src/memory_agent/acp_server.py:86 :: raise SessionOwnerConflict(sid)
+OK      src/memory_agent/acp_server.py:377 :: except SessionOwnerConflict:
+OK      src/memory_agent/acp_server.py:433 :: if requested and not _STORE.check_owner(requested, _owner):
+OK      lock:58 :: def test_reconfigure_closes_the_providers_it_is_replacing(monkeypatch)
+OK      lock:78 :: def test_reconfigure_keeps_new_provider_table_usable(monkeypatch):
+OK      lock:104 :: def test_save_skill_version_never_regresses(monkeypatch):
+OK      lock:160 :: def test_list_agent_memories_public档不谎称_all():
+OK      lock:169 :: def test_list_agent_memories_named_member_echoes_member():
+OK      lock:203 :: def test_dry_run_rejects_out_of_enum_exclusion_type(bad_type):
+OK      lock:211 :: def test_exclusion_type_is_case_and_space_normalized_before_the_enum_c
+OK      lock:219 :: def test_dry_run_accepts_a_good_hard_and_writes_nothing():
+OK      lock:229 :: def test_dry_run_soft_requires_text():
+OK      lock:236 :: def test_real_write_shares_the_same_judgement():
+OK      lock:248 :: def test_exclusion_type_enum_matches_the_toolspec_declaration():
+OK      lock:264 :: def test_mcp_facade_no_longer_short_circuits_dry_run():
+OK      lock:295 :: def test_execute_action_returns_not_implemented(monkeypatch):
+OK      lock:305 :: def test_execute_action_route_is_still_registered():
+OK      lock:328 :: def test_diary_wrapper_restarts_after_round_raises(monkeypatch):
+OK      lock:346 :: def test_diary_wrapper_exits_cleanly_on_success(monkeypatch):
+OK      lock:358 :: def test_self_diary_round_reraises_to_the_wrapper():
+OK      lock:401 :: def test_seed_upgrades_when_disk_lags_behind(monkeypatch):
+OK      lock:411 :: def test_seed_keeps_a_higher_agent_iterated_version(monkeypatch):
+OK      lock:421 :: def test_seed_repairs_an_unreadable_disk_copy(monkeypatch):
+OK      lock:430 :: def test_seed_writes_when_target_absent(monkeypatch):
+OK      lock:441 :: def test_seed_is_idempotent_on_second_run(monkeypatch):
+OK      lock:486 :: def test_retention_cleanup_runs_more_than_once(monkeypatch):
+OK      lock:498 :: def test_retention_cleanup_retries_after_failure(monkeypatch):
+OK      lock:509 :: def test_retention_task_is_registered_at_startup():
+LINECHECK_BAD=0

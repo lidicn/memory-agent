@@ -1,0 +1,4 @@
+L1 OK anchor=1 residue=0 丢键整格（改前形状：只回 core.data_quality）
+L2 OK anchor=1 residue=0 格还在但恒空（谎从「没有」变成「镜像永远干净」）
+L3 OK anchor=1 residue=0 摘掉附属块的保护（附属块炸掉时整页被 _degrade 打空）
+MUTANTS_PARSED=3 VERIFY_BAD=0

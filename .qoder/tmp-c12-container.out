@@ -1,0 +1,69 @@
+HEAD=bad9ae4 ORIGIN=bad9ae4
+FILES=345
+TAR_RC=0 SIZE=2182697
+SCP_RC=0
+STAGE_RC=0
+SYNC_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+SKIPPED [1] tests/test_algo_kernel.py:91: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:119: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:154: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:165: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:179: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_signal_learning.py:173: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+SKIPPED [1] tests/test_signal_learning.py:216: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+SKIPPED [1] tests/test_signal_learning.py:257: InsightService 已重构，_detect_activities 待适配为新框架 infer_activities
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:198: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1235 passed, 13 skipped in 228.99s (0:03:48)
+PROBE_RC=0
+[10/04/26 17:07:39] INFO     MCP                               mcp_scopes.py:244
+                             写工具完整性断言通过：未发现疑似                   
+                             写工具漏登记                                       
+db=/data/memory_agent.db tz=8.0 scan_limit=30000
+
+=== A1 分母（口径：day BETWEEN 窗口日键 AND ts BETWEEN 窗口边界，COUNT(*)）===
+窗口 2026-09-05 → 2026-10-05（日键 31 个）
+真值条数=951957  scan_limit=30000  按天分摊后的日配额=967
+逐日真值：min=2 中位=33450 max=44573（日配额/日均真值=0.0315）
+日配额占当日真值的比例（首/末三日）：[('2026-09-05', 30363, 0.0318), ('2026-09-06', 31586, 0.0306), ('2026-09-07', 36581, 0.0264)]
+
+=== A2 改前形状：单条 LIMIT scan_limit（旧实现）===
+耗时=392.2ms 条数=30000 覆盖日键=1 个（2026-09-05 → 2026-09-05）首末 ts=2026-09-05T01:07:40 → 2026-09-05T23:44:02
+
+=== A3 改后形状：load_events 按天分批 ===
+[10/04/26 17:07:43] WARNING  load_events 按天分批命中日配额    repository.py:300
+                             967/天（共 31                                      
+                             天），结果可能被截断                               
+[10/04/26 17:07:47] WARNING  load_events 按天分批命中日配额    repository.py:300
+                             967/天（共 31                                      
+                             天），结果可能被截断                               
+[10/04/26 17:07:51] WARNING  load_events 按天分批命中日配额    repository.py:300
+                             967/天（共 31                                      
+                             天），结果可能被截断                               
+耗时=三次 [4394.2, 4466.0, 4314.5]ms（取中位 4394.2ms）条数=28966 覆盖日键=31 个 truncated=True
+每个日键实返条数：min=2 max=967（日配额=967 ⇒ 有配额的日用满了它）
+耗时比（改后中位/改前）=11.2
+
+=== A4 每日可见时段（实返覆盖 vs 当日真实跨度，窗口内最后 5 天）===
+  2026-10-05 真实 00:00:00→01:00:07（1.0 h）｜实返 00:00:00→01:00:07（1.0 h）
+  2026-10-04 真实 00:00:04→23:59:59（24.0 h）｜实返 00:00:04→01:23:34（1.39 h）
+  2026-10-03 真实 00:00:07→23:59:44（23.99 h）｜实返 00:00:07→01:15:01（1.25 h）
+  2026-10-02 真实 00:00:00→23:59:36（23.99 h）｜实返 00:00:00→01:09:53（1.16 h）
+  2026-10-01 真实 00:00:00→23:59:56（24.0 h）｜实返 00:00:00→00:23:19（0.39 h）
+  口径：ts 是本地墙钟字符串（_to_iso 产出），跨度按同一字符串直算，不做时区换算
+
+=== B 设备健康整页字节预算（同一批生产行，只算不写）===
+device_health 全量条数=1776 本页取回行数=500（limit=500）
+fields=lean 改前 page_bytes=133583 count=500 | 改后 page_bytes=65309 count=235 | 省下=68274 字节（51.1%）
+        改后是否仍≤64KB=True 单行最大字节=377
+fields=full 改前 page_bytes=153294 count=500 | 改后 page_bytes=65391 count=195 | 省下=87903 字节（57.3%）
+        改后是否仍≤64KB=True 单行最大字节=556
+
+PROBE_DONE

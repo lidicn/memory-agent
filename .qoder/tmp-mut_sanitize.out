@@ -1,0 +1,12 @@
+[A 手机号规则退回无边界守卫] RC=1 ['3 failed, 27 passed in 7.99s']
+    FAILED tests/test_vma121_intent_and_pii.py::test_sanitize_pii_id_card_leaves_no_residue
+    FAILED tests/test_vma121_intent_and_pii.py::test_sanitize_pii_longer_digit_run_is_not_split
+    FAILED tests/test_vma121_intent_and_pii.py::test_sanitize_pii_separated_phone_is_masked
+[B 邮箱规则退回 \w 贪婪写法] RC=1 ['3 failed, 27 passed in 10.80s']
+    FAILED tests/test_vma121_intent_and_pii.py::test_sanitize_pii_plain_shapes_still_masked
+    FAILED tests/test_vma121_intent_and_pii.py::test_sanitize_pii_email_does_not_swallow_adjacent_chinese
+    FAILED tests/test_vma121_intent_and_pii.py::test_sanitize_pii_short_email_local_name_is_masked
+[C 身份证规则退回裸 18 位数字] RC=1 ['2 failed, 28 passed in 7.16s']
+    FAILED tests/test_vma121_intent_and_pii.py::test_sanitize_pii_id_card_leaves_no_residue
+    FAILED tests/test_vma121_intent_and_pii.py::test_sanitize_pii_longer_digit_run_is_not_split
+RESTORED=True

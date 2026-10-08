@@ -1,0 +1,62 @@
+COPY_TREE_READY=E:/NAS/memory-agent/.qoder/tmp-c95mut33-local src_files=85
+[Q-0] 对照腿（什么都不改）rc=0 summary='112 passed in 13.52s' failed=[] skipped=0
+Q-0 绿：副本树与快照树同口径，后续红都是注入造成的。
+[R01] KILLED src\memory_agent\rule_engine.py :: alert 桩回到「未实现却报成功」——正是 MA-29 要消灭的形状
+        1 failed, 111 passed in 11.48s :: 红用例 1 条: test_five_unimplemented_actions_do_not_claim_success[alert]
+[R02] KILLED src\memory_agent\rule_engine.py :: webhook 报成功 ⇒ 调用方以为钩子已经打出去了
+        1 failed, 111 passed in 10.23s :: 红用例 1 条: test_five_unimplemented_actions_do_not_claim_success[webhook]
+[R03] KILLED src\memory_agent\rule_engine.py :: tts 报成功 ⇒ 家里没响过却记成已播报
+        1 failed, 111 passed in 9.96s :: 红用例 1 条: test_five_unimplemented_actions_do_not_claim_success[tts]
+[R04] KILLED src\memory_agent\rule_engine.py :: light 报成功 ⇒ 灯没动却记成已派发
+        1 failed, 111 passed in 11.17s :: 红用例 1 条: test_five_unimplemented_actions_do_not_claim_success[light]
+[R05] KILLED src\memory_agent\rule_engine.py :: camera 报成功 ⇒ 没抓拍却记成已执行
+        1 failed, 111 passed in 10.40s :: 红用例 1 条: test_five_unimplemented_actions_do_not_claim_success[camera]
+[R06] KILLED src\memory_agent\rule_engine.py :: 丢掉 not_implemented ⇒ 消费方分不清「失败」与「根本没人实现」
+        1 failed, 111 passed in 10.81s :: 红用例 1 条: test_five_unimplemented_actions_do_not_claim_success[alert]
+[R07] KILLED src\memory_agent\rule_engine.py :: 丢掉 dry_run ⇒ device feed 的 logged_only 判据失效，未派发被记进派发通道
+        1 failed, 111 passed in 11.05s :: 红用例 1 条: test_five_unimplemented_actions_do_not_claim_success[webhook]
+[R08] KILLED src\memory_agent\rule_engine.py :: dispatched=True 与「不派发任何副作用」直接矛盾
+        1 failed, 111 passed in 11.52s :: 红用例 1 条: test_five_unimplemented_actions_do_not_claim_success[tts]
+[R09] KILLED src\memory_agent\rule_engine.py :: 触发历史不带 dry_run=1 ⇒ 观察期误报计数把未派发送进「真触发」那一栏
+        1 failed, 111 passed in 11.20s :: 红用例 1 条: test_five_unimplemented_actions_log_history_as_dry_run[light]
+[R10] KILLED src\memory_agent\rule_engine.py :: 连触发历史都不写 ⇒ 观察期天数/误报率没有样本，规则永远熬不出试运行
+        1 failed, 111 passed in 12.07s :: 红用例 1 条: test_five_unimplemented_actions_log_history_as_dry_run[camera]
+[R11] KILLED src\memory_agent\rule_engine.py :: 门面文案不再点名 MA-29 ⇒ 审计回来核销时无从对照（断言要求 docstring 带裁定号）
+        1 failed, 111 passed in 10.41s :: 红用例 1 条: test_execute_action_docstring_names_the_five_stubs
+[R12] KILLED src\memory_agent\rule_engine.py :: docstring 不列出五支 ⇒ 「哪几支未实现」又变回要靠读代码才知道的口口相传
+        1 failed, 111 passed in 11.01s :: 红用例 1 条: test_execute_action_docstring_names_the_five_stubs
+[R13] KILLED src\memory_agent\config.py :: MA-32：字段回来 = 加载器会接受一个没人实现的开关
+        2 failed, 110 passed in 10.84s :: 红用例 2 条: test_config_has_no_auto_discover_persona_field, test_repo_has_no_lingering_reference_to_the_removed_key
+[R14] KILLED src\memory_agent\api\config_routes.py :: MA-32：写侧白名单回来 = 面板能把值写进一个不存在的开关
+        2 failed, 110 passed in 11.23s :: 红用例 2 条: test_repo_has_no_lingering_reference_to_the_removed_key, test_writable_fields_and_payload_no_longer_declare_the_key
+[R15] KILLED src\memory_agent\static\js\pages\settings.js :: MA-32：卡片回来 = 空壳面板（开关后面没有任何代码路径）
+        2 failed, 110 passed in 10.32s :: 红用例 2 条: test_repo_has_no_lingering_reference_to_the_removed_key, test_settings_page_has_no_dangling_switch
+[R16] KILLED src\memory_agent\activity_inference.py :: audit_rule_recall 默认偷偷写库 ⇒ 「只算不落」的承诺失效
+        1 failed, 111 passed in 11.61s :: 红用例 1 条: test_mining_entrypoints_default_to_no_write[audit_rule_recall]
+[R17] KILLED src\memory_agent\activity_inference.py :: mine_process 默认写库 ⇒ 每次手工试算都在改生产数据
+        1 failed, 111 passed in 10.92s :: 红用例 1 条: test_mining_entrypoints_default_to_no_write[mine_process]
+[R18] KILLED src\memory_agent\activity_inference.py :: mine_drift 默认写库 ⇒ 漂移点按调用次数堆积
+        1 failed, 111 passed in 12.99s :: 红用例 1 条: test_mining_entrypoints_default_to_no_write[mine_drift]
+[R19] KILLED src\memory_agent\api\behavior_routes.py :: HTTP 面 process 入口不传 persist 就落库 ⇒ 与门面文档相反
+        1 failed, 111 passed in 10.89s :: 红用例 1 条: test_behavior_routes_pass_persist_default_false_three_times
+[R20] KILLED src\memory_agent\api\behavior_routes.py :: HTTP 面 drift 入口回落 True ⇒ 「默认写」是隐性副作用
+        1 failed, 111 passed in 11.80s :: 红用例 1 条: test_behavior_routes_pass_persist_default_false_three_times
+[R21] KILLED src\memory_agent\api\behavior_routes.py :: HTTP 面 recall 入口回落 True ⇒ 放宽建议静默入库
+        1 failed, 111 passed in 12.33s :: 红用例 1 条: test_behavior_routes_pass_persist_default_false_three_times
+[R22] KILLED src\memory_agent\runtime.py :: 日任务撤掉显式 persist=True ⇒ 默认 False 接管，过程挖掘从此不落库
+        2 failed, 110 passed in 12.68s :: 红用例 2 条: test_every_in_repo_caller_states_persist_explicitly, test_runtime_daily_tasks_opt_into_writing
+[R23] KILLED src\memory_agent\runtime.py :: 日任务撤掉漂移落库 ⇒ 漂移历史断供，面板只看当下
+        2 failed, 110 passed in 16.96s :: 红用例 2 条: test_every_in_repo_caller_states_persist_explicitly, test_runtime_daily_tasks_opt_into_writing
+[R24] KILLED src\memory_agent\runtime.py :: 日任务撤掉召回落库 ⇒ 补召回建议永远停在内存里
+        2 failed, 110 passed in 11.52s :: 红用例 2 条: test_every_in_repo_caller_states_persist_explicitly, test_runtime_daily_tasks_opt_into_writing
+[R25] KILLED scripts\scan_stub_claims_success.py :: 裁定已落地却留着豁免 ⇒ 豁免表变成永久免检通道（基线只准减）
+        1 failed, 111 passed in 10.14s :: 红用例 1 条: test_stub_claims_gate_reports_zero_stub_and_zero_exemption
+[R26] KILLED src\memory_agent\acp_server.py :: M_CANCEL 的属主闸摘掉 ⇒ B 能取消 A 的在飞任务，还能用错误码探测运行态
+        3 failed, 109 passed in 10.47s :: 红用例 3 条: test_cancel_cross_owner_denied_before_run_id_check, test_every_entry_that_reads_session_id_enforces_ownership, test_parity_gate_live_tree_is_clean
+[R27] KILLED scripts\scan_session_owner_parity.py :: 门的读数根退回整棵 If ⇒ elif 兄弟支的闸被算成自己的（假绿，本轮实测抓出）
+        3 failed, 109 passed in 10.10s :: 红用例 3 条: test_parity_gate_flags_entry_that_lost_its_guard, test_parity_gate_live_tree_is_clean, test_parity_gate_self_test_is_green
+[R28] KILLED scripts\scan_session_owner_parity.py :: 门不再沿 elif 递归 ⇒ 分支静默消失，读数面上「没有需要闸的入口」（假绿）
+        1 failed, 111 passed in 10.00s :: 红用例 1 条: test_parity_gate_self_test_is_green
+WT_UNTOUCHED=True
+totals: killed=28 survived=0 invalid=0 legs=28
+python: 3.13.2 harness-exe=C:\Users\lidicn\AppData\Local\Programs\Python\Python313\python.exe

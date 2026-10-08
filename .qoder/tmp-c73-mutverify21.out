@@ -1,0 +1,4 @@
+L1 OK anchor=1 residue=0 coverage 没接窗口回显（改前形状）
+L2 OK anchor=1 residue=0 data_quality 没接窗口回显（改前形状）
+L3 OK anchor=1 residue=0 window 键在但恒空壳（谎从「没有」变成「口径永远空白」）
+MUTANTS_PARSED=3 VERIFY_BAD=0

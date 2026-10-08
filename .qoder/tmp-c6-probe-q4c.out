@@ -1,0 +1,34 @@
+load_events 命中扫描上限 30000，结果可能被截断
+load_events 命中扫描上限 30000，结果可能被截断
+load_events 命中扫描上限 30000，结果可能被截断
+db=/data/memory_agent.db tz=8.0 days=30 max_scan=30000 builtin_rules=5
+
+=== ① 返回键集合 ===
+  legacy 键（8）: ['activities', 'activity_types', 'behavior_only', 'detector_report', 'ok', 'signal_inventory', 'total_activities', 'window']
+  新引擎键（9）: ['activities', 'activity_types', 'excluded_entities', 'filters', 'ok', 'rule_sources', 'summary', 'total_activities', 'window']
+  legacy 有而新引擎缺: ['behavior_only', 'detector_report', 'signal_inventory']
+  新引擎新增: ['excluded_entities', 'filters', 'rule_sources', 'summary']
+  消费侧要读的键是否都在: ['activities', 'activity_types', 'total_activities', 'window'] -> 齐
+
+=== ② 语义枚举值集合 ===
+  legacy activity_types=['away', 'bathing', 'cooking', 'door_verify', 'notag_verify', 'sleeping', 'watching_tv', 'working'] 条数=116
+  新引擎 activity_types=['away', 'cooking', 'door_verify', 'notag_verify', 'study', 'tv', '夜间活动', '日间活动', '晚间活动', '晨间活动'] 条数=45
+  新引擎 source 档位={'heuristic': 36, 'semantic': 9}（semantic=语义规则判定，heuristic=无标签设备兜底）
+  新引擎行级键（取第一行）: ['activity', 'confidence', 'custom', 'day', 'domains', 'dominant_domain', 'end', 'end_hour', 'end_ts', 'events', 'evidence', 'name', 'room', 'signals', 'source', 'start', 'start_hour', 'start_ts', 'tags', 'typical_window']
+  与 legacy 行同名的键（6）: ['activity', 'confidence', 'custom', 'day', 'evidence', 'typical_window']
+
+=== ③ 旁挂依赖（规则表 / 排除表）===
+  库里：activity_rules 启用/全部 = 5/5；signal_exclusions 生效中 = 0（硬排除 0、分类标注 0）
+  新引擎自报：rule_sources={builtin: 5, activity_rules_table: 5, custom_applied: 5, selected: 10, events_scanned: 30000, events_total: 957153, scan_limit: 30000, scan_truncated: True, excluded_entity_ids: 0, error: -}
+  新引擎自报：excluded_entities={count: 0, sources: {'signal_exclusions': 0, 'config': 0}, scopes: {}}
+  -> 自报数与库里真值是否一致：一致
+
+=== Q3 硬排除的实际作用面（同一窗口，带/不带排除各读一次）===
+  排除集大小=0 | load_events 带排除=30000 不带=30000 | count_events 带排除=957153 不带=957153
+  -> 生产库当前没有生效中的硬排除行（差值 0 属预期，不是失效）
+  activity_matrix 计数合计：带排除=957153 不带=957153 （裁6 Q3=A 要求 activity_matrix 一侧也剔除）
+
+=== 口径边界（如实登记，不计入「迁完」）===
+  已迁：内置 5 条语义规则 + activity_rules 自定义规则的判定，时段启发式降为兜底输出。
+  语义一侧的事件来自 load_events 的截断切片（受 max_scan 约束），兜底一侧走 activity_matrix（SQL 聚合，全窗口）；两个数由 rule_sources 自报，逐信号缺口见 probe_activity_coverage_gap.py。
+  未迁：legacy 的静默间隔睡眠/离家检测器、_noise_entities、detector_report/signal_inventory、detected_activity 落库——这些仍在 legacy 一侧，解释侧（explain_insight）因此维持裁5 的 legacy 路由。

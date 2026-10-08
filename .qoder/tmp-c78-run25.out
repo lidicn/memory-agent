@@ -1,0 +1,161 @@
+HEAD=97b7062
+UNPUSHED=1
+GUARD_OK TREE_CLEAN=0
+GUARD_OK HEAD_IS_78=97b7062
+GUARD_OK REMOTE_SYNTAX_RC=0
+GUARD_OK SELF_SYNTAX_RC=0
+GUARD_OK MUT78_PARSE_RC=0
+GUARD_OK HASHES_PARSE_RC=0
+GUARD_OK LOCK_PARSE_RC=0
+GUARD_OK SRC_PARSE_RC=0
+.qoder/tmp-c78-remote25.sh UNESCAPED=0 ODD_QUOTE_LINES=[]
+LINT_RC=0
+GUARD_OK LINT_RC=0
+FILES25=404
+GUARD_OK MUT78_VERIFY_RC=0
+VERIFY_LEGS=6 VERIFY_BAD=0
+GUARD_OK MUT78_VERIFY_LEGS=6
+GUARD_OK MUT78_VERIFY_BAD=0
+GUARD_OK MUT78_LOCAL_OUT_EXISTS=0
+M-0                                0    对照 failed=0 15 passed
+L1-dead-literal-restored           1    该响 failed=3 3 failed
+L2-source-swapped-to-local-assembly 1    该响 failed=2 2 failed
+L3-names-derived-from-catalog      1    该响 failed=2 2 failed
+L4-module-level-read               1    该响 failed=1 1 failed
+L5-describe-page-truncated         1    该响 failed=1 1 failed
+MUT78_COUNT=6 MUTATION_BAD=0
+SRC_UNCHANGED=True mcp_se_SHA=5f5541e8120d
+GUARD_OK MUT78_LOCAL_BAD=0
+GUARD_OK MUT78_LOCAL_LEGS=6
+GUARD_OK MUT78_LOCAL_UNCHANGED=True
+GUARD_OK CTL_OUT_EXISTS=0
+GUARD_OK CTL_BAD=0
+GUARD_OK CTL_TREE_GREEN=True
+GUARD_OK LOCAL_SUITE_EXISTS=0
+SKIPPED [1] tests\test_vma_task64_behavior_predictor.py:242: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+SKIPPED [1] tests\test_vma_task64_behavior_predictor.py:259: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+1937 passed, 24 skipped in 344.94s (0:05:44)
+GUARD_OK LOCAL_SUITE_FAILED=0
+GUARD_OK HASHES_LOCAL_RC=0
+HASH_LISTED=404 HASH_FILES=404 HASH_MISSING=0
+HASH_AGGREGATE=8ad3e70b97992842bbada8a2d2f2ca8f2ca3e59ff0cb0cbb7e3bc5130cf2c9c2
+GUARD_OK HASH_MISSING=0
+GUARD_OK PATH_APPEND=1
+GUARD_OK VERIFY_FLAG=2
+GUARD_OK AST_GUARD=1
+GUARD_OK L_LEGS=6
+GUARD_OK FAILED_GUARD=1
+GUARD_OK SRC_UNCHANGED_FLAG=1
+GUARD_OK MCP_LINES=2939
+GUARD_OK MCP_BYTES=137704
+GUARD_OK CAT_BIND=1
+GUARD_OK CAT_TOTAL=4
+GUARD_OK LITERAL_START=0
+GUARD_OK DERIVED_LINE=0
+GUARD_OK NEW_COMMENT=1
+GUARD_OK OLD_COMMENT=0
+GUARD_OK MCP_CR=0
+GUARD_OK PAR_TEST_DEFS=17
+GUARD_OK PAR_LOAD_ONLY=1
+GUARD_OK PAR_READINGS_FN=1
+GUARD_OK PAR_DESCRIBE_READ=1
+GUARD_OK PAR_DESCRIBE_TEST=1
+GUARD_OK LOCK_CR=0
+IN_SNAP_checked=12
+PREFLIGHT_OK=1
+GUARD_OK TAR_RC=0
+TAR_SIZE=2456942
+GUARD_OK SCP_RC=0
+GUARD_OK REMOTE_SCP_RC=0
+GUARD_OK MUT78_SCP_RC=0
+GUARD_OK HASHES_SCP_RC=0
+GUARD_OK FILELIST_SCP_RC=0
+STAGE_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+404
+SNAP_FILELIST_LINES_RC=0
+SYNC_RC=0
+2026-10-07T11:31:08+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+Python 3.11.16
+TOOLCHAIN_RC=0
+SNAP_RC=0
+HASH_LISTED=404 HASH_FILES=404 HASH_MISSING=0
+HASH_AGGREGATE=8ad3e70b97992842bbada8a2d2f2ca8f2ca3e59ff0cb0cbb7e3bc5130cf2c9c2
+MCP_LINES=2939
+MCP_BYTES=137704
+CAT_BIND=1
+CAT_TOTAL=4
+LITERAL_START=0
+DERIVED_LINE=0
+NEW_COMMENT=1
+OLD_COMMENT=0
+ANCHOR_MCP_RC=0
+PAR_TEST_DEFS=17
+PAR_LOAD_ONLY=1
+PAR_READINGS_FN=1
+PAR_DESCRIBE_READ=1
+PAR_DESCRIBE_TEST=1
+ANCHOR_LOCK_RC=0
+PATH_APPEND=1
+VERIFY_FLAG=2
+AST_GUARD=1
+L_LEGS=6
+FAILED_GUARD=1
+SRC_UNCHANGED_FLAG=1
+HARNESS_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:206: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1951 passed, 10 skipped in 467.73s (0:07:47)
+SUITE_FAILNAMES_RC=1
+[10/07/26 03:39:11] INFO     MCP                               mcp_scopes.py:244
+                             写工具完整性断言通过：未发现疑似                   
+                             写工具漏登记                                       
+CATALOG_LEN=90
+NAMES_LEN=90
+SAME_AS_SOURCE=True
+DESCRIBE_CATALOG=90
+DESCRIBE_TOOLS=90
+NO_SUMMARY=0
+MCP_AVAILABLE=True
+RUNTIME_RC=0
+TARGETED_RC=0
+.........................                                                [100%]
+25 passed in 5.11s
+FACES_RC=0
+........................................................................ [ 85%]
+............                                                             [100%]
+84 passed in 38.19s
+FACES_FAILNAMES_RC=1
+VERIFY_RC=0
+VERIFY_LEGS=6 VERIFY_BAD=0
+MUT78_RC=0
+M-0                                0    对照 failed=0 17 passed
+L1-dead-literal-restored           1    该响 failed=3 3 failed
+L2-source-swapped-to-local-assembly 1    该响 failed=2 2 failed
+L3-names-derived-from-catalog      1    该响 failed=2 2 failed
+L4-module-level-read               1    该响 failed=1 1 failed
+L5-describe-page-truncated         1    该响 failed=1 1 failed
+MUT78_COUNT=6 MUTATION_BAD=0
+SRC_UNCHANGED=True mcp_se_SHA=5f5541e8120d
+POST_HASHES_RC=0
+HASH_LISTED=404 HASH_FILES=404 HASH_MISSING=0
+HASH_AGGREGATE=8ad3e70b97992842bbada8a2d2f2ca8f2ca3e59ff0cb0cbb7e3bc5130cf2c9c2
+HASHES_IDENTICAL=1
+POST_RC=0
+.................                                                        [100%]
+17 passed in 4.98s
+2026-10-07T11:40:58+08:00
+REMOTE_BATCH_RC=0
+REMOTE_DRIVER_RC=0
+CONTAINER_BATCH_RC=0

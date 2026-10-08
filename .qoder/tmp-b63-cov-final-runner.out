@@ -1,0 +1,16 @@
+MARK v3 python=Python313 mode=full-suite-single-round include=behavior_routes+change_attribution tag=WTfinal
+TREE_HEAD=612f67b
+TREE_LINES=1227/893
+GATE_ANCHOR=1
+DEADGATE=0
+WTfinal_SUITE_RC=0
+WTfinal_REPORT_RC=0
+WTfinal_MISSING_RC=1
+1532 passed, 22 skipped in 591.12s (0:09:51)
+Name                                      Stmts   Miss  Cover
+-------------------------------------------------------------
+src\memory_agent\api\behavior_routes.py     678    207    69%
+src\memory_agent\change_attribution.py      482     60    88%
+-------------------------------------------------------------
+TOTAL                                      1160    267    77%
+COVERAGE_FINAL_DONE

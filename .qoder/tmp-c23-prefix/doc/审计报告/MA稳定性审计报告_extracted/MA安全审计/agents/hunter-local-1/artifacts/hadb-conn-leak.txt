@@ -1,0 +1,18 @@
+### 证据3 ha_db._get_conn 无锁并发连接泄漏 ###
+=== 源码：_get_conn (ha_db.py:97-100) ===
+    def _get_conn(self) -> pymysql.connections.Connection:
+        if self._conn is None or not self._conn.open:
+            self._conn = self._connect()
+        return self._conn
+
+  >>> 无 threading.Lock；读写 self._conn 无保护
+
+=== 16 线程并发首次调用 _get_conn（真实场景：asyncio.to_thread(get_history) 按 entity 批并发）===
+  实际创建的连接数         = 16
+  实际保留在 self._conn 的 = 1
+  泄漏（创建但丢失引用）   = 15
+  泄漏连接是否被 close()   = 否（无人持有引用）
+  >>> 并发 N 线程首调 → 创建 16 个连接，15 个泄漏
+
+=== 对照：加锁后的行为（模拟修复）===
+  加锁后创建连接数 = 1  （全部线程复用同一个）

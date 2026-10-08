@@ -1,0 +1,31 @@
+### 证据4 候选复核：CancelledError / purge / reload_config ###
+=== A. 复核候选『except CancelledError: pass 导致循环继续』===
+  缩进 0 | async def _periodic_causal_scan(self) -> None:
+  缩进12 | while True:
+  缩进 8 | except asyncio.CancelledError:
+  缩进 4 | async def _periodic_mqtt_presence(self) -> None:
+  缩进 8 | while True:
+  缩进12 | except asyncio.CancelledError:
+  缩进 4 | async def _periodic_backup(self) -> None:
+  >>> except CancelledError 与 while 的关系：
+  cancel 前循环轮数=4  cancel 后新增轮数=0
+  task.done()=True  → 任务正常结束，不会无限循环
+  判定：❌ 该候选不成立（except 在 while 外层，pass 后函数即返回）
+
+=== B. 复核候选『purge 异常被吞 → 表无界增长』===
+  L531: self.store.purge_behavior_anomalies, before)
+  L555: self.store.purge_behavior_drifts, bd)
+
+  上下文（purge 之后）:
+    purge_behavior_anomalies, before)
+    except Exception:  # noqa: BLE001
+    pass
+    pres = await asyncio.to_thread(
+    self.activity.mine_process,
+    None, None,
+    int(getattr(self.config, "process_mining_days",
+
+=== C. 复核候选『reload_config 未关闭旧 ha_db』===
+    self.ha_db = self._build_ha_db(self.config)
+    >>> 是否出现 ha_db.close() 前先关旧连接:
+        否（直接覆盖引用）

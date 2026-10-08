@@ -1,0 +1,63 @@
+HEAD=8b11437
+UNPUSHED=1
+GUARD_OK TREE_CLEAN=0
+GUARD_OK REMOTE_SYNTAX_RC=0
+GUARD_OK MUT72_PARSE_RC=0
+.qoder/tmp-c72-remote20.sh UNESCAPED=0 ODD_QUOTE_LINES=[]
+LINT_RC=0
+GUARD_OK LINT_RC=0
+GUARD_OK PATH_APPEND=1
+GUARD_OK OLD_CLOBBER=0
+GUARD_OK STDERR_SHOWN=1
+GUARD_OK FACADE_ORDER=1
+GUARD_OK LEGACY_ORDER=1
+GUARD_OK MUT72_LOCAL_RC=0
+NOTHING 什么都不改档 -> RC=0 | 12 passed in 2.23s
+L1 丢键整格（改前形状：只回 core.data_quality） -> RC=1 咬住了 restored=OK | 3 failed, 9 passed in 3.20s
+L2 格还在但恒空（谎从「没有」变成「镜像永远干净」） -> RC=1 咬住了 restored=OK | 3 failed, 9 passed in 3.19s
+L3 摘掉附属块的保护（附属块炸掉时整页被 _degrade 打空） -> RC=1 咬住了 restored=OK | 2 failed, 10 passed in 3.18s
+MUT_COUNT=3 MUTATION_BAD=0
+GUARD_OK MUT72_LOCAL_BAD=0
+GUARD_OK MUT72_VERIFY_RC=0
+GUARD_OK MUT72_PARSED=3
+GUARD_OK MUT72_VERIFYBAD=0
+PREFLIGHT_OK=1
+GUARD_OK MUT72_SCP_RC=0
+GUARD_OK REMOTE_SCP_RC=0
+SNAP_PRESENT_RC=0
+HARNESS_CP_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+SYNC_RC=0
+2026-10-07T06:23:53+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+Python 3.11.16
+TOOLCHAIN_RC=0
+SNAP_RC=0
+HASH_LISTED=400 HASH_FILES=400 HASH_MISSING=0
+HASH_AGGREGATE=b750ca638fd1ec79f9054cce3b365c7ab05c71288ca30b3af45dda9df1a0cdbd
+PATH_APPEND=1
+OLD_CLOBBER=0
+STDERR_SHOWN=1
+HARNESS_RC=0
+VERIFY_RC=0
+MUTANTS_PARSED=3 VERIFY_BAD=0
+MUT72_RC=0
+NOTHING 什么都不改档 -> RC=0 | 12 passed in 3.81s
+L1 丢键整格（改前形状：只回 core.data_quality） -> RC=1 咬住了 restored=OK | 3 failed, 9 passed in 3.91s
+L2 格还在但恒空（谎从「没有」变成「镜像永远干净」） -> RC=1 咬住了 restored=OK | 3 failed, 9 passed in 3.95s
+L3 摘掉附属块的保护（附属块炸掉时整页被 _degrade 打空） -> RC=1 咬住了 restored=OK | 2 failed, 10 passed in 4.07s
+MUT_COUNT=3 MUTATION_BAD=0
+POST_RC=0
+............                                                             [100%]
+12 passed in 9.67s
+FACADE_ORDER=1
+LEGACY_ORDER=1
+ORDER_RC=0
+2026-10-07T06:24:33+08:00
+REMOTE_BATCH_RC=0
+REMOTE_DRIVER_RC=0
+CONTAINER_BATCH_RC=0
+DRIVER_RC=0

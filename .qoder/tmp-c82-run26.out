@@ -1,0 +1,241 @@
+HEAD=fdad983
+UNPUSHED=4
+GUARD_OK CODE_CLEAN=0
+DOC_DIRTY=1
+GUARD_OK HEAD_IS_82=fdad983
+GUARD_OK UNPUSHED_4=4
+GUARD_OK REMOTE_SYNTAX_RC=0
+GUARD_OK M81_PARSE_RC=0
+GUARD_OK M82_PARSE_RC=0
+GUARD_OK PROBE_PARSE_RC=0
+GUARD_OK HASHES_PARSE_RC=0
+GUARD_OK AST_auth.py=0
+GUARD_OK AST_config.py=0
+GUARD_OK AST_auth_routes.py=0
+GUARD_OK AST_app.py=0
+GUARD_OK AST_announcer.py=0
+GUARD_OK AST_runtime.py=0
+GUARD_OK AST_mqtt_bridge.py=0
+GUARD_OK AST_adm_linkage.py=0
+GUARD_OK AST_test_vma_login_rate_limit.py=0
+GUARD_OK AST_test_announcer.py=0
+GUARD_OK AST_test_vma_dcd_20261006_linkage_codes.py=0
+GUARD_OK AST_test_vma_dcd_20261002_payload.py=0
+GUARD_OK AST_test_tool_prose_promised_keys.py=0
+.qoder/tmp-c82-remote26.sh UNESCAPED=0 ODD_QUOTE_LINES=[]
+LINT_RC=0
+GUARD_OK LINT_RC=0
+FILES26=406
+GUARD_OK OUT_1ST_PRESENT=0
+GUARD_OK OUT_2ND_PRESENT=0
+GUARD_OK OUT_1ST_PRESENT=0
+GUARD_OK OUT_2ND_PRESENT=0
+GUARD_OK M81_V1_WT=True
+GUARD_OK M81_V2_KILLED=2
+GUARD_OK M81_V2_SURVIVED=0
+GUARD_OK M81_V2_INVALID=0
+GUARD_OK M81_V2_WT=True
+[M-0] 对照腿（什么都不改）rc=0 summary='207 passed in 29.00s' failed=[]
+GUARD_OK M82_V1_KILLED=10
+GUARD_OK M82_V1_SURVIVED=4
+GUARD_OK M82_V1_INVALID=0
+GUARD_OK M82_V2_KILLED=4
+GUARD_OK M82_V2_SURVIVED=0
+GUARD_OK M82_V2_WT=True
+GUARD_OK M82_TOTALS=totals: killed=4 survived=0 invalid=0 legs=4
+GUARD_OK PROBE_LOCAL_RC=0
+GUARD_OK PROBE_BAD=0
+GUARD_OK PROBE_CASES=4
+GUARD_OK LOCAL_SUITE_EXISTS=0
+........ss..........................................................     [100%]
+1988 passed, 24 skipped in 249.44s (0:04:09)
+LOCAL_SUITE_RC=0
+GUARD_OK LOCAL_SUITE_RC=0
+GUARD_OK LOCAL_SUITE_FAILED=0
+GUARD_OK HASHES_LOCAL_RC=0
+HASH_LISTED=406 HASH_FILES=406 HASH_MISSING=0
+HASH_AGGREGATE=998d4aa8cbd06041c086a1598d290b11fda2e9377d2cfdd78d3f4fa664afd34a
+GUARD_OK HASH_MISSING=0
+GUARD_OK M81_LEGS=22
+GUARD_OK M82_LEGS=14
+GUARD_OK M81_OUTENV=1
+GUARD_OK M82_OUTENV=1
+GUARD_OK M81_AST=1
+GUARD_OK M82_AST=1
+GUARD_OK M81_UNCHANGED=1
+GUARD_OK M82_UNCHANGED=1
+GUARD_OK AUTH_RESOLVE=1
+GUARD_OK AUTH_BUDGET=1
+GUARD_OK AUTH_BACKOFF=1
+GUARD_OK AUTH_XFF_LAST=1
+GUARD_OK AUTH_SWITCH=1
+GUARD_OK AUTH_NETS_FN=1
+GUARD_OK CFG_TRUST_DEFAULT=1
+GUARD_OK CFG_CIDRS_DEFAULT=1
+GUARD_OK CFG_ENV_TRUST=1
+GUARD_OK CFG_ENV_CIDRS=1
+GUARD_OK ROUTES_TRUST=1
+GUARD_OK BASIC_RESOLVE=1
+GUARD_OK ANN_HA_FN=1
+GUARD_OK ANN_INBOX_FN=1
+GUARD_OK ANN_READY_PROP=1
+GUARD_OK ANN_PRIORITY_LINE=1
+GUARD_OK ANN_GATE_LINE=1
+GUARD_OK ANN_TRACEID=1
+GUARD_OK ANN_ENABLED_LINE=1
+GUARD_OK RT_MQTT_INJECT=1
+GUARD_OK RT_CONSTRUCT=1
+GUARD_OK MB_PUBLISH_SPEAK=1
+GUARD_OK L_RATE_DEFS=22
+GUARD_OK L_ANN_DEFS=17
+GUARD_OK L_CODE_DEFS=19
+GUARD_OK L_PROSE_DEFS=9
+GUARD_OK L_SWITCH_GATE=1
+GUARD_OK L_WIRED=1
+GUARD_OK L_HA_REJECT=1
+GUARD_OK L_HA_GARBAGE=1
+GUARD_OK L_CALLER_LOCK=1
+GUARD_OK DOCKER_PIP_032=1
+GUARD_OK DOCKER_PIP_031=0
+GUARD_OK VENDOR_WHEELS=1
+GUARD_OK VENDOR_SHA_MATCH=19bc83a67a96931c4556caec52f29c190aaa03a0a7036e0b41c242a533fb5505
+GUARD_OK VENDOR_SHA_REGISTERED=1
+GUARD_OK CR_auth.py=0
+GUARD_OK CR_config.py=0
+GUARD_OK CR_auth_routes.py=0
+GUARD_OK CR_app.py=0
+GUARD_OK CR_announcer.py=0
+GUARD_OK CR_runtime.py=0
+GUARD_OK CR_mqtt_bridge.py=0
+GUARD_OK CR_adm_linkage.py=0
+GUARD_OK CR_Dockerfile=0
+GUARD_OK CR_README.md=0
+GUARD_OK CR_test_vma_login_rate_limit.py=0
+GUARD_OK CR_test_announcer.py=0
+GUARD_OK CR_test_vma_dcd_20261006_linkage_codes.py=0
+GUARD_OK CR_test_vma_dcd_20261002_payload.py=0
+GUARD_OK CR_test_tool_prose_promised_keys.py=0
+GUARD_OK CR_tmp-c81-mut.py=0
+GUARD_OK CR_tmp-c82-mut.py=0
+GUARD_OK CR_tmp-c82-probe.py=0
+GUARD_OK CR_tmp-c82-remote26.sh=0
+IN_SNAP_checked=17
+PREFLIGHT_OK=1
+GUARD_OK TAR_RC=0
+TAR_SIZE=2486776
+GUARD_OK SCP_RC=0
+GUARD_OK REMOTE_SCP_RC=0
+GUARD_OK M81_SCP_RC=0
+GUARD_OK M82_SCP_RC=0
+GUARD_OK PROBE_SCP_RC=0
+GUARD_OK HASHES_SCP_RC=0
+GUARD_OK FILELIST_SCP_RC=0
+STAGE_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+406
+SNAP_FILELIST_LINES_RC=0
+SYNC_RC=0
+2026-10-08T02:19:51+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+Python 3.11.16
+TOOLCHAIN_RC=0
+SNAP_RC=0
+HASH_LISTED=406 HASH_FILES=406 HASH_MISSING=0
+HASH_AGGREGATE=998d4aa8cbd06041c086a1598d290b11fda2e9377d2cfdd78d3f4fa664afd34a
+AUTH_RESOLVE=1
+AUTH_BUDGET=1
+AUTH_BACKOFF=1
+AUTH_XFF_LAST=1
+AUTH_SWITCH=1
+AUTH_NETS_FN=1
+CFG_TRUST_DEFAULT=1
+CFG_CIDRS_DEFAULT=1
+CFG_ENV_TRUST=1
+CFG_ENV_CIDRS=1
+ROUTES_TRUST=1
+BASIC_RESOLVE=1
+ANCHOR81_RC=0
+ANN_HA_FN=1
+ANN_INBOX_FN=1
+ANN_READY_PROP=1
+ANN_PRIORITY_LINE=1
+ANN_GATE_LINE=1
+ANN_TRACEID=1
+ANN_ENABLED_LINE=1
+RT_MQTT_INJECT=1
+RT_CONSTRUCT=1
+MB_PUBLISH_SPEAK=1
+ANCHOR82_RC=0
+L_RATE_DEFS=22
+L_ANN_DEFS=17
+L_CODE_DEFS=19
+L_PROSE_DEFS=9
+L_SWITCH_GATE=1
+L_WIRED=1
+L_HA_REJECT=1
+L_HA_GARBAGE=1
+L_CALLER_LOCK=1
+LOCKS_RC=0
+M81_LEGS=22
+M82_LEGS=14
+M81_OUTENV=1
+M82_OUTENV=1
+M81_AST=1
+M82_AST=1
+M81_UNCHANGED=1
+M82_UNCHANGED=1
+HARNESS_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:220: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+2002 passed, 10 skipped in 549.90s (0:09:09)
+SUITE_FAILNAMES_RC=1
+AUTH_A_RC=0
+........................................................................ [ 45%]
+........................................................................ [ 91%]
+.............                                                            [100%]
+157 passed in 79.51s (0:01:19)
+ANN_B_RC=0
+.............................................s.......................... [ 84%]
+.............                                                            [100%]
+84 passed, 1 skipped in 8.67s
+PROSE_C_RC=0
+.......................................                                  [100%]
+39 passed in 15.00s
+PROBE_RC=1
+Traceback (most recent call last):
+  File "/tmp/c82snap20261008_probe.py", line 14, in <module>
+    from memory_agent.announcer import Announcer  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'memory_agent'
+M81_RC=0
+grep: /tmp/c82snap20261008_m81.log: No such file or directory
+grep: /tmp/c82snap20261008_m81.log: No such file or directory
+grep: /tmp/c82snap20261008_m81.log: No such file or directory
+M82_RC=0
+grep: /tmp/c82snap20261008_m82.log: No such file or directory
+grep: /tmp/c82snap20261008_m82.log: No such file or directory
+grep: /tmp/c82snap20261008_m82.log: No such file or directory
+POST_HASHES_RC=0
+HASH_LISTED=406 HASH_FILES=406 HASH_MISSING=0
+HASH_AGGREGATE=998d4aa8cbd06041c086a1598d290b11fda2e9377d2cfdd78d3f4fa664afd34a
+POST_ANN_RC=0
+.......................................                                  [100%]
+39 passed in 5.41s
+POST_AUTH_RC=0
+......................                                                   [100%]
+22 passed in 4.34s
+2026-10-08T03:04:31+08:00
+REMOTE_DONE
+REMOTE_DRIVER_RC=0
+CONTAINER_BATCH_RC=0
+DRIVER_RC=0

@@ -1,0 +1,24 @@
+PARSE_ONLY_RC=0 MUTANTS_PARSED=20
+OK  anchor=1 residue=0 M1 R5 封顶退回改前的 min-by-index（会松档）
+OK  anchor=1 residue=0 M2 R6 封顶退回改前的 min-by-index
+OK  anchor=1 residue=0 M3 R4 退回直接赋值覆盖
+OK  anchor=1 residue=0 M4 R3 封顶失效（改回 HIGH 即不封顶）
+OK  anchor=1 residue=0 M5 R2 封顶失效
+OK  anchor=1 residue=0 M6 _more_severe 取反（判据本身坏掉）
+OK  anchor=1 residue=0 M7 prior_boost 的 k<=1 门失效
+OK  anchor=1 residue=0 M8 prior_boost 的样本量门失效
+OK  anchor=1 residue=0 M9 log-odds 裁剪失效
+OK  anchor=1 residue=0 M10 消除法不再限置信度上限 0.65
+OK  anchor=1 residue=0 M11 房间为空的那一档失效
+OK  anchor=1 residue=0 M12 时序衰减整体失效（年龄不再降权）
+OK  anchor=1 residue=0 M13 VOTE 档不抬升 MANUAL 权重
+OK  anchor=1 residue=0 M14 MCP 侧 weekday 边界守卫失效
+OK  anchor=1 residue=0 M15 weekday 过滤失效（改前传 99 也不报错那一族）
+OK  anchor=1 residue=0 M16 persons 为 dict 的那一代形状不认
+OK  anchor=1 residue=0 M17 house_dt 的短串门放宽（残缺串被当日期）
+OK  anchor=1 residue=deletion-shaped M18 偏离严重度写死 mild
+OK  anchor=1 residue=0 M19 带内判据只看下界（早退也被判正常）
+OK  anchor=1 residue=0 M20 同窗口去重失效（集合改列表 ⇒ 频次按事件计）
+DEADSHAPE_COUNT=0
+SYNTAX_BAD=0
+VERIFY_BAD=0

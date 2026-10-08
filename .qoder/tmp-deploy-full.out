@@ -1,0 +1,6 @@
+[deploy] 全量同步完成
+..........................................                               [100%]
+42 passed in 67.03s (0:01:07)
+[deploy] 契约门禁绿（tests/contract 对刚同步的 /app/src）
+memory-agent
+[deploy] 容器已重启；chroma 冷启动约需 12 分钟后再做健康检查

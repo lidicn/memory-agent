@@ -1,0 +1,52 @@
+# run26 容器 3.11 权威档：mut81（#81 登录限速 22 腿）——从容器内 /tmp/c82snap20261008_m81.log 原样取回
+# 取回时刻（本机）：2026-10-08 03:04:17 / 容器 UTC：2026-10-07T19:04:17+00:00
+copy tree ready: /tmp/c82snap20261008_m81
+[M-0] 对照腿（什么都不改）rc=0 summary='207 passed in 86.47s (0:01:26)' failed=[]
+M-0 绿：副本树与工作树同口径，后续红都是注入造成的。
+[M01] KILLED src/memory_agent/auth.py :: 开关失效：MA_TRUST_PROXY 关着（默认）也去读 XFF
+        3 failed, 204 passed in 79.64s (0:01:19) :: 红用例 3 条: test_basic_path_with_switch_off_uses_tcp_peer, test_route_reads_the_switch_from_runtime_config, test_the_switch_is_the_master_gate_even_with_a_registered_peer
+[M02] KILLED src/memory_agent/auth.py :: 取 XFF 首位而不是末位：首位是客户端自己写的
+        1 failed, 206 passed in 77.27s (0:01:17) :: 红用例 1 条: test_trusted_peer_gets_the_last_xff_element_not_the_first
+[M03] KILLED src/memory_agent/auth.py :: 网段为空时 fail-open：一个字段都没配就等于谁都可信
+        1 failed, 206 passed in 79.47s (0:01:19) :: 红用例 1 条: test_switch_on_with_no_registered_network_is_fail_closed
+[M04] KILLED src/memory_agent/auth.py :: 坏 CIDR 从「跳过该条」变成「全放行」
+        1 failed, 206 passed in 77.38s (0:01:17) :: 红用例 1 条: test_bad_cidr_entry_is_skipped_with_a_warning_and_the_good_one_survives
+[M05] KILLED src/memory_agent/auth.py :: 缓存命中不再看配置串：改网段后旧口径赖着不走
+        3 failed, 204 passed in 78.40s (0:01:18) :: 红用例 3 条: test_both_login_paths_use_the_same_bucket_key, test_cache_is_keyed_on_the_config_string_so_a_new_value_takes_effect, test_route_reads_the_switch_from_runtime_config
+[M06] KILLED src/memory_agent/auth.py :: 不再核对请求方是否登记：开关一开就信 XFF
+        4 failed, 203 passed in 76.76s (0:01:16) :: 红用例 4 条: test_bare_ip_and_cidr_both_register_and_the_rest_of_the_subnet_does_not, test_cache_is_keyed_on_the_config_string_so_a_new_value_takes_effect, test_route_reads_the_switch_from_runtime_config, test_switch_on_still_ignores_xff_when_peer_is_not_registered
+[M07] KILLED src/memory_agent/auth.py :: 对端 IP 解析不出时不再按不可信处理，而是抛穿
+        1 failed, 206 passed in 76.84s (0:01:16) :: 红用例 1 条: test_unparseable_peer_is_never_treated_as_trusted
+[M08] KILLED src/memory_agent/auth.py :: 预算 off-by-one：要到 61 次才打穿
+        5 failed, 202 passed in 78.25s (0:01:18) :: 红用例 5 条: test_a_successful_login_does_not_clear_the_global_budget, test_breach_is_visible_in_the_log, test_budget_breach_locks_nobody_but_the_login_action, test_remaining_seconds_never_read_zero, test_spray_across_many_ips_and_users_hits_one_wall
+[M09] KILLED src/memory_agent/auth.py :: 退避写成 0 秒：打穿之后照常放行
+        5 failed, 202 passed in 80.68s (0:01:20) :: 红用例 5 条: test_a_successful_login_does_not_clear_the_global_budget, test_backoff_expires_and_the_window_is_not_cumulative, test_budget_breach_locks_nobody_but_the_login_action, test_remaining_seconds_never_read_zero, test_spray_across_many_ips_and_users_hits_one_wall
+[M10] KILLED src/memory_agent/auth.py :: 全局列表不回写：预算永不累积，墙永不立
+        6 failed, 201 passed in 81.75s (0:01:21) :: 红用例 6 条: test_a_successful_login_does_not_clear_the_global_budget, test_backoff_expires_and_the_window_is_not_cumulative, test_breach_is_visible_in_the_log, test_budget_breach_locks_nobody_but_the_login_action, test_remaining_seconds_never_read_zero, test_spray_across_many_ips_and_users_hits_one_wall
+[M11] KILLED src/memory_agent/auth.py :: 剩余秒数没有下限保护：不足 1 秒时报 0
+        1 failed, 206 passed in 79.64s (0:01:19) :: 红用例 1 条: test_remaining_seconds_never_read_zero
+[M12] KILLED src/memory_agent/auth.py :: login_allowed 完全不查全局退避
+        5 failed, 202 passed in 78.55s (0:01:18) :: 红用例 5 条: test_a_successful_login_does_not_clear_the_global_budget, test_backoff_expires_and_the_window_is_not_cumulative, test_budget_breach_locks_nobody_but_the_login_action, test_remaining_seconds_never_read_zero, test_spray_across_many_ips_and_users_hits_one_wall
+[M13] KILLED src/memory_agent/auth.py :: 失败不进预算计数
+        6 failed, 201 passed in 76.22s (0:01:16) :: 红用例 6 条: test_a_successful_login_does_not_clear_the_global_budget, test_backoff_expires_and_the_window_is_not_cumulative, test_breach_is_visible_in_the_log, test_budget_breach_locks_nobody_but_the_login_action, test_remaining_seconds_never_read_zero, test_spray_across_many_ips_and_users_hits_one_wall
+[M14] KILLED src/memory_agent/auth.py :: 成功登录顺手清全局预算：边被打边登录 = 免费清账
+        1 failed, 206 passed in 76.93s (0:01:16) :: 红用例 1 条: test_a_successful_login_does_not_clear_the_global_budget
+[M15] KILLED src/memory_agent/auth.py :: 窗口从每分钟变成每天：一次打穿拦一整天
+        1 failed, 206 passed in 76.90s (0:01:16) :: 红用例 1 条: test_ruling_fixed_the_numbers_and_they_are_locked
+[M16] KILLED src/memory_agent/api/auth_routes.py :: 429 文案把 60 秒退避说成 2 分钟
+        1 failed, 206 passed in 78.09s (0:01:18) :: 红用例 1 条: test_login_handler_reports_the_backoff_in_minutes_not_seconds
+[M17] KILLED src/memory_agent/api/auth_routes.py :: /login 入口硬开信任，不读运行时 config
+        1 failed, 206 passed in 76.61s (0:01:16) :: 红用例 1 条: test_route_reads_the_switch_from_runtime_config
+[M18] KILLED src/memory_agent/config.py :: 默认值从关翻成开
+        1 failed, 206 passed in 77.60s (0:01:17) :: 红用例 1 条: test_switch_defaults_off_and_env_can_open_it_both_ways
+[M19] KILLED src/memory_agent/config.py :: env 映射里删掉 MA_TRUST_PROXY：开关拨不动
+        1 failed, 206 passed in 77.18s (0:01:17) :: 红用例 1 条: test_switch_defaults_off_and_env_can_open_it_both_ways
+[M20] KILLED src/memory_agent/config.py :: env 映射里删掉 MA_TRUSTED_PROXY_CIDRS：网段配不进去
+        1 failed, 206 passed in 80.18s (0:01:20) :: 红用例 1 条: test_switch_defaults_off_and_env_can_open_it_both_ways
+[M21] KILLED src/memory_agent/config.py :: 默认给整段私有网段：信任面从一台代理扩到整个 docker 网
+        1 failed, 206 passed in 85.08s (0:01:25) :: 红用例 1 条: test_switch_defaults_off_and_env_can_open_it_both_ways
+[M22] KILLED src/memory_agent/app.py :: Basic Auth 入口退回 TCP 对端：两条入口的桶键再次分叉
+        1 failed, 206 passed in 86.45s (0:01:26) :: 红用例 1 条: test_both_login_paths_use_the_same_bucket_key
+WT_UNTOUCHED=True
+totals: killed=22 survived=0 invalid=0 legs=22
+python: 3.11.16 harness-exe=/usr/local/bin/python

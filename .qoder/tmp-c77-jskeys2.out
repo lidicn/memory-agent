@@ -1,0 +1,11 @@
+FACES api_methods=100 unparsed=0 route_entries=208 handler_defs=292 js_callsites=6
+CALLSITES_ORPHAN=0 PATH_UNMATCHED=0 CHAIN_UNKNOWN=0
+READKEY_LOOSE_IN=0 STRICT_MISS=0 LOOSE_MISS=2
+
+=== LOOSE_MISS（前端读键连 handler 函数体都没出现过 ⇒ 首要嫌疑，2 条）===
+  visionAnalyze /api/vision/analyze  key=scene  读点=src/memory_agent/static/js/pages/vision.js:444  路由=api/vision_routes.py:404
+  visionTestLlm /api/vision/test-llm  key=answer  读点=src/memory_agent/static/js/pages/vision.js:426  路由=api/vision_routes.py:403
+
+=== STRICT_MISS（宇宙里有、返回顶层没有 ⇒ 形状要人工判，0 条）===
+
+=== CHAIN_UNKNOWN（载荷由 helper 造，本尺不追，0 条）===

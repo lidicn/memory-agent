@@ -1,0 +1,6 @@
+api.py                 params= 125 lands= 125 dropped= 0 dead_result= 0 registered= 0
+service.py             params=  27 lands=  27 dropped= 0 dead_result= 0 registered= 0
+nlquery.py             params=   6 lands=   6 dropped= 0 dead_result= 0 registered= 0
+repository.py          params=  77 lands=  77 dropped= 0 dead_result= 0 registered= 0
+---- 判红清单（DROPPED / DEAD-RESULT）----
+FINDINGS=0

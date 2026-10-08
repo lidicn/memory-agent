@@ -1,0 +1,94 @@
+load_events 分层扫描未读全：返回 29012/30000 行（日配额 967，小时公平份额 40，窗口 31 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 28756/30000 行（日配额 967，小时公平份额 40，窗口 31 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 30000/30000 行（日配额 3750，小时公平份额 156，窗口 8 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 30000/30000 行（日配额 3750，小时公平份额 156，窗口 8 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 30000/30000 行（日配额 3750，小时公平份额 156，窗口 8 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 30000/30000 行（日配额 3750，小时公平份额 156，窗口 8 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 30000/30000 行（日配额 3750，小时公平份额 156，窗口 8 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 25644/30000 行（日配额 3750，小时公平份额 156，窗口 8 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 28756/30000 行（日配额 967，小时公平份额 40，窗口 31 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 29012/30000 行（日配额 967，小时公平份额 40，窗口 31 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 30000/30000 行（日配额 3750，小时公平份额 156，窗口 8 天）——有小时格补读后仍未探底，或有天没扫到
+load_events 分层扫描未读全：返回 30000/30000 行（日配额 3750，小时公平份额 156，窗口 8 天）——有小时格补读后仍未探底，或有天没扫到
+db=/data/memory_agent.db rooms=17 tz=8.0 max_scan=30000
+events 表跨度: {'min_day': '2026-09-05', 'max_day': '2026-10-06', 'rows': 986238}
+behavior_events 表跨度: {'min_day': '2026-08-30', 'max_day': '2026-10-05', 'rows': 4035}
+
+=== Q3-1 六个过滤/排序位是否真的生效（新引擎）===
+  repo 层 room : 无过滤 scan=29012 count=951754 | 客厅 scan=28756 count=149748 -> 生效
+  repo 层 domain: light count=1153 -> 生效
+  repo.load_events 形参: ['tr', 'entity_ids', 'rooms', 'domains', 'behavior_only', 'exclude_entity_ids', 'exclude_domains', 'states', 'order']
+  门面基线      : total=176439 count=50 ok=True filters=['behavior_only', 'category', 'domain', 'domains_resolved', 'entities_resolved', 'entity_id', 'order', 'query', 'room', 'state']
+  门面 category : 传 climate total=21 domains_resolved=['climate', 'fan', 'humidifier', 'water_heater'] err=- -> 生效
+  门面 query    : 传 灯 total=53 entities_resolved=14 err=- -> 生效
+  门面 domain   : 传 light total=53（与 repo 层同域互证 1153） err=- -> 生效（判据=门面与 repo 两路都生效）
+  门面 state    : 传 '28' total=4945 err=- -> 生效
+  门面 order    : asc 首末=[1790637163.0]/[1790670102.0] desc 首末=[1791225622.0]/[1791225611.0] err=(-,-) 回声=(asc,desc) -> 生效且回声同源（改前这一格先问『位有没有落点』：HEAD 的 `order` 无处可去 ⇒ 两侧同序）
+  门面 summarize: 有 summary=True 样本=50 count=50（不传时 count=50 样本=50） err=(-,-) -> 生效且 count 未被 50 条样本冒充（注：本条要 limit≥50 且窗口内有足够事件才量得出，读数里的 count 见上）
+  解析不出时    : 传「绝不相干的设备名甲乙丙」total=0 filters.unresolved=True err=- -> fail-closed（不回落成全量）
+  （fail-closed 不在 Q3-1 的六个位里，登记为额外一条：legacy 在这一格是漏的）
+
+=== Q3-2 days 是否真按天窗口（同一 room，days=1 / 7 / 30）===
+  days= 1 room=客厅: 扫描=5789 全量匹配=5789
+  days= 7 room=客厅: 扫描=25644 全量匹配=38074
+  days=30 room=客厅: 扫描=28756 全量匹配=149743
+  -> 窗口随 days 单调（是）：[5789, 38074, 149743]
+  legacy 同口径（**另一次读**：生产采集在跑，与新引擎那三行差 1–3 行属漂移，不能当成窗口右界口径差——此前把它解释成口径差是没验证过的归因）：
+  days= 1 legacy total=5789
+  days=30 legacy total=149743
+
+=== Q3-3/Q4 total 有没有被 MAX_SCAN 截断，截断时是否如实上报 ===
+  冻结窗口 2026-09-06T02:42:04 ~ 2026-10-06T02:42:04（右界在过去的绝对窗，新事件落不进来）
+  30 天全量匹配=951725（后置复点=951725，窗口稳定） 门面报 total=951725 count=5 truncated=True scan_limit=30000 total_exact=True（repo.scan_limit=30000）
+  -> total 不被切片冒充且截断如实上报（Q-A + Q4=A 达成）
+
+=== Q3-4 legacy 的分页/窗口键在新引擎有没有对应物 ===
+  behavior_insights legacy 实给分页/窗口键=['ok', 'window'] | 新引擎路径=core.behavior_insights 缺=无
+                    载荷键差集：仅 legacy=['anomalies', 'anomaly_checks', 'behavior_only', 'daily_rhythm', 'daily_totals', 'hint', 'most_active_room', 'noise_filtered', 'noise_sources', 'room_transitions', 'rooms', 'telemetry_filtered', 'total_events', 'total_events_raw'] 仅新引擎=['by_room', 'by_trigger', 'days', 'filters', 'hourly', 'perception', 'summary', 'top_actions']（切换时要走 DCD 载荷键名登记：等价物不等于同名）
+  device_health     legacy 实给分页/窗口键=['ok'] | 新引擎路径=core.device_health 缺=无
+                    载荷键差集：仅 legacy=['catalog_total', 'data_quality_count', 'data_quality_issues', 'healthy', 'healthy_entities', 'hint', 'no_data', 'no_data_entities', 'only_enabled', 'referenced_entities', 'referenced_entity_ids', 'scope', 'stale', 'stale_entities', 'stale_threshold_days', 'total_entities', 'window_days'] 仅新引擎=['filters', 'items', 'offline_days', 'reference_ts', 'summary', 'window']（切换时要走 DCD 载荷键名登记：等价物不等于同名）
+  device_usage      legacy 实给分页/窗口键=['ok', 'window'] | 新引擎路径=core.usage 缺=无
+                    载荷键差集：仅 legacy=['device_count', 'devices', 'total_on_human', 'total_on_seconds'] 仅新引擎=['by_domain', 'by_room', 'filters', 'items', 'span_days', 'total_entities', 'total_events', 'truncated']（切换时要走 DCD 载荷键名登记：等价物不等于同名）
+  entity_catalog    legacy 实给分页/窗口键=['ok', 'total', 'window'] | 新引擎路径=repo.entity_catalog（原行列表，无信封） 缺=['ok', 'total', 'window']
+                    载荷键差集：仅 legacy=['categories_available', 'duplicate_candidates', 'duplicates_merged', 'hint', 'no_data_entities', 'ok', 'raw_entity_count', 'rooms', 'total', 'window'] 仅新引擎=[]（切换时要走 DCD 载荷键名登记：等价物不等于同名）
+  search_events     legacy 实给分页/窗口键=['count', 'has_more', 'next_offset', 'offset', 'ok', 'total', 'window'] | 新引擎路径=_search 缺=无
+                    载荷键差集：仅 legacy=[] 仅新引擎=['limit', 'scan_limit', 'time_range', 'total_exact', 'truncated']（切换时要走 DCD 载荷键名登记：等价物不等于同名）
+
+=== Q3-5 「接收但不生效」的入参清单（新引擎无对应物的都要么实现要么下架）===
+  route_question               -> plan_question        门面收的过滤位=-（新引擎对应物：无）
+  get_entity_catalog           -> entity_catalog       门面收的过滤位=['category', 'domain', 'only_enabled', 'query']（新引擎对应物：同名有）
+  get_behavior_insights        -> behavior_insights    门面收的过滤位=-（新引擎对应物：同名有）
+  get_behavior_insights_compare -> get_behavior_insights 门面收的过滤位=-（新引擎对应物：无）
+  get_device_usage             -> device_usage         门面收的过滤位=['category', 'debounce_seconds', 'include_timeline', 'on_states', 'query']（新引擎对应物：异名 usage）
+  search_events                -> search_events        门面收的过滤位=['category', 'domain', 'order', 'query', 'state', 'summarize']（新引擎对应物：无）
+  get_device_health            -> device_health        门面收的过滤位=['category', 'only_enabled', 'query', 'stale_days']（新引擎对应物：同名有）
+  get_data_coverage            -> data_coverage        门面收的过滤位=-（新引擎对应物：异名 coverage）
+  get_climate_sessions         -> climate_sessions     门面收的过滤位=['query']（新引擎对应物：无）
+  infer_activities             -> infer_activities     门面收的过滤位=-（新引擎对应物：同名有）
+  get_user_persona             -> get_user_persona     门面收的过滤位=-（新引擎对应物：异名 user_persona）
+  explain_insight              -> explain_insight      门面收的过滤位=-（新引擎对应物：无）
+  ask_memory                   -> ask_memory           门面收的过滤位=-（新引擎对应物：无）
+  get_data_quality             -> get_data_quality     门面收的过滤位=-（新引擎对应物：异名 data_quality）
+  define_activity              -> define_activity      门面收的过滤位=-（新引擎对应物：无）
+  get_last_event               -> get_last_event       门面收的过滤位=['domain']（新引擎对应物：无）
+  query_behavior_events        -> query_behavior_events 门面收的过滤位=-（新引擎对应物：无）
+  同名无实现但存在异名等价物（语义待逐条核，切换时要另走载荷键名登记）：4 个 ['get_device_usage->device_usage≈core.usage', 'get_data_coverage->data_coverage≈core.coverage', 'get_user_persona->get_user_persona≈core.user_persona', 'get_data_quality->get_data_quality≈core.data_quality']
+  逐项参数级判定需要人工核对新引擎的实现语义；本行只给方法级候选清单：9 个方法在新引擎既无同名也无异名等价 ['route_question->plan_question', 'get_behavior_insights_compare->get_behavior_insights', 'search_events->search_events', 'get_climate_sessions->climate_sessions', 'explain_insight->explain_insight', 'ask_memory->ask_memory', 'define_activity->define_activity', 'get_last_event->get_last_event', 'query_behavior_events->query_behavior_events']load_events 分层扫描未读全：返回 30000/30000 行（日配额 3750，小时公平份额 156，窗口 8 天）——有小时格补读后仍未探底，或有天没扫到
+
+
+=== Q3-6 切换时要交的三项对比读数（本脚本即该项的量具）===
+  search_events: ① 返回键集合 门面/legacy/并集 = 14/9/14（仅门面 5、仅 legacy 0）——口径：这一列量的是**门面当前对外返回**的键（search_events 走 `_search` 新引擎扫描路径，另四条按裁5 Q1=A 仍是 legacy 门面体 + 补键），切换后要比的才是`core.*` 那一路（见 Q3-4 的新引擎路径列）
+  entity_catalog: ① 返回键集合 门面/legacy/并集 = 12/10/12（仅门面 2、仅 legacy 0）——口径：这一列量的是**门面当前对外返回**的键（search_events 走 `_search` 新引擎扫描路径，另四条按裁5 Q1=A 仍是 legacy 门面体 + 补键），切换后要比的才是`core.*` 那一路（见 Q3-4 的新引擎路径列）
+  device_usage: ① 返回键集合 门面/legacy/并集 = 8/6/8（仅门面 2、仅 legacy 0）——口径：这一列量的是**门面当前对外返回**的键（search_events 走 `_search` 新引擎扫描路径，另四条按裁5 Q1=A 仍是 legacy 门面体 + 补键），切换后要比的才是`core.*` 那一路（见 Q3-4 的新引擎路径列）
+  behavior_insights: ① 返回键集合 门面/legacy/并集 = 16/16/16（仅门面 0、仅 legacy 0）——口径：这一列量的是**门面当前对外返回**的键（search_events 走 `_search` 新引擎扫描路径，另四条按裁5 Q1=A 仍是 legacy 门面体 + 补键），切换后要比的才是`core.*` 那一路（见 Q3-4 的新引擎路径列）
+  device_health: ① 返回键集合 门面/legacy/并集 = 18/18/18（仅门面 0、仅 legacy 0）——口径：这一列量的是**门面当前对外返回**的键（search_events 走 `_search` 新引擎扫描路径，另四条按裁5 Q1=A 仍是 legacy 门面体 + 补键），切换后要比的才是`core.*` 那一路（见 Q3-4 的新引擎路径列）
+  ② 语义枚举值集合：domain=['binary_sensor', 'event', 'media_player', 'sensor', 'switch']（共 5 个） state=['0', '0.0', '0.01', '0.61', '0.63', '1', '10', '10.0']（共 258 个）；person/action 只报去重数（不外露姓名）：0/0
+  ③ 旁挂依赖：activity_rules=5 signal_exclusions=1 config.excluded_entities=0 项
+
+=== 验收单收口（六条全部有读数；判定只按上面对勾，不做乐观折算）===
+  Q3-1 过滤/排序位：生效=['category', 'domain', 'order', 'query', 'room', 'state', 'summarize'] 不生效=[] 未量到=[] -> 齐
+  Q3-2 days 窗口单调：齐（[5789, 38074, 149743]）
+  Q3-3 截断如实上报：齐
+  Q3-4 legacy 分页/窗口键对应物：不齐（有路径但缺键=无；新引擎无同名组装法、无信封可对齐=['entity_catalog']——两类分开登记，前者是补齐项、后者属 Q3-5 的未迁清单）
+  Q3-5 接收但不生效入参：不齐（既无同名也无异名等价 9 个；有异名等价物、语义待核 4 个）
+  Q3-6 三项对比读数：①②③ 已全部打印 -> 齐

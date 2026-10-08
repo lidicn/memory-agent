@@ -1,0 +1,129 @@
+FACES api_methods=100 unparsed=0 route_entries=208 handler_defs=292 js_callsites=67
+CALLSITES_ORPHAN=0 PATH_UNMATCHED=0 CHAIN_UNKNOWN=8
+READKEY_LOOSE_IN=1 STRICT_MISS=1 LOOSE_MISS=111
+
+=== LOOSE_MISS（前端读键连 handler 函数体都没出现过 ⇒ 首要嫌疑，111 条）===
+  acpCreateToken /api/acp/tokens  key=autoflow_url  读点=src/memory_agent/static/js/pages/acp.js:304  路由=api/acp_routes.py:249,api/acp_routes.py:250,api/acp_routes.p
+  acpCreateToken /api/acp/tokens  key=configured  读点=src/memory_agent/static/js/pages/acp.js:304  路由=api/acp_routes.py:249,api/acp_routes.py:250,api/acp_routes.p
+  acpCreateToken /api/acp/tokens  key=detail  读点=src/memory_agent/static/js/pages/acp.js:304  路由=api/acp_routes.py:249,api/acp_routes.py:250,api/acp_routes.p
+  acpCreateToken /api/acp/tokens  key=steps  读点=src/memory_agent/static/js/pages/acp.js:304  路由=api/acp_routes.py:249,api/acp_routes.py:250,api/acp_routes.p
+  acpCreateToken /api/acp/tokens  key=summary  读点=src/memory_agent/static/js/pages/acp.js:304  路由=api/acp_routes.py:249,api/acp_routes.py:250,api/acp_routes.p
+  acpRevokeToken /api/acp/tokens  key=autoflow_url  读点=src/memory_agent/static/js/pages/acp.js:327  路由=api/acp_routes.py:249,api/acp_routes.py:250,api/acp_routes.p
+  acpRevokeToken /api/acp/tokens  key=configured  读点=src/memory_agent/static/js/pages/acp.js:327  路由=api/acp_routes.py:249,api/acp_routes.py:250,api/acp_routes.p
+  acpRevokeToken /api/acp/tokens  key=detail  读点=src/memory_agent/static/js/pages/acp.js:327  路由=api/acp_routes.py:249,api/acp_routes.py:250,api/acp_routes.p
+  acpRevokeToken /api/acp/tokens  key=steps  读点=src/memory_agent/static/js/pages/acp.js:327  路由=api/acp_routes.py:249,api/acp_routes.py:250,api/acp_routes.p
+  acpRevokeToken /api/acp/tokens  key=summary  读点=src/memory_agent/static/js/pages/acp.js:327  路由=api/acp_routes.py:249,api/acp_routes.py:250,api/acp_routes.p
+  acpSelftest /api/acp/selftest  key=autoflow_url  读点=src/memory_agent/static/js/pages/acp.js:339  路由=api/acp_routes.py:247
+  acpSelftest /api/acp/selftest  key=configured  读点=src/memory_agent/static/js/pages/acp.js:339  路由=api/acp_routes.py:247
+  acpSelftest /api/acp/selftest  key=token  读点=src/memory_agent/static/js/pages/acp.js:339  路由=api/acp_routes.py:247
+  acpTestOutbound /api/acp/test-outbound  key=summary  读点=src/memory_agent/static/js/pages/acp.js:388  路由=api/acp_routes.py:248
+  createAppToken /api/config/app-tokens  key=api_key  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=backends  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=changed  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=confirm  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=connected  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=has_update  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=latest_commit  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=model  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=next  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=old  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=steps  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=token  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=url  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=users  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  createAppToken /api/config/app-tokens  key=value  读点=src/memory_agent/static/js/pages/settings.js:499  路由=api/config_routes.py:530,api/config_routes.py:531
+  haRooms /api/ha/rooms  key=down  读点=src/memory_agent/static/js/pages/members.js:450  路由=api/ha_routes.py:124,api/ha_routes.py:125
+  haRooms /api/ha/rooms  key=entities  读点=src/memory_agent/static/js/pages/members.js:450  路由=api/ha_routes.py:124,api/ha_routes.py:125
+  haRooms /api/ha/rooms  key=entity_id  读点=src/memory_agent/static/js/pages/members.js:450  路由=api/ha_routes.py:124,api/ha_routes.py:125
+  haRooms /api/ha/rooms  key=friendly_name  读点=src/memory_agent/static/js/pages/members.js:450  路由=api/ha_routes.py:124,api/ha_routes.py:125
+  haRooms /api/ha/rooms  key=light_entities  读点=src/memory_agent/static/js/pages/vision.js:339  路由=api/ha_routes.py:124,api/ha_routes.py:125
+  haRooms /api/ha/rooms  key=light_entities_text  读点=src/memory_agent/static/js/pages/vision.js:339  路由=api/ha_routes.py:124,api/ha_routes.py:125
+  haRooms /api/ha/rooms  key=members  读点=src/memory_agent/static/js/pages/members.js:450  路由=api/ha_routes.py:124,api/ha_routes.py:125
+  haRooms /api/ha/rooms  key=memories  读点=src/memory_agent/static/js/pages/members.js:450  路由=api/ha_routes.py:124,api/ha_routes.py:125
+  haRooms /api/ha/rooms  key=name  读点=src/memory_agent/static/js/pages/members.js:450  路由=api/ha_routes.py:124,api/ha_routes.py:125
+  haRooms /api/ha/rooms  key=up  读点=src/memory_agent/static/js/pages/members.js:450  路由=api/ha_routes.py:124,api/ha_routes.py:125
+  listAppTokens /api/config/app-tokens  key=api_key  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=backends  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=changed  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=confirm  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=connected  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=has_update  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=latest_commit  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=model  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=next  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=old  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=steps  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=token  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=url  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=users  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  listAppTokens /api/config/app-tokens  key=value  读点=src/memory_agent/static/js/pages/settings.js:490  路由=api/config_routes.py:530,api/config_routes.py:531
+  mcpAudit /api/mcp/audit  key=protocol_version  读点=src/memory_agent/static/js/pages/mcp.js:311  路由=api/mcp_routes.py:319
+  mcpAudit /api/mcp/audit  key=snippets  读点=src/memory_agent/static/js/pages/mcp.js:311  路由=api/mcp_routes.py:319
+  mcpAudit /api/mcp/audit  key=tools_count  读点=src/memory_agent/static/js/pages/mcp.js:311  路由=api/mcp_routes.py:319
+  members /api/members  key=down  读点=src/memory_agent/static/js/pages/members.js:439  路由=api/member_routes.py:273,api/member_routes.py:274
+  members /api/members  key=entities  读点=src/memory_agent/static/js/pages/members.js:439  路由=api/member_routes.py:273,api/member_routes.py:274
+  members /api/members  key=entity_id  读点=src/memory_agent/static/js/pages/members.js:439  路由=api/member_routes.py:273,api/member_routes.py:274
+  members /api/members  key=friendly_name  读点=src/memory_agent/static/js/pages/members.js:439  路由=api/member_routes.py:273,api/member_routes.py:274
+  members /api/members  key=memories  读点=src/memory_agent/static/js/pages/members.js:439  路由=api/member_routes.py:273,api/member_routes.py:274
+  members /api/members  key=name  读点=src/memory_agent/static/js/pages/members.js:439  路由=api/member_routes.py:273,api/member_routes.py:274
+  members /api/members  key=rooms  读点=src/memory_agent/static/js/pages/members.js:439  路由=api/member_routes.py:273,api/member_routes.py:274
+  members /api/members  key=up  读点=src/memory_agent/static/js/pages/members.js:439  路由=api/member_routes.py:273,api/member_routes.py:274
+  saveConfig /api/config  key=summary  读点=src/memory_agent/static/js/pages/acp.js:364  路由=api/config_routes.py:526,api/config_routes.py:527
+  systemUpdate /api/system/update  key=api_key  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=backends  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=changed  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=confirm  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=connected  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=has_update  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=latest_commit  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=model  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=next  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=old  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=steps  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=token  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=tokens  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=url  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=users  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdate /api/system/update  key=value  读点=src/memory_agent/static/js/pages/settings.js:576  路由=api/system_routes.py:238
+  systemUpdateCheck /api/system/update/check  key=api_key  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=backends  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=changed  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=confirm  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=connected  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=model  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=next  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=old  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=steps  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=token  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=tokens  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=url  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=users  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  systemUpdateCheck /api/system/update/check  key=value  读点=src/memory_agent/static/js/pages/settings.js:560  路由=api/system_routes.py:237
+  users /api/users  key=api_key  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=backends  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=changed  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=confirm  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=connected  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=has_update  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=latest_commit  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=model  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=next  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=old  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=steps  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=token  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=tokens  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=url  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+  users /api/users  key=value  读点=src/memory_agent/static/js/pages/settings.js:534  路由=api/auth_routes.py:183
+
+=== STRICT_MISS（宇宙里有、返回顶层没有 ⇒ 形状要人工判，1 条）===
+  acpSelftest /api/acp/selftest  key=detail  读点=src/memory_agent/static/js/pages/acp.js:339
+
+=== CHAIN_UNKNOWN（载荷由 helper 造，本尺不追，8 条）===
+  agentMemoryPromote /api/agent/memories/promote  helper=err,result
+  agentMemoryPromote /api/agent/memories/promote  helper=err,result
+  agentMemorySweep /api/agent/memories/sweep  helper=err,result
+  arenaAnalytics /api/arena/analytics  helper=data
+  health /api/health  helper=err
+  signalRules /api/signal-rules  helper=data,err
+  signalTeach /api/signal-rules/teach  helper=err,result
+  validateTemplates /api/templates/validate  helper=err

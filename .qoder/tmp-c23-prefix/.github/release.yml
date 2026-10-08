@@ -1,0 +1,16 @@
+# .github/release.yml
+# 在 GitHub 创建 Release（Draft）时自动填充说明模板。
+name: "v1.0.0"
+tag: "v1.0.0"
+prerelease: false
+description: "v1.0 对外与闭环：价值证明与生态接入"
+body: |
+  ## 亮点
+  - **arena 分析闭环**：`GET /api/arena/analytics` + 定向洞察页「竞技场闭环分析」卡片，量化「用了家庭记忆 vs 没用」的成功率/token 差异。
+  - **HA Assist 集成（MA 侧）**：OpenAI 兼容 `POST /v1/chat/completions` + `GET /v1/models`，HA 的 extended_openai_conversation 让 Assist / 语音直接用上家庭记忆。
+  - **顾安恒专属对话整合**：`snapshot_url` 截图外链、VLM 会话归集、新增 `GET /api/vision/latest`。
+  - **发布打磨**：版本统一 1.0.0、PWA 可安装、README 对接指南、release 模板。
+
+  ## 升级方式
+  - 容器部署：`docker compose pull && docker compose up -d`
+  - 或使用 WebUI「设置 → 系统 / 在线更新」一键更新

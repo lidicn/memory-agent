@@ -1,0 +1,30 @@
+SELFTEST_HIT core/p1_param_unguarded.py -> UNGUARDED-EXTERNAL (param-tainted:days)
+SELFTEST_HIT core/p2_param_renamed.py -> UNGUARDED-EXTERNAL (param-tainted:span)
+SELFTEST_HIT core/p3_regex_from_question.py -> UNGUARDED-EXTERNAL (param-tainted:n)
+SELFTEST_HIT core/p4_lo_only.py -> UNGUARDED-EXTERNAL (param-tainted:days)
+SELFTEST_HIT core/p5_marked_and_bounded.py -> CONFLICT:marked+bounded (param-tainted:days)
+SELFTEST_HIT core/p6_tuple_target.py -> UNGUARDED-EXTERNAL (param-tainted:a)
+SELFTEST_HIT core/p7_half_bounded.py -> UNGUARDED-EXTERNAL (param-tainted:cd,other)
+SELFTEST_HIT core/p8_bounded_only_after_site.py -> UNGUARDED-EXTERNAL (param-tainted:n)
+SELFTEST_CLEAN core/n1_literal.py label=literal
+SELFTEST_CLEAN core/n2_bounded.py label=external
+SELFTEST_CLEAN core/n3_clamp_helper.py label=external
+SELFTEST_CLEAN core/n4_date_math.py label=date_math
+SELFTEST_CLEAN core/n5_config.py label=config
+SELFTEST_CLEAN core/n6_marked_external.py label=external
+SELFTEST_CLEAN core/n7_module_level_no_func.py label=literal
+SELFTEST_CLEAN core/n8_bounded_var.py label=external
+SELFTEST_HIT writable/w1_writable_attr.py -> UNGUARDED-EXTERNAL (writable-config:window_days)
+SELFTEST_HIT writable/w2_writable_via_var.py -> UNGUARDED-EXTERNAL (writable-config:window_days)
+SELFTEST_HIT writable/w3_writable_getattr.py -> UNGUARDED-EXTERNAL (writable-config:window_days)
+SELFTEST_CLEAN writable/w4_nonwritable_attr.py label=config
+SELFTEST_CLEAN writable/w6_not_app_config_clamped.py label=external
+SELFTEST_HIT app-config/w5_not_app_config.py -> UNGUARDED-EXTERNAL (not-app-config:foreign_days)
+SELFTEST_HIT unreadable/w1_writable_attr.py -> UNGUARDED-EXTERNAL (config-list-unreadable:window_days)
+SELFTEST_HIT unreadable/w2_writable_via_var.py -> UNGUARDED-EXTERNAL (config-list-unreadable:window_days)
+SELFTEST_HIT unreadable/w3_writable_getattr.py -> UNGUARDED-EXTERNAL (config-list-unreadable:window_days)
+SELFTEST_HIT unreadable/w4_nonwritable_attr.py -> UNGUARDED-EXTERNAL (config-list-unreadable:other_days)
+SELFTEST_HIT unreadable/w5_not_app_config.py -> UNGUARDED-EXTERNAL (config-list-unreadable:foreign_days)
+SELFTEST_REALSOURCE_KEYS writable=77 app_config_fields=167 writable_not_in_config=0
+SELFTEST_HIT real-source/r1_real_writable.py -> UNGUARDED-EXTERNAL (writable-config:vision_snapshot_retention_days)
+SELFTEST_CLEAN real-source/r2_real_ops_key.py label=config

@@ -1,0 +1,31 @@
+A1_resolve_nl_window_default days=7 reversed=no span_days=7.26 note=最近7天
+A1_resolve_nl_window_default days=1e3 reversed=no span_days=3650.26 note=最近3650天
+A1_resolve_nl_window_default days=1e6 reversed=no span_days=3650.26 note=最近3650天
+A1_resolve_nl_window_default days=-5 reversed=no span_days=0.26 note=最近0天
+B1_resolve_nl_window_text q_len=12 reversed=no span_days=30.26 note=最近30天
+B1_resolve_nl_window_text q_len=16 reversed=no span_days=3650.26 note=最近3650天
+B1_resolve_nl_window_text q_len=11 reversed=no span_days=0.26 note=最近0天
+C1_analysis.resolve_range input=1e6 bucket=lo_only raised=OverflowError detail=OverflowError('date value out of range')
+C1_analysis.resolve_range input=-5 bucket=lo_only reversed=no start_year=2026
+C2_mcp._fetch_attribution_events input=1e6 bucket=lo_only raised=OverflowError detail=OverflowError('date value out of range')
+C2_mcp._fetch_attribution_events input=-5 bucket=lo_only reversed=no start_year=2026
+C3_store.get_behavior_summary input=1e6 bucket=lo_only raised=OverflowError detail=OverflowError('date value out of range')
+C3_store.get_behavior_summary input=-5 bucket=lo_only reversed=no start_year=2026
+C4_daily_profile input=1e6 bucket=unguarded raised=OverflowError detail=OverflowError('date value out of range')
+C4_daily_profile input=-5 bucket=unguarded reversed=yes start_year=2026
+C5_rule_engine input=1e6 bucket=unguarded raised=OverflowError detail=OverflowError('date value out of range')
+C5_rule_engine input=-5 bucket=unguarded reversed=yes start_year=2026
+C6_vision_service input=1e6 bucket=unguarded raised=OverflowError detail=OverflowError('date value out of range')
+C6_vision_service input=-5 bucket=unguarded reversed=yes start_year=2026
+C7_mcp.read_self_diary input=1e6 bucket=unguarded raised=OverflowError detail=OverflowError('date value out of range')
+C7_mcp.read_self_diary input=-5 bucket=unguarded reversed=yes start_year=2026
+C8_summary_queries input=1e6 bucket=unguarded raised=OverflowError detail=OverflowError('date value out of range')
+C8_summary_queries input=-5 bucket=unguarded reversed=yes start_year=2026
+C9_change_attribution.lookback_days input=1e6 bucket=unguarded raised=OverflowError detail=OverflowError('date value out of range')
+C9_change_attribution.lookback_days input=-5 bucket=unguarded reversed=yes start_year=2026
+D1_pool_growth rot=30 entries=8 open_clients=8 closed_entries=0 per_client_ms=2823.8
+D2_same_token_reuse entries=1 reused=yes
+D3_lru_safety entries=8 created=31 keep_survived=yes keep_closed=False evicted=23 evicted_closed=23
+[MCP] 未安装 mcp SDK（cannot import name 'MCPServer' from 'mcp.server' (C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\site-packages\mcp\server\__init__.py)）。请在 Dockerfile 中加入 'mcp>=2.0' 并重新 docker compose build 后再启动。
+E1_mcp_ask_memory note=mcp_sdk_unavailable
+PROBE_RC=0

@@ -1,0 +1,81 @@
+# 质量门禁 CI —— 复制到 `.github/workflows/gates.yml`
+#
+# 适用：memory-agent、autoflow（有 GitHub remote 的两家）。
+# AutoForge / doubao-butler 没有 remote，请用同目录的 `gates.sh` 挂本地/pre-commit。
+#
+# 两段分工，别混：
+#   AST 门禁   —— runner 自带解释器就够（它不 import 被扫代码，只 parse）。
+#   import 冒烟 —— **必须在部署镜像里跑**，否则第三方依赖没装齐会整片假红。
+#                  见 README 第三节。这里用 docker 步显式做，且在镜像里另建 job。
+
+name: quality-gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # 改成本仓 `.gates.toml` 里的 smoke_targets（空格分隔）。
+  # 这一行是下面那个 job 的唯一自定义点，两处必须一致，否则门禁口径分裂。
+  SMOKE_TARGETS: memory_agent memory_agent.acp_server memory_agent.mcp_server
+
+jobs:
+  ast-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # homesdk 目前走「仓库相邻目录 editable 安装」。
+      # 出 wheel 后改成：pip install homesdk==0.1.0 （私有 index / artifact）
+      - name: Install homesdk (gates tooling)
+        run: |
+          git clone --depth 1 https://github.com/lidicn/homesdk.git "$HOME/homesdk"
+          pip install -e "$HOME/homesdk"
+
+      - name: AST gates (no smoke)
+        run: homesdk-gates . --no-smoke
+
+      # pyflakes 门禁：基线只准减少（.gates/pyflakes-baseline.txt 为欠账台账）。
+      # 本地等价命令：bash scripts/pyflakes_gate.sh（pyflakes 装在容器 /tmp/pylibs，
+      # 即 docker exec -e PYTHONPATH=/tmp/pylibs memory-agent ...，见交接单 §2.4）。
+      - name: Install pyflakes
+        run: pip install pyflakes
+
+      - name: pyflakes gate (baseline ratchet)
+        run: bash scripts/pyflakes_gate.sh
+
+      # 基线只准减少：:42 那条硬闸的输出已经把净变化打进日志了——
+      # `扫描完成：新增/未获批 N 条（error/warn），基线内存量 M 条，过期基线条目 K 条`，
+      # 评审要的两个读数（N 与 M）都在同一行里。
+      #
+      # DCD 裁定 20261002 §一 点名删掉这里的 `continue-on-error: true`（假绿：一条永远不可能红的步）。
+      # 实测之后按"删除该步"落，不是"留着并让它红"：
+      #   `homesdk-gates . --no-baseline --no-smoke --quiet` → 新增/未获批 **208 条**（error 33 / warn 175），**EXIT=1**
+      #   `homesdk-gates . --no-smoke --quiet`（带基线，即 :42 的口径）→ 新增 **0 条**，基线内存量 **208 条**，**EXIT=0**
+      # 同一条命令去掉 `--no-baseline` 才是"能红且今天绿"的判据；留着 `--no-baseline` 又去掉容错，
+      # 等于把 208 条已入账的欠账变成每次 push 必红——那不是门禁，是永久红灯。欠账清零是路线图 3.1.3
+      # 的活（pyflakes 那档已清零），清完再谈把全量口径升成硬闸。
+
+  smoke-gates:
+    # 冒烟在镜像里跑：装齐依赖之后，这条红才配当结论。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t gates-smoke:${{ github.sha }} .
+
+      - name: import smoke inside image
+        run: |
+          set -e
+          for mod in $SMOKE_TARGETS; do
+            echo "── import $mod"
+            docker run --rm --entrypoint python gates-smoke:${{ github.sha }} -c "import $mod"
+          done
+

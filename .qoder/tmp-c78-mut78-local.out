@@ -1,0 +1,9 @@
+腿                                  RC   读数
+M-0                                0    对照 failed=0 15 passed
+L1-dead-literal-restored           1    该响 failed=3 3 failed
+L2-source-swapped-to-local-assembly 1    该响 failed=2 2 failed
+L3-names-derived-from-catalog      1    该响 failed=2 2 failed
+L4-module-level-read               1    该响 failed=1 1 failed
+L5-describe-page-truncated         1    该响 failed=1 1 failed
+MUT78_COUNT=6 MUTATION_BAD=0
+SRC_UNCHANGED=True mcp_se_SHA=5f5541e8120d

@@ -1,0 +1,25 @@
+baseline ...
+BASELINE failed=0 passed=39 FAILED=[]
+M1 member 退回 LIMIT 之后的 Python 过滤                     RED=True RESTORED=True 红在: tests/test_vma120_scene_graph.py,tests/test_vma_dcd_20261004b_event_total.py,tests/test_vma_insights_callsite_binding.py
+M2 字符串元素的 type 写成 string（生产库实测的漏法）                   RED=True RESTORED=True 红在: tests/test_vma_dcd_20261004b_event_total.py
+M3 计数查询带上 LIMIT（不再是全量）                               RED=True RESTORED=True 红在: tests/test_vma_dcd_20261004b_event_total.py,tests/test_vma_insights_callsite_binding.py
+M4 精确等值换成子串 LIKE                                     RED=True RESTORED=True 红在: tests/test_vma_dcd_20261004b_event_total.py
+M5 去掉 json_valid 护栏（脏数据把查询带崩）                        RED=True RESTORED=True 红在: tests/test_vma_dcd_20261004b_event_total.py
+M6 门面把 total 冒充成本页条数                                 RED=True RESTORED=True 红在: tests/test_vma_dcd_20261004b_event_total.py
+M7 _search 不覆盖切片 total                               RED=True RESTORED=True 红在: tests/test_vma_dcd_20261004b_event_total.py,tests/test_vma_insights_callsite_binding.py
+M8 annotate_scan 忽略 total_exact 入参（沿用切片推断）           RED=True RESTORED=True 红在: tests/test_vma_dcd_20261004b_event_total.py,tests/test_vma_insights_callsite_binding.py
+M9 计数失败时退回 count 而不是 None                            RED=True RESTORED=True 红在: tests/test_vma_dcd_20261004b_event_total.py
+
+汇总
+  M1 member 退回 LIMIT 之后的 Python 过滤 | 6 failed / 33 passed | test_vma120_scene_graph.py,test_vma_dcd_20261004b_event_total.py,test_vma_insights_callsite_binding.py
+  M2 字符串元素的 type 写成 string（生产库实测的漏法） | 4 failed / 35 passed | test_vma_dcd_20261004b_event_total.py
+  M3 计数查询带上 LIMIT（不再是全量） | 4 failed / 35 passed | test_vma_dcd_20261004b_event_total.py,test_vma_insights_callsite_binding.py
+  M4 精确等值换成子串 LIKE | 4 failed / 35 passed | test_vma_dcd_20261004b_event_total.py
+  M5 去掉 json_valid 护栏（脏数据把查询带崩） | 5 failed / 34 passed | test_vma_dcd_20261004b_event_total.py
+  M6 门面把 total 冒充成本页条数 | 2 failed / 37 passed | test_vma_dcd_20261004b_event_total.py
+  M7 _search 不覆盖切片 total | 2 failed / 37 passed | test_vma_dcd_20261004b_event_total.py,test_vma_insights_callsite_binding.py
+  M8 annotate_scan 忽略 total_exact 入参（沿用切片推断） | 2 failed / 37 passed | test_vma_dcd_20261004b_event_total.py,test_vma_insights_callsite_binding.py
+  M9 计数失败时退回 count 而不是 None | 1 failed / 38 passed | test_vma_dcd_20261004b_event_total.py
+BITTEN=9/9
+RESTORED_FINAL=True 末态=(0, 39)
+MUT_RC=0

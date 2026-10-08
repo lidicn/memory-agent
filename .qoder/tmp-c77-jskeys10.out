@@ -1,0 +1,33 @@
+FACES api_methods=100 unparsed=0 route_entries=208 handler_defs=292 js_callsites=67
+FACES2 defs_indexed=1650 handlers_with_helper_edge=80
+CALLSITES_ORPHAN=0 PATH_UNMATCHED=0 CHAIN_UNKNOWN=5
+READKEY_HARD=0 SHAPE=0 NESTED_MISS=0 GREEN_BY_HELPER=12
+
+=== HARD（前端读键既不在返回顶层解析结果、也不在 handler 函数体宇宙 ⇒ 首要嫌疑，0 条）===
+
+=== GREEN_BY_HELPER（只靠 helper 边才判绿的键 ⇒ 逐条按 file:line 抽查，12 条）===
+  agentMemorySweep /api/agent/memories/sweep  key=sweep  读点=src/memory_agent/static/js/pages/agent_memory.js:321  helper=src/memory_agent/agent_memory.py:701#AgentMemoryService.sweep_and_reconcile
+  createAppToken /api/config/app-tokens  key=token  读点=src/memory_agent/static/js/pages/settings.js:499  helper=src/memory_agent/app_tokens.py:43#AppTokenStore.generate,src/memory_agent/mcp_tokens.py:102#MCPTokenStore.generate,src/memory_agent/service_tokens.py:203#ServiceTokenStore.generate
+  health /api/health  key=collecting  读点=src/memory_agent/static/js/main.js:131  helper=src/memory_agent/agent_memory.py:705#AgentMemoryService.health,src/memory_agent/api/config_routes.py:436#health,src/memory_agent/insights/repository.py:121#StoreRepository.health
+  memberInsightFeedback /api/members/*/insight-feedback  key=down  读点=src/memory_agent/static/js/pages/members.js:833  helper=src/memory_agent/api/member_routes.py:259#_fetch(嵌套),src/memory_agent/store.py:4996#Store.member_insight_feedback
+  memberInsightFeedback /api/members/*/insight-feedback  key=memories  读点=src/memory_agent/static/js/pages/members.js:833  helper=src/memory_agent/api/member_routes.py:259#_fetch(嵌套),src/memory_agent/store.py:4996#Store.member_insight_feedback
+  memberInsightFeedback /api/members/*/insight-feedback  key=up  读点=src/memory_agent/static/js/pages/members.js:833  helper=src/memory_agent/api/member_routes.py:259#_fetch(嵌套),src/memory_agent/store.py:4996#Store.member_insight_feedback
+  signalRules /api/signal-rules  key=counts  读点=src/memory_agent/static/js/pages/signal_rules.js:385  helper=src/memory_agent/signal_learning.py:182#SignalLearningService.list_rules
+  signalRules /api/signal-rules  key=hard  读点=src/memory_agent/static/js/pages/signal_rules.js:385  helper=src/memory_agent/signal_learning.py:182#SignalLearningService.list_rules
+  signalRules /api/signal-rules  key=soft  读点=src/memory_agent/static/js/pages/signal_rules.js:385  helper=src/memory_agent/signal_learning.py:182#SignalLearningService.list_rules
+  validateTemplates /api/templates/validate  key=summary  读点=src/memory_agent/static/js/pages/insights.js:272  helper=src/memory_agent/template_validate.py:359#validate_template,src/memory_agent/template_validate.py:414#validate_all
+  visionAnalyze /api/vision/analyze  key=scene  读点=src/memory_agent/static/js/pages/vision.js:444  helper=src/memory_agent/vision_service.py:788#VisionService.analyze_room
+  visionTestLlm /api/vision/test-llm  key=answer  读点=src/memory_agent/static/js/pages/vision.js:426  helper=src/memory_agent/vision_service.py:1379#VisionService.test_llm
+
+=== SHAPE（函数体宇宙里有、返回顶层解析没有 ⇒ 嵌套/分支形状要人工判，0 条）===
+
+=== NESTED_MISS（列表元素读键在 handler 宇宙里没有，0 条）===
+
+=== CHAIN_UNKNOWN（载荷由 helper 造，本尺不追，5 条）===
+  arenaAnalytics /api/arena/analytics  看不清=<非 dict 载荷>,len
+  createAppToken /api/config/app-tokens  看不清=同名多义 src/memory_agent/app_tokens.py:43#AppTokenStore.generate,src/memory_agent/mcp_tokens.py:102#MCPTokenStore.generate,src/memory_agent/service_tokens.py:203#ServiceTokenStore.generate
+  health /api/health  看不清=<看不清>,<非 dict 载荷>,同名多义 src/memory_agent/agent_memory.py:705#AgentMemoryService.health,src/memory_agent/runtime.py:945#AppRuntime.health,src/memory_agent/api/config_routes.py:436#health,src/memory_agent/insights/repository.py:121#StoreRepository.health,已到深度 src/memory_agent/api/config_routes.py:436#health
+  listAppTokens /api/config/app-tokens  看不清=同名多义 src/memory_agent/app_tokens.py:43#AppTokenStore.generate,src/memory_agent/mcp_tokens.py:102#MCPTokenStore.generate,src/memory_agent/service_tokens.py:203#ServiceTokenStore.generate
+  memberInsightFeedback /api/members/*/insight-feedback  看不清=<非 dict 载荷>
+
+PAIR_CALLSITES=67 PAIR_MULTI_ROUTE=0（>1 条路由并进同一宇宙＝宽松判，只作候选）

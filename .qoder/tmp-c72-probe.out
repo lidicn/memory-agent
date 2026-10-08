@@ -1,0 +1,48 @@
+== data_coverage
+   legacy=days,days_total,days_with_data,first_day_with_data,last_day_with_data,missing_days,note,ok,total_events,window
+   facade=active_days,day_coverage,days,end_day,end_iso,hour_coverage,hourly,missing_days,ok,peak_hours,start_day,start_iso,total_days,total_events
+   LOST=days_total,days_with_data,first_day_with_data,last_day_with_data,note,window | NEW=active_days,day_coverage,end_day,end_iso,hour_coverage,hourly,peak_hours,start_day,start_iso,total_days
+== infer_activities
+   legacy=activities,activity_types,behavior_only,detector_report,ok,signal_inventory,total_activities,window
+   facade=activities,activity_types,excluded_entities,filters,ok,rule_sources,summary,total_activities,window
+   LOST=behavior_only,detector_report,signal_inventory | NEW=excluded_entities,filters,rule_sources,summary
+== get_user_persona
+   legacy=most_active_room,ok,persona,summary,top_rooms,total_events,window_days
+   facade=days,ok,rhythm,top_entities,top_rooms,total_events,traits,window
+   LOST=most_active_room,persona,summary,window_days | NEW=days,rhythm,top_entities,traits,window
+== get_behavior_insights
+   legacy=climate_comparison,compare_days,comparison,current_window,ok,previous_window,summary
+   facade=current,days,delta,filters,ok,previous,trend
+   LOST=climate_comparison,compare_days,comparison,current_window,previous_window,summary | NEW=current,days,delta,filters,previous,trend
+== get_data_quality
+   legacy=agent_memory,data_quality_issues,days,ok
+   facade=agent_memory,checks,filters,issues,missing_days,noise_ratio,ok,sample_size,score,summary,total_events
+   LOST=data_quality_issues,days | NEW=checks,filters,issues,missing_days,noise_ratio,sample_size,score,summary,total_events
+== device_usage
+   legacy=error,hint,ok
+   facade=device_count,devices,error,hint,items,ok,total,total_on_human,total_on_seconds,window
+   LOST=- | NEW=device_count,devices,items,total,total_on_human,total_on_seconds,window
+== anomaly_report
+   legacy=- ERR[TypeError: InsightService.anomaly_report() got an unexpected keyword ar]
+   facade=anomalies,filters,ok,summary
+   LOST=- | NEW=anomalies,filters,ok,summary
+== climate_sessions
+   legacy=events_scanned,events_state_unknown,ok,sessions,sessions_with_temperature,temperature_note,total_sessions,window
+   facade=events_scanned,events_state_unknown,has_more,limit,offset,ok,sessions,sessions_with_temperature,temperature_note,time_range,total,total_sessions,window
+   LOST=- | NEW=has_more,limit,offset,time_range,total
+== entity_catalog
+   legacy=categories_available,duplicate_candidates,duplicates_merged,hint,no_data_entities,ok,raw_entity_count,rooms,total,window
+   facade=categories_available,duplicate_candidates,duplicates_merged,entities,has_more,hint,no_data_entities,ok,raw_entity_count,rooms,total,window
+   LOST=- | NEW=entities,has_more
+== search_events
+   legacy=count,events,filters,has_more,next_offset,offset,ok,total,window
+   facade=count,events,filters,has_more,limit,next_offset,offset,ok,time_range,total,window
+   LOST=- | NEW=limit,time_range
+== query_behavior_events
+   legacy=count,events,member_filter,ok,room,window
+   facade=count,events,has_more,limit,member_filter,offset,ok,room,time_range,total,total_exact,window
+   LOST=- | NEW=has_more,limit,offset,time_range,total,total_exact
+== plan_question
+   legacy=answer,device,intent,matched_templates,ok,question,recommended_tool,room,room_scope,rooms_available,steps,suggested_args,window
+   facade=activity,category,days,entity_ids,has_more,hints,intent,offset,params,query,question,room,route,time_range,total
+   LOST=answer,device,matched_templates,ok,recommended_tool,room_scope,rooms_available,steps,suggested_args,window | NEW=activity,category,days,entity_ids,has_more,hints,offset,params,query,route,time_range,total

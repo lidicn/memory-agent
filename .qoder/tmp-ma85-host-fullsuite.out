@@ -1,0 +1,68 @@
+............................ssssssssss..s............................... [  3%]
+........................................................................ [  7%]
+........................................................................ [ 10%]
+........................................................................ [ 14%]
+........................................................................ [ 17%]
+........................................................................ [ 21%]
+........................................................................ [ 24%]
+.................................................ss..................... [ 28%]
+........................................................................ [ 31%]
+......................................................................FF [ 35%]
+............s........................................................... [ 38%]
+........................................................................ [ 42%]
+..............................................................sss....... [ 45%]
+.............sss.ss..................................................... [ 49%]
+........................................................................ [ 52%]
+........................................................................ [ 56%]
+........................................................................ [ 59%]
+........................................................................ [ 63%]
+........................................................................ [ 66%]
+........................................................................ [ 70%]
+........................................................................ [ 73%]
+........................................................................ [ 77%]
+........................................................................ [ 80%]
+........................................................................ [ 84%]
+........................................................................ [ 87%]
+...........s............................................................ [ 91%]
+........................................................................ [ 94%]
+............................................ss.......................... [ 98%]
+................................                                         [100%]
+================================== FAILURES ===================================
+_________________________ test_no_new_gate_violations _________________________
+
+    def test_no_new_gate_violations():
+        """新增违规一律红；`.gates-baseline.txt` 里的存量放行，但只准减少。"""
+        report = _report()
+        lines = [v.render() for v in report.active]
+        detail = "\n".join(lines[:40]) + ("\n… 其余略" if len(lines) > 40 else "")
+>       assert not report.active, (
+            f"新增 {len(report.active)} 条门禁违规（error {report.error_count} / warn {report.warn_count}）。\n"
+            f"要么修掉，要么在 `.gates-baseline.txt` 里逐条写明为什么放行。\n{detail}"
+        )
+E       AssertionError: 新增 1 条门禁违规（error 0 / warn 1）。
+E         要么修掉，要么在 `.gates-baseline.txt` 里逐条写明为什么放行。
+E         WARN  except-pass-broad        src/memory_agent/llm_client.py:441                           LLMRouter.reconfigure  咽下 Exception 且不做处理
+E       assert not (Violation(rule='except-pass-broad', rel_path='src/memory_agent/llm_client.py', line=441, qualname='LLMRouter.reconfigure', message='咽下 Exception 且不做处理', level='warn', tag=''),)
+E        +  where (Violation(rule='except-pass-broad', rel_path='src/memory_agent/llm_client.py', line=441, qualname='LLMRouter.reconfigure', message='咽下 Exception 且不做处理', level='warn', tag=''),) = Report(active=(Violation(rule='except-pass-broad', rel_path='src/memory_agent/llm_client.py', line=441, qualname='LLMR..._build_server.teach_signal',), counts=(('except-pass-broad', 29), ('fake-ok-const', 171), ('swallow-and-claim-ok', 7))).active
+
+tests\test_quality_gates.py:68: AssertionError
+__________________ test_baseline_shrinks_when_you_fix_things __________________
+
+    def test_baseline_shrinks_when_you_fix_things():
+        """修好了却不删基线条目 = 红。这条测试存在的唯一理由是防止基线肥化。"""
+        report = _report()
+>       assert not report.stale, (
+            f"{len(report.stale)} 条基线条目已不再命中，请从 `.gates-baseline.txt` 删掉：\n"
+            + "\n".join(report.stale)
+        )
+E       AssertionError: 1 条基线条目已不再命中，请从 `.gates-baseline.txt` 删掉：
+E         src/memory_agent/mcp_server.py#fake-ok-const#_build_server.teach_signal
+E       assert not ('src/memory_agent/mcp_server.py#fake-ok-const#_build_server.teach_signal',)
+E        +  where ('src/memory_agent/mcp_server.py#fake-ok-const#_build_server.teach_signal',) = Report(active=(Violation(rule='except-pass-broad', rel_path='src/memory_agent/llm_client.py', line=441, qualname='LLMR..._build_server.teach_signal',), counts=(('except-pass-broad', 29), ('fake-ok-const', 171), ('swallow-and-claim-ok', 7))).stale
+
+tests\test_quality_gates.py:77: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_quality_gates.py::test_no_new_gate_violations - AssertionEr...
+FAILED tests/test_quality_gates.py::test_baseline_shrinks_when_you_fix_things
+2 failed, 2021 passed, 25 skipped in 259.67s (0:04:19)
+SUITE_RC=1

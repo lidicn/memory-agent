@@ -1,0 +1,232 @@
+................................................F..FFFF                  [100%]
+================================== FAILURES ===================================
+______________________ test_normal_lookback_is_untouched ______________________
+
+    def test_normal_lookback_is_untouched():
+        """收口不许动常规档：7 天窗口的半衰期仍是 3.5 天，1000 天前的点照旧落在窗口外。"""
+        events = _attr_events()
+        normal = _conf_map(ca.search_candidate_causes(events, PERSON, CHANGE_TS, 7))
+        assert set(normal) == {"tv_on"}, normal
+        # 变化点前 1 天那一条是窗口内唯一的 tv_on：exp(-ln2 · 1/3.5) ≈ 0.82
+>       assert normal["tv_on"]["temporal_proximity"] == pytest.approx(0.82, abs=0.01), normal
+E       AssertionError: {'tv_on': {'cause_type': 'device_change', 'event_type': 'tv_on', 'count': 1, 'baseline_count': 0, ...}}
+E       assert 0.98 == 0.82 ± 0.01
+E         
+E         comparison failed
+E         Obtained: 0.98
+E         Expected: 0.82 ± 0.01
+
+tests\test_vma_task63_routes_input_boundary.py:388: AssertionError
+_____ test_handler_offloads_every_heavy_sync_call[behaviors_home_profile] _____
+
+handler = <function behaviors_home_profile at 0x000001F789129BC0>
+
+    @pytest.mark.parametrize("handler", [
+        br.behaviors_home_profile, br.behaviors_predictions, br.behaviors_intent,
+    ])
+    def test_handler_offloads_every_heavy_sync_call(handler):
+        """「什么都不改」档：HEAD 上这三个 handler 必须是 0 条。"""
+>       assert _unguarded_heavy_calls(inspect.getsource(handler)) == []
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_vma_task63_routes_input_boundary.py:508: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_vma_task63_routes_input_boundary.py:472: in _unguarded_heavy_calls
+    tree = ast.parse(inspect.cleandoc(source))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+source = 'async def behaviors_home_profile(request: Request):\n"""Phase 2.3 家庭画像：从 live 记忆生成 profile.md（原子写+权重截断）。\n\n查询参数：``ma...    written_path = out_path\nreturn ok({"profile": profile_text, "chars": len(profile_text), "written": written_path})'
+filename = '<unknown>', mode = 'exec', type_comments = False
+feature_version = -1, optimize = -1
+
+    def parse(source, filename='<unknown>', mode='exec', *,
+              type_comments=False, feature_version=None, optimize=-1):
+        """
+        Parse the source into an AST node.
+        Equivalent to compile(source, filename, mode, PyCF_ONLY_AST).
+        Pass type_comments=True to get back type comments where the syntax allows.
+        """
+        flags = PyCF_ONLY_AST
+        if optimize > 0:
+            flags |= PyCF_OPTIMIZED_AST
+        if type_comments:
+            flags |= PyCF_TYPE_COMMENTS
+        if feature_version is None:
+            feature_version = -1
+        elif isinstance(feature_version, tuple):
+            major, minor = feature_version  # Should be a 2-tuple.
+            if major != 3:
+                raise ValueError(f"Unsupported major version: {major}")
+            feature_version = minor
+        # Else it should be an int giving the minor version for 3.x.
+>       return compile(source, filename, mode, flags,
+                       _feature_version=feature_version, optimize=optimize)
+E         File "<unknown>", line 2
+E           """Phase 2.3 家庭画像：从 live 记忆生成 profile.md（原子写+权重截断）。
+E           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       IndentationError: expected an indented block after function definition on line 1
+
+C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\ast.py:54: IndentationError
+_____ test_handler_offloads_every_heavy_sync_call[behaviors_predictions] ______
+
+handler = <function behaviors_predictions at 0x000001F78912A980>
+
+    @pytest.mark.parametrize("handler", [
+        br.behaviors_home_profile, br.behaviors_predictions, br.behaviors_intent,
+    ])
+    def test_handler_offloads_every_heavy_sync_call(handler):
+        """「什么都不改」档：HEAD 上这三个 handler 必须是 0 条。"""
+>       assert _unguarded_heavy_calls(inspect.getsource(handler)) == []
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_vma_task63_routes_input_boundary.py:508: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_vma_task63_routes_input_boundary.py:472: in _unguarded_heavy_calls
+    tree = ast.parse(inspect.cleandoc(source))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+source = 'async def behaviors_predictions(request: Request):\n"""P4a 行为预测：基于历史事件预测家人的行为模式。\n\n查询参数：\n- person: 人名（如 "Kevin"），必填...n    "person": person,\n    "weekday": weekday,\n    "arrival_prediction": arrival,\n    "daily_routine": routine,\n})'
+filename = '<unknown>', mode = 'exec', type_comments = False
+feature_version = -1, optimize = -1
+
+    def parse(source, filename='<unknown>', mode='exec', *,
+              type_comments=False, feature_version=None, optimize=-1):
+        """
+        Parse the source into an AST node.
+        Equivalent to compile(source, filename, mode, PyCF_ONLY_AST).
+        Pass type_comments=True to get back type comments where the syntax allows.
+        """
+        flags = PyCF_ONLY_AST
+        if optimize > 0:
+            flags |= PyCF_OPTIMIZED_AST
+        if type_comments:
+            flags |= PyCF_TYPE_COMMENTS
+        if feature_version is None:
+            feature_version = -1
+        elif isinstance(feature_version, tuple):
+            major, minor = feature_version  # Should be a 2-tuple.
+            if major != 3:
+                raise ValueError(f"Unsupported major version: {major}")
+            feature_version = minor
+        # Else it should be an int giving the minor version for 3.x.
+>       return compile(source, filename, mode, flags,
+                       _feature_version=feature_version, optimize=optimize)
+E         File "<unknown>", line 2
+E           """P4a 行为预测：基于历史事件预测家人的行为模式。
+E           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       IndentationError: expected an indented block after function definition on line 1
+
+C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\ast.py:54: IndentationError
+________ test_handler_offloads_every_heavy_sync_call[behaviors_intent] ________
+
+handler = <function behaviors_intent at 0x000001F78912AA20>
+
+    @pytest.mark.parametrize("handler", [
+        br.behaviors_home_profile, br.behaviors_predictions, br.behaviors_intent,
+    ])
+    def test_handler_offloads_every_heavy_sync_call(handler):
+        """「什么都不改」档：HEAD 上这三个 handler 必须是 0 条。"""
+>       assert _unguarded_heavy_calls(inspect.getsource(handler)) == []
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_vma_task63_routes_input_boundary.py:508: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_vma_task63_routes_input_boundary.py:472: in _unguarded_heavy_calls
+    tree = ast.parse(inspect.cleandoc(source))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+source = 'async def behaviors_intent(request: Request):\n"""P4b 意图推断：从最近的行为事件推断用户意图。\n\n查询参数：\n- person: 人名（可选，限定某人）\n- limit: ...\n    return rows\n\nintents = await asyncio.to_thread(_infer)\nreturn ok({"intents": intents, "count": len(intents)})'
+filename = '<unknown>', mode = 'exec', type_comments = False
+feature_version = -1, optimize = -1
+
+    def parse(source, filename='<unknown>', mode='exec', *,
+              type_comments=False, feature_version=None, optimize=-1):
+        """
+        Parse the source into an AST node.
+        Equivalent to compile(source, filename, mode, PyCF_ONLY_AST).
+        Pass type_comments=True to get back type comments where the syntax allows.
+        """
+        flags = PyCF_ONLY_AST
+        if optimize > 0:
+            flags |= PyCF_OPTIMIZED_AST
+        if type_comments:
+            flags |= PyCF_TYPE_COMMENTS
+        if feature_version is None:
+            feature_version = -1
+        elif isinstance(feature_version, tuple):
+            major, minor = feature_version  # Should be a 2-tuple.
+            if major != 3:
+                raise ValueError(f"Unsupported major version: {major}")
+            feature_version = minor
+        # Else it should be an int giving the minor version for 3.x.
+>       return compile(source, filename, mode, flags,
+                       _feature_version=feature_version, optimize=optimize)
+E         File "<unknown>", line 2
+E           """P4b 意图推断：从最近的行为事件推断用户意图。
+E           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       IndentationError: expected an indented block after function definition on line 1
+
+C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\ast.py:54: IndentationError
+____________________ test_ast_gate_bites_the_pre_fix_shape ____________________
+
+    def test_ast_gate_bites_the_pre_fix_shape():
+        """反例档：把改前的写法原样喂给量具，必须判红（否则这条门等于没装）。"""
+        before = (
+            "async def behaviors_home_profile(request):\n"
+            "    from ..home_profile import build_profile, write_profile_atomic\n"
+            "    profile_text = build_profile(rt.store, max_chars=4000)\n"
+            "    write_profile_atomic('/data/home_profile.md', profile_text)\n"
+            "    return profile_text\n"
+        )
+>       hits = _unguarded_heavy_calls(before)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_vma_task63_routes_input_boundary.py:520: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_vma_task63_routes_input_boundary.py:472: in _unguarded_heavy_calls
+    tree = ast.parse(inspect.cleandoc(source))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+source = "async def behaviors_home_profile(request):\nfrom ..home_profile import build_profile, write_profile_atomic\nprofile_t...ld_profile(rt.store, max_chars=4000)\nwrite_profile_atomic('/data/home_profile.md', profile_text)\nreturn profile_text"
+filename = '<unknown>', mode = 'exec', type_comments = False
+feature_version = -1, optimize = -1
+
+    def parse(source, filename='<unknown>', mode='exec', *,
+              type_comments=False, feature_version=None, optimize=-1):
+        """
+        Parse the source into an AST node.
+        Equivalent to compile(source, filename, mode, PyCF_ONLY_AST).
+        Pass type_comments=True to get back type comments where the syntax allows.
+        """
+        flags = PyCF_ONLY_AST
+        if optimize > 0:
+            flags |= PyCF_OPTIMIZED_AST
+        if type_comments:
+            flags |= PyCF_TYPE_COMMENTS
+        if feature_version is None:
+            feature_version = -1
+        elif isinstance(feature_version, tuple):
+            major, minor = feature_version  # Should be a 2-tuple.
+            if major != 3:
+                raise ValueError(f"Unsupported major version: {major}")
+            feature_version = minor
+        # Else it should be an int giving the minor version for 3.x.
+>       return compile(source, filename, mode, flags,
+                       _feature_version=feature_version, optimize=optimize)
+E         File "<unknown>", line 2
+E           from ..home_profile import build_profile, write_profile_atomic
+E           ^^^^
+E       IndentationError: expected an indented block after function definition on line 1
+
+C:\Users\lidicn\AppData\Local\Programs\Python\Python313\Lib\ast.py:54: IndentationError
+=========================== short test summary info ===========================
+FAILED tests/test_vma_task63_routes_input_boundary.py::test_normal_lookback_is_untouched
+FAILED tests/test_vma_task63_routes_input_boundary.py::test_handler_offloads_every_heavy_sync_call[behaviors_home_profile]
+FAILED tests/test_vma_task63_routes_input_boundary.py::test_handler_offloads_every_heavy_sync_call[behaviors_predictions]
+FAILED tests/test_vma_task63_routes_input_boundary.py::test_handler_offloads_every_heavy_sync_call[behaviors_intent]
+FAILED tests/test_vma_task63_routes_input_boundary.py::test_ast_gate_bites_the_pre_fix_shape
+5 failed, 50 passed in 19.41s

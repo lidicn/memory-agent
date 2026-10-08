@@ -1,0 +1,9 @@
+.s...................................................................... [ 27%]
+..........................................ss............................ [ 54%]
+........................................................................ [ 82%]
+...............................................                          [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] tests\contract\test_ma_db_contract.py:372: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\test_unified_view.py:190: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:198: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+260 passed, 3 skipped, 1024 deselected in 23.26s

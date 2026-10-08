@@ -1,0 +1,4 @@
+SELFTEST pos_expected=4 pos_hit=4 neg_files=5 neg_flagged=0 neg_counts={'strict': 1, 'window': 2, 'marked': 2}
+SELFTEST_OK
+ROOT=src/memory_agent total_zip=19 marked=1 strict=13 window=5
+SCAN_RC=0 每个 zip 站点都有归属

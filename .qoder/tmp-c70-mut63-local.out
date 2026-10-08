@@ -1,0 +1,24 @@
+NOTHING 什么都不改档 -> RC=0 FAILED=0 | 85 passed in 8.94s
+M1 丢掉 bool 判定 -> RC=1 FAILED=5 咬住了 restored=OK | 5 failed, 80 passed in 10.93s
+M2 下界门失效 -> RC=1 FAILED=13 咬住了 restored=OK | 13 failed, 72 passed in 11.03s
+M3 上界门失效 -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 79 passed in 9.91s
+M4 转换失败退回默认档（改前的 int(x or 3)） -> RC=1 FAILED=14 咬住了 restored=OK | 14 failed, 71 passed in 10.41s
+M5 min_variant_support 顶死字面量 3 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 9.72s
+M6 mine_process 的合法 bucket_sec=0 被吞 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 10.46s
+M7 min_score 的合法 0.0 被吞 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 10.11s
+M8 causal_analyze 窗口门失效 -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 81 passed in 9.95s
+M9 causal_counterfactual 窗口门失效 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 9.89s
+M10 bad-cases 的 limit 拒绝分支摘掉 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 9.84s
+M11 predictions 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 10.64s
+M12 intent 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 10.58s
+M13 home_profile 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 9.62s
+M14 半衰期回到原值（两个口径） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 9.87s
+M15 intent 的 limit 上下界失效 -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 82 passed in 10.77s
+M16 mine_drift 的合法 bucket_sec=0 被吞 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 10.52s
+M17 rule_channel_audit 回到吞异常改 100 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 9.85s
+M18 min_count 回到 `or 3` 静默改值 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 83 passed in 9.87s
+M19 trigger_id 回到裸 int（无守卫） -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 82 passed in 10.55s
+M20 window_minutes 回到原样透传（改前的 500 路） -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 79 passed in 10.20s
+M21 人工审核不再留痕（R3 红线的留痕步） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 10.25s
+M22 规则视图的冷却位写死 False -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 84 passed in 9.89s
+MUT_COUNT=22 MUTATION_BAD=0

@@ -1,0 +1,32 @@
+......F.                                                                 [100%]
+================================== FAILURES ===================================
+_____________ test_rhythm_route_stays_silent_without_a_quiet_run ______________
+
+store = <memory_agent.store.Store object at 0x000001F428730AF0>
+
+    def test_rhythm_route_stays_silent_without_a_quiet_run(store):
+        """对偶档：全天每个小时都有事件 ⇒ 夜窗里没有静默段 ⇒ 不许编出入睡/起床时刻。
+    
+        只留上一条（"该有时钟"）的话，一个恒返回 `22:00/07:00` 的实现同样能全绿；
+        这一条钉住"证据不足就照实说未知"。
+        """
+        rows = []
+        for day in (DAY_1, DAY_2, DAY_3):
+            rows.extend(_ev(day, h, minute=h) for h in range(24))
+        svc = _svc(store, rows)
+        answer, data = _execute(svc.nl, "我一般几点睡觉")
+        assert data.get("ok"), f"rhythm 降级了：{data.get('error')}"
+>       assert data["sleep"] == "", f"没有静默段却有入睡时刻：{data['sleep']!r}"
+E       AssertionError: 没有静默段却有入睡时刻：'22:00'
+E       assert '22:00' == ''
+E         
+E         + 22:00
+
+tests\test_vma_insights_nlquery_routes.py:179: AssertionError
+---------------------------- Captured stdout setup ----------------------------
+[Store] FTS5 关键词索引已重建（tokenize=trigram）
+[Store] SQLite 就绪: C:\Users\lidicn\AppData\Local\Temp\ma_nlq_nst3hr5j\nlq.db (schema v1)
+[Store] 已种子化内置定向洞察任务: builtin_rhythm_001
+=========================== short test summary info ===========================
+FAILED tests/test_vma_insights_nlquery_routes.py::test_rhythm_route_stays_silent_without_a_quiet_run
+1 failed, 7 passed in 2.52s

@@ -1,0 +1,17 @@
+NOTHING 什么都不改档 -> RC=0 FAILED=0 | 55 passed in 16.91s
+M1 丢掉 bool 判定 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 53 passed in 17.55s
+M2 下界门失效 -> RC=1 FAILED=8 咬住了 restored=OK | 8 failed, 47 passed in 19.26s
+M3 上界门失效 -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 51 passed in 18.96s
+M4 转换失败退回默认档（改前的 int(x or 3)） -> RC=1 FAILED=11 咬住了 restored=OK | 11 failed, 44 passed in 19.99s
+M5 min_variant_support 顶死字面量 3 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 54 passed in 19.59s
+M6 bucket_sec 的合法 0 被吞 -> 锚点异常：锚点命中 2 次（需要恰好 1 次）
+M7 min_score 的合法 0.0 被吞 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 54 passed in 18.51s
+M8 causal_analyze 窗口门失效 -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 51 passed in 17.60s
+M9 causal_counterfactual 窗口门失效 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 53 passed in 17.13s
+M10 bad-cases 的 limit 拒绝分支摘掉 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 54 passed in 15.98s
+M11 predictions 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 53 passed in 9.47s
+M12 intent 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 53 passed in 8.38s
+M13 home_profile 回到主线程 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 53 passed in 9.09s
+M14 半衰期回到原值（两个口径） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 54 passed in 8.19s
+M15 intent 的 limit 上下界失效 -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 52 passed in 10.38s
+MUT_COUNT=15 MUTATION_BAD=1

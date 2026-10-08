@@ -1,0 +1,42 @@
+............................ssssssssss..s............................... [  5%]
+........................................................................ [ 11%]
+........................................................................ [ 17%]
+........................................................................ [ 23%]
+........................................................................ [ 28%]
+........................................................................ [ 34%]
+........................................................................ [ 40%]
+......ss................................................................ [ 46%]
+........................................................................ [ 51%]
+........................................................................ [ 57%]
+........................................................................ [ 63%]
+..................................................sss................... [ 69%]
+.sss.ss................................................................. [ 75%]
+........................................................................ [ 80%]
+........................................................................ [ 86%]
+........................................................................ [ 92%]
+..............................s......................................... [ 98%]
+........................                                                 [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] tests\contract\test_ma_db_contract.py:281: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:291: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:303: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:314: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:328: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:339: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:349: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:362: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:372: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:403: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\contract\test_ma_db_contract.py:440: mcp 不可用，跳过 MCP 服务面契约
+SKIPPED [1] tests\test_mcp_surface_parity.py:213: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+SKIPPED [1] tests\test_mcp_surface_parity.py:241: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+SKIPPED [1] tests\test_tool_schema.py:92: MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查
+SKIPPED [1] tests\test_tool_schema.py:110: MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查
+SKIPPED [1] tests\test_tool_schema.py:136: MCP SDK 不可用或版本过旧（mcp_server.mcp_server is None），跳过注册一致性检查
+SKIPPED [1] tests\test_unified_view.py:71: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:79: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:94: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:190: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_unified_view.py:198: /data/memory_agent.db is not a memory-agent store DB (missing source tables)
+SKIPPED [1] tests\test_vma_r7_seam_fixes.py:358: could not import 'chromadb': No module named 'chromadb'
+1226 passed, 22 skipped in 155.89s (0:02:35)

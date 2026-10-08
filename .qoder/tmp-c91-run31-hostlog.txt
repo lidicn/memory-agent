@@ -1,0 +1,79 @@
+2026-10-08T06:53:54+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+MCP_IMPORT_OK
+Python 3.11.16
+TOOLCHAIN_RC=0
+SNAP_RC=0
+HASH_LISTED=414 HASH_FILES=414 HASH_MISSING=0
+HASH_AGGREGATE=f66629b7d18aabf6ae6675925ddc58b66cb24a775c052bd7de3504842604a1b2
+ 10649 /tmp/c91snap31_mut31.py
+ 10686 /tmp/c91snap31_mut81.py
+  9843 /tmp/c91snap31_mut85.py
+  9592 /tmp/c91snap31_mut82.py
+ 40759 src/memory_agent/app.py
+ 20547 src/memory_agent/auth.py
+ 11930 src/memory_agent/mcp_tokens.py
+  3090 src/memory_agent/task_record.py
+255182 src/memory_agent/store.py
+ 12573 tests/test_vma_phase3_claims_direct.py
+  8602 tests/test_vma_phase2_claims_gauge.py
+393453 total
+MUTFILE_RC=0
+ANCHOR_RC=0
+ANCHOR_HARNESS /tmp/c91snap31_mut31.py legs=13 anchor_ok=13
+ANCHOR_HARNESS /tmp/c91snap31_mut81.py legs=22 anchor_ok=22
+ANCHOR_HARNESS /tmp/c91snap31_mut85.py legs=11 anchor_ok=11
+ANCHOR_HARNESS /tmp/c91snap31_mut82.py legs=14 anchor_ok=14
+ANCHOR_OK=60 ANCHOR_BAD=0 ANCHOR_MISSING=0
+AST311_ALL_OK
+AST311_RC=0
+PH3_RC=0
+.........................................                                [100%]
+41 passed in 5.83s
+PH3_SKIPPED=0
+LOCK_RC=0
+.......                                                                  [100%]
+7 passed in 16.54s
+NEWTWO_RC=0
+..                                                                       [100%]
+2 passed in 3.98s
+NEWTWO_SKIPPED=0
+MUT31_RC=0
+MUT31OUT_RC=0
+WT_UNTOUCHED=True
+totals: killed=13 survived=0 invalid=0 legs=13
+MUT31_KILLED_LINES=13
+MUT81_RC=0
+MUT81OUT_RC=0
+WT_UNTOUCHED=True
+totals: killed=22 survived=0 invalid=0 legs=22
+MUT85_RC=0
+MUT85OUT_RC=0
+WT_UNTOUCHED=True
+totals: killed=11 survived=0 invalid=0 legs=11
+MUT82_RC=0
+MUT82OUT_RC=0
+WT_UNTOUCHED=True
+totals: killed=14 survived=0 invalid=0 legs=14
+SELFTEST_G1_RC=0
+SELFTEST_G1_LINES=7
+SCAN_G1_RC=0
+ROOT=src/memory_agent STUBS=5 PROBLEM=0 EXEMPT_TOTAL=5 EXEMPT_HIT=5 EXEMPT_STALE=0
+SELFTEST_G2_RC=0
+SELFTEST_G2_LINES=7
+SCAN_G2_RC=0
+ROOT=src/memory_agent DECLARED=9 SKIP_GUARD=1 NEED_COMPARE=0 OK=2 PROBLEM=0 EXEMPT_STALE=0
+SELFTEST_G3_RC=0
+SELFTEST_G3_LINES=11
+SCAN_G3_RC=0
+ROOT=src/memory_agent TARGETS=9 DIRECT_LOOP=6 RESIDENT_TASK=1 VIA_CALLER=2 NOT_SCHEDULED=0 NO_CALLSITE=0 PROBLEM=0 EXEMPT_STALE=0
+SELFTEST_G4_RC=0
+SELFTEST_G4_LINES=9
+SCAN_G4_RC=0
+SRC=src/memory_agent DECLARED=41 REGISTERED=23 CASES=36 UNVERIFIED=18 PROBLEM=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）

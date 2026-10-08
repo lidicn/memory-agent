@@ -1,0 +1,7 @@
+SELFTEST_HIT seed（p1 存在即 return）⇒ 判红
+SELFTEST_HIT seed_cycle（p2 存在即 continue）⇒ 判红
+SELFTEST_CLEAN save_skill（n3 存在性=读盘取版本基数）exists_any=True 而无跳过守卫 ⇒ 不判红
+SELFTEST_CLEAN refresh（n4 not isfile=入参守卫）exists_any=True 而无跳过守卫 ⇒ 不判红
+SELFTEST_CLEAN seed2 版本比较在册
+SELFTEST_CLEAN plain 声明面没有真源关键词 ⇒ 不进候选
+SELFTEST_CLEAN 判红恰好来自两条正例（PROBLEM=2）

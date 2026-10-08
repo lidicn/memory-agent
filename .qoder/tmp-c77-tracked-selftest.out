@@ -1,0 +1,4 @@
+SELFTEST_FACES FACES api_methods=100 unparsed=0 route_entries=208 handler_defs=292 js_callsites=69
+SELFTEST_LEGS L1_fake_fires_in_HARD=True L2_toplevel_key_silent=True L3_helper_key_green_not_hard=True L4_helper_home_removed_flips_to_HARD=True
+SELFTEST_BAD=0
+SELFTEST_RC=0

@@ -1,0 +1,73 @@
+.FFFFF......................................................ss           [100%]
+================================== FAILURES ===================================
+__________________ test_r5_room_mismatch_does_not_loosen_r3 ___________________
+
+    def test_r5_room_mismatch_does_not_loosen_r3():
+        """改前红：R3 已顶到 needs_review，R5「房间不匹配」用 `min(..., key=index)` 把它松回 med。
+    
+        身份含义：两名候选分差不足 0.15 本该交人工，多一路房间不一致反而免了复核。
+        """
+        sigs = [_sig("s1", Source.ARCFACE, "Alice"), _sig("s2", Source.HA_FACE, "Alice"),
+                _sig("s3", Source.MANUAL, "Alice", mode=ManualMode.VOTE, room="bedroom")]
+        conflicts, cap = evaluate_conflicts(sigs, _scores(("Alice", 0.60), ("Bob", 0.55)))
+        assert {c.rule for c in conflicts} == {"R3", "R5"}, [c.rule for c in conflicts]
+>       assert cap is NEEDS_REVIEW, f"R5 不得把 cap 松回 med，实得 {cap.value}"
+E       AssertionError: R5 不得把 cap 松回 med，实得 med
+E       assert <Level.MED: 'med'> is <Level.NEEDS_REVIEW: 'needs_review'>
+
+tests\test_vma_task64_identity_fusion.py:82: AssertionError
+_____________________ test_r4_stranger_does_not_loosen_r3 _____________________
+
+    def test_r4_stranger_does_not_loosen_r3():
+        """改前红：R4 是 `cap = Level.LOW` 直接赋值，把 R3 的 needs_review 覆盖成 low。"""
+        sigs = [_sig("s1", Source.ARCFACE, "Alice"), _sig("s2", Source.HA_FACE, "Alice"),
+                _sig("s3", Source.ARCFACE, None, conf=0.9)]
+        conflicts, cap = evaluate_conflicts(sigs, _scores(("Alice", 0.60), ("Bob", 0.55)))
+        assert {c.rule for c in conflicts} == {"R3", "R4"}, [c.rule for c in conflicts]
+>       assert cap is NEEDS_REVIEW, f"R4 不得覆盖 needs_review，实得 {cap.value}"
+E       AssertionError: R4 不得覆盖 needs_review，实得 low
+E       assert <Level.LOW: 'low'> is <Level.NEEDS_REVIEW: 'needs_review'>
+
+tests\test_vma_task64_identity_fusion.py:91: AssertionError
+_________________________ test_r5_does_not_loosen_r4 __________________________
+
+    def test_r5_does_not_loosen_r4():
+        """改前红：cap 已是 LOW（R4），R5 的 `min` 按 index 取 MED = 更不严重 ⇒ 松回 med。"""
+        sigs = [_sig("s1", Source.ARCFACE, "Alice", room="living"),
+                _sig("s2", Source.ARCFACE, None, conf=0.9, room="living"),
+                _sig("s3", Source.MANUAL, "Alice", mode=ManualMode.VOTE, room="bedroom")]
+        conflicts, cap = evaluate_conflicts(sigs, _scores(("Alice", 0.90)))
+        assert {c.rule for c in conflicts} == {"R4", "R5"}, [c.rule for c in conflicts]
+>       assert cap is LOW, f"R5 不得把 LOW 松回 med，实得 {cap.value}"
+E       AssertionError: R5 不得把 LOW 松回 med，实得 med
+E       assert <Level.MED: 'med'> is <Level.LOW: 'low'>
+
+tests\test_vma_task64_identity_fusion.py:101: AssertionError
+__________________________ test_r6_alone_caps_at_med __________________________
+
+    def test_r6_alone_caps_at_med():
+        """R6（无人脸观测）单独命中时封顶 med——正向档，防把守卫写反。"""
+        sigs = [_sig("s1", Source.MANUAL, "Alice", mode=ManualMode.VOTE),
+                _sig("s2", Source.ELIMINATION, "Alice")]
+        conflicts, cap = evaluate_conflicts(sigs, _scores(("Alice", 0.90)))
+        assert [c.rule for c in conflicts] == ["R6"]
+>       assert cap is MED
+E       AssertionError: assert <Level.HIGH: 'high'> is <Level.MED: 'med'>
+
+tests\test_vma_task64_identity_fusion.py:110: AssertionError
+__________________________ test_r5_alone_caps_at_med __________________________
+
+    def test_r5_alone_caps_at_med():
+        """R5（房间不匹配）单独命中时封顶 med，且不误触 R2/R3。"""
+        sigs = [_sig("s1", Source.ARCFACE, "Alice", room="living"),
+                _sig("s2", Source.HA_FACE, "Alice", room="bedroom")]
+        conflicts, cap = evaluate_conflicts(sigs, _scores(("Alice", 0.90)))
+        assert [c.rule for c in conflicts] == ["R5"]
+>       assert cap is MED
+E       AssertionError: assert <Level.HIGH: 'high'> is <Level.MED: 'med'>
+
+tests\test_vma_task64_identity_fusion.py:119: AssertionError
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_vma_task64_behavior_predictor.py:241: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+SKIPPED [1] tests\test_vma_task64_behavior_predictor.py:258: MCP SDK 不可用或版本过旧，无法取到已注册工具函数
+5 failed, 55 passed, 2 skipped in 22.74s

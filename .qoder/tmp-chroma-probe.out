@@ -1,0 +1,85 @@
+Warning: Identity file C:/Users/lidicn/.ssh/openssh/OpenSSH-Win64/id_ed25519 not accessible: No such file or directory.
+[0;93m2026-10-04 05:23:24.054025583 [W:onnxruntime:Default, telemetry.cc:800 operator()] Failed to persist telemetry device ID; using an in-memory identifier[m
+Failed to send telemetry event ClientStartEvent: capture() takes 1 positional argument but 3 were given
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/models/CollectionCommon.py", line 90, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/models/CollectionCommon.py", line 301, in _validate_and_prepare_query_request
+    request_embeddings = self._embed_record_set(record_set=query_records)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/models/CollectionCommon.py", line 526, in _embed_record_set
+    return self._embed(input=record_set[field])  # type: ignore[literal-required]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/models/CollectionCommon.py", line 539, in _embed
+    return self._embedding_function(input=input)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/types.py", line 466, in __call__
+    result = call(self, input)
+             ^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/chromadb/utils/embedding_functions/onnx_mini_lm_l6_v2.py", line 199, in __call__
+    self._download_model_if_not_exists()
+  File "/usr/local/lib/python3.11/site-packages/chromadb/utils/embedding_functions/onnx_mini_lm_l6_v2.py", line 219, in _download_model_if_not_exists
+    os.makedirs(self.DOWNLOAD_PATH, exist_ok=True)
+  File "<frozen os>", line 215, in makedirs
+  File "<frozen os>", line 215, in makedirs
+  File "<frozen os>", line 215, in makedirs
+  File "<frozen os>", line 225, in makedirs
+PermissionError: [Errno 13] Permission denied: '/.cache'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<stdin>", line 84, in <module>
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/models/Collection.py", line 210, in query
+    query_request = self._validate_and_prepare_query_request(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/models/CollectionCommon.py", line 93, in wrapper
+    raise type(e)(msg).with_traceback(e.__traceback__)
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/models/CollectionCommon.py", line 90, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/models/CollectionCommon.py", line 301, in _validate_and_prepare_query_request
+    request_embeddings = self._embed_record_set(record_set=query_records)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/models/CollectionCommon.py", line 526, in _embed_record_set
+    return self._embed(input=record_set[field])  # type: ignore[literal-required]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/models/CollectionCommon.py", line 539, in _embed
+    return self._embedding_function(input=input)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/chromadb/api/types.py", line 466, in __call__
+    result = call(self, input)
+             ^^^^^^^^^^^^^^^^^
+== 版本 ==
+httpx=0.28.1 | chromadb=0.5.23 | requests=2.34.2 | posthog=7.58.0 | numpy=2.4.6
+python= 3.11.16
+== 环境（只报在场与否，不报值）==
+  EMBEDDING_BASE_URL: set=True
+  EMBEDDING_MODEL: set=True
+  EMBEDDING_API_KEY: set=True
+  CHROMA_HOST: set=True
+  CHROMA_PORT: set=True
+== ① 嵌入端点直连（不经 chroma，看真实状态码）==
+  status=200 bytes=21864
+  raise_for_status(): 正常（非 2xx 才抛）
+== ② 纯向量 query（绕开嵌入函数，判故障在哪一层）==
+  集合在场 count=68
+  query_embeddings(dim=384) -> InvalidDimensionException: Embedding dimension 384 does not match collection dimensionality 1024
+  query_embeddings(dim=1024) OK ids=3
+== ③ query_texts 路（生产 conflict_scan 的形状，全量 traceback）==
+  query_texts -> PermissionError: [Errno 13] Permission denied: '/.cache' in query.
+-- traceback --
+-- 异常链 --
+   PermissionError: [Errno 13] Permission denied: '/.cache' in query.
+   PermissionError: [Errno 13] Permission denied: '/.cache'
+PROBE_DONE
+  File "/usr/local/lib/python3.11/site-packages/chromadb/utils/embedding_functions/onnx_mini_lm_l6_v2.py", line 199, in __call__
+    self._download_model_if_not_exists()
+  File "/usr/local/lib/python3.11/site-packages/chromadb/utils/embedding_functions/onnx_mini_lm_l6_v2.py", line 219, in _download_model_if_not_exists
+    os.makedirs(self.DOWNLOAD_PATH, exist_ok=True)
+  File "<frozen os>", line 215, in makedirs
+  File "<frozen os>", line 215, in makedirs
+  File "<frozen os>", line 215, in makedirs
+  File "<frozen os>", line 225, in makedirs
+PermissionError: [Errno 13] Permission denied: '/.cache' in query.

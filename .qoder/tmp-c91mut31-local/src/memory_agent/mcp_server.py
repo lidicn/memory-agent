@@ -1,0 +1,2978 @@
+"""MCP 服务器 —— 基于官方 Python SDK（MCPServer + Streamable HTTP, MCP 2.x）
+
+定位
+----
+这是**行为洞察层**，不是事件数据层。原则：
+
+* 洞察由服务端算好（时长、作息、异常），不 dump 上万条原始事件让调用方硬算；
+* 一切入口都能用人话（房间名 / 设备类别 / 关键词）定位，不逼调用方背 entity_id；
+* 默认干净：功率、温湿度这类每分钟一条的遥测默认排除，避免污染行为分布；
+* 一切查询返回 ``total`` / ``offset`` / ``has_more`` 与显式时区，杜绝「取没取全」的疑问。
+
+工具分层
+--------
+1. 入口层（推荐）：``help`` → ``get_entity_catalog`` → ``get_behavior_insights``
+2. 定量层：``get_device_usage``、``search_events``
+3. 精确层：``query_events``、``get_behavior_summary``、``get_person_history``
+4. 沉淀层：``save_analysis_template``、``export_insight`` …
+5. 运维层：``get_collect_status``、``trigger_collection``、``export_history``
+6. 技能层：``save_skill`` / ``list_skills`` / ``get_skill`` —— 网关作为技能唯一真源，
+   Agent 通过 ``get_skill`` 从网关拉取最新版本（带 version/updated_at），``save_skill``
+   把新经验写回网关并自增版本，实现跨 Agent 的技能同步。
+7. 视觉层：``list_vision_cameras`` → ``analyze_camera`` —— 用自然语言「看」摄像头。
+
+实现注意
+--------
+1. MCP 2.0 起 ``FastMCP`` 已移除，改用 ``MCPServer``；``stateless_http`` 与
+   ``streamable_http_path`` 移到了 ``streamable_http_app(...)``。
+2. 显式 ``streamable_http_path="/"`` 保持对外 URL 仍是 ``/mcp``。
+3. 显式 ``host="0.0.0.0"`` 关闭 DNS 重绑定保护（端点已有 Bearer Token 鉴权）。
+4. 父应用需串接子应用 lifespan，由 ``app.py`` 负责。
+
+若运行环境尚未安装 ``mcp`` 包，本模块不会让整个服务崩溃，
+而是把 ``mcp_app`` 置为 None 并暴露 ``MCP_IMPORT_ERROR``，由 WebUI 提示重建镜像。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import functools
+import json
+import logging
+import os
+import threading
+import time
+
+from .day_bounds import clamp_days
+from .mcp_context import caller as _caller_context
+from .mcp_errors import (
+    ALL_CODES,
+    _is_error,
+    ErrorCode,
+    normalize_tool_result,
+)
+from .mcp_scopes import note_unknown, requires, scope_of
+from .rule_lifecycle import log_confirmation
+from .runtime import AppRuntime, get_runtime
+from .store import CANDIDATE_ACCEPTED, now_local
+from .tool_schema import build_catalog, TOOL_NAMES as TOOL_NAMES_FROM_SPEC, register_simple_tools  # noqa: F401
+
+SERVER_NAME = "memory-agent"
+SERVER_INSTRUCTIONS = """Memory Agent —— 家庭行为记忆与洞察中枢。
+
+## 视觉识别（看摄像头）
+用户问「看看谁在客厅」「客厅有没有异常」「玄关有没有快递」这类问题时使用：
+1. `list_vision_cameras()` —— 确认有哪些房间/流名（房间名用配置里的真实区域名）。
+2. `analyze_camera(room="客厅", prompt_preset="people")` —— 取一帧并让多模态模型识别，
+   返回**文字描述**（默认不含图片，隐私优先）。
+   - `prompt_preset`：`people`(人员活动) / `security`(安全异常) / `object`(物品宠物快递) / `custom`。
+   - 需要自定义问题就传 `prompt="..."`，或 `prompt_preset="custom"` 再传 `prompt`。
+   - 默认 `bypass_limits=True`：显式调用会绕过光线门槛与每小时调用上限，立即取帧。
+   - 极少数场景需要图片时用 `include_preview=True`（返回 base64 缩略图，费 token）。
+3. 把返回的文字描述 `description` 转述给用户即可；`ok=false` 时按 `error` 说明（多为
+   go2rtc 凭据未配、流名错或 VLM 会话失效），并提示用户在设置页检查。
+
+## 推荐流程（不要跳过第 1 步）
+1. `get_entity_catalog(room="主卧")` —— 用人话找设备，拿到 entity_id 与友好名
+2. `get_behavior_insights(days=7)` —— 服务端直接给作息、活跃时段、房间分布、异常
+3. `get_device_usage(query="书房空调", days=7)` —— 开了多久、开关几次，无需手算
+4. `search_events(room="客厅", category="media", summarize=true)` —— 语义过滤 + 摘要
+5. `save_analysis_template(...)` / `export_insight(...)` —— 把结论沉淀给 Node-RED
+6. `get_skill(name)` —— 网关是技能唯一真源，Agent 应通过它**拉取最新版本**（`version`、
+   `updated_at`），与本地缓存比对后按需更新；`save_skill(name, content)` 把新经验写回网关、
+   自增 `version`，供其他 Agent 下次 `get_skill` 拉取。
+
+## 三条避坑提示
+* 别一上来就 `query_events`：它要精确 entity_id，先用 catalog 或 search_events。
+* 功率/温湿度每分钟一条，会把小时分布拍平。所有洞察工具默认 `behavior_only=true`，
+  除非你就是要看遥测，否则别关掉。
+* 时间统一用 `days`（最近 N 天）或 `start`/`end`（本地时区 ISO），返回里都带 `window.timezone`。
+
+## 已知数据缺口
+`person` 字段来自 HA 状态历史，通常为空 —— 当前**不支持人员归属**分析，
+请改用房间/设备维度。媒体、语音类实体若无事件，多半是采集未启用该实体。
+
+## 家庭成员与生活习惯档案
+你可以为家人建立「生活习惯档案」，把从数据中看出的行为偏好（如夜猫子🦉、家庭主厨🍳）沉淀下来：
+
+1. 先 `list_members()` 看是否已有成员；没有就 `create_member(name='爸爸', avatar_emoji='🦉')` 建一个。
+2. `assign_member_room(member_id, rooms=['主卧','书房'])` 绑定 TA 常驻的房间；`assign_member_device(...)` 绑定专属设备（手机/电脑/按摩椅，或「谁做饭谁操作」的厨房设备）。
+3. 调用 `get_member_persona(member_id, days=14)`（或全局 `get_user_persona`）拿到结构化画像：各活动的出现天数/频次/典型时段/房间/置信度与样本证据。
+4. **由你（Agent）基于这些信号自主推断标签**，例如：
+   - 主卧室 23:00–02:00 活跃占比高 → 「夜猫子 🦉」（category=sleep）
+   - 厨房活动 ≥5 天/周且集中在饭点 → 「家庭主厨 🍳」（category=diet）
+   - 客厅电视/游戏机日均活跃 >2h → 「重度媒体用户 📺」（category=media）
+   并用 `persona.summary` / `sample_evidence` 作为支撑证据。
+5. 用自然语言把发现讲给用户：**展示证据 + 询问是否存档到 TA 的生活习惯档案**。
+6. **只有用户明确确认后**才调用 `confirm_member_tag(member_id, tag='夜猫子', emoji='🦉', confidence=0.9, category='sleep', evidence=[...])` 写回。
+   同名标签会覆盖刷新；用户也可在 WebUI 的「家庭成员」页手动增删标签。
+   **服务端强制（v0.9）**：标签写回默认**被服务端拒绝**（返回 `DENIED`），需管理员先在 WebUI「系统设置」开启 `member_tag_agent_writeback`；
+   未开启时请引导用户在「家庭成员」页手动添加，切勿重复尝试。
+
+安全准则：绝不在未获确认时擅自写回标签；标签用语要温和、带人情味（emoji + 口语化），避免监控感。
+
+## 错误模型（v0.9 统一契约）
+工具失败一律返回 `isError=true`，正文为结构化 JSON：
+`{"ok": false, "error": {"code": "...", "message": "..."}, "detail": {...}}`。
+错误码枚举：
+- `NOT_FOUND` 资源不存在（成员/模板/记忆/技能…）
+- `INVALID_PARAM` 参数缺失或非法
+- `UPSTREAM_UNAVAILABLE` 依赖不可达（HA / LLM / 向量库 / 功能未启用）
+- `DENIED` 权限不足（如令牌无 write 权限）
+- `RATE_LIMITED` 限流
+- `INTERNAL` 未分类内部错误
+遇到 `isError` 时按 `error.code` 分类处理（勿把 `message` 当正常数据），必要时向用户说明并建议修复。
+
+## 幂等键（防重复执行）
+所有写工具（如 `trigger_collection` / `create_member` / `save_skill` / `add_semantic_memory` …）
+都支持可选参数 `idempotency_key`：传同一 key 的重复调用**只执行一次**，24h 内再次调用直接返回首次结果。
+网络重试 / 多次触发同一动作时带上它，可避免重复采集、重复建成员、重复写记忆等副作用。
+并发携带同一 key 时，后到的调用**不会执行工具**，而是返回 `RATE_LIMITED`（提示「正在执行中」），
+稍后用同一 key 重试即可取回首次结果；执行失败的结果不缓存，可直接重试。
+
+## 响应体上限（v0.9 任务3 / DCD 20261004 MA-裁4）
+单个工具的响应正文超过 `mcp_response_max_bytes`（默认 64KB，可在「系统设置」调整）时会被
+**自动截断并附摘要**，结尾提示「[响应已截断] … 请换更窄的参数重试」。JSON 载荷走的是
+**结构降级**（按记录条数裁剪并附 `_truncated` 计数，保证仍是合法 JSON）；只有非 JSON /
+无可裁列表的正文才退回字符截断。这是服务端保护（避免巨响应撑爆客户端上下文），并非错误；
+带 `limit/offset` 的工具（如 `list_device_health`、`query_unified_events`）分批取即可拿全。
+
+## 故障注入矩阵（v0.9 任务3，运维/测试用）
+容器内可调用 `set_mcp_fault(tool, code)` 强制某工具（tool='*' 表示全部）返回指定错误码而
+**不真正执行**，用于验证客户端对各类故障的契约处理（错误模型 / 断路器 / 重试）。
+code ∈ {NOT_FOUND, INVALID_PARAM, UPSTREAM_UNAVAILABLE, DENIED, RATE_LIMITED, INTERNAL}。
+结束后 `clear_mcp_faults()` 清除。正常业务不应依赖此能力。
+"""
+
+MCP_AVAILABLE = True
+MCP_IMPORT_ERROR = ""
+
+try:
+    from mcp.server import MCPServer
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+    except Exception:  # 极少数旧版本没有该模块，退化为 None，下方用 host 隐式关闭兜底
+        TransportSecuritySettings = None  # type: ignore[assignment]
+except Exception as exc:  # pragma: no cover - 取决于运行环境
+    MCPServer = None  # type: ignore[assignment]
+    TransportSecuritySettings = None  # type: ignore[assignment]
+    MCP_AVAILABLE = False
+    MCP_IMPORT_ERROR = (
+        f"未安装 mcp SDK（{exc}）。请在 Dockerfile 中加入 'mcp>=2.0' 并重新 "
+        f"docker compose build 后再启动。"
+    )
+    print(f"[MCP] {MCP_IMPORT_ERROR}")
+
+
+# 网关随包发布的内置技能目录（Dockerfile 会随 src/ 一起打进镜像）
+BUNDLED_SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills_bundle")
+
+
+
+def _fetch_attribution_events(store, days: int = 30) -> list[dict]:
+    """从 behavior_events 表获取最近 N 天事件，转换为 change_attribution 需要的格式。"""
+    from datetime import timedelta
+    # day 列由 Store 按家庭墙钟写入，容器时钟通常是 UTC：用裸 datetime.now() 会在
+    # UTC 16:00–24:00 窗口里把窗口整体前移一天（第七轮审计 · 时区关节）。
+    day_from = (now_local(store.tz_offset_hours) - timedelta(days=clamp_days(days))).strftime("%Y-%m-%d")
+    conn = store.connect()
+    with store._lock:
+        rows = conn.execute(
+            "SELECT server_ts, action, room, scene, persons_json FROM behavior_events "
+            "WHERE day >= ? AND action != 'behavior_change_alert' ORDER BY server_ts ASC LIMIT 50000",
+            (day_from,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if not d.get("persons_json"):
+            d["persons_json"] = "[]"
+        out.append(d)
+    return out
+
+def _read_skill_meta(path: str) -> dict:
+    """从 SKILL.md 的 YAML frontmatter 解析出元数据（name/description/category/version 等）。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            txt = f.read()
+        if not txt.startswith("---"):
+            return {}
+        end = txt.find("---", 3)
+        if end == -1:
+            return {}
+        block = txt[3:end]
+        meta: dict = {}
+        for line in block.splitlines():
+            if ":" in line:
+                key, _, value = line.partition(":")
+                meta[key.strip()] = value.strip()
+        if "version" in meta:
+            try:
+                meta["version"] = int(meta["version"])
+            except ValueError:
+                pass
+        return meta
+    except Exception:
+        return {}
+
+
+def seed_builtin_skills(rt: "AppRuntime") -> int:
+    """启动种子化：把包内内置技能（skills_bundle）写入网关 skills_dir。
+
+    判据是**版本比较**，不是文件存在性（第十七轮审计 MA-33）：
+    - 目标不存在 ⇒ 写入；
+    - 盘上版本低于内置版本、或盘上那份解析不出版本（空文件/被截断/手工改坏）⇒ 覆盖升级并留痕；
+    - 盘上版本 ≥ 内置版本 ⇒ 跳过（保护 Agent 已迭代出的更高版本），结束时打印跳过数量。
+    内置技能即网关作为真源对外提供的最新版本，Agent 通过 get_skill 拉取；
+    原来只按 `os.path.isfile(dst)` 判跳 ⇒ 旧版部署升级后永久停在旧版且无任何日志，
+    那句"真源 = 最新版本"就成了空话。返回本次写入（新增 + 升级）的技能数。
+    """
+    seeded = 0
+    skipped = 0
+    if not os.path.isdir(BUNDLED_SKILLS_DIR):
+        return seeded
+    for name in sorted(os.listdir(BUNDLED_SKILLS_DIR)):
+        src = os.path.join(BUNDLED_SKILLS_DIR, name, "SKILL.md")
+        if not os.path.isfile(src):
+            continue
+        dst_dir = os.path.join(rt.config.skills_dir, name)
+        dst = os.path.join(dst_dir, "SKILL.md")
+
+        bundled_meta = _read_skill_meta(src)
+        # 内置那份自己就该带版本号；缺版本号的内置技能按 v1 记账，好让"没有版本"这件事可查
+        try:
+            bundled_version = int(bundled_meta.get("version", 1))
+        except (TypeError, ValueError):
+            bundled_version = 1
+        if not bundled_meta.get("version"):
+            print(f"[SeedSkills] {name}: 内置 SKILL.md 未声明 version，按 v{bundled_version} 记账")
+
+        disk_version: "int | None" = None
+        if os.path.isfile(dst):
+            disk_meta = _read_skill_meta(dst)
+            try:
+                # 解析不出版本 = 盘上那份不可信（空文件/截断/手工改坏），按 0 处理以便被修复
+                disk_version = int(disk_meta["version"]) if disk_meta.get("version") else 0
+            except (TypeError, ValueError):
+                disk_version = 0
+            if disk_version >= bundled_version:
+                skipped += 1
+                continue
+
+        os.makedirs(dst_dir, exist_ok=True)
+        with open(src, "r", encoding="utf-8") as f:
+            data = f.read()
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write(data)
+        seeded += 1
+        if disk_version is not None:
+            print(
+                f"[SeedSkills] {name}: v{disk_version} → v{bundled_version}（内置为真源，已升级）"
+            )
+    if skipped:
+        print(f"[SeedSkills] 跳过 {skipped} 个已不落后于内置版本的技能（不覆盖 Agent 迭代）")
+    return seeded
+
+
+# ── MCP 调用可观测性（Bug#8：调用计数 / 耗时 / 错误 / 慢调用日志）──────
+# 所有 CALL_TOOL 请求经 MCPServer._handle_call_tool -> self.call_tool 统一入口，
+# 因此包装实例级 call_tool 即可覆盖手写 @mcp.tool() 与动态注册的 schema 工具。
+MCP_CALL_STATS: dict = {}
+MCP_STATS_LOCK = threading.Lock()
+# 审计 M2：单级阈值会把「冷启动 ~60s」与「偶发慢查询」混为一谈（前者必然触发，
+# 反而淹没后者）。拆成两级：SLOW（>=5s，INFO）与 HEAVY（>=30s，WARNING，重点排查）。
+MCP_SLOW_MS = float(os.getenv("MCP_SLOW_MS", "5000"))
+MCP_HEAVY_MS = float(os.getenv("MCP_HEAVY_MS", "30000"))
+_mcp_stats_log = logging.getLogger("mcp.stats")
+_log = logging.getLogger(__name__)  # 稳定性审计第二轮：_log 未定义导致错误路径崩溃
+# 审计 M1：MCP 调用统计上限，防止进程级无限增长（内存泄漏）
+MCP_MAX_STATS_ENTRIES = int(os.getenv("MCP_MAX_STATS_ENTRIES", "500"))
+
+
+def _extract_error_text(result):
+    try:
+        for c in result.content:
+            if getattr(c, "type", "") == "text" and getattr(c, "text", ""):
+                return str(c.text)[:300]
+    except Exception:
+        pass
+    return "is_error"
+
+
+async def _record_mcp_call(name, dt_ms, is_err, err_text):
+    # v0.7.5-2 操作审计：落库（带身份/来源），与内存统计互补。
+    # P1-7: 审计写改异步（asyncio.to_thread），避免同步 commit 阻塞事件循环
+    # 旁路：失败只记日志，绝不影响工具调用本身。
+    try:
+        token_name, _granted, origin = _caller_context()
+        await asyncio.to_thread(
+            get_runtime().store.log_mcp_audit,
+            token_name=token_name,
+            tool=name,
+            scope=scope_of(name),
+            duration_ms=dt_ms,
+            ok=not is_err,
+            error=(err_text or "") if is_err else "",
+            origin=origin,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _mcp_stats_log.debug("MCP 审计落库失败（忽略）: %s", exc)
+    with MCP_STATS_LOCK:
+        s = MCP_CALL_STATS.get(name)
+        if s is None:
+            s = {"calls": 0, "errors": 0, "total_ms": 0.0, "max_ms": 0.0,
+                 "min_ms": 0.0, "last_ms": 0.0, "last_called": "", "last_error": None}
+            MCP_CALL_STATS[name] = s
+        s["calls"] += 1
+        s["total_ms"] += dt_ms
+        if dt_ms > s["max_ms"]:
+            s["max_ms"] = dt_ms
+        if s["min_ms"] <= 0 or dt_ms < s["min_ms"]:
+            s["min_ms"] = dt_ms
+        s["last_ms"] = dt_ms
+        s["last_called"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+        if is_err:
+            s["errors"] += 1
+            s["last_error"] = (err_text or "")[:500]
+        # 审计 M1：防止 MCP_CALL_STATS 进程级无限增长（内存泄漏）
+        if len(MCP_CALL_STATS) > MCP_MAX_STATS_ENTRIES:
+            for _ in range(len(MCP_CALL_STATS) - MCP_MAX_STATS_ENTRIES):
+                MCP_CALL_STATS.popitem(last=False)  # py3.7+ 字典保序，淘汰最旧
+    if dt_ms >= MCP_HEAVY_MS:
+        _mcp_stats_log.warning("[MCP-HEAVY] tool=%s %.0fms err=%s", name, dt_ms, is_err)
+    elif dt_ms >= MCP_SLOW_MS:
+        _mcp_stats_log.info("[MCP-SLOW] tool=%s %.0fms err=%s", name, dt_ms, is_err)
+
+
+def _build_tool_result(text: str, is_error: bool = False):
+    """构造 CallToolResult，自动适配 mcp 1.x(isError) / 2.x(is_error) 字段名。"""
+    from mcp.types import CallToolResult, TextContent
+
+    tc = TextContent(type="text", text=text)
+    flds = getattr(CallToolResult, "model_fields", None) or getattr(
+        CallToolResult, "__fields__", {}) or {}
+    kwargs: dict = {"content": [tc]}
+    if "is_error" in flds:
+        kwargs["is_error"] = is_error
+    elif "isError" in flds:
+        kwargs["isError"] = is_error
+    else:
+        kwargs["is_error"] = is_error
+    return CallToolResult(**kwargs)
+
+
+def _denied_result(tool: str, token_name: str, granted: list):
+    """构造「权限不足」的工具错误结果（isError=True，而非抛协议错误）。
+
+    用 isError 结果而不是异常：客户端拿到的是可读的失败原因，
+    而不是一条难以定位的协议错误。
+    """
+    granted_txt = ",".join(granted) if granted else "(无)"
+    text = (
+        f"DENIED: 令牌 '{token_name or '(未知)'}' 无 write 权限，"
+        f"不能调用写工具 '{tool}'（当前权限 {granted_txt}）。"
+        "请在 WebUI「MCP 接入」把该令牌权限切到「读写」，或换用带 write 的令牌。"
+    )
+    return _build_tool_result(text, is_error=True)
+
+
+# ── v0.9 幂等键（写工具防重复执行；分发层消费，工具签名无需改）──────────────
+def _idem_result(cached: dict):
+    """把缓存的幂等结果还原为 CallToolResult（兼容 mcp 1.x/2.x 字段名）。"""
+    from mcp.types import CallToolResult, TextContent
+
+    text = TextContent(type="text", text=cached.get("result_text") or "")
+    flds = getattr(CallToolResult, "model_fields", None) or getattr(
+        CallToolResult, "__fields__", {}) or {}
+    kwargs: dict = {"content": [text]}
+    is_err = bool(cached.get("is_error"))
+    if "is_error" in flds:
+        kwargs["is_error"] = is_err
+    elif "isError" in flds:
+        kwargs["isError"] = is_err
+    else:
+        kwargs["is_error"] = is_err
+    return CallToolResult(**kwargs)
+
+
+def _result_text(result) -> str:
+    try:
+        for c in result.content:
+            if getattr(c, "type", "") == "text":
+                return str(c.text)
+    except Exception:
+        pass
+    return ""
+
+
+def _idem_store():
+    try:
+        return get_runtime().store
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _idem_reserve(cache_key: str, tool: str) -> dict:
+    """占位失败一律按「放行执行」处理：幂等是防重复的优化，不能因存储抖动打死工具。"""
+    store = _idem_store()
+    if store is None:
+        return {"state": "reserved"}
+    try:
+        return store.reserve_idempotency(cache_key, tool)
+    except Exception as exc:  # noqa: BLE001
+        _mcp_stats_log.debug("幂等占位失败（放行执行）: %s", exc)
+        return {"state": "reserved"}
+
+
+def _idem_finalize(cache_key: str, text: str) -> None:
+    try:
+        store = _idem_store()
+        if store is not None:
+            store.finalize_idempotency(cache_key, text)
+    except Exception as exc:  # noqa: BLE001
+        _mcp_stats_log.debug("幂等键落库失败（忽略）: %s", exc)
+
+
+def _idem_release(cache_key: str) -> None:
+    """执行失败/异常：撤掉占位，让调用方可以用同一 key 重试。"""
+    try:
+        store = _idem_store()
+        if store is not None:
+            store.release_idempotency(cache_key)
+    except Exception as exc:  # noqa: BLE001
+        _mcp_stats_log.debug("幂等占位释放失败（忽略）: %s", exc)
+
+
+def _mcp_response_max_bytes() -> int:
+    """运行时读取响应上限（默认 64KB）。"""
+    try:
+        return int(getattr(get_runtime().config, "mcp_response_max_bytes", 65536) or 65536)
+    except Exception:
+        return 65536
+
+
+# DCD 20261004 MA-裁4 Q2：默认投影的精简长度。stable_id 的中文长名是给人看的，
+# 定位实体用 entity_id——生产实测该字段 51,062 字节（占该工具响应的可省大头）。
+DEVICE_HEALTH_STABLE_ID_MAX_CHARS = 40
+DEVICE_HEALTH_PAGE_LIMIT_DEFAULT = 500
+DEVICE_HEALTH_PAGE_LIMIT_MAX = 2000
+# DCD 20261004 裁1/裁4 Q2=甲：整页投影后 ≤64KB 自动收窄。
+# 旧的 40 字符 stable_id 截断只压掉 12%，页级预算才是硬上限。
+DEVICE_HEALTH_PAGE_MAX_BYTES = 64 * 1024
+
+
+def project_device_health(rows: list[dict], fields: str = "lean") -> list[dict]:
+    """设备健康清单的对外投影（DCD 20261004 MA-裁4 Q2）。
+
+    ``fields='lean'``（默认）：
+    * ``stable_id`` 截到 40 字，被截的那条带 ``stable_id_truncated: true``；
+    * ``note`` 只在 ``referenced=1`` 时给原值，其余置空但**保留键**。
+
+    保留键不是啰嗦：键不存在时消费端的 ``row["note"]`` 会 KeyError，而
+    「键名对不上就静默归零」正是本 ADM 已经栽过的坑（判例见 DCD 20261004 §六.2）。
+    ``fields='full'`` **不改单行内容**——但整页预算照样生效：全量行更肥，一页装得下的
+    行数更少（锁见 `tests/test_vma_q2_device_health_64kb.py::test_full_fields_also_respects_byte_budget`）。
+    也就是说"要整段中文说明"要靠翻页拿全，不是靠一次调用拿全。
+    """
+    if str(fields or "").strip().lower() == "full":
+        return rows
+    out: list[dict] = []
+    for row in rows:
+        d = dict(row)
+        stable_id = str(d.get("stable_id") or "")
+        if len(stable_id) > DEVICE_HEALTH_STABLE_ID_MAX_CHARS:
+            d["stable_id"] = stable_id[:DEVICE_HEALTH_STABLE_ID_MAX_CHARS]
+            d["stable_id_truncated"] = True
+        if not int(d.get("referenced") or 0):
+            d["note"] = ""
+        out.append(d)
+    return out
+
+
+def device_health_page(rows: list[dict], total: int, *, state: str = "",
+                       offset: int = 0, limit: int = DEVICE_HEALTH_PAGE_LIMIT_DEFAULT,
+                       fields: str = "lean") -> dict:
+    """`list_device_health` 的分页信封（DCD 20261004 MA-裁4 Q1，与 ``query_unified_events`` 同口径）。
+
+    之所以是纯函数：MCP 工具定义在工厂闭包里，测试压根取不到，判据只能落在这一层。
+    ``total`` 是**分页前**的全量条数，由调用方从 ``count_device_health`` 取。
+
+    翻页收口用「本页必须给出行」判，不单独用 `offset < total` 判：拿到空页时若还回
+    `has_more=true`，`next_offset` 就等于 `offset`——按 ``while has_more`` 翻页的消费端
+    就此死循环（offset 小于 total 但数据被清过，正是这种时刻）。
+
+    DCD 20261004 裁1/裁4 Q2=甲：整页投影后 ≤64KB 自动收窄。旧的 40 字符 stable_id 截断
+    只压掉 12%，页级预算才是硬上限。超过 64KB 时逐行收窄直到满足预算，
+    ``next_offset`` 按实际返回行数推进（消费端翻页不受影响）。
+
+    这里不写 `ok` 那一位：它由工具本体给，因为只有那边知道"读通了没有"。
+    """
+    import json
+
+    rows_limit = max(1, min(int(limit), DEVICE_HEALTH_PAGE_LIMIT_MAX))
+    rows_offset = max(0, int(offset))
+    page = project_device_health(rows, fields)
+
+    # 页级 64KB 自动收窄（DCD Q2=甲）
+    def _page_bytes(p: list[dict]) -> int:
+        return len(json.dumps(p, ensure_ascii=False).encode("utf-8"))
+
+    if page and _page_bytes(page) > DEVICE_HEALTH_PAGE_MAX_BYTES:
+        # 先按比例粗估，再逐行精修（行大小不均，比例估可能不准）
+        est = max(1, int(len(page) * DEVICE_HEALTH_PAGE_MAX_BYTES / _page_bytes(page)))
+        page = page[:est]
+        while len(page) > 1 and _page_bytes(page) > DEVICE_HEALTH_PAGE_MAX_BYTES:
+            page = page[:-1]
+
+    consumed = rows_offset + len(page)
+    full = int(total)
+    has_more = bool(page) and consumed < full
+    return {
+        "state": state or "all",
+        "health": page,
+        "total": full,
+        "count": len(page),
+        "offset": rows_offset,
+        "limit": rows_limit,
+        "has_more": has_more,
+        "next_offset": consumed if has_more else None,
+        "fields": "full" if str(fields or "").strip().lower() == "full" else "lean",
+        "page_bytes": _page_bytes(page),
+    }
+
+
+def _json_shrink_to_fit(text: str, tool: str, cap: int):
+    """超限 JSON 的**结构降级**：裁记录条数，而不是把 JSON 切在半行上。
+
+    生产实测：`list_device_health` 原始约 650KB > 上限 512KB，旧的字符截断把正文切在
+    `"entity_id": "sensor.x` 处，调用方 `json.loads` 直接报错——「已展示前 512KB」
+    成一句没法消费的话。这里改成：按字节挑最大的列表逐半裁掉，直到连摘要一起装得下，
+    并在 `_truncated` 里写清丢了什么。返回 None 表示切不动（非 JSON / 无列表 / 单条就超限），
+    交回字符截断。
+    """
+    try:
+        data = json.loads(text)
+    except Exception:  # noqa: BLE001 非 JSON 正文走字符截断
+        return None
+    if not isinstance(data, dict):
+        return None
+    list_keys = [k for k, v in data.items() if isinstance(v, list) and v]
+    if not list_keys:
+        return None
+    original_bytes = len(text.encode("utf-8"))
+    original_rows = {k: len(data[k]) for k in list_keys}
+    for _ in range(64):
+        dropped = {k: original_rows[k] - len(data[k]) for k in list_keys}
+        total_dropped = sum(dropped.values())
+        if total_dropped:
+            data["_truncated"] = {
+                "tool": tool,
+                "original_bytes": original_bytes,
+                "cap_bytes": cap,
+                "original_rows": sum(original_rows.values()),
+                "kept_rows": sum(len(data[k]) for k in list_keys),
+                "dropped": total_dropped,
+                "fields": {k: {"kept": len(data[k]), "dropped": dropped[k]} for k in list_keys},
+                "hint": (f"⚠️ [响应已截断] 工具 '{tool}' 原始输出约 "
+                         f"{max(1, original_bytes // 1024)}KB 超过上限 {max(1, cap // 1024)}KB，"
+                         f"已按记录条数裁剪（丢 {total_dropped} 条）。请用更窄的时间窗 / "
+                         f"过滤参数取完整结果。"),
+            }
+        else:
+            data.pop("_truncated", None)
+        payload = json.dumps(data, ensure_ascii=False)
+        if len(payload.encode("utf-8")) <= cap:
+            return payload
+        biggest = max(list_keys,
+                      key=lambda k: len(json.dumps(data[k], ensure_ascii=False).encode("utf-8")))
+        if not data[biggest]:
+            return None          # 全部裁空仍超限：单条记录本身就比上限大
+        del data[biggest][max(1, len(data[biggest]) // 2):]
+    return None
+
+
+def _apply_response_cap(result, tool: str, max_bytes: int = None):
+    """v0.9 任务3：单工具响应正文超上限则截断并附摘要，避免巨响应撑爆客户端上下文。
+
+    max_bytes 为 None 取运行配置；传值用于单测。错误结果(is_error)截断后保留错误标记。
+    JSON 载荷优先走结构降级（裁条数、保持可解析），切不动才退回字符截断。
+    """
+    cap = max_bytes if max_bytes is not None else _mcp_response_max_bytes()
+    if cap <= 0:
+        return result
+    text = _result_text(result)
+    raw = text.encode("utf-8")
+    if len(raw) <= cap:
+        return result
+    shrunk = _json_shrink_to_fit(text, tool, cap)
+    if shrunk is not None:
+        return _build_tool_result(shrunk, is_error=_is_error(result))
+    truncated = raw[:cap].decode("utf-8", "ignore")
+    kb_total = max(1, len(raw) // 1024)
+    kb_cap = max(1, cap // 1024)
+    summary = (
+        f"\n\n⚠️ [响应已截断] 工具 '{tool}' 原始输出约 {kb_total}KB 超过上限 {kb_cap}KB，"
+        f"已展示前 {kb_cap}KB。请换更窄的参数重试（时间窗 / 过滤 / limit-offset 等，"
+        f"以该工具在 tools/list 里的参数面为准）。"
+    )
+    return _build_tool_result(truncated + summary, is_error=_is_error(result))
+
+
+# ── v0.9 任务3 故障注入矩阵（混沌演练 / 契约验证用）────────────────────────
+# 运维或测试可在容器内调用 set_mcp_fault(tool, code) 强制某工具返回指定错误码，
+# 不真正执行工具——用于验证客户端对各类故障的契约处理（错误模型 / 断路器 / 重试）。
+_FAULT_INJECT: dict[str, str] = {}
+_FAULT_LOCK = threading.Lock()
+
+
+def set_mcp_fault(tool: str, code: str) -> None:
+    """注入故障：tool='*' 表示全部工具。code 必须为 mcp_errors.ErrorCode 之一。"""
+    if code not in ALL_CODES:
+        raise ValueError(f"未知故障码 {code!r}，应为 {ALL_CODES} 之一")
+    with _FAULT_LOCK:
+        _FAULT_INJECT[tool] = code
+
+
+def clear_mcp_faults() -> None:
+    with _FAULT_LOCK:
+        _FAULT_INJECT.clear()
+
+
+def list_mcp_faults() -> dict[str, str]:
+    with _FAULT_LOCK:
+        return dict(_FAULT_INJECT)
+
+
+def _fault_result(tool: str, code: str):
+    msg = f"故障注入（演练）：工具 '{tool}' 被强制返回 {code}"
+    payload = json.dumps(
+        {"ok": False, "error": {"code": code, "message": msg}}, ensure_ascii=False
+    )
+    return _build_tool_result(payload, is_error=True)
+
+
+async def _tracked_call_tool(server, name, arguments, context=None):
+    # v0.7.5-1 工具级 scope：写工具需令牌持 write。
+    # 判定放在这里而不是 ASGI 中间件——中间件读 body 会破坏 /mcp 的 Mount 转发。
+    _tok, _scopes, _origin = _caller_context()
+
+    # v0.9 任务3 故障注入矩阵：注入的故障优先于一切正常逻辑（含未登记检查、权限检查、
+    # 幂等缓存），用于契约验证 / 混沌演练。测试用未登记工具名注入故障时也必须生效。
+    fault_code = _FAULT_INJECT.get(name) or _FAULT_INJECT.get("*")
+    if fault_code:
+        _mcp_stats_log.warning("MCP 故障注入: tool=%s code=%s", name, fault_code)
+        result = _fault_result(name, fault_code)
+        await _record_mcp_call(name, 0.0, True, f"FAULT-INJECT:{fault_code}")
+        return result
+
+    note_unknown(name)
+    # P0-3：未登记工具（scope==UNKNOWN）走 NOT_FOUND，不再被误判为"无 write 权限"
+    # （审计实测：令牌明明有 read,write 却报"无 write 权限"，逻辑自相矛盾）
+    if scope_of(name) == "unknown":
+        _mcp_stats_log.warning("MCP 工具未登记: token=%s tool=%s", _tok, name)
+        result = _build_tool_result(
+            f"NOT_FOUND: 工具 '{name}' 未登记到 MCP 工具表，可能已下线或名称错误。",
+            is_error=True)
+        await _record_mcp_call(name, 0.0, True, f"NOT_FOUND: {name}")
+        return result
+    if not requires(name, _scopes):
+        _mcp_stats_log.warning(
+            "MCP 权限拒绝: token=%s tool=%s need=write granted=%s", _tok, name, _scopes
+        )
+        result = _denied_result(name, _tok, _scopes)
+        await _record_mcp_call(name, 0.0, True, f"DENIED scope: {name}")
+        return result
+
+    # v0.9 幂等键：写工具可传 idempotency_key 防重复执行（分发层消费，工具签名无需改）
+    idem_key = ""
+    if isinstance(arguments, dict):
+        idem_key = str(arguments.pop("idempotency_key", "") or "").strip()
+    # P1-10: 幂等键加命名空间（token_name），防止不同调用者撞缓存
+    _token_name, _, _ = _caller_context()
+    cache_key = f"{_token_name or 'anon'}:{name}:{idem_key}" if idem_key else ""
+    # 第六轮审计 CRITICAL-1（实测 50ms 工具 × 5 并发同 key = 5 次执行）：
+    # 原先「查缓存 → await 执行 → 写缓存」的 CHECK 与 ACT 之间横跨 await，窗口必然穿透。
+    # 改为先**原子占位**再执行：拿到 reserved 才执行，done 直接回放，
+    # in_flight 一律不执行工具（返回可重试的错误，而不是重复写一遍）。
+    state = ""
+    if cache_key:
+        claim = await asyncio.to_thread(_idem_reserve, cache_key, name)
+        state = str(claim.get("state") or "")
+        if state == "done":
+            await _record_mcp_call(name, 0.0, bool(claim.get("is_error")), "IDEMPOTENT-HIT")
+            return _idem_result(claim)
+        if state == "in_flight":
+            _mcp_stats_log.info("幂等键执行中，未执行工具: token=%s tool=%s", _token_name, name)
+            await _record_mcp_call(name, 0.0, True, f"IDEMPOTENT-IN-FLIGHT: {idem_key}")
+            return _build_tool_result(json.dumps({
+                "ok": False,
+                "error": {
+                    "code": ErrorCode.RATE_LIMITED,
+                    "message": (f"幂等键 {idem_key} 对应的工具 '{name}' 正在执行中，"
+                                "本次未执行。请稍后用同一 idempotency_key 重试取回结果。"),
+                },
+            }, ensure_ascii=False), is_error=True)
+
+    t0 = time.monotonic()
+    is_err = False
+    err_text = None
+    try:
+        result = await MCPServer.call_tool(server, name, arguments, context)
+        # v0.9 契约完善：把工具的朴素 {"ok": false} 结果升级为 isError=True + 结构化错误码，
+        # 终结「ok:false 被模型当正文」。
+        result = normalize_tool_result(result, name)
+        # v0.9 任务3：响应体超限截断 + 摘要（不真正执行工具外不触发）
+        result = _apply_response_cap(result, name)
+        if getattr(result, "is_error", False) or getattr(result, "isError", False):
+            is_err = True
+            err_text = _extract_error_text(result)
+        return result
+    except Exception as exc:
+        is_err = True
+        err_text = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        if cache_key and state == "reserved":
+            # 成功才落 done；失败/异常撤占位，保持「失败可重试」的既有语义。
+            # 同步 SQLite 一律走 to_thread（第五轮 CRITICAL：不阻塞事件环）。
+            if is_err:
+                await asyncio.to_thread(_idem_release, cache_key)
+            else:
+                await asyncio.to_thread(_idem_finalize, cache_key, _result_text(result))
+        dt = (time.monotonic() - t0) * 1000
+        await _record_mcp_call(name, dt, is_err, err_text)
+
+
+def _install_mcp_tracking(server):
+    """包装实例级 call_tool，覆盖全部工具调用（含动态注册的 schema 工具）。"""
+    if server is None:
+        return
+    server.call_tool = functools.partial(_tracked_call_tool, server)
+
+
+def get_mcp_stats(top_n: int = 20, sort_by: str = "calls") -> dict:
+    """返回 MCP 工具调用效率快照（运维/效率可观测）。
+
+    sort_by: calls / errors / total_ms / avg_ms / max_ms（降序）。
+    """
+    with MCP_STATS_LOCK:
+        items = []
+        for name, s in MCP_CALL_STATS.items():
+            avg = (s["total_ms"] / s["calls"]) if s["calls"] else 0.0
+            items.append({
+                "name": name, "calls": s["calls"], "errors": s["errors"],
+                "error_rate": round(s["errors"] / s["calls"], 3) if s["calls"] else 0.0,
+                "total_ms": round(s["total_ms"], 1), "avg_ms": round(avg, 1),
+                "max_ms": round(s["max_ms"], 1), "min_ms": round(s["min_ms"], 1),
+                "last_ms": round(s["last_ms"], 1), "last_called": s["last_called"],
+                "last_error": s["last_error"],
+            })
+        total_calls = sum(i["calls"] for i in items)
+        total_errors = sum(i["errors"] for i in items)
+    key = sort_by if sort_by in ("calls", "errors", "total_ms", "avg_ms", "max_ms") else "calls"
+    items.sort(key=lambda i: i[key], reverse=True)
+    if top_n and top_n > 0:
+        items = items[:top_n]
+    return {
+        "ok": True, "since": "process start", "window_tools": len(MCP_CALL_STATS),
+        "total_calls": total_calls, "total_errors": total_errors,
+        "slow_threshold_ms": MCP_SLOW_MS, "tools": items,
+    }
+
+
+def _rule_lifecycle(rt):
+    """DCD R3 生效通道（与 HTTP 侧同源：同一个引擎单例 + 通道单例）。"""
+    from .rule_engine import get_rule_engine
+    from .rule_lifecycle import get_rule_lifecycle
+    return get_rule_lifecycle(rt.store, get_rule_engine(rt.store, rt.alert_dispatcher))
+
+
+def _build_server():
+    if not MCP_AVAILABLE:
+        return None
+
+    mcp = MCPServer(SERVER_NAME, instructions=SERVER_INSTRUCTIONS)
+    _install_mcp_tracking(mcp)
+
+    # ── 入口层 ───────────────────────────────────────────────────────────
+
+    @mcp.tool()
+    def help(tool_name: str = "") -> dict:
+        """工具索引与用法。不带参数看全景，带 tool_name 看单个工具的参数、示例与坑。
+
+        新会话建议第一个调用它，可以省掉大量试错。
+        """
+        if tool_name:
+            hit = next((t for t in TOOL_CATALOG if t["name"] == tool_name), None)
+            if not hit:
+                return {
+                    "ok": False,
+                    "error": f"没有名为 {tool_name} 的工具",
+                    "available": TOOL_NAMES,
+                }
+            return {"ok": True, **hit}
+
+        groups: dict[str, list[dict]] = {}
+        for t in TOOL_CATALOG:
+            groups.setdefault(t["group"], []).append(
+                {"name": t["name"], "summary": t["summary"]}
+            )
+        return {
+            "ok": True,
+            "server": SERVER_NAME,
+            "positioning": "行为洞察层：服务端算好结论，调用方不用背 entity_id、不用手算时长",
+            "recommended_flow": [
+                "get_entity_catalog(room='主卧')  # 用人话找设备",
+                "get_behavior_insights(days=7)    # 直接拿作息与异常",
+                "get_device_usage(query='书房空调', days=7)  # 具体设备用了多久",
+                "search_events(room='客厅', category='media', summarize=True)",
+                "save_analysis_template(...)      # 沉淀给 Node-RED",
+            ],
+            "common_pitfalls": [
+                "功率/温湿度每分钟一条，会污染行为分布 —— 保持 behavior_only=true",
+                "query_events 要精确 entity_id，不知道就先 search_events",
+                "person 字段通常为空，当前不支持人员归属分析",
+                "所有列表返回都带 total/has_more/next_offset，据此判断是否取全",
+            ],
+            "groups": groups,
+            "tools": TOOL_NAMES,
+        }
+
+    @mcp.tool()
+    async def get_entity_catalog(
+        room: str = "",
+        category: str = "",
+        domain: str = "",
+        query: str = "",
+        only_enabled: bool = True,
+        days: int = 7,
+    ) -> dict:
+        """设备目录：友好名 / 房间 / 类别 / 最后在线 / 近期活跃度。
+
+        解决「实体 ID 反人类」的入口。支持用房间名、设备类别或自由关键词
+        （如 query="主卧空调"）定位，返回结果里的 entity_id 可直接喂给其他工具。
+        category 取值：climate / lighting / media / presence / appliance / security / telemetry。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.insights.entity_catalog, room, category, domain, query, only_enabled, days
+        )
+
+    # ── 洞察层 ───────────────────────────────────────────────────────────
+
+    @mcp.tool()
+    async def get_behavior_insights(
+        days: int = 7,
+        rooms: str = "",
+        behavior_only: bool = True,
+        start: str = "",
+        end: str = "",
+    ) -> dict:
+        """服务端直出行为洞察报告：作息节律、各房间活跃时段与 Top 设备、
+        跨设备状态转移、每日事件量与异常检测。
+
+        写周报/做作息分析直接用它，不要自己拉原始事件再算。
+        rooms 传逗号分隔的房间名可聚焦，留空则分析全屋。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.insights.behavior_insights, days, rooms, behavior_only, start, end
+        )
+
+    @mcp.tool()
+    async def get_device_usage(
+        entity_id: str = "",
+        query: str = "",
+        room: str = "",
+        category: str = "",
+        days: int = 7,
+        start: str = "",
+        end: str = "",
+        on_states: str = "",
+        debounce_seconds: int = 5,
+        include_timeline: bool = True,
+    ) -> dict:
+        """设备用量统计：总开启时长、开关次数、平均单次时长、每日分布、时间线。
+
+        自动处理三件容易算错的事：窗口开始前就已开启的状态、窗口结束时仍未关闭的
+        片段、以及短于 debounce_seconds 的误触抖动。
+        climate 的 heat/cool、media_player 的 playing 都会被正确判定为「开启」。
+
+        定位方式二选一：传 entity_id（可逗号分隔多个），或用 query/room/category 语义定位。
+        """
+        rt = get_runtime()
+        try:
+            return await asyncio.to_thread(
+                rt.insights.device_usage,
+                entity_id,
+                room,
+                category,
+                query,
+                days,
+                start,
+                end,
+                on_states,
+                debounce_seconds,
+                include_timeline,
+            )
+        except Exception as e:
+            return {"ok": False, "error": {"code": "INTERNAL", "message": str(e),
+                    "hint": "试试用 query_device_usage 或 query_events"}}
+
+    @mcp.tool()
+    async def query_device_usage(
+        logical_device: str = "",
+        entity_id: str = "",
+        attribute: str = "state",
+        value: str = "",
+        pattern: str = "equals",
+        metric: str = "duration",
+        days: int = 7,
+        start: str = "",
+        end: str = "",
+        include_timeline: bool = False,
+    ) -> dict:
+        """按「逻辑设备名」查询用量 / 时长 / 计数（v0.3 语义工具）。
+
+        与 ``get_device_usage`` 的区别：本工具接受**逻辑设备名**（如「客厅电视」「游戏机」），
+        由身份层解析为当前 entity_id。因此 HA 集成重登、双集成并存导致 entity_id 漂移后
+        依然稳定——不必先调 get_entity_catalog 去查最新的 entity_id。
+
+        典型用法：``query_device_usage(logical_device="客厅电视", attribute="source",
+        value="HDMI 3", metric="duration", days=2)`` 即「电视 HDMI 3 近两天的时长」。
+
+        logical_device 与 entity_id 二选一；都不传会报错。
+        metric：duration（时长）/ count（次数）/ numeric_sum（数值累计）。
+        """
+        from .templates import run_query
+
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            run_query,
+            rt,
+            entity_id=entity_id,
+            logical_id=logical_device,
+            attribute=attribute,
+            pattern=pattern,
+            value=value,
+            metric=metric,
+            days=days,
+            start=start,
+            end=end,
+            include_timeline=include_timeline,
+        )
+
+    @mcp.tool()
+    async def get_device_usage_summary(
+        entity_id: str = "",
+        start: str = "",
+        end: str = "",
+        days: int = 7,
+        debounce_seconds: int = 5,
+    ) -> dict:
+        """设备用量精简汇总：总开启时长 / 开关次数 / 平均单次时长（分钟）。
+
+        比 get_device_usage 更省 token：只要三个汇总数、不要时间线与每日分布时用本工具。
+        时长口径：events 状态变化序列积分（开→关为一个片段；窗口前已开启从左沿起算，
+        窗口末未闭合截断到右沿，返回值带 window_open_session 标记）；短于
+        debounce_seconds 的抖动不计。entity_id 可逗号分隔多个（汇总为并集）。
+        窗口内无任何事件时三个指标为 null（no_data=true）。
+        """
+        from .summary_queries import device_usage_summary
+
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            device_usage_summary, rt.store, entity_id, start, end, days, debounce_seconds
+        )
+
+    @mcp.tool()
+    async def get_room_behavior_summary(
+        room: str = "",
+        start: str = "",
+        end: str = "",
+        days: int = 7,
+    ) -> dict:
+        """房间行为汇总：活动标签分布 + 每时段（24 小时）活跃度。
+
+        活动分布 = behavior_states 推断活动 + behavior_events 视觉动作（仅 status=ok）
+        按标签计数；小时直方图取设备事件并默认剔除遥测域（功率/温湿度），
+        与其余行为工具 behavior_only 口径一致。问「某房间这段时间都在干嘛」用它。
+        """
+        from .summary_queries import room_behavior_summary
+
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            room_behavior_summary, rt.store, room, start, end, days
+        )
+
+    @mcp.tool()
+    async def get_member_daily_pattern(
+        member_id: str = "",
+        date: str = "",
+    ) -> dict:
+        """成员当日行为序列：推断活动状态 + 视觉动作 + 具名设备事件，按时间升序合并。
+
+        member_id 必填（成员隔离 fail-closed：日序列只按成员维度开放，无全量视图），
+        成员不存在返回 NOT_FOUND。date 为 YYYY-MM-DD，留空取今天。
+        注意：人员归属按成员**姓名**匹配 behavior_states.member / behavior_events.persons，
+        events.person 字段通常为空。
+        """
+        from .summary_queries import member_daily_pattern
+
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            member_daily_pattern, rt.store, member_id, date
+        )
+
+    @mcp.tool()
+    async def list_device_health(state: str = "", limit: int = DEVICE_HEALTH_PAGE_LIMIT_DEFAULT,
+                                 offset: int = 0, fields: str = "lean") -> dict:
+        """实体健康 / 失效清单（A3）。
+
+        state 可填 active（确认在线）/ unknown（短暂失联）/ stale（长期失效），
+        留空返回全部。``referenced=1`` 表示该实体仍被某个模板引用，
+        它一旦失效就会让洞察失真，应优先处理。
+
+        DCD 20261004 MA-裁4：分页与投影都在这条对外面上（与 ``query_unified_events`` 同口径，
+        返回带 ``total/count/offset/limit/has_more/next_offset``）。``limit`` 默认 500、上限 2000；
+        默认投影精简 ``stable_id``（40 字）与 ``note``（仅 ``referenced=1`` 给原值），
+        要全量传 ``fields='full'``。
+        """
+        rt = get_runtime()
+        identity = getattr(rt, "identity", None)
+        if identity is None:
+            return {"ok": False, "error": "身份层未启用"}
+        rows_limit = max(1, min(int(limit), DEVICE_HEALTH_PAGE_LIMIT_MAX))
+        rows_offset = max(0, int(offset))
+
+        def _read():
+            store = identity.store
+            return (
+                store.list_device_health(state, limit=rows_limit, offset=rows_offset),
+                store.count_device_health(state),
+            )
+
+        rows, total = await asyncio.to_thread(_read)
+        devices = await asyncio.to_thread(identity.list_devices)
+        envelope = device_health_page(rows, total, state=state, offset=rows_offset,
+                                      limit=rows_limit, fields=fields)
+        # `ok` 写成字面量留在调用点：门禁 fake-ok-const 认字典字面量，
+        # 换成 payload["ok"] = True 会让那条基线条目"凭空消失"——债没还，只是扫描器看不见。
+        return {"ok": True, **envelope, "logical_devices": len(devices)}
+
+    @mcp.tool()
+    async def search_events(
+        room: str = "",
+        category: str = "",
+        domain: str = "",
+        query: str = "",
+        entity_id: str = "",
+        state: str = "",
+        days: int = 7,
+        start: str = "",
+        end: str = "",
+        limit: int = 200,
+        offset: int = 0,
+        order: str = "desc",
+        behavior_only: bool = True,
+        summarize: bool = False,
+    ) -> dict:
+        """语义化事件搜索：按房间 / 设备类别 / 状态过滤，无需背 entity_id。
+
+        entity_id 可逗号分隔多个；显式指定时直接精确过滤，忽略 room/category/query
+        的语义解析结果。
+        summarize=true 时返回「每个设备变化了多少次、都变成了什么、24 小时分布」
+        的压缩摘要 + 50 条样本，比几千条裸事件省 token 且更易读。
+        返回的 total / has_more / next_offset 能明确告诉你有没有取全。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.insights.search_events,
+            room=room,
+            category=category,
+            domain=domain,
+            query=query,
+            entity_id=entity_id,
+            state=state,
+            days=days,
+            start=start,
+            end=end,
+            limit=limit,
+            offset=offset,
+            order=order,
+            behavior_only=behavior_only,
+            summarize=summarize,
+        )
+
+
+    @mcp.tool()
+    async def query_unified_events(
+        person: str = "",
+        room: str = "",
+        start: str = "",
+        end: str = "",
+        days: int = 7,
+        source: str = "",
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict:
+        """vMA-1.3 多模态统一查询：跨设备事件/视觉行为/感知事件三源统一只读查询。
+
+        基于 unified_events VIEW（三源 UNION ALL，只读）。
+        event_type 语义：device=entity:action, vision=action, perception=kind。
+        只读工具，read scope。
+        """
+        from datetime import timedelta
+
+        rt = get_runtime()
+        # 默认窗口按**家庭墙钟**起算，不用 UTC：三张源表的 server_ts/ts 都由 Store
+        # 按 +8 墙钟写入，容器时钟是 UTC。按 UTC 取 end 会把最近 tz_offset 小时内
+        # 的事件整段切在窗口外——生产实测「最近 7 天」少掉 8105 条设备事件（8 小时），
+        # 且调用方看不出少的是最新那段。与 BUG-TZ1 同源，判据同 rule_engine._now。
+        if not start and not end:
+            end_dt = now_local(getattr(rt.config, "tz_offset_hours", 8.0))
+            start_dt = end_dt - timedelta(days=clamp_days(days))
+            start = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            end = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+        def _query():
+            sql = "SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence, payload FROM unified_events WHERE 1=1"
+            params = []
+            if person:
+                sql += " AND person LIKE ?"
+                params.append(f"%{person}%")
+            if room:
+                sql += " AND room LIKE ?"
+                params.append(f"%{room}%")
+            if source:
+                sql += " AND source = ?"
+                params.append(source)
+            if start:
+                sql += " AND server_ts >= ?"
+                params.append(start)
+            if end:
+                sql += " AND server_ts <= ?"
+                params.append(end)
+            # count
+            count_sql = sql.replace("SELECT event_id, server_ts, day, room, source, event_type, person, entity_id, confidence, payload", "SELECT COUNT(*)")
+            # rows
+            rows_limit = max(1, min(int(limit), 2000))
+            sql += " ORDER BY server_ts DESC LIMIT ? OFFSET ?"
+            # 第六轮审计 CRITICAL-2 的附带发现（P0，审计本身没查到）：这里原先是
+            # `conn = rt.store.connect()` + `finally: conn.close()`，关掉的却是 Store 的
+            # **共享**连接——connect() 只认缓存、不判已关闭，于是本工具每调用一次，
+            # 全进程后续所有 SQLite 访问都抛 ProgrammingError: Cannot operate on a
+            # closed database。共享连接不由调用方关闭。
+            # 另外 count 与 rows 原本在锁外分两次读，中间可能有写入插进来导致
+            # total 与事件列表口径不一致；收进同一个锁区一次读完。
+            with rt.store._db() as conn:
+                total = conn.execute(count_sql, params).fetchone()[0]
+                rows = conn.execute(sql, params + [rows_limit, offset]).fetchall()
+            events = [dict(r) for r in rows]
+            return {
+                "total": total,
+                "count": len(events),
+                "offset": offset,
+                "limit": rows_limit,
+                "has_more": (offset + len(events)) < total,
+                "next_offset": offset + len(events) if (offset + len(events)) < total else None,
+                "events": events,
+            }
+
+        return await asyncio.to_thread(_query)
+    @mcp.tool()
+    async def get_device_health(
+        room: str = "",
+        category: str = "",
+        query: str = "",
+        days: int = 7,
+        stale_days: int = 3,
+        only_enabled: bool = True,
+    ) -> dict:
+        """设备健康探测：主动揪出失联 / 没电 / 长期静默的设备。
+
+        基于实体目录的 has_data / last_seen / stale_days。返回 healthy / no_data /
+        stale 三类实体清单。no_data=从未采到数据（可能实体 ID 错/未启用）；
+        stale=最近 stale_days 天无数据（可能没电或离线）。
+        另返回 data_quality_issues：电量倒灌 / state 与属性单位冲突 / 心跳计数器。
+        only_enabled 默认 True，与 get_entity_catalog 口径一致；传 False 看全量实体。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.insights.device_health,
+            room, category, query, days, stale_days, only_enabled,
+        )
+
+    @mcp.tool()
+    async def get_data_coverage(
+        days: int = 7,
+        start: str = "",
+        end: str = "",
+    ) -> dict:
+        """数据覆盖报告：逐日给出事件量与空日标记，定位"为什么某天没数据"。
+
+        `days[]` 每格是 `{day, events, active_hours, hours, empty}`（`empty=true` 即当天 0 条），
+        `missing_days` 是这些空日的清单；`start_day/end_day` 是**查询窗口边界**（不等于"有数据的
+        首末日"，首末日要从 `days[]`/`missing_days` 自己读）；覆盖率看 `day_coverage`（有数据天数
+        占比）与 `hour_coverage`，高峰看 `peak_hours`。取数前先调它确认窗口完整性。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.insights.data_coverage, days, start, end)
+
+    @mcp.tool()
+    async def get_climate_sessions(
+        query: str = "",
+        room: str = "",
+        days: int = 7,
+        start: str = "",
+        end: str = "",
+    ) -> dict:
+        """气候会话：把空调/地暖等 climate 实体的开启时段拼成「设定温度 + 室温 + 运行时长」。
+
+        直接解析事件中的 current_temperature（室温）与 temperature（设定温度），
+        解决原先只有 hvac_action、缺温度的痛点。query/room 可聚焦。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.insights.climate_sessions, query, room, days, start, end
+        )
+
+    @mcp.tool()
+    async def infer_activities(
+        days: int = 7,
+        rooms: str = "",
+        start: str = "",
+        end: str = "",
+        activities: list = None,
+    ) -> dict:
+        """活动识别：基于设备共现与时段，识别做饭 / 洗澡 / 睡眠 / 看电视 / 离家等活动，
+        以及 define_activity 注册的自定义活动。
+
+        返回每个活动在窗口内各天的发生记录（含置信度与证据），让 Agent 直接拿到
+        语义层结论，而不用自己拼原始动线。
+        activities：可选活动类型白名单（内置名或自定义名），只返回命中的类型。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.insights.infer_activities, days, rooms, start, end, activities
+        )
+
+    @mcp.tool()
+    async def define_activity(
+        name: str,
+        room: str = "",
+        tags: list = None,
+        start_hour: int = 0,
+        end_hour: int = 23,
+        min_events: int = 1,
+        confidence: float = 0.6,
+        note: str = "",
+    ) -> dict:
+        """注册/更新自定义活动识别规则：agent 教系统识别新行为（如午睡/健身）。
+
+        name=活动类型名(英文snake_case)；room=房间子串(可选)；tags=需命中的设备标签(可选,如 presence/door/media)；
+        start_hour/end_hour=生效时段；min_events=最小触发次数；confidence=置信度；note=人类可读说明。
+        规则落库 activity_rules；infer_activities 每次推断都读取启用中的规则并套用，
+        读数见返回体 rule_sources，无标签设备仍由时段启发式兜底。
+        识别出的活动可被 source_refs=insight:<id> 引用写回记忆。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.insights.define_activity, name, room, (tags or []),
+            start_hour, end_hour, min_events, confidence, note,
+        )
+
+    @mcp.tool()
+    async def get_user_persona(days: int = 14) -> dict:
+        """合成用户滚动行为画像：基于近期活动识别聚合（出现天数/频次/时段/房间/置信度）+ 房间活跃度。
+
+        做长期用户理解、个性化推荐、健康提醒时直接调用，不要自己拉原始事件算。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.insights.get_user_persona, days)
+
+    # ── 家庭成员 / 生活习惯档案 ───────────────────────────────────────────
+
+    @mcp.tool()
+    async def list_members() -> dict:
+        """列出全部家庭成员，返回 id/name/rooms/devices/tags 轻量字段。
+        不含头像/人脸等大字段；需要详情用 get_member_persona(member_id)。"""
+        rt = get_runtime()
+        raw = await asyncio.to_thread(rt.store.list_members)
+        # MCP 层裁剪：去掉 base64 图片/人脸向量等大字段，防止响应截断
+        _SKIP = {"face_photo", "avatar_url", "embedding", "face_feature",
+                 "profile_json", "appearance_json"}
+        members = []
+        for m in raw:
+            slim = {k: v for k, v in m.items() if k not in _SKIP}
+            # tags 只留标签名+置信度，去掉 evidence_json/evidence 长文本
+            if isinstance(slim.get("tags"), list):
+                slim["tags"] = [
+                    {"label": t.get("label") or t.get("name", ""),
+                     "category": t.get("category", ""),
+                     "confidence": t.get("confidence", 0)}
+                    for t in slim["tags"] if isinstance(t, dict)
+                ]
+            members.append(slim)
+        return {"ok": True, "members": members, "total": len(members)}
+
+    @mcp.tool()
+    async def create_member(
+        name: str,
+        avatar_emoji: str = "",
+        avatar_bg: str = "#0EA5E9",
+        note: str = "",
+    ) -> dict:
+        """创建家庭成员。name 为显示名（必填，不可空）；avatar_emoji 为头像（如 🦉）。"""
+        if not name or not name.strip():
+            return {"ok": False, "error": "INVALID_PARAM: name 不能为空"}
+        rt = get_runtime()
+        member = await asyncio.to_thread(
+            rt.store.create_member, name.strip(), avatar_emoji, avatar_bg, note
+        )
+        return {"ok": True, "member": member}
+
+    @mcp.tool()
+    async def assign_member_room(member_id: str, rooms: list = None) -> dict:
+        """设置成员关联房间（全量覆盖）。rooms 为房间名数组，如 ['主卧','书房']。"""
+        rt = get_runtime()
+        member = await asyncio.to_thread(rt.store.get_member, member_id)
+        if member is None:
+            return {"ok": False, "error": f"NOT_FOUND: 成员 {member_id} 不存在"}
+        await asyncio.to_thread(rt.store.set_member_rooms, member_id, rooms or [])
+        return {"ok": True, "message": "关联房间已更新"}
+
+    @mcp.tool()
+    async def delete_member(member_id: str) -> dict:
+        """删除家庭成员（不可恢复）。member_id 为成员 UUID。"""
+        rt = get_runtime()
+        member = await asyncio.to_thread(rt.store.get_member, member_id)
+        if member is None:
+            return {"ok": False, "error": f"NOT_FOUND: 成员 {member_id} 不存在"}
+        await asyncio.to_thread(rt.store.delete_member, member_id)
+        return {"ok": True, "message": f"成员 {member.get('name', member_id)} 已删除"}
+
+    @mcp.tool()
+    async def assign_member_device(member_id: str, entity_ids: list = None) -> dict:
+        """设置成员专属设备（全量覆盖）。entity_ids 为 entity_id 数组。"""
+        rt = get_runtime()
+        # 与 assign_member_room 同一口径：先验成员存在。set_member_devices 是
+        # DELETE+INSERT 且没有外键拦着，成员不存在时照样写进 member_devices，
+        # 却回 ok=True——调用方以为改成功了，实际留下孤儿行。
+        member = await asyncio.to_thread(rt.store.get_member, member_id)
+        if member is None:
+            return {"ok": False, "error": f"NOT_FOUND: 成员 {member_id} 不存在"}
+        await asyncio.to_thread(rt.store.set_member_devices, member_id, entity_ids or [])
+        return {"ok": True, "message": "专属设备已更新"}
+
+    @mcp.tool()
+    async def confirm_member_tag(
+        member_id: str,
+        tag: str,
+        category: str = "other",
+        emoji: str = "",
+        confidence: float = 0.0,
+        evidence: list = None,
+    ) -> dict:
+        """把推断出的生活习惯标签写回成员档案。仅当用户明确确认后调用。
+
+        tag 为标签名（如 夜猫子）；category 取 sleep/diet/activity/media/hygiene/other；
+        emoji 如 🦉；confidence 为 0~1；evidence 为证据字符串列表。
+        """
+        rt = get_runtime()
+        # v0.9 授权规则服务端化：「须用户确认」由服务端强制，不再依赖 LLM 自觉。
+        # 管理员需在 WebUI「系统设置」显式开启 member_tag_agent_writeback，否则拒绝写回。
+        if not bool(getattr(rt.config, "member_tag_agent_writeback", False)):
+            return {
+                "ok": False,
+                "code": "DENIED",
+                "error": "成员标签写回未授权（member_tag_agent_writeback=false）。"
+                         "请管理员在 WebUI「系统设置」开启后重试；"
+                         "或引导用户在「家庭成员」页手动添加标签。",
+            }
+        result = await asyncio.to_thread(
+            rt.store.add_member_tag,
+            member_id,
+            tag,
+            category,
+            emoji,
+            confidence,
+            evidence or [],
+            "agent",
+        )
+        return {"ok": True, "tag": result}
+
+    @mcp.tool()
+    async def get_member_persona(member_id: str, days: int = 14) -> dict:
+        """拉取某成员的生活习惯画像：成员档案 + 全屋行为画像 +（若已绑定房间）房间定向洞察 + 已存档标签。"""
+        rt = get_runtime()
+        member = await asyncio.to_thread(rt.store.get_member, member_id)
+        if not member:
+            return {"ok": False, "error": "成员不存在"}
+        persona = await asyncio.to_thread(rt.insights.get_user_persona, days)
+        result = {
+            "ok": True,
+            "member_id": member_id,
+            "name": member.get("name"),
+            "avatar_emoji": member.get("avatar_emoji"),
+            "rooms": member.get("rooms", []),
+            "devices": member.get("devices", []),
+            "archived_tags": member.get("tags", []),
+            "persona": persona,
+        }
+        if member.get("rooms"):
+            try:
+                # 修复（审计 P1-9）：get_behavior_insights 签名为 (compare_days: int = 7)，
+                # 原调用多传了 rooms 参数导致 TypeError，被 except:pass 静默吞掉，
+                # room_insights 永远为空。此处对齐签名，按全局行为环比返回。
+                room_insights = await asyncio.to_thread(
+                    rt.insights.get_behavior_insights, compare_days=days
+                )
+                result["room_insights"] = room_insights
+            except Exception as _exc:
+                logging.getLogger(__name__).warning(
+                    "get_member_persona: get_behavior_insights 调用失败: %s", _exc
+                )
+        return result
+
+    @mcp.tool()
+    async def get_behavior_insights_compare(compare_days: int = 7) -> dict:
+        """行为环比洞察：对比最近 compare_days 与上一个等长窗口（自然日对齐，各恰好 compare_days 天）。
+
+        返回各活动的发生次数/天数 **与累计时长(delta)**，以及 **温控维度**（空调开启时长、
+        平均设定/室温、设定温度区间变化）的 delta 与趋势摘要。适用于『和上周比有什么变化』、
+        『这周对比上周』、『空调是不是开得更猛/设得更低了』。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.insights.get_behavior_insights, compare_days)
+
+    @mcp.tool()
+    async def mine_behavior_process(days: int = 7, rooms: str = "") -> dict:
+        """过程挖掘（只读分析）：把「房间·天」当轨迹、设备标签为步骤，挖行为过程模型并找**异常的一天**。
+
+        与序列规则（define_activity/mine_sequences 的 n-gram 频次）互补：本工具做**一致性检验**
+        ——某天的行为步骤里出现了平时几乎不走的转移（如平时只 门→灯→电脑，某天多插了空调），
+        即判为行为异常。返回变体统计、DFG 规模、一致性率与异常清单（含稀有边证据）。
+        适用『最近有没有哪天行为异常/不对劲』『作息是不是变了』。不写库；要落库请用
+        refresh_behavior_anomalies。
+
+        :param days: 回溯天数，默认 7
+        :param rooms: 逗号分隔的房间白名单，留空=全部房间
+        """
+        rt = get_runtime()
+        room_list = [r.strip() for r in (rooms or "").split(",") if r.strip()] or None
+        return await asyncio.to_thread(
+            rt.activity.mine_process, None, None, days, room_list,
+            persist=False, emit_rules=False,
+        )
+
+    @mcp.tool()
+    async def refresh_behavior_anomalies(days: int = 7, rooms: str = "") -> dict:
+        """重算并**落库**行为异常（写工具，需 read+write 令牌）。
+
+        同 mine_behavior_process 的算法，但把异常写入 behavior_anomalies 供 WebUI 复核，
+        并把「房间高频过程变体」写候选规则（source=process，作为规则缺口提示，人工审核）。
+        """
+        rt = get_runtime()
+        room_list = [r.strip() for r in (rooms or "").split(",") if r.strip()] or None
+        return await asyncio.to_thread(
+            rt.activity.mine_process, None, None, days, room_list,
+            persist=True, emit_rules=True,
+        )
+
+    @mcp.tool()
+    async def list_behavior_anomalies(status: str = "", days: int = 14,
+                                      limit: int = 50) -> dict:
+        """列出已落库的行为异常（按严重度降序）。
+
+        :param status: new（未复核）| confirmed | ignored；留空=全部
+        :param days: 只取最近 N 天（按异常所属日期），默认 14
+        :param limit: 返回上限，默认 50
+        """
+        from datetime import timedelta
+
+        rt = get_runtime()
+        day_from = (now_local(rt.config.tz_offset_hours)
+                    - timedelta(days=clamp_days(days or 14))).strftime("%Y-%m-%d")
+        rows = await asyncio.to_thread(
+            rt.store.list_behavior_anomalies, status or None, day_from, None, None,
+            max(1, min(int(limit or 50), 500)),
+        )
+        return {"ok": True, "count": len(rows), "day_from": day_from, "anomalies": rows}
+
+    @mcp.tool()
+    async def review_behavior_anomaly(anomaly_id: str, status: str) -> dict:
+        """复核行为异常（写工具）：status = confirmed（确属异常）/ ignored（误报）/ new（复位）。
+
+        人工复核结果在重跑挖掘时会被保留（不会被刷新洗掉）。
+        """
+        rt = get_runtime()
+        if status not in ("new", "confirmed", "ignored"):
+            return {"ok": False, "error": "status 必须是 new/confirmed/ignored"}
+        changed = await asyncio.to_thread(
+            rt.store.set_behavior_anomaly_status, anomaly_id, status
+        )
+        if not changed:
+            return {"ok": False, "error": f"异常不存在: {anomaly_id}"}
+        return {"ok": True, "anomaly_id": anomaly_id, "status": status}
+
+    @mcp.tool()
+    async def get_behavior_drift(days: int = 14) -> dict:
+        """在线异常 + 概念漂移检测（只读）：把**每小时行为活跃度**当时间序列在线评估。
+
+        Half-Space Trees 给无监督异常分（哪些时段不像平时），ADWIN 检测活跃度分布的
+        **突变**（"最近作息/活跃度变了"）。适用『最近作息是不是变了』『有没有异常的时段』。
+        与 mine_behavior_process 互补：后者按天做**事后**一致性检验，本工具看**时序突变**。
+        只算不落库；要落库请用 refresh_behavior_drift。
+
+        :param days: 回溯天数，默认 14（1 小时分桶，14 天 ≈ 336 点）
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.activity.mine_drift, None, None, days,
+                                       None, persist=False)
+
+    @mcp.tool()
+    async def refresh_behavior_drift(days: int = 14) -> dict:
+        """重算并**落库**漂移点/异常时段（写工具，需 read+write 令牌）→ behavior_drifts。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.activity.mine_drift, None, None, days,
+                                       None, persist=True)
+
+
+    @mcp.tool()
+    async def analyze_behavior_change(
+        person: str, metric: str = "arrival_time",
+        days: int = 30, lookback_days: int = 7, room: str = ""
+    ) -> dict:
+        """行为变化因果归因（P5a+P5b）：检测某人的行为指标是否变化，并搜索+验证可能的原因。
+
+        P5a 检测变化点 → P5b 分组比较法验证每个候选原因的因果性（有事件天 vs 无事件天）。
+        支持 metric: arrival_time（到家时间）、activity_count（日活动量）、
+        active_duration（日活跃时长）、room_distribution（房间分布，需指定 room）。
+
+        :param person: 成员名称（如 lidicn、Kevin、Emily）
+        :param metric: 行为指标，默认 arrival_time
+        :param days: 回溯总天数，默认 30
+        :param lookback_days: 变化点前搜索候选原因的天数，默认 7
+        :param room: room_distribution 指标时指定房间
+        """
+        from memory_agent.change_attribution import attribute_with_conditional
+        rt = get_runtime()
+        events = await asyncio.to_thread(_fetch_attribution_events, rt.store, max(14, int(days)))
+        if len(events) < 14:
+            return {"ok": False, "error": f"事件数据不足（{len(events)} 条 < 14 天最低要求）",
+                    "event_count": len(events)}
+        result = await asyncio.to_thread(
+            attribute_with_conditional, events, person, metric,
+            0.5, lookback_days, max(30, int(days)), room or None
+        )
+        return {"ok": True, "person": person, "metric": metric,
+                "event_count": len(events), **result}
+
+    @mcp.tool()
+    async def counterfactual_query(
+        person: str, event_type: str, metric: str = "arrival_time",
+        days: int = 30, room: str = ""
+    ) -> dict:
+        """反事实查询（P5c）：如果没有这个事件，行为指标会怎样？
+
+        基于分组比较法，用无事件天的分布作为反事实估计。
+        返回实际值、反事实预测值、差异、95% 置信区间、因果效应量、显著性。
+
+        :param person: 成员名称
+        :param event_type: 事件类型（如 tv_on、light_on、aircon_on、door_open、face_known）
+        :param metric: 行为指标，默认 arrival_time
+        :param days: 回溯天数，默认 30
+        :param room: room_distribution 指标时指定房间
+        """
+        from memory_agent.change_attribution import counterfactual_query as _cfq
+        from datetime import timedelta
+        rt = get_runtime()
+        events = await asyncio.to_thread(_fetch_attribution_events, rt.store, max(14, int(days)))
+        if len(events) < 14:
+            return {"ok": False, "error": f"事件数据不足（{len(events)} 条 < 14 天最低要求）",
+                    "event_count": len(events)}
+        # 与事件行的墙钟口径保持一致（见 _fetch_attribution_events 注释）
+        change_ts = (now_local(rt.config.tz_offset_hours)
+                     - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+        result = await asyncio.to_thread(
+            _cfq, events, person, metric, event_type, change_ts,
+            max(30, int(days)), room or None
+        )
+        return {"ok": result.get("enabled", False), **result}
+
+    @mcp.tool()
+    async def list_behavior_drifts(days: int = 14, kind: str = "",
+                                   limit: int = 50) -> dict:
+        """列出已落库的漂移/异常时段。
+
+        :param kind: drift（活跃度分布突变）| anomaly（异常时段）；留空=全部
+        :param days: 只取最近 N 天，默认 14
+        """
+        from datetime import timedelta
+
+        rt = get_runtime()
+        day_from = (now_local(rt.config.tz_offset_hours)
+                    - timedelta(days=clamp_days(days or 14))).strftime("%Y-%m-%d")
+        rows = await asyncio.to_thread(
+            rt.store.list_behavior_drifts, kind or None, day_from, None,
+            max(1, min(int(limit or 50), 500)),
+        )
+        return {"ok": True, "count": len(rows), "day_from": day_from, "drifts": rows}
+
+    @mcp.tool()
+    async def audit_rule_recall(days: int = 14, rooms: str = "") -> dict:
+        """序列规则**召回审计**（只读）：找出"该判没判"的场景，并诊断卡在哪一步。
+
+        回答的是『哪条规则可能漏了、漏在哪里』。口径：以「房间·天」为单位，
+        当天出现了规则所有步骤所需的标签（eligible）却没命中 → 记为召回缺口
+        （near_miss），并给出第一个匹配不上的步骤（blocker）与估计召回率。
+
+        适用『就寝识别是不是漏了很多』『房间移动规则为什么很少触发』。
+        注：只审计内置序列规则（书房工作/就寝/房间移动）。不落库。
+
+        :param days: 回溯天数，默认 14
+        :param rooms: 逗号分隔房间白名单，留空=全部
+        """
+        rt = get_runtime()
+        room_list = [r.strip() for r in (rooms or "").split(",") if r.strip()] or None
+        return await asyncio.to_thread(
+            rt.activity.audit_rule_recall, None, None, days, room_list, persist=False)
+
+    @mcp.tool()
+    async def refresh_rule_recall_gaps(days: int = 14) -> dict:
+        """重算并**落库**召回放宽建议（写工具，需 read+write 令牌）。
+
+        对反复卡在同一步的缺口，产出「去掉该步骤」的宽松变体，写 ``candidate_rules``
+        （source=recall_gap，staging 待人工审核）。不会自动改动线上规则。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.activity.audit_rule_recall, None, None, days, None, persist=True)
+
+    @mcp.tool()
+    async def explain_insight(insight_id: str) -> dict:
+        """证据溯源：给定 insight(活动id) 或 agent 记忆 id，返回底层触发事件与 source_refs 解析。
+
+        insight id 来自 infer_activities 的每个活动 id 字段；agent 记忆 id 来自 add_semantic_memory 返回。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.insights.explain_insight, insight_id)
+
+    @mcp.tool()
+    async def ask_memory(
+        question: str,
+        days: int = 7,
+        route: str = "auto",
+        return_hints: bool = False,
+    ) -> dict:
+        """自然语言问答：用口语问法查询行为记忆。
+
+        例：「用户上周三晚上在干嘛」「昨天谁在家做饭」「空调最近设定几度」。
+        问法先映射到既有洞察工具（关系库主力）；模糊问法回落向量库语义检索（副驾）。
+        route: auto=结构化+副驾证据, structured=仅结构化, semantic=纯语义+agent记忆。
+        return_hints=True 时另给顶层键 `hints`（规划阶段生成的候选追问，调试/混合用）。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.insights.ask_memory, question, days, route, return_hints
+        )
+
+    # ── Agent 记忆（参与式写回向量库）─────────────────────────────────────
+
+    @mcp.tool()
+    async def add_semantic_memory(
+        text: str,
+        source_refs: list = None,
+        tags: list = None,
+        ttl_days: int = 0,
+        topic_key: str = "",
+        dry_run: bool = True,
+        session_id: str = "mcp",
+        member_id: str = "",  # WO-MA-005: 成员归属
+    ) -> dict:
+        """把挖掘出的行为洞察写回向量库（Agent 参与式迭代）。
+
+        - source_refs 必须是可解析的真实引用：event:<event_id> 或 insight:<activity_id>
+          （insight id 来自 infer_activities 返回的每个活动 id 字段）。
+        - dry_run=True（默认）：只做冲突/重复自检，不落库，agent 可先 verify。
+        - 写入恒为 staging，永不自动进 live；需 promote / sweep 晋升。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.agent_memory.add_semantic_memory,
+            session_id, text, (tags or []), (source_refs or []),
+            (ttl_days or None), topic_key, dry_run, "ma", True, "", "",
+            member_id,
+        )
+
+    # ── 事件：最后关闭/打开时间 ─────────────────────────────────────────────
+    @mcp.tool()
+    async def get_last_event(
+        entity_id: str = "",
+        domain: str = "",
+        room: str = "",
+        transition: str = "off",
+        days: int = 30,
+    ) -> dict:
+        """查询某实体/某类设备最近一次状态变化（最后关闭/打开/任意变化）。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.insights.get_last_event,
+            (entity_id or None), (domain or None), (room or None),
+            transition, days,
+        )
+
+    # ── 学习策略（信号纠正：硬排除 + 软记忆）──────────────────────────────
+    @mcp.tool()
+    async def teach_signal(
+        entity_id: str,
+        scope: str = "all",
+        kind: str = "hard",
+        reason: str = "",
+        text: str = "",
+        source_refs: list = None,
+        exclusion_type: str = "exclude",
+        dry_run: bool = False,
+        session_id: str = "mcp",
+    ) -> dict:
+        """（学习策略）教系统：把『某实体在某检测维度是/不是自动化信号』的纠正持久化。
+
+        - kind='hard'：写入 signal_exclusions 表（无歧义硬排，优先级高于软记忆）；
+          生效于 infer_activities 的起床锚定(wake_anchor)、在房/工作判定(working/presence)、
+          看电视(watching_tv)。
+        - kind='soft'：走 agent 记忆（topic_key=signal_trust，参与信任闭环，用于带条件软判）；
+          此时 text 必填，source_refs 须为可解析的真实引用。
+        - dry_run=true：只校验参数，不写入。校验与真实写入走同一串判据
+          （entity_id / kind / exclusion_type / soft 时的 text），回显里 checked 就是实际查过的字段。
+        """
+        # MA-28：这里原来有一句 `if dry_run: return {"ok": True, ... "参数校验通过"}`，
+        # 一行校验都没做 —— 探边界探出"通过"，真写入却被拒（或被静默收下），
+        # 承诺的"先探边界"是假的。校验挪进 signal_learning.teach_signal 本体。
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.signal_learning.teach_signal,
+            entity_id, scope, kind, reason, text, (source_refs or []),
+            session_id, exclusion_type, dry_run,
+        )
+
+    @mcp.tool()
+    async def revoke_signal_rule(exclusion_id: str) -> dict:
+        """撤销信号硬排除（将其标记为 revoked）。exclusion_id 来自 teach_signal 的返回值。"""
+        rt = get_runtime()
+        ok = await asyncio.to_thread(rt.store.revoke_signal_exclusion, exclusion_id)
+        if not ok:
+            return {"ok": False, "error": f"NOT_FOUND: 排除规则 {exclusion_id} 不存在"}
+        return {"ok": True, "message": f"排除规则 {exclusion_id} 已撤销"}
+
+    @mcp.tool()
+    async def list_signal_rules(
+        include_revoked: bool = False,
+    ) -> dict:
+        """（学习策略）列出已学会的信号规则：硬排除（signal_exclusions 表）+ 软记忆（topic_key=signal_trust）。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.signal_learning.list_rules, include_revoked)
+
+    @mcp.tool()
+    async def promote_memory(
+        memory_id: str,
+        force: bool = False,
+        corroborating_insight_id: str = "",
+        session_id: str = "mcp",
+    ) -> dict:
+        """把一条 staging 记忆晋升为 live（参与检索）。
+
+        - 普通会话需满足晋升条件：(a) 提供佐证 insight_id 且高置信，或 (b) 跨 N 天反复观测。
+        - force=True 仅限 Web 端人工复核（human_override），MCP 调用方不可 force（WO-MA-002/P0-5）。
+        - 晋升前自动做矛盾/重复检测：重复禁止晋升，冲突挂起 pending_review。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.agent_memory.promote_memory, memory_id, session_id, force,
+            corroborating_insight_id,
+        )
+
+    @mcp.tool()
+    async def revoke_memory(memory_id: str) -> dict:
+        """软删一条记忆（墓碑），保留审计轨迹，不硬删。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.agent_memory.revoke_memory, memory_id)
+
+    @mcp.tool()
+    async def rollback_agent_memory(session_id: str = "mcp") -> dict:
+        """把某 session 下所有未 revoked 记忆整段回滚为 revoked（一键回滚）。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.agent_memory.rollback_agent_memory, session_id)
+
+    @mcp.tool()
+    async def feedback_memory(memory_id: str, useful: bool = True,
+                              question: str = "", comment: str = "") -> dict:
+        """对一条记忆反馈有用/无用，驱动 trust 与 TTL（外部信号鉴定置信度）。
+
+        question 传"当初用户问的那句话"：DCD 2026-10-01 R1 裁定 vMA-2.0 的
+        badcase 门以 👎 + 问题文本 为取料口径，不带 question 的 👎 事后无法
+        还原成可判负的 badcase，只会让门永远攒不出料。入库前统一 PII 脱敏。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.agent_memory.feedback_memory, memory_id, useful,
+            comment=comment, question=question,
+        )
+
+    @mcp.tool()
+    async def list_candidate_rules(status: str = "staging") -> dict:
+        """列出候选规则建议（vMA-1.2.1）。
+
+        status: staging(待确认) | confirmed(已确认) | rejected(已拒绝)
+        返回未确认的自动规则建议，供人工审核。
+        """
+        rt = get_runtime()
+        rules = await asyncio.to_thread(rt.store.list_candidate_rules, status=status)
+        return {"ok": True, "count": len(rules), "rules": rules}
+
+    @mcp.tool()
+    async def confirm_candidate_rule(rule_id: str, confirmed: bool = True) -> dict:
+        """确认或拒绝一条候选规则（vMA-1.2.1 DCD红线）。
+
+        confirmed=true: 落 status='accepted' 且 user_confirmed=1（与 WebUI 同一状态字）。
+        confirmed=false: 落 status='rejected'，不再出现在建议列表。
+        确认只是"人已同意"，**不等于已生效**：还需 promote_candidate_rule 过
+        证据门槛才会进引擎，且先进试运行（DCD R3 四红线）。本步会留审计记录。
+        """
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        status = CANDIDATE_ACCEPTED if confirmed else "rejected"
+        rule = await asyncio.to_thread(rt.store.update_candidate_rule_status, rule_id, status)
+        if not rule:
+            return {"ok": False, "error": f"候选规则 {rule_id} 不存在"}
+        await asyncio.to_thread(
+            log_confirmation, rt.store, rule_id, status, _tok or _origin or "agent")
+        return {"ok": True, "rule_id": rule_id, "status": status}
+
+    @mcp.tool()
+    async def list_rule_channel(candidate_id: str = "") -> dict:
+        """DCD R3 生效通道全景（只读）。
+
+        candidate_id 非空时只返回该候选的门槛判据（eligibility 预演）；
+        否则返回 accepted 候选的晋升预演清单 + 试运行/已转正/已撤销规则与观察读数。
+        判据：accepted + user_confirmed + ≥MA_RULE_MIN_EVIDENCE 个独立证据日 + 事件类型在引擎实时 feed 词表内。
+        """
+        rt = get_runtime()
+        lc = _rule_lifecycle(rt)
+        if candidate_id:
+            return await asyncio.to_thread(lc.eligibility, candidate_id)
+        return await asyncio.to_thread(lc.channel_status)
+
+    @mcp.tool()
+    async def promote_candidate_rule(rule_id: str, reason: str = "",
+                                     cooldown_seconds: int | None = None) -> dict:
+        """把一条 accepted 候选规则晋升进引擎（DCD R3）。
+
+        必须先过证据门槛，否则拒绝并返回 blockers；晋升成功的规则一律
+        ``mode='dry_run'``（只记录不触发），观察期满再 advance_rule_to_live 转正。
+
+        ``cooldown_seconds`` 是这条规则对外的吵人上限（每 N 秒最多产出一条）。
+        DCD 20261004 MA-裁1 Q1 之后这里**没有默认值**：不传就取候选行已设定的值，
+        两者都空则拒绝晋升并把它列进 blockers。
+        """
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        return await asyncio.to_thread(
+            _rule_lifecycle(rt).promote, rule_id, _tok or _origin or "agent", reason,
+            cooldown_seconds)
+
+    @mcp.tool()
+    async def advance_rule_to_live(rule_id: str, reason: str = "") -> dict:
+        """试运行规则转正为 live（红线"观察期"）。
+
+        判据：观察满 MA_RULE_DRY_RUN_DAYS 天且期间零误报，否则拒绝并给出 blockers。
+        """
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        return await asyncio.to_thread(
+            _rule_lifecycle(rt).advance_to_live, rule_id, _tok or _origin or "agent", reason)
+
+    @mcp.tool()
+    async def revoke_active_rule(rule_id: str, reason: str = "",
+                                 rollback_inferences: bool = True) -> dict:
+        """撤销一条生效规则（红线"可回滚"）。
+
+        关闭规则（mode='revoked'、enabled=0）并删除它经 infer_activity 产生的
+        推断活动，回滚条数写入审计。
+        """
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        return await asyncio.to_thread(
+            _rule_lifecycle(rt).revoke, rule_id, _tok or _origin or "agent",
+            reason, rollback_inferences)
+
+    @mcp.tool()
+    async def flag_rule_false_positive(rule_id: str, trigger_id: int,
+                                       reason: str = "") -> dict:
+        """把一条规则触发记录判为误报（观察期的红判据，误报未清零不能转正）。"""
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        return await asyncio.to_thread(
+            _rule_lifecycle(rt).flag_false_positive, rule_id, trigger_id,
+            _tok or _origin or "agent", reason)
+
+    @mcp.tool()
+    async def list_rule_lifecycle_audit(rule_id: str = "", limit: int = 50) -> dict:
+        """列出规则生命周期审计（机器建议→人工确认→生效→转正/撤销全链路留痕）。"""
+        rt = get_runtime()
+        rows = await asyncio.to_thread(rt.store.list_rule_lifecycle, rule_id, limit)
+        # 红线 4 的留痕要求：审计行必须带规则、动作和时间，缺任何一样都不算「取到了链路」
+        intact = all(str(r.get("rule_id") or "") and str(r.get("action") or "")
+                     and str(r.get("created_at") or "") for r in rows)
+        return {"ok": intact, "count": len(rows), "items": rows}
+
+    @mcp.tool()
+    async def report_bug(
+        tool_name: str = "",
+        description: str = "",
+        expected: str = "",
+        actual: str = "",
+        severity: str = "minor",
+    ) -> dict:
+        """上报一条 bug（agent 用 MA 时发现功能问题记录于此）。
+
+        tool_name: 出问题的 MCP 工具名
+        description: 问题描述
+        expected: 期望行为
+        actual: 实际行为
+        severity: minor|major|critical
+        """
+        rt = get_runtime()
+        _tok, _scopes, _origin = _caller_context()
+        result = await asyncio.to_thread(
+            rt.store.add_bug_report,
+            tool_name, description, expected, actual, severity,
+            _tok,
+        )
+        return {"ok": True, **result}
+
+    @mcp.tool()
+    async def list_bug_reports(status: str = "open", limit: int = 50) -> dict:
+        """列出已上报的 bug。status: open|resolved|all"""
+        rt = get_runtime()
+        bugs = await asyncio.to_thread(rt.store.list_bug_reports, status, limit)
+        return {"ok": True, "count": len(bugs), "bugs": bugs}
+
+    # ── 自我日记（家庭人格化实验）──────────────────────────────────────
+    @mcp.tool()
+    async def write_self_diary(text: str) -> dict:
+        """写一段自我日记（第一人称视角）。写入 staging，永不自动晋升。
+        text: 日记正文（第一人称，如"今天晚上客厅很安静…"）
+        """
+        rt = get_runtime()
+        mid = await asyncio.to_thread(
+            rt.store.add_agent_memory,
+            "self_diary",           # session_id
+            text,                   # text
+            "self_diary",           # topic_key
+            "[]",                   # tags_json
+            "[]",                   # source_refs_json
+            365,                    # ttl_days
+            "staging",              # state
+            1,                      # auto_promote_blocked=1（永不自动晋升）
+        )
+        return {"ok": True, "memory_id": mid, "message": "日记已写入 staging"}
+
+    @mcp.tool()
+    async def read_self_diary(days: int = 7) -> dict:
+        """读取最近 N 天的自我日记。
+        days: 回溯天数，默认 7
+        """
+        rt = get_runtime()
+        # MA-06（第二轮）：改前这里不传 exact_member，等于绕过成员收窄层读全量。
+        # 现在日记恒为公共（write_self_diary 不带 member_id ⇒ member_id=''），
+        # 所以本行读数不变；一旦将来日记加成员归属，未收窄就会变成跨成员读取。
+        all_mem = await asyncio.to_thread(
+            rt.store.list_agent_memories, "all", "", 500, "", exact_member=True
+        )
+        diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
+        from datetime import timedelta
+        # created_at 是家庭墙钟（agent_memory 用 now_local 落盘），cutoff 必须同口径
+        cutoff = (now_local(rt.config.tz_offset_hours) - timedelta(days=clamp_days(days))).isoformat()
+        diaries = [d for d in diaries if d.get("created_at", "") >= cutoff]
+        diaries.sort(key=lambda x: x.get("created_at", ""))
+        return {
+            "ok": True,
+            "count": len(diaries),
+            "diaries": [
+                {"date": d.get("created_at", "")[:10], "text": d.get("text", "")}
+                for d in diaries
+            ],
+        }
+
+    @mcp.tool()
+    async def generate_self_diary() -> dict:
+        """自动生成今天的自我日记（第一人称视角）。
+        从当天事件提取脱敏摘要，调 LLM 生成日记，写入 staging。
+        """
+        rt = get_runtime()
+        # 1. 读昨天日记
+        all_mem = await asyncio.to_thread(
+            rt.store.list_agent_memories, "all", "", 500, "", exact_member=True
+        )
+        diaries = [m for m in all_mem if m.get("topic_key") == "self_diary"]
+        diaries.sort(key=lambda x: x.get("created_at", ""))
+        yesterday_text = diaries[-1]["text"][:200] if diaries else "（还没有日记）"
+
+        # 2. 从当天 events 提取脱敏摘要
+        # query_events 的 day 参数按家庭墙钟匹配 day 列，用容器 UTC 日期会取到昨天的全天。
+        today = now_local(rt.config.tz_offset_hours).strftime("%Y-%m-%d")
+        events = await asyncio.to_thread(
+            rt.store.query_events, "", today, "", 100
+        )
+        # 脱敏：只取时间+房间+有意义的事件（只保留门/灯/人/设备开关）
+        keep_patterns = ["binary_sensor", "switch.", "light.", "media_player", "cover.", "lock.", "person.", "device_tracker"]
+        skip_patterns = ["temperature", "humidity", "power", "battery", "co2", "storage", "signal", "rssi", "voltage", "current", "energy", "pressure", "illuminance", "moisture", "conductivity", "daily_use", "hourly_use", "no_one_duration", "time_count", "status_p_"]
+        summary_lines = []
+        for e in events[:200]:
+            t = e.get("ts", "")[11:16]
+            room = e.get("room", "")
+            entity = e.get("entity_id", "")
+            # 只保留有意义的实体类型
+            if not any(p in entity for p in keep_patterns):
+                continue
+            # 过滤掉无关传感器
+            if any(p in entity.lower() for p in skip_patterns):
+                continue
+            if room and entity:
+                summary_lines.append(f"{t} {room}: {entity}")
+        summary = "\n".join(summary_lines[:40])
+
+        # 3. 调 LLM 生成日记
+        prompt = f"""你是这个家庭里的一个"存在"。用第一人称写今天的日记。
+
+严格规则：
+1. 只能写下面事件摘要里有的内容，绝对不许编造任何摘要里没有的细节
+2. 摘要里没有提到的，就说"没注意到"或"没有记录"
+3. 开头引用昨天日记的一句话（"昨天我说…"）
+4. 200-400 字
+5. 只写观察到的，不下结论、不做诊断
+6. 用"我"视角，不用"这个家庭"
+
+昨天日记：{yesterday_text}
+
+今天的事件摘要（脱敏后，只有这些是事实）：
+{summary}
+
+请写今天的日记（只能用上面摘要里的事实）："""
+
+        try:
+            resp = await rt.llm.chat(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=800,
+                temperature=0.7,
+            )
+            diary_text = resp.get("content", "")
+        except Exception as e:
+            return {"ok": False, "error": f"LLM 调用失败: {e}"}
+
+        # 4. 写入 staging
+        mid = await asyncio.to_thread(
+            rt.store.add_agent_memory,
+            "self_diary",
+            diary_text,
+            "self_diary",
+            "[]",
+            "[]",
+            365,
+            "staging",
+            1,
+        )
+        return {"ok": True, "memory_id": mid, "diary": diary_text[:200]}
+
+    @mcp.tool()
+    async def list_agent_memories(state: str = "live", member_id: str = "") -> dict:
+        """列出 agent 记忆（WO-MA-005 隐私面收窄）。
+
+        state: staging|live|revoked|pending_review|all，默认 live（revoked 永不经 MCP 返回）。
+        member_id: 成员归属过滤；非空时只返回该成员记忆。
+        不传 member_id 时（第二期审计 MA-05，改前这里写的是"可查全量"，与实现不符）：
+        **admin scope 也只得公共记忆**（`member_id=''`）——下游 `agent_memory.list_agent_memories`
+        恒传 `exact_member=True`，跨成员需要逐成员点名。留痕同理：记的是"公共档列表"，
+        不是"全量列表"，事后追责不能读出后者。
+        普通 read/write 令牌必须传 member_id，否则拒绝。
+        """
+        rt = get_runtime()
+        # WO-MA-005: 入口收窄——member_id 缺失时只允许 admin 审计通道
+        if not member_id:
+            _tok, _scopes, _origin = _caller_context()
+            if "admin" not in (_scopes or []):
+                return {
+                    "ok": False,
+                    "error": "member_id 缺失：普通令牌必须指定 member_id；"
+                             "admin 令牌不点名时只走公共档（member_id=''），跨成员需逐成员点名",
+                    "code": 403,
+                }
+            # admin 审计通道出证：谁在什么时候走了"不点名成员"的列表档
+            # MA-05：文案原来写的是 `full member_id-less listing`，而实现只返回公共记忆
+            # （`exact_member=True`）——留痕比实际能力大，等于给事后追责造假证据。
+            try:
+                await asyncio.to_thread(
+                    rt.store.log_mcp_audit,
+                    token_name=_tok, tool="list_agent_memories",
+                    scope="admin", duration_ms=0, ok=True,
+                    error="AUDIT: public-only listing (member_id omitted)", origin=_origin,
+                )
+            except Exception as _e:
+                _log.warning("审计日志写入失败（不阻断查询）: %s", _e)
+        # revoked 永不经 MCP 面返回（即使 admin 也只能经专门审计通道）
+        if state == "revoked":
+            _tok, _scopes, _origin = _caller_context()
+            if "admin" not in (_scopes or []):
+                return {"ok": False, "error": "revoked 记忆仅 admin 审计通道可访问", "code": 403}
+        return await asyncio.to_thread(
+            rt.agent_memory.list_agent_memories, state, "", member_id
+        )
+
+    @mcp.tool()
+    async def get_session_trust(session_id: str = "mcp") -> dict:
+        """查某 session 声誉：avg_trust / live 占比 / 是否被锁自动晋升。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.agent_memory.get_session_trust, session_id)
+
+    @mcp.tool()
+    async def sweep_promote_candidates() -> dict:
+        """手动触发自动晋升扫描 + 镜像 reconcile：把满足条件的 staging 记忆晋升 live。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.agent_memory.sweep_and_reconcile)
+
+    @mcp.tool()
+    async def retrieve_agent_memories(
+        question: str = "", trust_min: float = -1.0, top_k: int = 5,
+        member_id: str = "", query: str = "", limit: int = 0
+    ) -> dict:
+        """从 Agent 记忆库检索已晋升 live 的记忆（按相似度+trust 重排）。
+
+        WO-ADM-001 R-60：加 member_id 成员归属过滤 + query/question 参数名兼容。
+
+        question: 查询问题或自然语言主题（优先使用）。
+        query: 查询问题（butler 旧参数名，兼容别名；question 为空时取 query）。
+        member_id: 成员归属过滤（只召回该成员的记忆）。空值不返回全量：走的是与
+               `list_agent_memories` 同一档 fail-closed，只召回公共记忆（MA-05）。
+        trust_min: 最低信任分过滤（默认 -1 不限制）。
+        top_k: 返回条数（默认 5，最多受配置 agent_retrieve_k 约束）。
+        limit: top_k 的兼容别名（butler 侧沿用的是 HTTP 分页口径的命名）；
+               非 0 时覆盖 top_k，否则用 top_k。
+        返回 {ok, schema, count, memories: [{memory_id, text, member_id, similarity, trust, final_score, topic_key}]}。
+        """
+        # WO-ADM-001 R-60：query/question 兼容（butler 旧版传 query，新版传 question）
+        q = question or query
+        if not q:
+            return {"ok": False, "error": "question/query 不能为空", "count": 0, "memories": []}
+        # DCD裁定1: fail-close——member_id 缺失时只允许 admin 审计通道
+        if not member_id:
+            _tok, _scopes, _origin = _caller_context()
+            if "admin" not in (_scopes or []):
+                return {
+                    "ok": False,
+                    "error": "member_id 缺失：普通令牌必须指定 member_id；"
+                             "admin 令牌不点名时只走公共档（member_id=''），跨成员需逐成员点名",
+                    "code": 403,
+                    "schema": "ma-recall/1",
+                    "count": 0,
+                    "memories": [],
+                }
+            try:
+                rt0 = get_runtime()
+                await asyncio.to_thread(
+                    rt0.store.log_mcp_audit,
+                    token_name=_tok, tool="retrieve_agent_memories",
+                    scope="admin", duration_ms=0, ok=True,
+                    error="AUDIT: public-scope recall (member_id omitted)", origin=_origin,
+                )
+            except Exception:
+                pass
+        rt = get_runtime()
+        k = int(limit) if limit and int(limit) > 0 else int(top_k)
+        hits = await asyncio.to_thread(
+            rt.agent_memory.retrieve,
+            q,
+            trust_min=trust_min if trust_min > -1 else None,
+            top_k=max(1, k),
+            member_id=member_id,
+        )
+        return {"ok": True, "schema": "ma-recall/1", "count": len(hits), "memories": hits}
+
+    @mcp.tool()
+    async def agent_memory_health() -> dict:
+        """Agent 记忆子系统健康：各状态数量、镜像缺口、chroma 可用性。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.agent_memory.health)
+
+    @mcp.tool()
+    async def get_data_quality(days: int = 30) -> dict:
+        """聚合数据质量：逐项 `checks`，未通过项的名字列在 `issues`。
+
+        顶层键 = `checks[]`（每格 {name, ok, value, ratio, detail}）、`issues`（未通过的检查名）、
+        `score`（通过占比）、`total_events`/`sample_size`、`missing_days`、`noise_ratio`、
+        `summary`、`filters`、`window`、`ok`；agent 记忆镜像缺口在 `agent_memory` 块里——
+        子系统可用时是 {ok, states, mirror_dirty, chroma_available}，读不到时只有 {ok:false, error}。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(rt.insights.get_data_quality, days)
+
+    # ── 精确层 ───────────────────────────────────────────────────────────
+
+    @mcp.tool()
+    async def query_events(
+        days: int = 0,
+        start: str = "",
+        end: str = "",
+        rooms: list[str] | None = None,
+        entities: list[str] | None = None,
+        state: str = "",
+        limit: int = 200,
+        offset: int = 0,
+        order: str = "desc",
+        behavior_only: bool = True,
+    ) -> dict:
+        """精确查询原始事件。
+
+        时间语义与其他工具一致：``days`` 表示最近 N 天，或用 ``start``/``end``
+        传本地时区 ISO 时间；两者都不传默认最近 7 天。
+        返回带 ``total`` 与 ``next_offset``，分页取全不再靠猜。
+        不知道 entity_id 时请改用 search_events。
+        """
+        rt = get_runtime()
+        ins = rt.insights
+        start_iso, end_iso, meta = await asyncio.to_thread(
+            ins.resolve_range, days or 7, start, end
+        )
+        from .store import TELEMETRY_DOMAINS
+
+        excl = list(TELEMETRY_DOMAINS) if behavior_only else None
+        states = [s.strip() for s in str(state or "").split(",") if s.strip()] or None
+        limit_val = max(1, min(int(limit or 200), 2000))
+        offset_val = max(0, int(offset or 0))
+
+        total = await asyncio.to_thread(
+            rt.store.count_events,
+            start_iso,
+            end_iso,
+            rooms or None,
+            entities or None,
+            None,
+            None,
+            states,
+            excl,
+        )
+        rows = await asyncio.to_thread(
+            rt.store.query_events,
+            start_iso,
+            end_iso,
+            rooms or None,
+            entities or None,
+            None,
+            None,
+            limit_val,
+            offset_val,
+            order,
+            states,
+            excl,
+        )
+        decorated = await asyncio.to_thread(ins.decorate, rows)
+        return {
+            "ok": True,
+            "window": meta,
+            "behavior_only": behavior_only,
+            "total": total,
+            "count": len(decorated),
+            "offset": offset_val,
+            "has_more": offset_val + len(decorated) < total,
+            "next_offset": (
+                offset_val + len(decorated)
+                if offset_val + len(decorated) < total
+                else None
+            ),
+            "events": decorated,
+        }
+
+    @mcp.tool()
+    async def get_behavior_summary(days: int = 7, behavior_only: bool = True) -> dict:
+        """轻量总览：事件总量、房间分布、24 小时分布、Top 实体。
+
+        behavior_only 默认 true，会剔除 sensor/number 等纯遥测；
+        返回里的 telemetry_excluded 告诉你过滤掉了多少条。
+        需要更深入的结论请用 get_behavior_insights。
+        """
+        rt = get_runtime()
+        result = await asyncio.to_thread(
+            rt.history.get_behavior_summary, max(1, min(int(days or 7), 365)), behavior_only
+        )
+        result["ok"] = True
+        result["hint"] = (
+            "已排除功率/温湿度等周期性遥测，小时分布反映的是真实活动"
+            if behavior_only
+            else "⚠️ 含遥测数据：功率传感器每分钟一条，小时分布会被拍平，建议 behavior_only=true"
+        )
+        return result
+
+    @mcp.tool()
+    async def get_person_history(
+        person: str = "all", days: int = 7, limit: int = 200
+    ) -> dict:
+        """按人员查询行为历史。
+
+        注意：HA 状态历史不含操作者信息，person 字段通常为空。
+        若返回的 known_persons 为空数组，说明当前数据源不支持人员归属，
+        请改用 get_behavior_insights 做房间/设备维度分析。
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.history.get_person_history,
+            person or "all",
+            max(1, min(int(days or 7), 365)),
+            max(1, min(int(limit or 200), 2000)),
+        )
+
+    @mcp.tool()
+    async def get_behavior_prediction(
+        person: str, weekday: int = -1
+    ) -> dict:
+        """P4a 行为预测：基于历史事件预测某人的到家时间和日常作息。
+
+        Args:
+            person: 人名（如 "Kevin"、"Emily"、"lidicn"）
+            weekday: 0=周一, 6=周日。-1=用所有日期统计（默认）。
+        """
+        rt = get_runtime()
+        # HTTP 侧 `/api/behaviors/predict` 校 0-6，MCP 侧原先只判 `<0`：传 7~99 不报错，
+        # 而是每一天都被 weekday 过滤掉 ⇒ 扫完 5000 行事件回一句"没有那一天"（静默空答）。
+        if weekday is not None and not (-1 <= weekday <= 6):
+            return {"ok": False, "error": "weekday 必须是 -1（全部）或 0-6（周一到周日）"}
+        events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
+        if not events:
+            return {"ok": False, "error": "无历史行为事件数据"}
+
+        from .behavior_predictor import predict_daily_routine, predict_arrival_time
+
+        wd = None if weekday < 0 else weekday
+        arrival = predict_arrival_time(events, person, weekday=wd,
+                                       tz_offset_hours=rt.config.tz_offset_hours)
+        routine = predict_daily_routine(events, person,
+                                        tz_offset_hours=rt.config.tz_offset_hours)
+
+        return {
+            "ok": True,
+            "person": person,
+            "weekday": wd,
+            "arrival_prediction": arrival,
+            "daily_routine": routine,
+        }
+
+    @mcp.tool()
+    async def infer_behavior_intent(
+        person: str = "", window_min: int | None = None, limit: int = 3
+    ) -> dict:
+        """P4b 意图推断：从最近的行为事件推断用户意图（无 LLM 快路径）。
+
+        基于行为规则匹配（开灯+开电视=想看电视），毫秒级响应。
+        返回意图列表（按置信度排序），每个含 intent/label/confidence/evidence/suggestions。
+
+        Args:
+            person: 人名（可选，限定某人，如 "Kevin"）
+            window_min: 时间窗口（分钟）。给定则**只用这一个窗口**（最多返回 1 个意图）；
+                不给则按 5/15/30 三个窗口各试一遍再按置信度排序。
+            limit: 返回意图数量（默认 3，最多 5）
+        """
+        rt = get_runtime()
+        events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
+        if not events:
+            return {"ok": False, "error": "无历史行为事件数据"}
+
+        from .intent_inference import infer_intent_sequence, get_intent_suggestions
+
+        p = (person or "").strip() or None
+        intents = infer_intent_sequence(
+            events, person=p, max_intents=max(1, min(limit, 5)), window_min=window_min
+        )
+        for intent in intents:
+            intent["suggestions"] = get_intent_suggestions(intent)
+
+        return {"ok": True, "intents": intents, "count": len(intents)}
+
+    @mcp.tool()
+    async def execute_intent_actions(
+        intent: str, dry_run: bool = True, person: str = ""
+    ) -> dict:
+        """P4c 意图→动作执行：推断意图后执行（或预览）建议动作。
+
+        内置 7 个意图的常识动作映射（看电视/工作/睡觉/出门/回家/吃饭/运动）。
+        默认 dry_run=true 只预览不执行；dry_run=false 时只执行 auto=true 的动作
+        （TTS 播报/告警），灯光/摄像头等需要用户确认的动作不会自动执行。
+
+        Args:
+            intent: 意图名称（如 "watch_tv"、"sleep"、"arrive_home"）
+            dry_run: True=只预览不执行（默认），False=执行自动动作
+            person: 触发意图的人（可选，用于日志）
+        """
+        rt = get_runtime()
+        from .intent_action import execute_intent_actions as _execute
+
+        p = (person or "").strip() or None
+        result = await _execute(intent, rt, dry_run=dry_run, person=p)
+        return {"ok": True, **result}
+
+    @mcp.tool()
+    async def list_rooms_entities(only_enabled: bool = True) -> dict:
+        """房间与实体清单（含友好名）。需要活跃度与最后在线请用 get_entity_catalog。"""
+        rt = get_runtime()
+        rooms_out = {}
+        for room, payload in (rt.config.rooms or {}).items():
+            if not isinstance(payload, dict):
+                continue
+            if only_enabled and not payload.get("enabled", True):
+                continue
+            entities = []
+            for entity_id, info in (payload.get("entities") or {}).items():
+                info = info if isinstance(info, dict) else {}
+                if only_enabled and not info.get("enabled", True):
+                    continue
+                entities.append(
+                    {
+                        "entity_id": entity_id,
+                        "name": info.get("name", ""),
+                        "domain": info.get("domain", entity_id.split(".")[0]),
+                    }
+                )
+            rooms_out[room] = {
+                "enabled": payload.get("enabled", True),
+                "entities": entities,
+            }
+        stats = await asyncio.to_thread(rt.store.stats)
+        return {"ok": True, "rooms": rooms_out, "stats": stats}
+
+    # ── 运维层 ───────────────────────────────────────────────────────────
+
+    @mcp.tool()
+    async def get_collect_status() -> dict:
+        """采集服务状态、当前任务进度、数据库（关系库+向量库）统计。
+
+        明确暴露「关系库（主）/ 向量库（辅）」双层状态：
+        关系库承载全部事件查询与洞察计算；向量库仅做天×房间聚合摘要镜像与语义检索副驾。
+        """
+        rt = get_runtime()
+        stats = await asyncio.to_thread(rt.store.stats)
+        chroma = {}
+        try:
+            chroma = await asyncio.to_thread(rt.history.chroma_status)
+        except Exception as exc:
+            chroma = {"available": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "progress": rt.collector.get_progress(),
+            "storage": {
+                "relational": {"role": "主", "engine": "sqlite", **stats},
+                "vector": {"role": "辅", "engine": "chromadb", **chroma},
+            },
+            "note": "关系库为主（全部事件/洞察计算），向量库为辅（语义检索/天摘要镜像）",
+        }
+
+    @mcp.tool()
+    async def trigger_collection() -> dict:
+        """立即触发一次增量采集（异步执行，立刻返回任务号）。"""
+        return await get_runtime().collector.trigger("mcp")
+
+    @mcp.tool()
+    async def trigger_incremental_collection(since_minutes: int = 0) -> dict:
+        """触发一次增量采集（异步，立刻返回任务号）。
+
+        since_minutes: 增量窗口起点，从多少分钟前开始补采。
+          - 0（默认）：从上次成功采集点 last_poll_time 到现在（标准增量，推荐）。
+          - >0：强制重采「最近 since_minutes 分钟」，即使已采过也会兜底补齐（写入幂等，重复无害）。
+        返回 {ok, job_id, source, message}；用 get_collect_status 轮询进度（progress.source 显示实际数据源）。
+        """
+        rt = get_runtime()
+        result = await rt.collector.trigger_incremental(
+            since_minutes=int(since_minutes or 0) or None, source="mcp"
+        )
+        if result.get("ok"):
+            return {
+                "ok": True,
+                "job_id": result.get("job_id"),
+                "source": rt.collector.current_source(),
+                "message": "增量采集任务已启动（后台异步），可用 get_collect_status 查询进度",
+            }
+        return result
+
+    @mcp.tool()
+    async def export_history(
+        days: int = 30, person: str = "all", limit: int = 2000
+    ) -> dict:
+        """导出最近 N 天原始事件用于离线分析。日常洞察请优先用 get_behavior_insights。"""
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.history.export_history,
+            max(1, min(int(days or 30), 365)),
+            person or "all",
+            max(1, min(int(limit or 2000), 10000)),
+        )
+
+    # ── 沉淀层 ───────────────────────────────────────────────────────────
+
+    @mcp.tool()
+    def save_analysis_template(
+        id: str,
+        name: str,
+        description: str,
+        category: str,
+        entities: list[dict],
+        pattern: str,
+        confidence: float = 0.0,
+        sample_days: int = 0,
+        nr_condition: str = "",
+        nr_action: str = "",
+        default_days: int = 0,
+        interpretation: str = "",
+    ) -> dict:
+        """保存行为洞察模板。分析历史数据发现行为模式后用它沉淀结论。
+
+        category 可选值：sleep / media / lighting / climate / appliance / security / other。
+        entities 每项形如 {"entity_id","attribute","pattern","value","time_range","metric"}，
+        metric 可选 duration / count / numeric_sum / state_share（默认 duration）。
+        default_days 为模板默认时间窗天数；interpretation 为给 Agent 的解读话术模板
+        （{window}/{total_human}/{count}/{total_l} 可占位），供 run_analysis_template 直接转述。
+        """
+        from .templates import BehaviorInsight, EntityQuery
+
+        rt = get_runtime()
+        queries = [
+            EntityQuery(
+                entity_id=e.get("entity_id", ""),
+                attribute=e.get("attribute", "state"),
+                pattern=e.get("pattern", "equals"),
+                value=e.get("value", ""),
+                time_range=e.get("time_range", ""),
+                metric=e.get("metric", "duration"),
+            )
+            for e in (entities or [])
+            if isinstance(e, dict) and e.get("entity_id")
+        ]
+        insight = BehaviorInsight(
+            id=id,
+            name=name,
+            description=description,
+            category=category or "other",
+            entities=queries,
+            pattern=pattern,
+            confidence=float(confidence or 0.0),
+            sample_days=int(sample_days or 0),
+            nr_condition=nr_condition,
+            nr_action=nr_action,
+            default_days=int(default_days or 0),
+            interpretation=interpretation,
+        )
+        saved = rt.templates.save(insight)
+        return {"ok": True, "id": saved.id, "name": saved.name, "message": "模板已保存"}
+
+    @mcp.tool()
+    def list_analysis_templates(category: str = "") -> dict:
+        """列出所有已保存的行为洞察模板。可按 category 筛选。"""
+        rt = get_runtime()
+        items = rt.templates.list_all()
+        if category:
+            items = [t for t in items if t.category == category]
+        return {
+            "ok": True,
+            "total": len(items),
+            "templates": [
+                {
+                    "id": t.id,
+                    "name": t.name,
+                    "description": t.description,
+                    "category": t.category,
+                    "confidence": t.confidence,
+                    "sample_days": t.sample_days,
+                    "default_days": t.default_days,
+                    "interpretation": t.interpretation,
+                    "entities_count": len(t.entities),
+                    "builtin": rt.templates.is_builtin(t.id),
+                }
+                for t in items
+            ],
+        }
+
+    @mcp.tool()
+    def export_insight(template_id: str) -> dict:
+        """导出行为洞察，包含实体查询条件与 Node-RED 实现逻辑。"""
+        if not template_id:
+            return {"ok": False, "error": "template_id 不能为空"}
+        data = get_runtime().templates.export_insight(template_id)
+        if not data:
+            return {"ok": False, "error": f"模板不存在: {template_id}"}
+        return {"ok": True, "insight": data}
+
+    @mcp.tool()
+    def delete_analysis_template(template_id: str) -> dict:
+        """删除自定义行为洞察模板（内置模板不可删除）。"""
+        if not template_id:
+            return {"ok": False, "error": "template_id 不能为空"}
+        if not get_runtime().templates.delete(template_id):
+            return {"ok": False, "error": "模板不存在或为内置模板"}
+        return {"ok": True, "message": f"模板已删除: {template_id}"}
+
+    @mcp.tool()
+    def run_analysis_template(
+        template_id: str,
+        days: int = 0,
+        start: str = "",
+        end: str = "",
+        include_timeline: bool = True,
+    ) -> dict:
+        """按行为洞察模板直接算出结果（服务端计算，非仅导出配置）。
+
+        当用户说"用 xxx 模板分析 / 按 xxx 模板看…"时调用：服务端根据模板里声明的
+        实体条件与指标（duration 时长 / count 次数 / numeric_sum 数值求和 / state_share 占比）
+        复用既有算力，返回每实体累计值、分日明细、时间轴与解读话术 summary_text，
+        Agent 只需基于返回直接作答，不要另写查询或自己反推。
+
+        days 与 start/end 二选一（都给时优先用 start/end）；不填则按模板 default_days。
+        """
+        if not template_id:
+            return {"ok": False, "error": "template_id 不能为空"}
+        from .template_validate import check_executable
+        from .templates import run_template
+
+        rt = get_runtime()
+        # 执行闸门（v0.7）：失效模板硬阻止，避免静默返回误导性的 0
+        gate = check_executable(rt, template_id)
+        if not gate.get("allowed"):
+            return {
+                "ok": False,
+                "error": (
+                    f"模板已失效（{gate.get('status')}）："
+                    f"{gate.get('reason') or '引用实体不可用'}"
+                ),
+                "status": gate.get("status"),
+                "suggestions": gate.get("suggestions") or [],
+            }
+        try:
+            res = run_template(
+                rt,
+                template_id,
+                days=days,
+                start=start,
+                end=end,
+                include_timeline=include_timeline,
+            )
+            if gate.get("warning"):
+                res["warning"] = gate["warning"]
+            return res
+        except Exception as exc:
+            return {"ok": False, "error": f"模板执行失败：{exc}"}
+
+    # ── 技能层 ───────────────────────────────────────────────────────────
+
+    @mcp.tool()
+    def save_skill(
+        name: str,
+        content: str,
+        title: str = "",
+        category: str = "insight",
+    ) -> dict:
+        """把分析经验写回网关（唯一真源）：自增 version、刷新 updated_at，供 Agent 通过 get_skill 拉取最新版。
+
+        name 是 skill 唯一标识（作为目录名，只能含字母数字 _ -）；content 为完整 markdown；
+        title/category 仅用于生成 frontmatter，未带 frontmatter 时自动补齐。
+        网关保存后会把 version +1 并刷新 updated_at，Agent 下次 get_skill 即拿到最新版本。
+        """
+        import re
+
+        if not name or not re.match(r"^[A-Za-z0-9_\-]+$", name):
+            return {"ok": False, "error": "name 只能含字母、数字、下划线、连字符"}
+        if not content or not content.strip():
+            return {"ok": False, "error": "content 不能为空"}
+
+        rt = get_runtime()
+        base = os.path.join(rt.config.skills_dir, name)
+        os.makedirs(base, exist_ok=True)
+        path = os.path.join(base, "SKILL.md")
+
+        # 解析传入内容的已有 frontmatter，继承元数据并续版本号
+        existing: dict = {}
+        body = content.strip()
+        if body.startswith("---"):
+            end = body.find("---", 3)
+            if end != -1:
+                for line in body[3:end].splitlines():
+                    if ":" in line:
+                        k, _, v = line.partition(":")
+                        existing[k.strip()] = v.strip()
+                body = body[end + 3:].strip()
+
+        prev_version = 0
+        # MA-26：基数原来只从**入参** frontmatter 解析，从不读盘上那份 ⇒
+        # 入参不带版本号时恒回 version: 1，磁盘上已到 v5 的技能被覆盖成 v1（版本倒退），
+        # 而本工具的承诺是"自增 version…Agent 下次 get_skill 即拿到最新版本"。
+        # 消费方（list_skills / get_skill）都按版本号判定"有没有更新"，倒退等于永久收不到。
+        for src in (existing, _read_skill_meta(path) if os.path.isfile(path) else {}):
+            if src.get("version"):
+                try:
+                    prev_version = max(prev_version, int(src["version"]))
+                except (ValueError, TypeError):
+                    pass
+        new_version = prev_version + 1
+
+        from .store import now_local
+
+        # Config 没有 timezone 属性；now_local 需要的是数值时区偏移（小时），
+        # 与 Store 保持一致（默认东八区）。getattr 兜底防止未来字段改名导致再崩。
+        updated_at = now_local(
+            getattr(rt.config, "tz_offset_hours", 8.0)
+        ).isoformat(timespec="seconds")
+        description = title or existing.get("description") or name
+        final_category = category or existing.get("category") or "insight"
+
+        fm = (
+            f"---\n"
+            f"name: {name}\n"
+            f"description: {description}\n"
+            f"category: {final_category}\n"
+            f"version: {new_version}\n"
+            f"updated_at: {updated_at}\n"
+            f"---\n\n"
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(fm + body + "\n")
+        return {
+            "ok": True,
+            "name": name,
+            "version": new_version,
+            "updated_at": updated_at,
+            "path": path,
+            "message": "skill 已写回网关，Agent 通过 get_skill 即可拉取最新版本",
+        }
+
+    @mcp.tool()
+    def list_skills(category: str = "") -> dict:
+        """列出网关上所有 skill 及版本号/更新时间，便于 Agent 比对哪些需要拉取最新版。"""
+        rt = get_runtime()
+        base = rt.config.skills_dir
+        if not os.path.isdir(base):
+            return {"ok": True, "total": 0, "skills": []}
+
+        out = []
+        for name in sorted(os.listdir(base)):
+            skill_dir = os.path.join(base, name)
+            skill_path = os.path.join(skill_dir, "SKILL.md")
+            if os.path.isdir(skill_dir) and os.path.isfile(skill_path):
+                meta = _read_skill_meta(skill_path)
+                if category and meta.get("category") and meta["category"] != category:
+                    continue
+                item = {
+                    "name": name,
+                    "version": meta.get("version", 1),
+                    "updated_at": meta.get("updated_at", ""),
+                }
+                if meta.get("description"):
+                    item["description"] = meta["description"]
+                out.append(item)
+        return {"ok": True, "total": len(out), "skills": out}
+
+    @mcp.tool()
+    def get_skill(name: str, version: str = "latest") -> dict:
+        """Agent 从网关拉取某 skill 的最新版本（version 默认 'latest'，即网关当前保存版）。
+
+        返回完整 markdown 正文及元数据（version / updated_at 等），便于 Agent 与本地缓存比对、按需更新。
+        version 参数预留给未来多版本历史；当前网关只保留最新版，'latest' 或非法值均返回当前版。
+        """
+        if not name:
+            return {"ok": False, "error": "name 不能为空"}
+        # 元宝第八轮 P2-7：路径遍历防护。name 来自 MCP 调用方，不得包含 .. 或绝对路径，
+        # 否则 os.path.join 可逃出 skills_dir 读取任意文件。
+        if ".." in name or name.startswith(("/", "\\")) or ":" in name:
+            return {"ok": False, "error": "name 含非法路径字符"}
+        rt = get_runtime()
+        skill_path = os.path.join(rt.config.skills_dir, name, "SKILL.md")
+        # 二次校验：realpath 必须在 skills_dir 内
+        _real = os.path.realpath(skill_path)
+        _base = os.path.realpath(rt.config.skills_dir)
+        if not _real.startswith(_base + os.sep):
+            return {"ok": False, "error": "skill 路径越界"}
+        if not os.path.isfile(skill_path):
+            return {"ok": False, "error": f"skill 不存在: {name}"}
+        with open(skill_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        meta = _read_skill_meta(skill_path)
+        extra = {k: v for k, v in meta.items() if k not in ("version", "updated_at")}
+        return {
+            "ok": True,
+            "name": name,
+            "version": meta.get("version", 1),
+            "updated_at": meta.get("updated_at", ""),
+            "content": content,
+            "is_latest": True,
+            **extra,
+        }
+
+    # ── 只读资源（v0.9 MCP 契约：列表/获取类迁为资源，可缓存、省 token）────────
+    @mcp.resource("skill://{name}", name="skill",
+                  description="按名获取网关技能 markdown（技能唯一真源）",
+                  mime_type="text/markdown")
+    def res_skill(name: str) -> str:
+        rt = get_runtime()
+        # P2-7 路径遍历防护（与 get_skill 同口径）
+        if ".." in name or name.startswith(("/", "\\")) or ":" in name:
+            return "# skill name 含非法路径字符"
+        skill_path = os.path.join(rt.config.skills_dir, name, "SKILL.md")
+        _real = os.path.realpath(skill_path)
+        _base = os.path.realpath(rt.config.skills_dir)
+        if not _real.startswith(_base + os.sep):
+            return "# skill 路径越界"
+        if not os.path.isfile(skill_path):
+            return f"# skill 不存在: {name}"
+        with open(skill_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    @mcp.resource("template://{template_id}", name="template",
+                  description="行为洞察模板完整 JSON", mime_type="application/json")
+    def res_template(template_id: str) -> str:
+        rt = get_runtime()
+        tpl = rt.templates.get(template_id)
+        if tpl is None:
+            return json.dumps({"ok": False, "error": f"模板不存在: {template_id}"},
+                              ensure_ascii=False)
+        data = tpl.to_dict()
+        data["builtin"] = rt.templates.is_builtin(template_id)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.resource("member://{member_id}", name="member",
+                  description="成员生活习惯档案（含标签/房间/设备）JSON",
+                  mime_type="application/json")
+    def res_member(member_id: str) -> str:
+        rt = get_runtime()
+        member = rt.store.get_member(member_id)
+        if not member:
+            return json.dumps({"ok": False, "error": "成员不存在"}, ensure_ascii=False)
+        member.pop("face_feature", None)  # 生物特征不经资源外泄
+        return json.dumps({"ok": True, "member": member}, ensure_ascii=False)
+
+    @mcp.resource("catalog://rooms", name="rooms",
+                  description="房间与设备目录（entity_id ↔ 友好名/房间/类别）",
+                  mime_type="application/json")
+    def res_rooms() -> str:
+        rt = get_runtime()
+        return json.dumps(rt.insights.entity_catalog("", "", "", "", True, 7),
+                          ensure_ascii=False)
+
+    # ── 可复用提示（v0.9 MCP 契约：把 SERVER_INSTRUCTIONS 流程抽成 Prompts）────
+    @mcp.prompt(name="weekly_review", description="生成家庭行为周报的分析流程")
+    def prompt_weekly_review(days: str = "7") -> str:
+        return (
+            f"请生成最近 {days} 天的家庭行为周报：\n"
+            f"1. get_behavior_insights(days={days}) 拿作息、活跃时段、房间分布、异常；\n"
+            "2. get_device_usage(...) 补关键设备用量；\n"
+            "3. 结合 get_user_persona 汇总；\n"
+            "4. 按「作息 / 房间偏好 / 媒体 / 异常」四段输出，附证据与时间窗。"
+        )
+
+    @mcp.prompt(name="member_persona", description="为成员建立/更新生活习惯档案的流程")
+    def prompt_member_persona(member_id: str = "", days: str = "14") -> str:
+        return (
+            "为成员建立生活习惯档案：\n"
+            "1. list_members() 找到 member_id（无则 create_member）；\n"
+            f"2. get_member_persona(member_id, days={days}) 拿结构化画像与证据；\n"
+            "3. 基于出现天数/频次/典型时段/房间推断标签（如夜猫子🦉、家庭主厨🍳）；\n"
+            "4. 展示证据并询问用户是否存档；**确认后**才 confirm_member_tag 写回"
+            "（服务端需管理员开启 member_tag_agent_writeback）。"
+        )
+
+    @mcp.prompt(name="device_health_audit", description="设备健康巡检流程")
+    def prompt_device_health_audit() -> str:
+        return (
+            "设备健康巡检：\n"
+            "1. get_entity_catalog(days=14, only_enabled=False) 看全量设备与最后在线；\n"
+            "2. 识别长期离线的设备；\n"
+            "3. 用设备健康相关工具拿健康状态与失效实体；\n"
+            "4. 汇总「异常设备清单 + 建议」（重建集成 / 检查供电 / 网络）。"
+        )
+
+    return mcp
+
+
+mcp_server = _build_server()
+# 显式关闭 DNS 重绑定保护：端点已有 Bearer Token 鉴权，且服务经局域网/容器暴露。
+# 仅靠 host="0.0.0.0" 的隐式关闭不够稳健——部分 mcp 版本对默认 host 仍会自动启用
+# 该保护并只允许 localhost，导致局域网客户端（如 DeepSeek++）被 421 拒绝、SSE 端点
+# 永不发送 endpoint 事件。显式传 transport_security 可彻底规避此隐患。
+_MCP_TRANSPORT_SECURITY = (
+    TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    if TransportSecuritySettings is not None
+    else None
+)
+
+mcp_app = (
+    mcp_server.streamable_http_app(
+        streamable_http_path="/",
+        stateless_http=True,
+        host="0.0.0.0",
+        transport_security=_MCP_TRANSPORT_SECURITY,
+    )
+    if mcp_server is not None
+    else None
+)
+
+# 额外提供旧版 SSE 传输兼容端点，供尚未完整支持 Streamable HTTP 的客户端使用
+mcp_sse_app = (
+    mcp_server.sse_app(
+        sse_path="/sse",
+        message_path="/messages/",
+        host="0.0.0.0",
+        transport_security=_MCP_TRANSPORT_SECURITY,
+    )
+    if mcp_server is not None
+    else None
+)
+
+# 将单一 schema 中的 generated 工具动态注册到 MCP，与上方手写 @mcp.tool 并存。
+# 这里显式列出需要 schema 自动注册的工具，避免与手写工具重名冲突。
+# 注册失败**不再吞掉**（审计 20261002 · 新发现 5）：残缺的工具面会让客户端按目录调用却
+# 得到 NOT_FOUND，宁可导入期红掉，也不要放出去一个「目录说有、实际没有」的服务。
+if mcp_server is not None:
+    _registered = register_simple_tools(
+        mcp_server, get_runtime,
+        names=["route_question", "list_vision_cameras", "get_vision_status", "analyze_camera", "query_behavior_events"],
+    )
+    # 目录一致性测试依赖 hasattr(mcp_server, name)，需把动态函数提升为模块级属性
+    globals().update(_registered)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 单一工具 schema 真源（tool_schema.py）
+# 目录唯一真源 = `tool_schema.build_catalog()`（DCD 20261007 §一 裁甲）。
+# help / describe / selftest / WebUI 的 MCP 接入页与内置 LLM 共用同一份工具定义
+# （name/summary/params/example/pitfall）；曾经并存的手写字面量已于本批删除。
+TOOL_CATALOG = build_catalog()
+TOOL_NAMES = TOOL_NAMES_FROM_SPEC
+
+# 安全加固（审计 P0-6）：启动期断言所有写工具均已登记 WRITE_TOOLS，
+# 防止新增写工具漏登记后被默认为只读对所有 scope 开放。
+from .mcp_scopes import assert_write_tools_complete
+assert_write_tools_complete()
+
+
+def get_lifespan_context():
+    """返回 MCP 子应用的 lifespan 上下文管理器工厂，供父应用串接。"""
+    if mcp_app is None:
+        return None
+    router = getattr(mcp_app, "router", None)
+    return getattr(router, "lifespan_context", None)
+
+
+def describe() -> dict:
+    """给 WebUI 的 MCP 接入页使用。"""
+    return {
+        "available": MCP_AVAILABLE,
+        "error": MCP_IMPORT_ERROR,
+        "server_name": SERVER_NAME,
+        "tools": TOOL_NAMES,
+        "catalog": TOOL_CATALOG,
+        "transport": "streamable-http",
+        "fallback_transport": "sse",
+        "sse_endpoint": "/mcp/sse",
+    }

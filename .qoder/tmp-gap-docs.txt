@@ -1,0 +1,446 @@
+##### advance_rule_to_live
+试运行规则转正为 live（红线"观察期"）。
+
+判据：观察满 MA_RULE_DRY_RUN_DAYS 天且期间零误报，否则拒绝并给出 blockers。
+--- body ---
+rt = get_runtime()
+_tok, _scopes, _origin = _caller_context()
+return await asyncio.to_thread(_rule_lifecycle(rt).advance_to_live, rule_id, _tok or _origin or 'agent', reason)
+
+##### assign_member_device
+设置成员专属设备（全量覆盖）。entity_ids 为 entity_id 数组。
+--- body ---
+rt = get_runtime()
+return {'ok': True, 'message': '专属设备已更新'}
+
+##### assign_member_room
+设置成员关联房间（全量覆盖）。rooms 为房间名数组，如 ['主卧','书房']。
+--- body ---
+rt = get_runtime()
+member = await asyncio.to_thread(rt.store.get_member, member_id)
+if member is None:
+    return {'ok': False, 'error': f'NOT_FOUND: 成员 {member_id} 不存在'}
+return {'ok': True, 'message': '关联房间已更新'}
+
+##### audit_rule_recall
+序列规则**召回审计**（只读）：找出"该判没判"的场景，并诊断卡在哪一步。
+
+回答的是『哪条规则可能漏了、漏在哪里』。口径：以「房间·天」为单位，
+当天出现了规则所有步骤所需的标签（eligible）却没命中 → 记为召回缺口
+（near_miss），并给出第一个匹配不上的步骤（blocker）与估计召回率。
+
+适用『就寝识别是不是漏了很多』『房间移动规则为什么很少触发』。
+注：只审计内置序列规则（书房工作/就寝/房间移动）。不落库。
+
+:param days: 回溯天数，默认 14
+:param rooms: 逗号分隔房间白名单，留空=全部
+--- body ---
+rt = get_runtime()
+room_list = [r.strip() for r in (rooms or '').split(',') if r.strip()] or None
+return await asyncio.to_thread(rt.activity.audit_rule_recall, None, None, days, room_list, persist=False)
+
+##### confirm_candidate_rule
+确认或拒绝一条候选规则（vMA-1.2.1 DCD红线）。
+
+confirmed=true: 落 status='accepted' 且 user_confirmed=1（与 WebUI 同一状态字）。
+confirmed=false: 落 status='rejected'，不再出现在建议列表。
+确认只是"人已同意"，**不等于已生效**：还需 promote_candidate_rule 过
+证据门槛才会进引擎，且先进试运行（DCD R3 四红线）。本步会留审计记录。
+--- body ---
+rt = get_runtime()
+_tok, _scopes, _origin = _caller_context()
+status = CANDIDATE_ACCEPTED if confirmed else 'rejected'
+rule = await asyncio.to_thread(rt.store.update_candidate_rule_status, rule_id, status)
+if not rule:
+    return {'ok': False, 'error': f'候选规则 {rule_id} 不存在'}
+return {'ok': True, 'rule_id': rule_id, 'status': status}
+
+##### confirm_member_tag
+把推断出的生活习惯标签写回成员档案。仅当用户明确确认后调用。
+
+tag 为标签名（如 夜猫子）；category 取 sleep/diet/activity/media/hygiene/other；
+emoji 如 🦉；confidence 为 0~1；evidence 为证据字符串列表。
+--- body ---
+rt = get_runtime()
+if not bool(getattr(rt.config, 'member_tag_agent_writeback', False)):
+    return {'ok': False, 'code': 'DENIED', 'error': '成员标签写回未授权（member_tag_agent_writeback=false）。请管理员在 WebUI「系统设置」开启后重试；或引导用户在「家庭成员」页手动添加标签。'}
+result = await asyncio.to_thread(rt.store.add_member_tag, member_id, tag, category, emoji, confidence, evidence or [], 'agent')
+return {'ok': True, 'tag': result}
+
+##### counterfactual_query
+反事实查询（P5c）：如果没有这个事件，行为指标会怎样？
+
+基于分组比较法，用无事件天的分布作为反事实估计。
+返回实际值、反事实预测值、差异、95% 置信区间、因果效应量、显著性。
+
+:param person: 成员名称
+:param event_type: 事件类型（如 tv_on、light_on、aircon_on、door_open、face_known）
+:param metric: 行为指标，默认 arrival_time
+:param days: 回溯天数，默认 30
+:param room: room_distribution 指标时指定房间
+--- body ---
+from memory_agent.change_attribution import counterfactual_query as _cfq
+from datetime import timedelta
+rt = get_runtime()
+events = await asyncio.to_thread(_fetch_attribution_events, rt.store, max(14, int(days)))
+if len(events) < 14:
+    return {'ok': False, 'error': f'事件数据不足（{len(events)} 条 < 14 天最低要求）', 'event_count': len(events)}
+change_ts = (now_local(rt.config.tz_offset_hours) - timedelta(days=1)).strftime('%Y-%m-%dT00:00:00')
+result = await asyncio.to_thread(_cfq, events, person, metric, event_type, change_ts, max(30, int(days)), room or None)
+return {'ok': result.get('enabled', False), **result}
+
+##### create_member
+创建家庭成员。name 为显示名（必填，不可空）；avatar_emoji 为头像（如 🦉）。
+--- body ---
+if not name or not name.strip():
+    return {'ok': False, 'error': 'INVALID_PARAM: name 不能为空'}
+rt = get_runtime()
+member = await asyncio.to_thread(rt.store.create_member, name.strip(), avatar_emoji, avatar_bg, note)
+return {'ok': True, 'member': member}
+
+##### delete_member
+删除家庭成员（不可恢复）。member_id 为成员 UUID。
+--- body ---
+rt = get_runtime()
+member = await asyncio.to_thread(rt.store.get_member, member_id)
+if member is None:
+    return {'ok': False, 'error': f'NOT_FOUND: 成员 {member_id} 不存在'}
+return {'ok': True, 'message': f"成员 {member.get('name', member_id)} 已删除"}
+
+##### execute_intent_actions
+P4c 意图→动作执行：推断意图后执行（或预览）建议动作。
+
+内置 7 个意图的常识动作映射（看电视/工作/睡觉/出门/回家/吃饭/运动）。
+默认 dry_run=true 只预览不执行；dry_run=false 时只执行 auto=true 的动作
+（TTS 播报/告警），灯光/摄像头等需要用户确认的动作不会自动执行。
+
+Args:
+    intent: 意图名称（如 "watch_tv"、"sleep"、"arrive_home"）
+    dry_run: True=只预览不执行（默认），False=执行自动动作
+    person: 触发意图的人（可选，用于日志）
+--- body ---
+rt = get_runtime()
+from .intent_action import execute_intent_actions as _execute
+p = (person or '').strip() or None
+result = await _execute(intent, rt, dry_run=dry_run, person=p)
+return {'ok': True, **result}
+
+##### flag_rule_false_positive
+把一条规则触发记录判为误报（观察期的红判据，误报未清零不能转正）。
+--- body ---
+rt = get_runtime()
+_tok, _scopes, _origin = _caller_context()
+return await asyncio.to_thread(_rule_lifecycle(rt).flag_false_positive, rule_id, trigger_id, _tok or _origin or 'agent', reason)
+
+##### generate_self_diary
+自动生成今天的自我日记（第一人称视角）。
+从当天事件提取脱敏摘要，调 LLM 生成日记，写入 staging。
+--- body ---
+rt = get_runtime()
+all_mem = await asyncio.to_thread(rt.store.list_agent_memories, 'all', '', 500, '')
+diaries = [m for m in all_mem if m.get('topic_key') == 'self_diary']
+yesterday_text = diaries[-1]['text'][:200] if diaries else '（还没有日记）'
+today = now_local(rt.config.tz_offset_hours).strftime('%Y-%m-%d')
+events = await asyncio.to_thread(rt.store.query_events, '', today, '', 100)
+keep_patterns = ['binary_sensor', 'switch.', 'light.', 'media_player', 'cover.', 'lock.', 'person.', 'device_tracker']
+skip_patterns = ['temperature', 'humidity', 'power', 'battery', 'co2', 'storage', 'signal', 'rssi', 'voltage', 'current', 'energy', 'pressure', 'illuminance', 'moisture', 'conductivity', 'daily_use', 'hourly_use', 'no_one_duration', 'time_count', 'status_p_']
+summary_lines = []
+for e in events[:200]:
+    t = e.get('ts', '')[11:16]
+    room = e.get('room', '')
+    entity = e.get('entity_id', '')
+    if not any((p in entity for p in keep_patterns)):
+        continue
+    if any((p in entity.lower() for p in skip_patterns)):
+        continue
+    if room and entity:
+        summary_lines.append(f'{t} {room}: {entity}')
+summary = '\n'.join(summary_lines[:40])
+prompt = f'你是这个家庭里的一个"存在"。用第一人称写今天的日记。\n\n严格规则：\n1. 只能写下面事件摘要里有的内容，绝对不许编造任何摘要里没有的细节\n2. 摘要里没有提到的，就说"没注意到"或"没有记录"\n3. 开头引用昨天日记的一句话（"昨天我说…"）\n4. 200-400 字\n5. 只写观察到的，不下结论、不做诊断\n6. 用"我"视角，不用"这个家庭"\n\n昨天日记：{yesterday_text}\n\n今天的事件摘要（脱敏后，只有这些是事实）：\n{summary}\n\n请写今天的日记（只能用上面摘要里的事实）：'
+try:
+    resp = await rt.llm.chat(messages=[{'role': 'user', 'content': prompt}], max_tokens=800, temperature=0.7)
+    diary_text = resp.get('content', '')
+except Exception as e:
+    return {'ok': False, 'error': f'LLM 调用失败: {e}'}
+mid = await asyncio.to_thread(rt.store.add_agent_memory, 'self_diary', diary_text, 'self_diary', '[]', '[]', 365, 'staging', 1)
+return {'ok': True, 'memory_id': mid, 'diary': diary_text[:200]}
+
+##### get_behavior_drift
+在线异常 + 概念漂移检测（只读）：把**每小时行为活跃度**当时间序列在线评估。
+
+Half-Space Trees 给无监督异常分（哪些时段不像平时），ADWIN 检测活跃度分布的
+**突变**（"最近作息/活跃度变了"）。适用『最近作息是不是变了』『有没有异常的时段』。
+与 mine_behavior_process 互补：后者按天做**事后**一致性检验，本工具看**时序突变**。
+只算不落库；要落库请用 refresh_behavior_drift。
+
+:param days: 回溯天数，默认 14（1 小时分桶，14 天 ≈ 336 点）
+--- body ---
+rt = get_runtime()
+return await asyncio.to_thread(rt.activity.mine_drift, None, None, days, None, persist=False)
+
+##### get_behavior_prediction
+P4a 行为预测：基于历史事件预测某人的到家时间和日常作息。
+
+Args:
+    person: 人名（如 "Kevin"、"Emily"、"lidicn"）
+    weekday: 0=周一, 6=周日。-1=用所有日期统计（默认）。
+--- body ---
+rt = get_runtime()
+events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
+if not events:
+    return {'ok': False, 'error': '无历史行为事件数据'}
+from .behavior_predictor import predict_daily_routine, predict_arrival_time
+wd = None if weekday < 0 else weekday
+arrival = predict_arrival_time(events, person, weekday=wd)
+routine = predict_daily_routine(events, person)
+return {'ok': True, 'person': person, 'weekday': wd, 'arrival_prediction': arrival, 'daily_routine': routine}
+
+##### infer_behavior_intent
+P4b 意图推断：从最近的行为事件推断用户意图（无 LLM 快路径）。
+
+基于行为规则匹配（开灯+开电视=想看电视），毫秒级响应。
+返回意图列表（按置信度排序），每个含 intent/label/confidence/evidence/suggestions。
+
+Args:
+    person: 人名（可选，限定某人，如 "Kevin"）
+    window_min: 时间窗口（分钟）。给定则**只用这一个窗口**（最多返回 1 个意图）；
+        不给则按 5/15/30 三个窗口各试一遍再按置信度排序。
+    limit: 返回意图数量（默认 3，最多 5）
+--- body ---
+rt = get_runtime()
+events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
+if not events:
+    return {'ok': False, 'error': '无历史行为事件数据'}
+from .intent_inference import infer_intent_sequence, get_intent_suggestions
+p = (person or '').strip() or None
+intents = infer_intent_sequence(events, person=p, max_intents=max(1, min(limit, 5)), window_min=window_min)
+for intent in intents:
+    intent['suggestions'] = get_intent_suggestions(intent)
+return {'ok': True, 'intents': intents, 'count': len(intents)}
+
+##### list_behavior_anomalies
+列出已落库的行为异常（按严重度降序）。
+
+:param status: new（未复核）| confirmed | ignored；留空=全部
+:param days: 只取最近 N 天（按异常所属日期），默认 14
+:param limit: 返回上限，默认 50
+--- body ---
+from datetime import timedelta
+rt = get_runtime()
+day_from = (now_local(rt.config.tz_offset_hours) - timedelta(days=max(1, int(days or 14)))).strftime('%Y-%m-%d')
+rows = await asyncio.to_thread(rt.store.list_behavior_anomalies, status or None, day_from, None, None, max(1, min(int(limit or 50), 500)))
+return {'ok': True, 'count': len(rows), 'day_from': day_from, 'anomalies': rows}
+
+##### list_behavior_drifts
+列出已落库的漂移/异常时段。
+
+:param kind: drift（活跃度分布突变）| anomaly（异常时段）；留空=全部
+:param days: 只取最近 N 天，默认 14
+--- body ---
+from datetime import timedelta
+rt = get_runtime()
+day_from = (now_local(rt.config.tz_offset_hours) - timedelta(days=max(1, int(days or 14)))).strftime('%Y-%m-%d')
+rows = await asyncio.to_thread(rt.store.list_behavior_drifts, kind or None, day_from, None, max(1, min(int(limit or 50), 500)))
+return {'ok': True, 'count': len(rows), 'day_from': day_from, 'drifts': rows}
+
+##### list_bug_reports
+列出已上报的 bug。status: open|resolved|all
+--- body ---
+rt = get_runtime()
+bugs = await asyncio.to_thread(rt.store.list_bug_reports, status, limit)
+return {'ok': True, 'count': len(bugs), 'bugs': bugs}
+
+##### list_candidate_rules
+列出候选规则建议（vMA-1.2.1）。
+
+status: staging(待确认) | confirmed(已确认) | rejected(已拒绝)
+返回未确认的自动规则建议，供人工审核。
+--- body ---
+rt = get_runtime()
+rules = await asyncio.to_thread(rt.store.list_candidate_rules, status=status)
+return {'ok': True, 'count': len(rules), 'rules': rules}
+
+##### list_device_health
+实体健康 / 失效清单（A3）。
+
+state 可填 active（确认在线）/ unknown（短暂失联）/ stale（长期失效），
+留空返回全部。``referenced=1`` 表示该实体仍被某个模板引用，
+它一旦失效就会让洞察失真，应优先处理。
+--- body ---
+rt = get_runtime()
+identity = getattr(rt, 'identity', None)
+if identity is None:
+    return {'ok': False, 'error': '身份层未启用'}
+rows = await asyncio.to_thread(identity.store.list_device_health, state)
+devices = await asyncio.to_thread(identity.list_devices)
+return {'ok': True, 'state': state or 'all', 'health': rows, 'total': len(rows), 'logical_devices': len(devices)}
+
+##### list_members
+列出全部家庭成员，返回 id/name/rooms/devices/tags 轻量字段。
+不含头像/人脸等大字段；需要详情用 get_member_persona(member_id)。
+--- body ---
+rt = get_runtime()
+raw = await asyncio.to_thread(rt.store.list_members)
+_SKIP = {'face_photo', 'avatar_url', 'embedding', 'face_feature', 'profile_json', 'appearance_json'}
+members = []
+for m in raw:
+    slim = {k: v for k, v in m.items() if k not in _SKIP}
+    if isinstance(slim.get('tags'), list):
+        slim['tags'] = [{'label': t.get('label') or t.get('name', ''), 'category': t.get('category', ''), 'confidence': t.get('confidence', 0)} for t in slim['tags'] if isinstance(t, dict)]
+    members.append(slim)
+return {'ok': True, 'members': members, 'total': len(members)}
+
+##### list_rule_channel
+DCD R3 生效通道全景（只读）。
+
+candidate_id 非空时只返回该候选的门槛判据（eligibility 预演）；
+否则返回 accepted 候选的晋升预演清单 + 试运行/已转正/已撤销规则与观察读数。
+判据：accepted + user_confirmed + ≥MA_RULE_MIN_EVIDENCE 个独立证据日 + 事件类型在引擎实时 feed 词表内。
+--- body ---
+rt = get_runtime()
+lc = _rule_lifecycle(rt)
+if candidate_id:
+    return await asyncio.to_thread(lc.eligibility, candidate_id)
+return await asyncio.to_thread(lc.channel_status)
+
+##### list_rule_lifecycle_audit
+列出规则生命周期审计（机器建议→人工确认→生效→转正/撤销全链路留痕）。
+--- body ---
+rt = get_runtime()
+rows = await asyncio.to_thread(rt.store.list_rule_lifecycle, rule_id, limit)
+intact = all((str(r.get('rule_id') or '') and str(r.get('action') or '') and str(r.get('created_at') or '') for r in rows))
+return {'ok': intact, 'count': len(rows), 'items': rows}
+
+##### mine_behavior_process
+过程挖掘（只读分析）：把「房间·天」当轨迹、设备标签为步骤，挖行为过程模型并找**异常的一天**。
+
+与序列规则（define_activity/mine_sequences 的 n-gram 频次）互补：本工具做**一致性检验**
+——某天的行为步骤里出现了平时几乎不走的转移（如平时只 门→灯→电脑，某天多插了空调），
+即判为行为异常。返回变体统计、DFG 规模、一致性率与异常清单（含稀有边证据）。
+适用『最近有没有哪天行为异常/不对劲』『作息是不是变了』。不写库；要落库请用
+refresh_behavior_anomalies。
+
+:param days: 回溯天数，默认 7
+:param rooms: 逗号分隔的房间白名单，留空=全部房间
+--- body ---
+rt = get_runtime()
+room_list = [r.strip() for r in (rooms or '').split(',') if r.strip()] or None
+return await asyncio.to_thread(rt.activity.mine_process, None, None, days, room_list, persist=False, emit_rules=False)
+
+##### promote_candidate_rule
+把一条 accepted 候选规则晋升进引擎（DCD R3）。
+
+必须先过证据门槛，否则拒绝并返回 blockers；晋升成功的规则一律
+``mode='dry_run'``（只记录不触发），观察期满再 advance_rule_to_live 转正。
+--- body ---
+rt = get_runtime()
+_tok, _scopes, _origin = _caller_context()
+return await asyncio.to_thread(_rule_lifecycle(rt).promote, rule_id, _tok or _origin or 'agent', reason)
+
+##### query_device_usage
+按「逻辑设备名」查询用量 / 时长 / 计数（v0.3 语义工具）。
+
+与 ``get_device_usage`` 的区别：本工具接受**逻辑设备名**（如「客厅电视」「游戏机」），
+由身份层解析为当前 entity_id。因此 HA 集成重登、双集成并存导致 entity_id 漂移后
+依然稳定——不必先调 get_entity_catalog 去查最新的 entity_id。
+
+典型用法：``query_device_usage(logical_device="客厅电视", attribute="source",
+value="HDMI 3", metric="duration", days=2)`` 即「电视 HDMI 3 近两天的时长」。
+
+logical_device 与 entity_id 二选一；都不传会报错。
+metric：duration（时长）/ count（次数）/ numeric_sum（数值累计）。
+--- body ---
+from .templates import run_query
+rt = get_runtime()
+return await asyncio.to_thread(run_query, rt, entity_id=entity_id, logical_id=logical_device, attribute=attribute, pattern=pattern, value=value, metric=metric, days=days, start=start, end=end, include_timeline=include_timeline)
+
+##### read_self_diary
+读取最近 N 天的自我日记。
+days: 回溯天数，默认 7
+--- body ---
+rt = get_runtime()
+all_mem = await asyncio.to_thread(rt.store.list_agent_memories, 'all', '', 500, '')
+diaries = [m for m in all_mem if m.get('topic_key') == 'self_diary']
+from datetime import timedelta
+cutoff = (now_local(rt.config.tz_offset_hours) - timedelta(days=days)).isoformat()
+diaries = [d for d in diaries if d.get('created_at', '') >= cutoff]
+return {'ok': True, 'count': len(diaries), 'diaries': [{'date': d.get('created_at', '')[:10], 'text': d.get('text', '')} for d in diaries]}
+
+##### refresh_behavior_anomalies
+重算并**落库**行为异常（写工具，需 read+write 令牌）。
+
+同 mine_behavior_process 的算法，但把异常写入 behavior_anomalies 供 WebUI 复核，
+并把「房间高频过程变体」写候选规则（source=process，作为规则缺口提示，人工审核）。
+--- body ---
+rt = get_runtime()
+room_list = [r.strip() for r in (rooms or '').split(',') if r.strip()] or None
+return await asyncio.to_thread(rt.activity.mine_process, None, None, days, room_list, persist=True, emit_rules=True)
+
+##### refresh_behavior_drift
+重算并**落库**漂移点/异常时段（写工具，需 read+write 令牌）→ behavior_drifts。
+--- body ---
+rt = get_runtime()
+return await asyncio.to_thread(rt.activity.mine_drift, None, None, days, None, persist=True)
+
+##### refresh_rule_recall_gaps
+重算并**落库**召回放宽建议（写工具，需 read+write 令牌）。
+
+对反复卡在同一步的缺口，产出「去掉该步骤」的宽松变体，写 ``candidate_rules``
+（source=recall_gap，staging 待人工审核）。不会自动改动线上规则。
+--- body ---
+rt = get_runtime()
+return await asyncio.to_thread(rt.activity.audit_rule_recall, None, None, days, None, persist=True)
+
+##### report_bug
+上报一条 bug（agent 用 MA 时发现功能问题记录于此）。
+
+tool_name: 出问题的 MCP 工具名
+description: 问题描述
+expected: 期望行为
+actual: 实际行为
+severity: minor|major|critical
+--- body ---
+rt = get_runtime()
+_tok, _scopes, _origin = _caller_context()
+result = await asyncio.to_thread(rt.store.add_bug_report, tool_name, description, expected, actual, severity, _tok)
+return {'ok': True, **result}
+
+##### review_behavior_anomaly
+复核行为异常（写工具）：status = confirmed（确属异常）/ ignored（误报）/ new（复位）。
+
+人工复核结果在重跑挖掘时会被保留（不会被刷新洗掉）。
+--- body ---
+rt = get_runtime()
+if status not in ('new', 'confirmed', 'ignored'):
+    return {'ok': False, 'error': 'status 必须是 new/confirmed/ignored'}
+changed = await asyncio.to_thread(rt.store.set_behavior_anomaly_status, anomaly_id, status)
+if not changed:
+    return {'ok': False, 'error': f'异常不存在: {anomaly_id}'}
+return {'ok': True, 'anomaly_id': anomaly_id, 'status': status}
+
+##### revoke_active_rule
+撤销一条生效规则（红线"可回滚"）。
+
+关闭规则（mode='revoked'、enabled=0）并删除它经 infer_activity 产生的
+推断活动，回滚条数写入审计。
+--- body ---
+rt = get_runtime()
+_tok, _scopes, _origin = _caller_context()
+return await asyncio.to_thread(_rule_lifecycle(rt).revoke, rule_id, _tok or _origin or 'agent', reason, rollback_inferences)
+
+##### revoke_signal_rule
+撤销信号硬排除（将其标记为 revoked）。exclusion_id 来自 teach_signal 的返回值。
+--- body ---
+rt = get_runtime()
+ok = await asyncio.to_thread(rt.store.revoke_signal_exclusion, exclusion_id)
+if not ok:
+    return {'ok': False, 'error': f'NOT_FOUND: 排除规则 {exclusion_id} 不存在'}
+return {'ok': True, 'message': f'排除规则 {exclusion_id} 已撤销'}
+
+##### write_self_diary
+写一段自我日记（第一人称视角）。写入 staging，永不自动晋升。
+text: 日记正文（第一人称，如"今天晚上客厅很安静…"）
+--- body ---
+rt = get_runtime()
+mid = await asyncio.to_thread(rt.store.add_agent_memory, 'self_diary', text, 'self_diary', '[]', '[]', 365, 'staging', 1)
+return {'ok': True, 'memory_id': mid, 'message': '日记已写入 staging'}

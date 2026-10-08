@@ -1,0 +1,5 @@
+ANCHOR_HARNESS .qoder\tmp-c91-mut31.py legs=13 anchor_ok=13
+ANCHOR_HARNESS .qoder\tmp-c81-mut.py legs=22 anchor_ok=22
+ANCHOR_HARNESS .qoder\tmp-c85-mut.py legs=11 anchor_ok=11
+ANCHOR_HARNESS .qoder\tmp-c82-mut.py legs=14 anchor_ok=14
+ANCHOR_OK=60 ANCHOR_BAD=0 ANCHOR_MISSING=0

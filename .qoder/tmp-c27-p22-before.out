@@ -1,0 +1,103 @@
+.FFFF                                                                    [100%]
+================================== FAILURES ===================================
+______________ test_login_handler_does_not_freeze_the_event_loop ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002DC93566D70>
+
+    def test_login_handler_does_not_freeze_the_event_loop(monkeypatch):
+        auth = _SlowAuth()
+        monkeypatch.setattr(ar, "runtime", lambda request=None: _RT(auth))
+    
+        async def call():
+            return await ar.login(_request({"username": "u1", "password": "pw"}))
+    
+        ticks = _ticks_during(call)
+        assert auth.login_calls == 1
+>       assert ticks >= MIN_TICKS_WHEN_OFFLOADED
+E       assert 0 >= 10
+
+tests\test_vma_a3_p22_auth_loop_blocking.py:127: AssertionError
+___________ test_auth_status_handler_does_not_freeze_the_event_loop ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002DC93567230>
+
+    def test_auth_status_handler_does_not_freeze_the_event_loop(monkeypatch):
+        auth = _SlowAuth()
+        monkeypatch.setattr(ar, "runtime", lambda request=None: _RT(auth))
+    
+        async def call():
+            return await ar.auth_status(_request(method="GET"))
+    
+        ticks = _ticks_during(call)
+        assert auth.status_reads == 1
+>       assert ticks >= MIN_TICKS_WHEN_OFFLOADED
+E       assert 0 >= 10
+
+tests\test_vma_a3_p22_auth_loop_blocking.py:140: AssertionError
+_____________ test_register_precheck_offloads_the_users_file_read _____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002DC93575A30>
+
+    def test_register_precheck_offloads_the_users_file_read(monkeypatch):
+        """`register` 的前置检查也在免鉴权路径上，同步读账号文件同样冻循环；
+        它后面的 `rt.auth.register()` 则**故意不卸载**（见下一条）。"""
+        auth = _SlowAuth()
+        monkeypatch.setattr(ar, "runtime", lambda request=None: _RT(auth))
+    
+        async def call():
+            # has_users=True ⇒ 走"已初始化，需管理员"分支，不经 register 的 RMW
+            return await ar.register(_request({"username": "u2", "password": "pw"}))
+    
+        ticks = _ticks_during(call)
+        assert auth.status_reads == 1
+>       assert ticks >= MIN_TICKS_WHEN_OFFLOADED
+E       assert 0 >= 10
+
+tests\test_vma_a3_p22_auth_loop_blocking.py:155: AssertionError
+____________ test_concurrent_registration_does_not_lose_an_account ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002DC93597020>
+
+    def test_concurrent_registration_does_not_lose_an_account(monkeypatch):
+        """反向不变量：register 的「读 → 改 → 整份写回」在 `AuthManager` 里没有锁，
+        靠的就是它在事件循环线程内不被 await 打断。两个并发注册必须都留下来。"""
+        class _RmwAuth:
+            def __init__(self):
+                self.users = {}
+    
+            def has_users(self):
+                return bool(self.users)
+    
+            def register(self, username, password):
+                snapshot = dict(self.users)      # 读
+                time.sleep(0.05)                 # 真实实现里是文件 IO，放大窗口用
+                snapshot[username] = {"password_hash": "h"}
+                self.users = snapshot            # 整份写回（覆盖）
+                return {"ok": True, "is_admin": len(snapshot) == 1}
+    
+            def login(self, username, password):
+                return {"ok": True, "token": "t"}
+    
+        auth = _RmwAuth()
+        monkeypatch.setattr(ar, "runtime", lambda request=None: _RT(auth))
+    
+        async def main():
+            await asyncio.gather(
+                ar.register(_request({"username": "a", "password": "pw"})),
+                ar.register(_request({"username": "b", "password": "pw"})),
+            )
+    
+        asyncio.run(main())
+>       assert sorted(auth.users) == ["a", "b"]
+E       AssertionError: assert ['a'] == ['a', 'b']
+E         
+E         Right contains one more item: 'b'
+E         Use -v to get more diff
+
+tests\test_vma_a3_p22_auth_loop_blocking.py:188: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_vma_a3_p22_auth_loop_blocking.py::test_login_handler_does_not_freeze_the_event_loop
+FAILED tests/test_vma_a3_p22_auth_loop_blocking.py::test_auth_status_handler_does_not_freeze_the_event_loop
+FAILED tests/test_vma_a3_p22_auth_loop_blocking.py::test_register_precheck_offloads_the_users_file_read
+FAILED tests/test_vma_a3_p22_auth_loop_blocking.py::test_concurrent_registration_does_not_lose_an_account
+4 failed, 1 passed in 6.11s

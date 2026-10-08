@@ -1,0 +1,27 @@
+copy tree ready: E:\NAS\memory-agent\.qoder\tmp-c85-mut
+[Q-0] 对照腿（什么都不改）rc=0 summary='27 passed, 1 skipped in 5.34s' failed=[]
+Q-0 绿：副本树与工作树同口径，后续红都是注入造成的。
+[Q01] KILLED src\memory_agent\llm_client.py :: MA-25 回归：热更新整表重建后不关旧 provider ⇒ 每次 /api/config 漏一批 httpx.AsyncClient
+        1 failed, 26 passed, 1 skipped in 3.00s :: 红用例 1 条: test_reconfigure_closes_the_providers_it_is_replacing
+[Q02] SURVIVED !! src\memory_agent\mcp_server.py :: MA-26 回归：版本基数只从入参 frontmatter 取 ⇒ 入参不带版本号时把盘上 v5 覆盖成 v1 :: 27 passed, 1 skipped in 3.34s
+[Q03] KILLED src\memory_agent\agent_memory.py :: MA-27 回归：fail-closed 只回公共记忆，响应却把自己说成跨成员全量
+        1 failed, 26 passed, 1 skipped in 3.08s :: 红用例 1 条: test_list_agent_memories_public档不谎称_all
+[Q04] KILLED src\memory_agent\signal_learning.py :: MA-28 回归：越界 exclusion_type 不再被拦，直接写进 signal_exclusions
+        5 failed, 22 passed, 1 skipped in 2.84s :: 红用例 5 条: test_dry_run_rejects_out_of_enum_exclusion_type[exclude_x], test_dry_run_rejects_out_of_enum_exclusion_type[hard], test_dry_run_rejects_out_of_enum_exclusion_type[isautomation], test_dry_run_rejects_out_of_enum_exclusion_type[no_such_type], test_real_write_shares_the_same_judgement
+[Q05] KILLED src\memory_agent\signal_learning.py :: MA-28 回归：dry_run 抢在校验之前回假成功（一行判据都没走）
+        7 failed, 20 passed, 1 skipped in 3.01s :: 红用例 7 条: test_dry_run_accepts_a_good_hard_and_writes_nothing, test_dry_run_rejects_out_of_enum_exclusion_type[exclude_x], test_dry_run_rejects_out_of_enum_exclusion_type[hard], test_dry_run_rejects_out_of_enum_exclusion_type[isautomation], test_dry_run_rejects_out_of_enum_exclusion_type[no_such_type], test_dry_run_soft_requires_text ...
+[Q06] KILLED src\memory_agent\api\nr_routes.py :: MA-30 回归：零实现端点回到 200 + 「动作已执行」
+        1 failed, 26 passed, 1 skipped in 2.85s :: 红用例 1 条: test_execute_action_returns_not_implemented
+[Q07] KILLED src\memory_agent\runtime.py :: MA-31 回归：顶层 handler 吞掉异常，外壳收不到 ⇒ 无从重启
+        1 failed, 26 passed, 1 skipped in 2.76s :: 红用例 1 条: test_self_diary_round_reraises_to_the_wrapper
+[Q08] KILLED src\memory_agent\runtime.py :: MA-31 回归：接住就 return（旧结构），一次异常 ⇒ 任务永久停摆
+        1 failed, 26 passed, 1 skipped in 3.54s :: 红用例 1 条: test_diary_wrapper_restarts_after_round_raises
+[Q09] KILLED src\memory_agent\mcp_server.py :: MA-33 回归：同步判据退回"盘上有文件就跳过" ⇒ 旧部署永久停在旧版且无日志
+        2 failed, 25 passed, 1 skipped in 2.77s :: 红用例 2 条: test_seed_repairs_an_unreadable_disk_copy, test_seed_upgrades_when_disk_lags_behind
+[Q10] KILLED src\memory_agent\runtime.py :: MA-35 回归：保留期清理回到只在启动跑一次 ⇒ 长跑容器里 events 跨度远超 90 天
+        2 failed, 25 passed, 1 skipped in 3.08s :: 红用例 2 条: test_retention_cleanup_retries_after_failure, test_retention_cleanup_runs_more_than_once
+[Q11] KILLED src\memory_agent\runtime.py :: MA-35 回归：清理失败后等满一个周期才重试（默认 86400s）而非短退避
+        1 failed, 26 passed, 1 skipped in 2.88s :: 红用例 1 条: test_retention_cleanup_retries_after_failure
+WT_UNTOUCHED=False
+totals: killed=10 survived=1 invalid=0 legs=11
+python: 3.13.2 harness-exe=C:/Users/lidicn/AppData/Local/Programs/Python/Python313/python.exe

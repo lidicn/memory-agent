@@ -1,0 +1,2 @@
+ANCHOR_HARNESS .qoder/tmp-c92-mut32.py legs=9 anchor_ok=9
+ANCHOR_OK=9 ANCHOR_BAD=0 ANCHOR_MISSING=0

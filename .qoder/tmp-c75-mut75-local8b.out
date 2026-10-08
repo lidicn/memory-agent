@@ -1,0 +1,11 @@
+腿                        RC     读数
+M-0                      0      对照 failed=0 10 passed
+L1-quality-docstring     1      该响 failed=1 1 failed
+L2-hints-docstring       1      该响 failed=1 1 failed
+L3-hints-param           1      该响 failed=1 1 failed
+L4-recommended-tool      1      该响 failed=2 2 failed
+L5-fake-intent           1      该响 failed=1 1 failed
+L6-temperature-chain     1      该响 failed=1 1 failed
+L7-attrs-name-as-key     1      该响 failed=2 2 failed
+MUT75_COUNT=8 MUTATION_BAD=0
+SRC_UNCHANGED=True mcp_se_SHA=2ac5ee1665c6 tool_s_SHA=843d68eef44a insigh_SHA=b21c968d9f32 utils_SHA=6962e628e462

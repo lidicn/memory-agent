@@ -1,0 +1,249 @@
+HEAD=2a14651
+UNPUSHED=10
+GUARD_OK REMOTE_SYNTAX_RC=0
+GUARD_OK SELF_SYNTAX_RC=0
+GUARD_OK ANCHORS_SYNTAX_RC=0
+GUARD_OK HASHES_PARSE_RC=0
+.qoder/tmp-c68-remote17.sh UNESCAPED=0 ODD_QUOTE_LINES=[]
+LINT_RC=0
+GUARD_OK LINT_RC=0
+GUARD_OK MUT68_VERIFY_RC=0
+MUTANTS_PARSED=15 SYNTAX_BAD=0 ANCHOR_OR_RESTORE_BAD=0
+GUARD_OK MUT68_PARSED=15
+GUARD_OK MUT68_RESTOREBAD=0
+GUARD_OK MUT64_VERIFY_RC=0
+PARSE_ONLY_RC=0 MUTANTS_PARSED=24
+DEADSHAPE_COUNT=0
+SYNTAX_BAD=0
+VERIFY_BAD=0
+MUT63_VERIFY_INFO_RC=1
+PARSE_ONLY_RC=0 MUTANTS_PARSED=22
+BAD anchor=0 residue=0 M1 丢掉 bool 判定
+BAD anchor=0 residue=0 M2 下界门失效
+BAD anchor=0 residue=0 M3 上界门失效
+BAD anchor=0 residue=0 M4 转换失败退回默认档（改前的 int(x or 3)）
+DEADSHAPE_COUNT=0
+SYNTAX_BAD=0
+VERIFY_BAD=4
+GUARD_OK PARSE_tmp-b68-mut=0
+GUARD_OK PARSE_tmp-b64-mut=0
+FILES=400
+IN_SNAP_checked=20
+IN_SNAP_attic=9
+GUARD_OK HASHES_LOCAL_RC=0
+HASH_LISTED=400 HASH_FILES=400 HASH_MISSING=0
+HASH_AGGREGATE=cafb96a7e93403c526f9afbc85e9a4099c541f6ca94052323792e3fe9a581112
+GUARD_OK HASH_MISSING=0
+PREFLIGHT_OK=1
+GUARD_OK TAR_RC=0
+TAR_SIZE=2432371
+GUARD_OK SCP_RC=0
+GUARD_OK REMOTE_SCP_RC=0
+GUARD_OK MUT68_SCP_RC=0
+GUARD_OK MUT64_SCP_RC=0
+GUARD_OK ANCHORS_SCP_RC=0
+GUARD_OK HASHES_SCP_RC=0
+GUARD_OK FILELIST_SCP_RC=0
+STAGE_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+43
+SNAP_ANCHOR_LINES_RC=0
+SYNC_RC=0
+2026-10-07T04:39:11+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+Python 3.11.16
+TOOLCHAIN_RC=0
+SNAP_RC=0
+HASH_LISTED=400 HASH_FILES=400 HASH_MISSING=0
+HASH_AGGREGATE=cafb96a7e93403c526f9afbc85e9a4099c541f6ca94052323792e3fe9a581112
+ANCHORS_RC=0
+TT_AMR=10
+TT_MBR=13
+TT_SGR=3
+TT_VRS=17
+TT_LLR=12
+TT_MCR=1
+TT_BHR=49
+TT_ACP=0
+TT_MCA=0
+L_AMR_LIST=1
+L_MBR_MEMBERS=1
+L_MBR_APPEAR=1
+L_MBR_FETCH=1
+L_MBR_CONF=1
+L_MCR_LIMIT=1
+L_MCR_ROWS=1
+L_LLR_CACHE=1
+L_ACP_ONLOOP=1
+OLD_AMR_DIRECT=0
+OLD_MBR_DIRECT=0
+OLD_LLR_DIRECT=0
+G_SELFTEST=1
+G_OK=1
+G_STOREFACE=3
+G_BODY=2
+G_SUBSYS=1
+G_MEMO=1
+G_TRANSITIVE=5
+G_LINES=516
+T_DEFS=20
+T_LANDING=1
+T_OFFLOADED=2
+T_SELFT=1
+T_HEART=1
+T_REV=1
+T_RULER=2
+T_LINES=570
+L_AMR=226
+L_MBR=286
+L_SGR=80
+L_VRS=411
+L_LLR=673
+L_MCR=324
+SCANS_RC=0
+FINDINGS=0
+QBLAND_RC=0
+CALLSITE_RC=0
+扫描 src/memory_agent/insights/api.py：门面引擎指向 39（含多跳链 4），空指向 0，未登记 0
+ATTRS_RC=0
+SELFTEST_HIT core/p1_param_unguarded.py -> UNGUARDED-EXTERNAL (param-tainted:days)
+SELFTEST_HIT core/p2_param_renamed.py -> UNGUARDED-EXTERNAL (param-tainted:span)
+SELFTEST_HIT core/p3_regex_from_question.py -> UNGUARDED-EXTERNAL (param-tainted:n)
+SELFTEST_HIT core/p4_lo_only.py -> UNGUARDED-EXTERNAL (param-tainted:days)
+SELFTEST_HIT core/p5_marked_and_bounded.py -> CONFLICT:marked+bounded (param-tainted:days)
+SELFTEST_HIT core/p6_tuple_target.py -> UNGUARDED-EXTERNAL (param-tainted:a)
+SELFTEST_HIT core/p7_half_bounded.py -> UNGUARDED-EXTERNAL (param-tainted:cd,other)
+SELFTEST_HIT core/p8_bounded_only_after_site.py -> UNGUARDED-EXTERNAL (param-tainted:n)
+SELFTEST_HIT core/p9_class_const_overwritten.py -> UNGUARDED-EXTERNAL (param-tainted:self)
+SELFTEST_HIT core/p10_class_const_nonliteral.py -> UNGUARDED-EXTERNAL (param-tainted:self)
+SELFTEST_HIT core/p11_self_attr_only.py -> UNGUARDED-EXTERNAL (param-tainted:self)
+SELFTEST_CLEAN core/n1_literal.py label=literal
+SELFTEST_CLEAN core/n2_bounded.py label=external
+SELFTEST_CLEAN core/n3_clamp_helper.py label=external
+SELFTEST_CLEAN core/n4_date_math.py label=date_math
+SELFTEST_CLEAN core/n5_config.py label=config
+SELFTEST_CLEAN core/n6_marked_external.py label=external
+SELFTEST_CLEAN core/n7_module_level_no_func.py label=literal
+SELFTEST_CLEAN core/n9_class_const.py label=literal
+SELFTEST_CLEAN core/n8_bounded_var.py label=external
+SELFTEST_HIT writable/w1_writable_attr.py -> UNGUARDED-EXTERNAL (writable-config:window_days)
+SELFTEST_HIT writable/w2_writable_via_var.py -> UNGUARDED-EXTERNAL (writable-config:window_days)
+SELFTEST_HIT writable/w3_writable_getattr.py -> UNGUARDED-EXTERNAL (writable-config:window_days)
+SELFTEST_CLEAN writable/w4_nonwritable_attr.py label=config
+SELFTEST_CLEAN writable/w6_not_app_config_clamped.py label=external
+SELFTEST_HIT app-config/w5_not_app_config.py -> UNGUARDED-EXTERNAL (not-app-config:foreign_days)
+SELFTEST_HIT unreadable/w1_writable_attr.py -> UNGUARDED-EXTERNAL (config-list-unreadable:window_days)
+SELFTEST_HIT unreadable/w2_writable_via_var.py -> UNGUARDED-EXTERNAL (config-list-unreadable:window_days)
+SELFTEST_HIT unreadable/w3_writable_getattr.py -> UNGUARDED-EXTERNAL (config-list-unreadable:window_days)
+SELFTEST_HIT unreadable/w4_nonwritable_attr.py -> UNGUARDED-EXTERNAL (config-list-unreadable:other_days)
+SELFTEST_HIT unreadable/w5_not_app_config.py -> UNGUARDED-EXTERNAL (config-list-unreadable:foreign_days)
+SELFTEST_REALSOURCE_KEYS writable=77 app_config_fields=167 writable_not_in_config=0
+SELFTEST_HIT real-source/r1_real_writable.py -> UNGUARDED-EXTERNAL (writable-config:vision_snapshot_retention_days)
+SELFTEST_CLEAN real-source/r2_real_ops_key.py label=config
+DAYBOUNDS_RC=0
+SELFTEST_STATES called_directly=referenced-elsewhere h=UNMOUNTED h1=mounted h2=mounted handler_missing=UNMOUNTED handler_ok=mounted ok=mounted use_it=mounted
+SELFTEST_HIT p1_unmounted.py -> handler_missing
+SELFTEST_HIT p2_path_param_shape.py -> h
+SELFTEST_CLEAN n3_referenced_elsewhere -> referenced-elsewhere
+SELFTEST_CLEAN n1_mounted -> mounted（含跨模块属性形式）
+SELFTEST_CLEAN n2_not_handler_shape -> 候选形状外
+ROUTEMOUNT_RC=0
+SELFTEST pos_expected=4 pos_hit=4 neg_files=5 neg_flagged=0 neg_counts={'strict': 1, 'window': 2, 'marked': 2}
+SELFTEST_OK
+ZIPPASS_RC=0
+SELFTEST OK pos=2 neg=0 pos_store=2 neg_store=0 pos_subsys=1 neg_subsys=0 pos_body=1 neg_body=0
+GAUGE_SELFTEST_RC=0
+HITS=0
+GAUGE_DIRECT_RC=0
+HITS=0
+GAUGE_TRANSITIVE_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+GATE_MENTIONS_ATTIC=0
+SUITE_RC=0
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:206: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1904 passed, 10 skipped in 450.48s (0:07:30)
+SUITE_FAILNAMES_RC=1
+TARGETED_RC=0
+.................................................                        [100%]
+49 passed in 72.51s (0:01:12)
+BATCHES_RC=0
+........................................................................ [ 51%]
+........................................................................ [ 76%]
+...............................................................s..       [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:206: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+281 passed, 1 skipped in 101.68s (0:01:41)
+BATCHES_FAILNAMES_RC=1
+PREVBATCH_RC=0
+........................................................................ [ 23%]
+........................................................................ [ 47%]
+........................................................................ [ 71%]
+........................................................................ [ 95%]
+..............                                                           [100%]
+302 passed in 48.87s
+TOUCHED_RC=0
+........................................................................ [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 79%]
+.......................................................                  [100%]
+271 passed in 99.28s (0:01:39)
+TOUCHED_FAILNAMES_RC=1
+MUT68_RC=0
+NOTHING 什么都不改档 -> RC=0 FAILED=0 | 49 passed in 72.45s (0:01:12)
+M1 list_memories 退回协程直调（agent_memory 面） -> RC=1 FAILED=7 咬住了 restored=OK | 7 failed, 42 passed in 57.03s
+M2 member_list 退回协程直调（store 面） -> RC=1 FAILED=8 咬住了 restored=OK | 8 failed, 41 passed in 50.14s
+M3 events_face 退回协程直调（vision 面） -> RC=1 FAILED=5 咬住了 restored=OK | 5 failed, 44 passed in 71.04s (0:01:11)
+M4 signal list_rules 退回协程直调 -> RC=1 FAILED=5 咬住了 restored=OK | 5 failed, 44 passed in 71.60s (0:01:11)
+M5 mcp list_audit 退回协程直调 -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 43 passed in 56.88s
+M6 llm_cache_clear 退回协程直调 -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 43 passed in 57.80s
+M7 外观档案的归一化不再进线程（两跳合一被拆掉） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 47 passed in 71.10s (0:01:11)
+M8 insight_feedback 的第一步取数回到协程里 -> RC=1 FAILED=8 咬住了 restored=OK | 8 failed, 41 passed in 58.07s
+M9 list_audit 的上限摘掉（1001 会下推到 SQLite） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 70.23s (0:01:10)
+M10 list_audit 的下界放松到 0（0 档不再被拒） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 74.27s (0:01:14)
+M11 member_tag 的 confidence 上界摘掉（1.5 一路写进库） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 75.31s (0:01:15)
+M12 给内存 token 校验加线程跳转（#51 裁定被推翻） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 74.60s (0:01:14)
+M13 量具身体门摘掉：叫 store 一律判红（纯内存也响） -> RC=1 FAILED=6 咬住了 restored=OK | 6 failed, 43 passed in 55.55s
+M14 量具一层口径失效（真 SQL 也要等展开才响） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 73.11s (0:01:13)
+M15 subsys 面退化：不再按属性解析到类 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 48 passed in 70.96s (0:01:10)
+MUT_COUNT=15 MUTATION_BAD=0
+MUT64_RC=0
+NOTHING 什么都不改档 -> RC=0 FAILED=0 | 69 passed in 4.52s
+M1 R5 封顶退回改前的 min-by-index（会松档） -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 66 passed in 4.81s
+M2 R6 封顶退回改前的 min-by-index -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.59s
+M3 R4 退回直接赋值覆盖 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.59s
+M4 R3 封顶失效（改回 HIGH 即不封顶） -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 65 passed in 4.75s
+M5 R2 封顶失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.64s
+M6 _more_severe 取反（判据本身坏掉） -> RC=1 FAILED=11 咬住了 restored=OK | 11 failed, 58 passed in 4.86s
+M7 prior_boost 的 k<=1 门失效 -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 67 passed in 4.67s
+M8 prior_boost 的样本量门失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.64s
+M9 log-odds 裁剪失效 -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 66 passed in 4.68s
+M10 消除法不再限置信度上限 0.65 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.64s
+M11 房间为空的那一档失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.64s
+M12 时序衰减整体失效（年龄不再降权） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 67 passed in 4.68s
+M13 VOTE 档不抬升 MANUAL 权重 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.75s
+M14 MCP 侧 weekday 边界守卫失效 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.71s
+M15 weekday 过滤失效（改前传 99 也不报错那一族） -> RC=1 FAILED=3 咬住了 restored=OK | 3 failed, 66 passed in 4.81s
+M16 persons 为 dict 的那一代形状不认 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.65s
+M17 house_dt 的短串门放宽（残缺串被当日期） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 67 passed in 4.70s
+M18 偏离严重度写死 mild -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 65 passed in 4.74s
+M19 带内判据只看下界（早退也被判正常） -> RC=1 FAILED=4 咬住了 restored=OK | 4 failed, 65 passed in 4.68s
+M20 同窗口去重失效（集合改列表 ⇒ 频次按事件计） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.72s
+M21 有人给 identity_fusion 接线（零调用者锁的负控） -> RC=1 FAILED=2 咬住了 restored=OK | 2 failed, 67 passed in 4.53s
+M22 score_raw 的分母改成按记录数（重复上报不再放大） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.66s
+M23 偏离判据补上跨午夜环形距离（那条现状登记失效） -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.78s
+M24 person 形参开始影响判档 -> RC=1 FAILED=1 咬住了 restored=OK | 1 failed, 68 passed in 4.98s
+MUT_COUNT=24 MUTATION_BAD=0
+2026-10-07T05:13:51+08:00
+REMOTE_BATCH_RC=0
+REMOTE_DRIVER_RC=0
+CONTAINER_BATCH_RC=0
+DRIVER_RC=0

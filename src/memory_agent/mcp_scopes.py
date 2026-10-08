@@ -41,7 +41,6 @@ REGISTERED_TOOLS = frozenset({
     "infer_behavior_intent",
     "counterfactual_query",
     "analyze_behavior_change",
-    "execute_intent_actions",
     "get_climate_sessions",
     "get_collect_status",
     "get_data_coverage",
@@ -134,6 +133,8 @@ WRITE_TOOLS = frozenset({
     # 自我日记（写入 agent_memory staging，auto_promote_blocked=1 永不自动晋升）
     "write_self_diary",
     "generate_self_diary",
+    # 意图动作执行（dry_run=false 时触发 TTS/告警等外部动作，属写操作）
+    "execute_intent_actions",
 })
 
 _REPORTED_UNKNOWN: set[str] = set()

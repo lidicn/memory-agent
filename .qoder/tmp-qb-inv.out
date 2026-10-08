@@ -1,0 +1,56 @@
+FACADE_METHODS=54 LEGACY_METHODS=69
+
+tool                       facade  fwd->legacy            facade_dropped_params      legacy_only_params
+--------------------------------------------------------------------------------------------------------------
+search_events              OK      search_events          -                          -
+device_usage               OK      device_usage           -                          -
+climate_sessions           OK      climate_sessions       -                          -
+get_last_event             OK      get_last_event         -                          -
+query_behavior_events      OK      query_behavior_events  -                          -
+explain_insight            OK      explain_insight        -                          -
+data_coverage              OK      (none)                 -                          -
+get_user_persona           OK      (none)                 -                          -
+ask_memory                 OK      (none)                 -                          -
+route_question             ABSENT  -                      -                          -
+define_activity            OK      define_activity        -                          -
+get_behavior_insights_compare ABSENT  -                      -                          -
+get_data_quality           OK      (none)                 -                          -
+entity_catalog             OK      entity_catalog         -                          -
+behavior_insights          OK      behavior_insights      -                          -
+device_health              OK      device_health          -                          -
+water_purifier_usage       OK      water_purifier_usage   -                          -
+plan_question              OK      (none)                 -                          -
+compare_insights           OK      (none)                 -                          -
+anomaly_report             OK      (none)                 query                      by_day,hourly,start_iso,end_iso,store
+data_quality_issues        OK      (none)                 -                          start_iso,end_iso,store
+infer_activities           OK      (none)                 -                          -
+
+SUMMARY absent=2 forwards=11 has_dropped_param=1 of 22
+
+---- 裁5 Q3-1 六个过滤/排序位：门面签名在场？体内被引用？ ----
+search_events          category query state order summarize domain
+_search                category query state order summarize domain
+query_behavior_events  category=no-param query=no-param state=no-param order=no-param summarize=no-param domain=no-param
+entity_catalog         category query state=no-param order=no-param summarize=no-param domain
+device_usage           category query state=no-param order=no-param summarize=no-param domain=no-param
+device_health          category query state=no-param order=no-param summarize=no-param domain=no-param
+data_quality_issues    category=no-param query=no-param state=no-param order=no-param summarize=no-param domain=no-param
+anomaly_report         category query=DROP state=no-param order=no-param summarize=no-param domain=no-param
+
+---- 裁5 Q3-4 legacy 分页/窗口键在门面的在场计数（源码字面量） ----
+count        facade=40
+next_offset  facade=2
+window       facade=18
+"ok"         facade=12
+total_exact  facade=11
+truncated    facade=15
+scan_limit   facade=12
+has_more     facade=22
+count        legacy=32
+next_offset  legacy=1
+window       legacy=17
+
+---- 门面里显式传出的关键字是否覆盖 legacy 形参（抽样三个高优先工具） ----
+get_user_persona     legacy_params=days facade_params=self,days body_kwargs=days fwd=(none)
+data_coverage        legacy_params=days,start,end facade_params=self,days,start,end body_kwargs=days fwd=(none)
+get_data_quality     legacy_params=days facade_params=self,days body_kwargs=days fwd=(none)

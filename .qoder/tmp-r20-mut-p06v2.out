@@ -1,0 +1,8 @@
+copy tree ready: E:\NAS\memory-agent\.qoder\tmp-r20-mut
+[P-0] 对照腿（什么都不改）rc=0 summary='28 passed in 5.02s' failed=[]
+P-0 绿：副本树与工作树同口径，后续红都是注入造成的。
+[P06] KILLED src\memory_agent\acp_server.py :: 空主体放行：未带 scope 的入口直接绕过属主校验
+        1 failed, 27 passed in 2.92s :: 红用例 1 条: test_prompt_from_an_unauthenticated_principal_is_denied_for_existing_session
+WT_UNTOUCHED=True
+totals: killed=1 survived=0 invalid=0 legs=1
+python: 3.13.2 harness-exe=C:\Users\lidicn\AppData\Local\Programs\Python\Python313\python.exe

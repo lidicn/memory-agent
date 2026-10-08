@@ -1,0 +1,15 @@
+"""生产库只读探针：query_behavior_events 的 promise vs 实际数据源（不打印任何个人值）。"""
+import sqlite3
+c = sqlite3.connect("file:/data/memory_agent.db?mode=ro", uri=True)
+q = lambda s, *p: c.execute(s, p).fetchall()
+print("events_total=", q("SELECT COUNT(*) FROM events")[0][0])
+print("events_action_ne=", q("SELECT COUNT(*) FROM events WHERE COALESCE(action,'')<>''")[0][0])
+print("events_person_ne=", q("SELECT COUNT(*) FROM events WHERE COALESCE(person,'')<>''")[0][0])
+print("events_distinct_persons=", len([r for r in q("SELECT DISTINCT person FROM events WHERE COALESCE(person,'')<>''")]))
+print("behavior_events_total=", q("SELECT COUNT(*) FROM behavior_events")[0][0])
+print("behavior_persons_ne=", q("SELECT COUNT(*) FROM behavior_events WHERE COALESCE(persons_json,'') NOT IN ('','[]')")[0][0])
+print("behavior_rooms=", len(q("SELECT DISTINCT room FROM behavior_events")))
+print("action_top5_len=", [len(str(r[0])) for r in q("SELECT DISTINCT action FROM events WHERE COALESCE(action,'')<>'' LIMIT 5")])
+print("days_span=", q("SELECT MIN(day), MAX(day) FROM events"))
+print("days_span_behavior=", q("SELECT MIN(day), MAX(day) FROM behavior_events"))
+c.close()

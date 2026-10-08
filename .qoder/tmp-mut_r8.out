@@ -1,0 +1,22 @@
+== 基线（未变异）==
+  11 passed in 2.60s  RC=0
+
+== 变异 A 摘掉 HTTPStatusError 的转接（真实状态码重新被 chroma 包装吞掉） ==
+  读数: 2 failed, 9 passed in 5.28s  RC=1
+  预期红了谁: 非 2xx 的三条锁
+  RESTORED=True
+  恢复后复跑: 11 passed in 1.69s  RC=0
+
+== 变异 B 状态码不进消息（只剩 model） ==
+  读数: 2 failed, 9 passed in 5.97s  RC=1
+  预期红了谁: 两条状态码锁
+  RESTORED=True
+  恢复后复跑: 11 passed in 4.15s  RC=0
+
+== 变异 C 模式库退回不传 embedding_function ==
+  读数: 1 failed, 10 passed in 5.24s  RC=1
+  预期红了谁: patterns 同源接线锁
+  RESTORED=True
+  恢复后复跑: 11 passed in 3.47s  RC=0
+
+MUT_RUN_RC=0

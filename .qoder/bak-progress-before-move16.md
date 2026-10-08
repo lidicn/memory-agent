@@ -1,0 +1,812 @@
+# Qoder 接手进度与再交接 · 2026-10-04
+
+> 接手起点：上一份交接 `doc/交接单/Qoder接手进度_20261001.md`；本轮工作范围 = 路线图计划卡
+> `doc/路线图与规划/ADM联动执行计划-MA.md` + `doc/审计报告/`（审计会持续新增）+ DCD 裁定吸收
+> 本文基准 HEAD：**`f02eefd`**（`origin/main` 同一处，`git rev-list --count origin/main..HEAD` = **0**，已实测）
+> 权威读数（容器工作区快照 `/tmp/c7snap20261004a`，338 文件含 `.gates/`）：pyflakes **`GATE_RC=0`**（当前 0 / 基线 0 / 新增 0 / 已修 0），
+> 全量 **`1191 passed, 13 skipped in 249.62s` / `SUITE_RC=0`**
+> 一句话状态：**裁 1–6 + 裁5 追加 Q-A 已全部落码并推送 GitHub；同日两批新裁定（裁6 补裁、向量面 MiniLM）已吸进台账但尚未落码**。
+> 所有代码变更**都还没在生产上生效**——生效要合并停机窗（官方口径三件，见 §五.4）。
+
+---
+
+## 〇、下一位接手者的第一步（照抄即可）
+
+### 0.1 权威环境是 NAS 容器，不是本机
+
+本机 `python` 有多条、**禁止 `pip install`**，且缺 chromadb / 可用的 mcp-2.x / pyflakes。
+"缺包"九成是跑错解释器。带依赖的那份是
+`C:/Users/lidicn/AppData/Local/Programs/Python/Python313/python.exe`（本机只适合跑定向用例；
+**门禁与全量的权威数一律来自容器**）。
+
+```bash
+SSH="C:/Users/lidicn/.ssh/openssh/OpenSSH-Win64/ssh.exe"; KEY="C:/Users/lidicn/.ssh/id_ed25519"
+NAS="lidicn@192.168.2.200"; OPTS=(-i "$KEY" -o StrictHostKeyChecking=no)
+cd /e/NAS/memory-agent
+```
+
+### 0.2 全量回归 + pyflakes：工作区快照法（不碰 /app、不碰生产库）
+
+这是本轮用的方法，比"同步到 NAS 部署目录再跑"更安全（部署目录是生产）。脚本形态见
+`.qoder/tmp-c7-container.sh`（会话临时文件，未被 git 管，可照抄重建）：
+
+```bash
+SNAP=c8snap$(date +%Y%m%d)a          # 全新唯一名；容器 /tmp 里别人的 vsNN 目录不碰不复用不删除
+{ git ls-files -- src tests scripts benchmarks .gates-baseline.txt .gates.toml .gates pytest.ini pyproject.toml gates.sh
+  git ls-files --others --exclude-standard -- tests scripts   # 未 add 的新文件要显式带上
+} | sort -u > .qoder/tmp-c8-filelist.txt
+tar -czf .qoder/tmp-c8-snap.tgz -T .qoder/tmp-c8-filelist.txt
+"$SCP" "${OPTS[@]}" .qoder/tmp-c8-snap.tgz "$NAS:/tmp/ma_$SNAP.tgz"
+# 宿主机解包 → docker cp 进容器 → chown 10001:10001 → 删宿主暂存
+"$SSH" "${OPTS[@]}" "$NAS" "docker exec memory-agent sh -c 'cd /tmp/$SNAP && PYTHONPATH=/tmp/pylibs GATES_REQUIRE=1 bash scripts/pyflakes_gate.sh' > /tmp/${SNAP}_gate.log 2>&1; echo GATE_RC=\$?"
+"$SSH" "${OPTS[@]}" "$NAS" "docker exec memory-agent sh -c 'cd /tmp/$SNAP && PYTHONPATH=/tmp/$SNAP:/tmp/$SNAP/src:/tmp/pylibs GATES_REQUIRE=1 JWT_SECRET=ci-test python -m pytest tests -q -rs' > /tmp/${SNAP}_suite.log 2>&1; echo SUITE_RC=\$?"
+```
+
+**必须只看状态字**：`GATE_RC` / `SUITE_RC` / `PROBE_RC`。容器内是 dash，
+管道后的 `$?` 不是门禁读数；要读数就 `cmd > file; echo RC=$?`。
+**docker 日志里的时间戳是 flush 时间不是打印时间**，别拿它排序事件。
+
+### 0.3 生产库只做只读探针
+
+```bash
+"$SSH" "${OPTS[@]}" "$NAS" 'docker exec -i memory-agent python -u -' < scripts/probe_behavior_event_total.py > .qoder/tmp.out 2>&1; echo PROBE_RC=$?
+```
+
+形态约束：`sqlite3.connect("file:%s?mode=ro" % cfg.db_path, uri=True)`，全程 SELECT；
+**绝不**对生产库跑写测试；写测试一律临时库（`tempfile` + `Store(...)`）；探针**不打印姓名 / entity_id / 凭据值**，
+只报数量层级。容器 `/tmp` 里的 `vsNN` 是别的会话快照，**各删各的**。
+
+---
+
+## 一、这个项目在联动里是什么
+
+MA = 记忆/洞察侧（FastAPI + SQLite WAL + MCP 2.x FastMCP + ACP SSE + MQTT 桥 + HA REST/MariaDB 采集 + Chroma 镜像 + FTS5）。
+上下游：`E:\NAS\autoforge`（AF，自动化编排）、`E:\NAS\deepseek-pro`（DB/管家对话面）、`E:\NAS\homesdk`（机制层库）。
+跨仓主题与载荷的权威契约在 **`E:\NAS\homesdk\doc\ADM联动主题注册表与消息契约.md`**——改对外键名前必须读它。
+
+不能自主决定的事项 → 写决策申请投 **`E:\NAS\关键决策部\inbox\`**，等 `decisions/` 出裁定书。
+**该目录不是 git 仓库**，读写用绝对路径 + Read/Write/Edit，不要 `cd`。
+
+**裁定吸收的第一动作是 `grep`，不是回忆**（今日两例同形事故：裁定书已在盘上、开发者未读到，把已裁项挂回"仍待裁"）。
+DCD 已把这句写进执行要点：
+
+```bash
+ls -1t "E:/NAS/关键决策部/decisions/" | head -20
+grep -rl "<关键词，如 total / MiniLM / activity_rules>" "E:/NAS/关键决策部/decisions/"
+```
+
+---
+
+## 二、本轮（2026-10-04）已经做完并推送的
+
+| commit | 内容 | 关键判据（都已实测，容器/本机分别标注） |
+|---|---|---|
+| `3345e52` | 裁5 落码：门面"调出去"那一半补扫描器，对外台账 6→11 把，Q4 三键 `truncated/scan_limit/total_exact` 如实上报 | 容器 `/tmp/cd5s1`：pyflakes `GATE_RC=0`、全量 1169 passed 等效 |
+| `f329ca8` | 裁5 台账（计划卡 §6.4 + 审计 §二十七） | Q3 六条实测**三条不齐** ⇒ 切换开关保持关闭 |
+| `0d6ec63` | 裁6 落码：规则表真被读、标签条件真生效、截断真自报 | 容器 `/tmp/c6snap20261004c`：`GATE_RC=0`、**`1185 passed, 13 skipped`** |
+| `fb89b17` | 裁6 台账 §6.5 + 审计 §二十八 | Q4 读数②在生产库抓出一次**假命中**（tags 被丢 ⇒ fail-open） |
+| `bc4f12a` | 裁6 定向读数按 HEAD 重跑更正 | 19/20 是加第 15 把锁前的旧数，更正为 20（15+5）与 26 |
+| `c1c2e99` | **裁5 追加 Q-A 落码**：`total` = 匹配总数，`member` 过滤下推进 SQL | 本机定向 `23 passed` / `LOCAL_RC=0`；容器 `GATE_RC=0`、**`1191 passed, 13 skipped` / `SUITE_RC=0`**；变异 M1–M9 `BITTEN=9/9`、`MUT_RC=0` |
+| `f02eefd` | Q-A 台账 §6.6/§6.7 + 审计 §二十九 + 两批新裁定入账 | 现网探针 `PROBE_RC=0`、形状读数 `SHAPE_RC=0`、老用例现读 `OLDCASE_RC=0` |
+
+Q-A 这一件的技术要点（下一个 agent 大概率要接着用这块形状）：
+
+- 旧 `Store.list_behavior_events` 先 `ORDER BY server_ts DESC LIMIT ?` 取一页、**再**在 Python 里按姓名筛 ⇒
+  不只是 `total` 不可信，`count` 本身也会把"有人的窗口"筛成空页。
+- 现在谓词抽成 `store.py:2298 _behavior_event_where`，`list_*`（`:2359`，新增 `offset`）与
+  `count_behavior_events`（`:2340`，不带 LIMIT）**共用同一份**——两边各写一遍必然漂移。
+- `member` 用 `json_each` + `EXISTS` 下推。**两个必须知道的坑**：
+  ① `json_each()` 对非法 JSON **抛错**，所以要用
+  `CASE WHEN json_valid(x)=1 AND json_type(x)='array' THEN x ELSE '[]' END` 守卫；
+  ② 字符串元素（旧格式 `["成员甲"]`）的 `type` 是 **`text`**，不是字面的 `string`——写错时生产库 8 个姓名里
+  恰好 1 个比对不一致，就是那 1 行旧格式。**判定口径必须与 `Store._deserialize_persons`（`store.py:586`）对齐。**
+- 门面侧：`total` 取不到时给 **`None` + `total_exact=False`，不是 0**（0 是"库里没有"的假证词）。
+  `annotate_scan` 现在收 `total_exact` 入参 ⇒ **"切片被截"与"总数精确"可以同时成立**，`max_scan` 一个字节没动。
+- 审计 §二十九 有九把变异的逐条明细，其中包括一条计划外收获：`member` 谓词整体失守时，
+  红的除了门面链还有 `tests/test_vma120_scene_graph.py:108`。
+
+---
+
+## 二·补（2026-10-05 凌晨批次：#46 / #47 / #48）
+
+| commit | 内容 | 关键判据（容器权威口径，快照法见 §〇.2） |
+|---|---|---|
+| `4ae51c9` | #46 `behavior_predictor` / `daily_profile` 改读现行 `persons` 形状 + 家庭墙钟折算 | 生产只读探针 `probe_behavior_predictor_live.py`（三入口非空读数成对） |
+| `1b02746` | #47 **核实结论=阴性**：`activity_matrix` 的小时维度没有恒 0，交的是守卫锁 | `repository.py:345` 别名 `hour_value` 与 `:351` 取值键一致，`store.py:674 dict(zip(cols,row))` 按列名成键；7 把锁里 anomaly 成对（不响 + 该响） |
+| `54daf31` | #48 自然语言六条路由重绑现行引擎（三条 `TypeError` + 两条空话术） | 见下 |
+
+**#48 的成对读数**（`scripts/probe_nlquery_routes_live.py`，容器内跑生产库，全程 SELECT、
+不构造 legacy 门面——那会往在役库拖模板装载）：
+
+| 路由 | 改前（HEAD `4ae51c9`） | 改后（工作区） |
+|---|---|---|
+| device_usage / behavior / anomaly | `TypeError: usage() got an unexpected keyword argument 'query'` ⇒ **降级 3/6**（两档窗口都是 3/6） | 全部真读数：7 天窗 `entities=5 events=811` / `by_room=1` / `anomalies=1` |
+| rhythm | `sleep/wake/samples = None` ⇒ 话术恒「未知…0 天样本」 | 7 天窗 `23:00 / 07:00 / samples=3`；30 天窗 `23:00 / 04:00 / samples=5` |
+| persona | 答案 5 个字符（正是「暂无画像。」） | 48/51 字符，`traits=5`、`total_events=144,143 / 950,902` |
+| activity | 本来就对（`total_activities`） | 不变：17 / 39 次 |
+
+口径两条，下一个人别踩：
+1. 现行引擎的 `usage` 只有**事件数**（`entity_stats`），**没有任何时长概念** ⇒ 话术不许沿用
+   legacy 的「活跃 N 分钟」；behavior 路由的分组读 `by_room`，不再有 `group_by=` 参数。
+2. `rhythm.sleep/wake` 是**事件密度推出来的小时级锚点**（夜窗内最长连续静默段的两侧，
+   跨零点在展开序列的下标上取中位数），不是实测关灯时刻——这句口径随读数回显在
+   `sleep_wake.method` 里，对外话术也照这个说。
+
+变异实测（两向都咬）：`_sleep_wake_hours` 短路成空 ⇒ 作息档判红；恒回 `22:00/07:00` ⇒
+「全天有事件 ⇒ 必须照实说未知」那条对偶档判红（`MUT_RC=1`）。
+容器：`GATE_RC=0`（pyflakes 0 新增）、`SUITE_RC=0`（**1265 passed, 10 skipped**，192.95s）。
+本机等效：`1253 passed, 22 skipped`（缺 chromadb/hmmlearn/pm4py/river，差异只在可选依赖面）。
+
+**#23 收尾**：三条「`_detect_activities` 待适配」skip 已在 `3e14059` 翻新为现行引擎实断言，
+剩余 skip 全是可选依赖/精简检出的合法跳过（`hmmlearn`/`pm4py`/`river`/homesdk 门禁/wheel provenance）。
+
+---
+
+## 三、当前有效裁定台账（按"还能不能改"排）
+
+| 裁定 | 口径 | 状态 |
+|---|---|---|
+| **裁5 Q1=A** | legacy 是对外只读引擎；`LEGACY_OUTWARD_METHODS`（`insights/api.py:68-80`，11 条，**不含 `infer_activities`**） | 生效中。路由不外迁 |
+| **裁5 Q2=A** | 两代键并存（legacy 键 + 门面分页键） | 生效中 |
+| **裁5 Q4=A** | **不提高 `max_scan`**（`InsightConfig.max_scan = 30000`，`insights/models.py:652`），命中即如实上报 | 生效中，任何"分批"实现不得变相绕开 |
+| **裁5 追加 Q-A** | `total` = 匹配总数；`count` 与 `total` 分开、不许改名冒充 | **已落码 `c1c2e99`** |
+| **裁5 追加 Q-B** | 新引擎补齐 Q3 六条：不切、不下架、不假装补齐 | **在做 #40**：六条现 4 齐 2 不齐（Q3-4 只剩 `entity_catalog` 无组装法、Q3-5 是 9 真无 + 4 异名待核）；四问已投 inbox |
+| **裁6 Q1=A** | 语义活动回归，启发式降为兜底并打 `source: semantic\|heuristic` | 已落码 `0d6ec63` |
+| **裁6 Q2=A** | `define_activity` 回 8 参数（现读 `insights/api.py:550-552`），引擎真读 `activity_rules` | 已落码 |
+| **裁6 Q3=A** | 硬排除进 `activity_matrix` + 可见字段 | 已落码（生产当前 0 条生效行 ⇒ 差值 0 属预期） |
+| **裁6 Q6-1** | **A′**：内置模板字面**不动**，本居清单生成覆盖行入 `activity_rules`；C（改 `any_of` 语义）**驳回** | **等 SP 给本居活动清单**（与 #38 同一张单） |
+| **裁6 Q6-2** | **A**：按天分批扫描，三条约束（见 §四 #44） | **已落码 `5f472a9`**（单独 commit，符合裁定） |
+| **裁3 出境** | **甲**：只有 `trace_anon.txt` 出境，`trace.txt` 仅供本居排障 | MA 零改动；契约句由 DCD 在 homesdk 契约面落笔 |
+| **裁1/裁4 Q2** | **甲**：投影阈值改按字节预算（整页 ≤64KB 自动收窄） | **已落码 `71d18ee`** |
+| **ma-insights 载荷** | `insight_id` = 稳定身份（MA 应发）；`conf` 可选、封顶 0.59；`intent?` 登记 | **#42 代码已发并推送**（`bad9ae4`，6 条锁 + 变异 3/3）；甲口径=**故意不发** `conf`/`intent`，契约表由 DCD 落笔 |
+| **向量面 MiniLM** | **Q1=B**（明确不要本地退路）/ Q2 不适用 / **Q3 整行删除** `Dockerfile:27`；新规则：**构建链不许用 `\|\| true` 吞掉本该成功的步骤** | **已落码 `cd8be6a`**（三处回退路 fail-closed） |
+| **20261005 乙′（:36）** | 日配额**不**用窗口函数：每天 24 个带 `LIMIT` 的子查询 `UNION ALL`，k=`967//24≈40`；判据=30 天窗内任一日 20:00–23:00 必须有事件返回 | **已落码并出网（任务表 #54 = commit `6b00bfa`；#60 量具 = `6b31bb8`；终树门 run10）**。判据①：夜间出场 **28/31 天**（前缀形状 0/31）；判据②同 run 成对（**以 run10 为正式基准，缓存已热**）：分层 **2415.7ms** vs 改前单条 `LIMIT` **3620.8ms**（**0.67×**，且覆盖从 2 个日键变 31 个）vs 前缀量具 **736.4ms**（**3.28×**，换来每日可见小时数 1→24）。run9 那对 0.07×/0.33× 是**冷盘**读数，只能证"分层没被冷盘拖死"，不能当基准。**分支里的 `day = ?` 换成夹紧的 `ts` 半开区间**（408ms/天→18.5ms/天，同一批行），run7 那份 25.82× 的代价就此清掉。口径按 :43 改「**返回行数**硬上限」，判据只认**已证明的丢失** |
+| **20261005 Q1（:53）** | 乙+丁分两步：只读面先挂（实际路径 `GET /api/behaviors/active-rules`，deviation 见台账下条）；写 CRUD 挂进 R3 通道，`add` 落 `candidate_rules` 而非 `active_rules` | **已落码（本批，run6）** |
+| **20261005 Q2（:54）** | 乙：`learning_*` 八模块移出 `src/` → `attic/learning/`，不进门禁口径 | **已落码**；day-bounds 99→95、zip window 5→4 是**在册人口**变化不是缺陷清零（两条守恒锁） |
+| **20261005 Q3（:55）** | 乙：`insights/persona.py` 保留 + 标 `[DEPRECATED-待接回]`，随 Q-B 接回（现在接上去恒 `found: False`） | **已落码** |
+| **20261005 Q4（:56）** | 乙：`test_rule` 实现 `ignore_trigger` 独立回放 + HTTP 入口；`base_days` 死参删；`if True:` 与两条 `CAPABILITY_*` 授权 MA 机械自办 | **已落码**（第一轮 P2-3 六处至此核销） |
+| **20261005 附带（:58）** | **引用必须按「报告+行号」，不许只写编号**（`P2-3` 在四份报告里指四件不同的事） | 已入交付纪律 §六.14 |
+| **20261005 CVE Q1（:64）** | 乙：只做**网络隔离**（chroma/redis 拆到 MA 专用内部网）。**唯一有效读数** = `docker network inspect` 可达 chroma 的容器数 4→2 | **有效读数已现取（2026-10-05T17:20Z，NAS 192.168.2.200）**：`memory-agent_internal` 成员 = `memory-agent`/`memory-chroma`/`memory-redis`，`memory-agent_default` 只剩 `memory-caddy`/`memory-agent` ⇒ **caddy 已不可达 chroma**（判据成立）；`docker port memory-chroma`/`memory-redis` 均为空。**两处字面偏离登记**（细节见路线图 §6.19）：①网络名实为 `memory-agent_internal`（compose 前缀），不是裁定文的 `ma_internal`；②可达 chroma 的容器数是 **3 而不是 2**，多的那个是 redis（一并拆入，MA 自有、不对外发布）。隔离动作由 commit `969236c` 执行，本批未新开停机窗 |
+| **20261005 CVE Q2（:65）** | 甲：chroma 升 1.x 列入 **vMA-1.4**，本窗不升 | 登记，不在本窗 |
+| **20261005 CVE Q3（:66）** | 甲：`ecdsa`/`oauthlib`/`PyJWT` 三格按**不可达**登记，随每次扫描复测 | 登记 |
+| **20261005 裁5 Q-A（:74）** | 甲：`window` 定为洞察类读数的**通用回显键**，一次登记、后续新读法默认带 | 代码侧已落（锁在 `tests/test_vma_insights_window_echo.py`）；**契约面的一次登记由 DCD 落笔**（同件 :55） |
+| **20261005 裁5 Q-B（:75）** | 甲：`page_bytes` 保留并登记，口径=**整页投影序列化后的字节数（UTF-8，含信封不含 hint）** | **已登记**（现读点 `src/memory_agent/mcp_server.py:947`；run10 生产 B 组：lean 133381→65335 字节/500→235 行、full 153092→65391/500→195 行，均 ≤64KB）。**零新增出境键** |
+| **20261005 裁5 Q-C（:76）** | 乙：`entity_catalog` 定为**永久 legacy 只读面**；Q3-4 判据改成"除已裁保留项外全齐" | **口径已改并登记**：`entity_catalog` 留在 `LEGACY_OUTWARD_METHODS`（`insights/api.py:69-81`）= "已裁保留项"，Q3-4 清点按新口径读，不再挂"不齐"当未做项（#40 随之改口径） |
+| **20261005 裁5 Q-D（:77）** | 甲：切换前做**参数级语义核对**（每个入参要么有新实现落点、要么显式登记不支持），逐件出**键名对照表**走载荷键名登记再切 | **等外部输入**：与五问件 :59-62 合并执行（批次按消费方依赖度 `get_user_persona`→`get_data_quality`→`data_coverage`→`device_usage`，切换后 legacy **保留 7 天双跑**对账）；需 DB/AF 各出一句"我方实际读哪些键"（投 inbox）⇒ **MA 无法自证消费方依赖，此项在 SP/DCD 手上** |
+| **20261005 五问 Q3（:64-71）** | A：caddy **换端口**（裁定文写 8080/8443），PWA 走 `https://…:8443` | 形状已按 A 执行、**字面端口号偏离**：在役为 **9080/9443**（`docker-compose.yml:62-64`，`docker port memory-caddy` 现读一致）。理由与验证在 commit `53eb15e` 正文（宿主 80/443 被孤儿端点占、8443 被 homelab-dashboard 占；caddy 代理 `/health` 返回 200 `ok=true`）。按判例（五问件 :102"计划 vs 实现不一致是硬证据"）**等 DCD 追认**，孤儿端点残留按 :71 登记为 NAS 运维待办 |
+| **20261005 五问 Q5（:77-84）** | 30 天从新令牌签发日起算 + 审计面加 `token_kind` + DCD 排期协同窗 + MA 提供旧令牌使用量监控 | 三条 MA 可自证的已由 commit `d156057` 落码；第 3 条（协同窗口排期）**不在 MA 手里**，保持待办 |
+
+| **20261005 Q5（待裁）** | `WRITABLE_FIELDS` 里 HTTP 可写保留键的**合法区间**由谁定（甲=写入侧按键给区间 / 乙=只夹紧消费侧（当前态）/ 丙=只给"会删数据"的键加区间；MA 倾向丙，**区间数字请 DCD/SP 给**） | **仍待裁**；前端 `min/max` 不单独加（API 直写会绕过它） |
+| **安全审计 F-1/F-3** | AF 侧；DB 侧持 write 域令牌，MA 零改动 | 不涉及 MA |
+| 3.3.3 service_token 双轨 | 签发属合并窗事项 | 待做 **#9** |
+
+**回执已投 DCD**：`E:\NAS\关键决策部\inbox\20261006-MA-乙′落码回执与两处字面偏离-决策申请.md`
+（118 行 / CR=0）。内容三块：① 乙′ 落码形状 + run10 正式基准读数 + **一条 MA 自己更正的读数解释**
+（run9 那对 0.07×/0.33× 是冷盘读数，不能读成"比旧形状更快"）；② **两处裁定字面 vs 在役实现的不一致**按判例
+（五问件 :102）主动抬出来请追认——caddy 端口 9080/9443（裁定文 8080/8443）、
+可达 chroma 的容器数 3（裁定文 2，差的是 redis 一并拆入）+ 网络名实为 `memory-agent_internal`；
+③ 一处**知会而非请示**：HEAD 上那条 day-bounds 红是量具把 `self` 当外部输入，MA 修工具不修在册文件
+（`service_tokens.py` 一字未改），并明确拒绝"给类常量加 clamp"这个错方向。
+若 DCD 要求回到字面数字（chroma 独占一张网 ⇒ 成员 2），那是**再一次 recreate = 停机窗事项，MA 不自行操作**。
+
+**"读数必须标口径"已成 MA 交付纪律**（DCD 追加裁定 §二.4）：同一个数不标口径会在两份文书里长出两个意思。
+
+实例：`signal_exclusions = 1`（`COUNT(*)`）与"生效中 0"（`revoked=0`）**两句都对**。
+
+---
+
+## 四、待办清单（每项都带裁定依据 + 验收标准，按性价比排）
+
+### #43 向量面 MiniLM 退路 fail-closed（Q1=B）——**改动面比看起来大**
+
+DCD 现读定的最小集合：**3 处回退路 + 2 处宣示性注释 + 1 份测试契约 + 1 条契约登记**。
+
+1. `src/memory_agent/history.py:115-116`：未配外部端点时**先打印**「使用本地 MiniLM」再构造 `DefaultEmbeddingFunction()`；
+   `:172` 把这个解析结果**显式**作为 `embedding_function=` 传进 `get_or_create_collection`；
+   `src/memory_agent/patterns.py:81-82`（解析抛异常被 `except` 吞 ⇒ 只记 warning「退回 chroma 默认」）+
+   `:83-86`（`_embed is None` 时**省略 kwarg**）⇒ 同样落 chroma 默认。
+   **光改 `history.py` 堵不住**。裁定要求：**不许 `return None`**，改抛具名异常或显式"不可用"哨兵，
+   日志口径改成「未配置嵌入端点 ⇒ 向量面不可用」。
+2. 注释/文档同批改：`config.py:56`「缺省留空 → 使用 chroma 默认 MiniLM」、`history.py:47` 公开类 docstring 同一承诺。
+3. `tests/test_vma_r8_chroma_error_masking.py:177` 的旧契约（"回退 MiniLM 或返回 None，但绝不打断构造"）
+   **要被替换而不是绕过**。补两条可判红判据：① 未配端点 ⇒ 判定"不可用"且**不落 MiniLM**；② 采集/启动**未被阻断**（这是要保留的属性）。
+4. `Dockerfile:27` 整行删除（不是摘 `|| true`）。
+5. 契约登记：外部嵌入网关是向量面**唯一依赖**、维度**钉 1024**；换模型必须跑 `scripts/reindex_embeddings.py`
+   （`history.py:105` 已有此要求，登记时引用它）。
+6. **必须随回执交的一条现读**：容器内 `import chromadb` 后，显式 `embedding_function=None`
+   **是否等价默认 MiniLM**——DCD 本机无 chromadb 未能独立证实这一格，容器里有真版本，这是 MA 独有的凭据。
+7. 验收：`grep -rn "DefaultEmbeddingFunction" src/` 0 命中（或仅剩"禁止使用"注释）、
+   `grep -rn "使用本地 MiniLM" src/` 0、`Dockerfile` 无该行且全文无 `|| true`、两条新判据都能判红。
+
+维度事实（裁定引源码 docstring）：生产两集合 `behavior_history`/`agent_memory` 是外部网关的 **1024 维**，
+chroma 默认 MiniLM 是 **384 维**，且 MiniLM 在容器内 `os.makedirs('/.cache')` → `PermissionError`
+（uid 10001、HOME 不可写）。所以"本地退路"在唯一需要它的时刻收益为 0。
+
+### #44 Q6-2 按天分批扫描（**三条约束一个都不能省**）
+
+① 分批后**总读取量**要有硬上限，且与 `scan_limit` 的关系写清——**选"按日分摊同一预算"**，
+新增预算 = 变相提高上限 = 绕开裁5 Q4=A；② 改前/改后 **30 天窗耗时要成对交**，否则"成本随天数线性"无法验收；
+③ `scan_truncated` 判据不能沿用 `scanned >= scan_limit`，要给"分批下什么情况仍算被截"的口径 +
+**一条可判红锁**（防恒 True/恒 False——`test_rule_sources_reports_the_scan_cap_that_limits_the_semantic_side`
+已经用 `max_scan=50` 做过对照组，照做）。**读路径改动单独 commit**。
+
+### #40 Q-B 新引擎补齐 Q3 六条 ——**进行中，六条现在 4 齐 2 不齐**（2026-10-05 更新）
+
+已交：**Q3-1**（`category`/`query`/`domain`/`state`/`order`/`summarize` 六个位全部落到底，`160020c`）、
+**Q3-4 的"缺键"那一类**（`window` 回显补进 `core.usage`/`core.behavior_insights`/`core.device_health`/`_search`，
+`6470650`）、**量具自身四处判定形状改正**（`6c980ff`，含一次**假绿**：哨兵值 `total=-1` 参与判据，
+把「形参无处可去」读成「生效」）。台账：计划卡 §6.9/§6.10、审计 §三十/§三十一。
+
+**当前判定**：Q3-1/2/3/6 齐，**Q3-4 不齐**（只剩 `entity_catalog`——新引擎只有 `repo.entity_catalog`
+原行列表，没有组装法，按「无信封可对齐」登记，不折算成补齐）、**Q3-5 不齐**
+（**9 个真无**实现 + **4 个异名等价**待逐条核语义；异名不能算等价，也不能报成漏咬）。
+
+**接手的人要知道的三件事**：
+1. 剩下两格**不是 MA 能自判的**：加 `window` 到 `coverage`/`data_quality` 是跨仓载荷变更、
+   `entity_catalog` 要不要造组装法、四个异名实现按哪条口径切——已投
+   `关键决策部/inbox/20261005-MA-裁5Q-B两格回执与四问-page_bytes漏投补登记.md`（Q-A/B/C/D）。
+   同件里补登记了 `71d18ee` 漏投的出境键 `page_bytes`。
+2. **成对跑 + 冻结绝对窗**是这一批量具能用的前提：`days=30` 的右界随墙钟滑动，采集边写边数，
+   同一窗口两次独立 `COUNT(*)` 实测差 **1–3 行** ⇒ 任何 ±1 级差异**不能当口径差解读**
+   （此前我把它解释成"窗口右界口径"，是未验证归因，已更正）。
+   **漂移有两种，接手别混**：同一次运行内的滑动右界推进是 1–3 行级；**跨运行**的冻结窗每次重新锚定
+   （右界 = 运行时刻），整窗平移，行数差可到百级（`950362`/`950058`/`949951` 是三次不同锚点，
+   不是同窗口径差）。判据只看**同一次运行内**「前置计数 = 后置计数 = 门面 `total`」三读全等。
+   探针收口为 `6c980ff` 后这对读数**复跑过一遍**（两侧 `PROBE_RC=0`，
+   `.qoder/tmp-c21-c18{pre,snap}20261005a-q3.log`），判定与首次完全一致：改前
+   `生效=[room] / 不生效=[category,query] / 未量到=[domain,order,state,summarize]`，改后七位全中；
+   Q3-4 改前缺 `window`×2 + `next_offset,ok,window`、改后除 `entity_catalog` 外缺=无。
+3. 门面路由在裁5 Q1=A 下**本身就是 legacy**：拿门面读数比 legacy 读数是拿 legacy 比 legacy，
+   必然全绿、零信息量。要比的是 `core.*`/`repo.*` 那一路（探针 Q3-4 的"新引擎路径"列）。
+
+维持不变：对外工具面**一个都没切**，`LEGACY_OUTWARD_METHODS` 11 个方法一字未动，
+`max_scan=30000` 未动（裁5 Q4=A）；不设死线，vMA-1.4 窗口前未补齐 → 回来重议"下架收缩"。
+
+### #41 `list_device_health` 投影阈值改 64KB 字节预算（甲）
+
+现有默认精简投影按 40 字符阈值裁 `stable_id`，实测只压掉 12%（开发者更正成立）。
+改成"整页投影后 ≤64KB 时自动收窄"，要交**改前/改后页字节读数**。
+
+### #42 出境载荷三键 ——**代码已交付（`bad9ae4`），这里记甲口径**
+
+`insight_id`（稳定身份，MA 应发，AF 的去重与回灌用它、**不用 `trace_id`**）、`conf?`（可选，报了封顶 0.59，
+没报记"未上报"）、`intent?`（结构化意图，愿意发时发）。契约表这四处由 DCD 落笔。
+
+MA 侧落码口径（**这一条是给下一个人的，别当成"没做完"**）：
+- `_insight_id(session_id, alert_type, day)` —— 复用 MA **自己已经在用**的告警单飞身份再加日键：
+  同房间同类洞察当天重复投递 ⇒ 同一枚 id，换天 ⇒ 新洞察。**故意不卷** `trace_id`/快照 URL/随机数，
+  卷了就没有稳定身份；去重键与分发单飞共用同一对变量，避免"被抑制的那条"与"去重的那条"不是同一个洞察。
+- `trace_id` 保持**事件级**（每次现场生成），键序按 DCD 追认 `insight_id → trace_id`。
+- **`conf` 不发**：陌生人告警的置信度没标定过，硬编一个数只会污染 AF 排序。
+  **`intent` 不发**：当前无结构化意图，可选字段不得变成消费方硬依赖。
+- 有一把**载荷键集封闭**锁：契约行 ∪ 20261002"只加不减"白名单之外的新键即判红
+  ——`page_bytes` 那类流程偏差的通用防线（注意：它当时**没拦住** `page_bytes`，因为 `list_device_health`
+  的信封不在 `tests/contract/` 覆盖面里；防线要连着覆盖面一起看才算数）。
+
+### #38 + Q6-1 等 SP 的本居活动清单
+
+**不要自行改内置词表**（裁定明令，验收里写死了"不得出现'已按现网命名调过内置词表'这类单方改动"）。
+清单到手后：内置模板不动 + 覆盖行入 `activity_rules`（现读 `api.py:561-563` 已是"每次推断从表读启用中规则注入引擎"），
+并交**覆盖率读数**（清单里每个活动解析到几个实体、命中几条事件）证明缺口被补掉。
+若覆盖层表达不了（内置与覆盖行优先级），**回 inbox 说明并给读数**，不要自己定形状。
+
+### #49 依赖 CVE 首批扫描（2026-10-05 新增，A5/A7 §5.1 那格"未扫"现在有读数了）
+
+**为什么以前扫不成**（现读，别再重复试 pip-audit）：生产容器**无出站网络**
+（`urlopen https://pypi.org/status` ⇒ `TimeoutError` / `NET_RC=1`），pip-audit 要拉索引；
+本机多解释器机器明令禁 `pip install`。⇒ 量具走 **stdlib-only 打 OSV**，
+在能出网那侧跑、输入是容器 `pip freeze` 快照：`scripts/dep_audit_cve.py`。
+
+**接手最需要记住的是这格**：我第一版**自己读出过一次假绿**——只认 OSV 批量接口的 `matches` 键，
+而它把命中放在 `vulns` 键下 ⇒ 连 `requests==2.19.1` 这种确定有洞的都报
+`命中漏洞=0 / RC=0`，形状完全合法。发现靠的是**反例档**（正式扫描前先打一个确定有 CVE 的版本，
+不咬就 `RC=2` 作废整份读数），不是运气。三态必须分开：
+`{"vulns":[…]}`/`{"matches":[…]}`=命中、`{}`=该包无已知漏洞（**合法 0 条**）、
+非空却两键皆无=**读数作废**；出网失败/条数不对也 `RC=2`——**「没扫成」永远不回 0**。
+
+首批读数（快照 2026-10-05 03:35+08、108 包、`OSV_RC=0`、反例 `命中=10 -> 咬`）：
+**命中 14 条 / 4 个包 / 无上游修复 8 条**。真在场的只有 `chromadb==0.5.23`
+（服务端镜像同为 `chromadb/chroma:0.5.23`、含 **CRITICAL**、上游**无修复版**、
+chroma 的 auth 类 env **键数=0**=无认证；但 8000 **未发布到 LAN**，
+可达人群 = `memory-agent_default` 上 4 个容器）。另三包判定为**调用链不可达**
+（`ecdsa`：`auth.py:167/205/215` 只允许 HS256；`oauthlib`：MA 非 OAuth 提供方；
+`PyJWT`：全仓无 `PyJWK`，用的是 `from jose import jwt`）——
+**"不可达"不等于"可以不管"**，所以随件请裁（Q3）。
+
+不可自判的三格已投 `关键决策部/inbox/20261005-MA-依赖CVE首批读数与三格定向请求.md`：
+Q1 chroma 无认证现在缓不缓（倾向乙=只做网络隔离，不重烤镜像）、
+Q2 要不要升 chroma 1.x（倾向甲=列入 vMA-1.4，**别把 CVE 升级和 1024 维集合迁移叠进同一次停机窗**）、
+Q3 三格不可达的要不要仍做版本动作（倾向甲=登记+随扫描复测）。
+**本件不动交付面**；验收读数是 `docker network inspect` 的可达容器数 **4 → 2**，不是"配了"。
+
+**验证状态**（容器权威快照 `/tmp/c22snap20261005a`、354 文件，回收 2026-10-05 03:46+08）：
+`GATE_RC=0`（pyflakes 当前 0 / 基线 0 / 新增 0 / 已修 0）、`SUITE_RC=0`、**`1302 passed, 10 skipped in 226.01s`**；
+本机同批 `1290 passed, 22 skipped`，**两侧总数同为 1312**（12 条差 = 容器没装 hmmlearn/pm4py/river 而记 skip），
+⇒ 新增 14 条锁两侧都在场。容器内 `--freeze /dev/null` ⇒ `IN_CONTAINER_RC=2`（空快照判红，不是判绿）；
+容器无出网 ⇒ **CVE 读数只能在出网侧取，这是量具边界不是缺陷**。`.gates-baseline.txt` 一字未改。
+
+### 其余未完项
+
+- ~~**#23 P2-5 三条 skip**~~ **已收（`3e14059` 翻新 + 本档 §二·补）**：三条用例重绑到现行
+  `infer_activities`，不是"legacy 检测器不翻新"，所以不需要裁定口径。
+- ~~**#47 activity_matrix 小时恒 0**~~ **核实=阴性**（`1b02746`）：别名与取值键对得上，交的是守卫锁。
+- ~~**#48 自然语言路由**~~ **已修**（`54daf31`）：见 §二·补 的成对读数。
+- **#9 3.3.3 service_token 双轨（30 天）**、**#10 R2 PII 存量回填**（先备份，**245 这个数字不许写死**，
+  以 `pii_backfill_r2.py` 的 dry-run 读数为准），**#5/#32 DCD 跟踪**。
+  - **#10 窗前点数已真跑过**（2026-10-05 03:33+08，只读：`R2_DRYRUN_RC=0` + 逐项点数 `READ_RC=0`，
+    脚本末行自证「一条都没改」）：`agent_memories=251 行`、**命中明文姓名 98 行**
+    （`staging` 97 + `revoked` 1、**`live` 0**）、生产 sanitizer 对这 98 行**全部有变化**
+    （"命中但不改"=0）、命中行文本合计 1388 字符（中位 14）、`mirror_dirty=1` = **0 行**。
+    两条对窗口有用的结论：**明文存量不在 `live`**（写入侧脱敏挡住了新行，回填是清旧账不是救火）；
+    `--reconcile` 的量是 **98 行重刷**而不是"全量重建 ≈12 分钟"那条最贵路径。
+    窗内**仍要重跑**（数会随采集增长），这里是把"没量过"变成"量过、有日期、有口径"。
+- **待写回执**（§八 详述）。
+
+---
+
+## 五、生效机制与生产现状（这块最容易踩，照实读）
+
+### 5.1 compose 的挂载决定了"要不要重烤镜像"
+
+`docker-compose.yml:41-44`：
+
+```yaml
+volumes:
+  - ./src:/app/src:ro     # 源码是磁盘 bind mount（只读），盖住镜像里 COPY 的那份
+  - ./data:/data
+  - ./.env:/app/.env:ro
+environment:
+  PYTHONPATH: "/app/src"
+```
+
+⇒ **同步 `src/` + 重启容器**就让裁3/裁5/裁6/Q-A 生效（`AUTOFORGE` 类重启是 SP 授权我自主决定的范围）。
+⇒ **`vendor/homesdk` 进运行面必须重烤镜像**（`Dockerfile:15` 的 `COPY vendor/` 与 `:24` 的
+`pip install ./vendor/homesdk-0.3.1-py3-none-any.whl` 都没有对应挂载）。
+**重烤至今未获授权**，不要自己烤。`tests/` 也不在挂载里——这就是 §〇.2 用快照法的理由。
+
+### 5.2 部署目录现状（`/vol1/1000/docker/memory-agent`，只读 grep，本轮实测）
+
+| 标记 | 命中文件数 | 含义 |
+|---|---|---|
+| `LEGACY_OUTWARD_METHODS` | 1 | 裁5（`3345e52`）的代码**已在磁盘上** |
+| `require_tags` | 0 | 裁6（`0d6ec63`）**没同步** |
+| `_behavior_event_where` / `count_behavior_events` | 0 | Q-A（`c1c2e99`）**没同步** |
+| `store.py` mtime | 2026-10-04 13:55 +0800 | 最后一次同步时间 |
+
+> 我上一轮的笔记写"部署目录缺 3345e52"，**那句已过期**，以本表为准。下一位接手时用同一条 grep 复核，
+> 别引用任何文档里的"落后几个 commit"。
+> **禁止**在部署目录跑 `git pull/checkout/reset/clean`（那是生产）；禁止删该目录里任何不认识的文件。
+
+### 5.3 生产库只读事实（本轮实测，复现命令在 §〇.3）
+
+| 项 | 读数（口径） |
+|---|---|
+| `behavior_events` 总行数 | 4,023（`COUNT(*)`，`PROBE_RC=0`） |
+| `persons_json` 空/NULL/`[]` | 428 行（`SHAPE_RC=0`） |
+| `persons_json` 非法 JSON / 合法但非数组 | 0 / 0 |
+| JSON 元素为 object / 为 text | 3,595 / 1（`json_each` 展开后逐元素） |
+| dict 元素里的去重姓名数 | 7（含那 1 行 text 元素后 Python 口径为 8） |
+| HA `events` 表 | 989,240 行，其中 `person` 非空 **0 行**（⇒ 视觉侧必须读 `behavior_events`） |
+| 30 天窗语义扫描自报 | `rule_sources.events_total=957,153` / `scan_limit=30,000` / `scan_truncated=true`（`GAP_RC=0`） |
+| 30 天窗 `days`/`客厅` 事件数 | 149,206（legacy 侧 `count_events`，`Q3_RC=0`；与裁5 期"30 天全量匹配 958,388"是不同窗口口径，别混引） |
+
+### 5.4 合并停机窗（官方口径 = **三件**，DCD 20261004 已更正我此前的五件盘点）
+
+1. **R2 PII 存量回填**（先备份，dry-run 读数决定条数）；
+2. **service_token 签发**（#9）；
+3. **镜像重烤**（homesdk 进运行面；**未授权**，要 SP 明确点头）。
+
+裁3/裁5/裁6/Q-A 的**代码**随窗口内的一次重启生效，不需要单独开新窗。
+观察期口径也已被裁定更正：**按"有效小时 ≥20 小时/天"计天数，断档日不算完整观察日**。
+
+---
+
+## 六、证据纪律（这些是踩过才知道的，不是风格偏好）
+
+1. **报"实测输出"之前先确认脚本/产物真在盘上**。本会话已两次凭空虚写读数被自己抓到。
+2. **回归结论必须对 HEAD/工作区快照重跑**，历史数一律标"旧读数"并就地更正（见 `bc4f12a`）。
+3. **新判红先找反例**（变异测试）。变异纪律：改**源文件**、锚点必须恰好命中 1 次否则 ABORT、
+   先跑 baseline（"什么都不改"那一档）、回写后校验字节全等 `RESTORED=True`、比对 FAILED 名单差异。
+4. **"漏咬"与"等价位"必须能区分**：`split_days` 时区锁在本机 +8 判绿是**可证等价位**（如实登记），
+   在容器 UTC 判红才算咬到。藏起来与当成漏咬，都错。
+5. **等价发现要诚实登记**，不许把"没有锁可咬"伪造成判红。
+6. **读数带口径**（`COUNT(*)` vs `revoked=0` 那类）。
+7. **回执里不贴真名 / 转写 / 凭据值**；原样贴工具输出；实体 id、设备序列号、人名一律不外露，
+   只到聚合与去重数量层级。曾有一次配置转储打出过 `ha_db_password` 的**值**——那个值永远不许进
+   任何文档/提交/回复；配置转储要先过滤密钥形状键。
+8. **绝不 `git add -A`/`git add .`**：会话里有大量 `.qoder/tmp-*`、`{head,old,prod}-src/`、`worktrees/`、
+   `wt-base/` 暂存物，一律**按文件名列举**暂存。绝不提交 `.env` 或凭据形状文件。
+9. **改完文件查 CR**：`tr -dc '\r' < file | wc -c` 必须 0（`.gitattributes` = `* text=auto eol=lf`；
+   文本模式重写会把 LF 变 CRLF，diff 会整份重写）。
+10. **`src/memory_agent/api/nr_routes.py` 红线**：该文件内所有端点的**路径与响应结构一律不得变更**，
+    只允许修内部 Bug。
+11. **交付面（Dockerfile/compose/CI）与跨仓接口不单方面改**——本轮 `Dockerfile:27` 的删除是**裁定明确授权**的，
+    不是自行决定；重烤镜像仍未授权。
+12. **不要用 `printf '%d'` 生成脚本**（会吞格式串生成语法错误的文件）；写脚本用 heredoc 或 Write 工具。
+13. **Never chain `open(p,'wb')` with a fallible expression**——先绑好数据再打开写。
+14. **引用一律按「报告 + 行号」，不许只写编号**（DCD 20261005 `AF用户WebUI与MA四件与CVE-裁定.md:58`：
+    「P2-3 这个编号在四份报告里指四件不同的事」）。本仓已实踩一次：本文档里「#54 存量清单」与会话任务
+    #54（日配额分层）同号不同事 ⇒ 交付面上提到任何编号，必须同时写出它在哪份文件的哪一行。
+15. **门自己响的读数要当场清掉，不许写进基线当存量**。本批 `manual_add/manual_edit/manual_withdraw`
+    三条被 `fake-ok-const` 判红（字面量 `ok=True`），改法是仓内既有那一条：`ok` 由**回读**推出来
+    （`service_tokens.py:240` 的口径），不是把三条塞进 `.gates-baseline.txt`。
+
+---
+
+## 七、DCD 通信面（当前状态）
+
+- 已投已裁（本轮批次）：`inbox/20261004-MA-裁6落码回执与Q4三项对比读数.md` → `decisions/20261004-MA-裁6落码回执与两问-裁定.md`；
+  `inbox/20261004-MA-向量面MiniLM退路的HOME可写性与Dockerfile预热无效-决策申请.md` → `decisions/20261004-MA向量面MiniLM退路-裁定.md`；
+  裁1/裁3/裁4/裁5 回执 → `decisions/20261004-AF安全审计与MA回执与遗留两批-裁定.md`。
+- **DCD 已点名要 MA 改的动作**：回执里**先把 `grep decisions/` 跑一遍**再落笔，
+  否则已裁项会被挂回"仍待裁"（今日两例，判例「"已裁未读"＝"已裁未记"」）。
+- 等外部输入：**SP 的本居活动清单**（Q6-1/#38 共用一张单，给设备补标签 B 也在同一张单上——
+  分两次提就是两次打扰，所以不要单独去要）。
+
+## 八、待写文书（新 agent 的第一批动作）
+
+1. `inbox/20261004-MA-裁5追加QA落码回执与老用例现读.md`，内容三件事**分开写**（这是裁6 补裁 §四 验收原文）：
+   ① `total` 已按 18:35 口径落码（`c1c2e99` + 审计 §二十九 + 现网少报读数）；
+   ② 老回归用例已改写——给**文件:行 + 变异判红**，现读已在手：`.qoder/tmp-c7-mut-oldcase.py`
+   跑 `tests/test_vma_activity_semantic.py`，基线 `15 passed / rc=0`；把 `_signal_ids` 的标签条件整体摘掉还原缺陷现场后
+   **`1 failed, 14 passed`**，FAILED 只有
+   `test_rule_tag_condition_filters_events_instead_of_being_decorative`（`:212`）；
+   曾被冻结的 `test_disabled_rule_rows_are_not_applied`（`:191`）**在缺陷现场仍然绿**
+   （它的"不判"来自 `enabled=0`，`:202` 直接断言 `list_activity_rules(enabled_only=True)==[]`、
+   `:206` 断言 `rule_sources.activity_rules_table==0`）⇒ 缺陷不再被它当期望行为；
+   复原 `RESTORED=True`、末态 `15 passed / FAILED=[] / rc=0`、`OLDCASE_RC=0`。
+   ③ Q6-2 的耗时分母与新截断判据——**这条要等 #44 落码才有数**，回执里先写"未落地 + 三条约束已接收"。
+   同时更正我自己引用错的那格：`define_activity` 8 参数签名现读在 **`insights/api.py:550-552`**，
+   我上一份回执写的 `api.py:503-505` 是 `water_purifier_usage` 的 docstring（DCD 更正成立）。
+2. Q6-1 那半句照实写：**"已挂 SP，未落地"**，不要出现任何"已调内置词表"的表述。
+
+## 九、清理欠账（不影响功能，影响磁盘与下一个人）
+
+- 本机 `E:\NAS\memory-agent\.qoder\`：本会话产生的 `tmp-c7-*`（脚本、探针、`.out`、`.sh`）以及历史
+  `tmp-c6-*`、`tmp-35-*`、`{head,old,prod}-src/`、`worktrees/`、`wt-base/` 全都没被 git 管
+  （`git status --short -- src tests scripts doc` 应该只剩 0 项才算干净）。
+- 容器 `/tmp`：**只删自己命名的**（`c6snap20261004a/b/c`、`c7snap20261004a` 及同名 `*_gate.log`/`*_suite.log`），
+  别人的 `vsNN` 目录一律不碰。
+
+---
+
+## 十、2026-10-05 追加（#50 / #51 两批审计核销）
+
+> 本文 §一–§九 是 2026-10-04 的**当时快照**（基准 HEAD `f02eefd`），其中的用例数与
+> `origin/main` 关系都已过期，别当现读用。本节只补两批的**当前状态**，细节全在
+> `修复与核实/审计核实与修复_20261001.md` §三十三、§三十四。
+
+- **现读门**（2026-10-05 04:54+08）：`git rev-list --count origin/main..HEAD` = **0**；
+  容器快照 `/tmp/c28snap20261005a`（358 文件）pyflakes `GATE_RC=0`、
+  全量 `SUITE_RC=0` **`1322 passed, 10 skipped in 203.10s`**、定向 `20 passed`、鉴权链 `47 passed`；
+  本机同批 `1310 passed, 22 skipped` ⇒ 两侧总数都是 **1332**。`.gates-baseline.txt` 一字未改。
+- **A8（#50）核销结论**：A8 §一 那条 `12 failed, 7 passed` 是把我们表头的
+  「锁缺陷条数 / 对照条数」**两列读成了运行结果**（数字一模一样不是巧合，是同一批用例的分工计数）；
+  A8 §三 点名的 `service.py:68` 被证伪（`:50` 已先升序）。但同一族里**真有三条**被扫出来并修掉：
+  `EventRecord.dt` 走机器本地时区而与同一条记录的 `day`/`hour` 分属两条时钟、
+  `tags_json` 解析失败静默把规则的标签条件归零、`list_entities` 单行构造失败静默缺项。
+  外加 A3 P2-6（`_CONV` 并发丢消息）此前**一条锁都没有**，本批补 5 条机制级锁。
+- **A3 §八（#51）落到底**：那句"少量未卸载的同步 I/O"真身是**鉴权中间件**——
+  改前每个非公开请求都在事件循环上读一遍账号文件，Basic 分支还要跑 bcrypt（容器实测 p50 **369ms**）。
+  已连带 `/api/auth/login`、`/api/auth/status` 一并卸载；`register` 与三条管理路径
+  **故意不卸载**（实测卸载会把引导期并发注册从"第二个 403"变成两个都建号）。
+  新量具 `scripts/scan_unloaded_async_io.py` 两侧同读数，且自己写明**量不到传递性阻塞**。
+- **仍未动的**（顺序没变，别重复排队）：#9 service_token 30 天双轨、#10 R2 `--apply`
+  （要 SP 排窗）、#38 内置词表（等 SP 本居活动清单，明令不得单方改）、#5 DCD 裁决跟踪、
+  #40 Q-B 剩余格；DCD 在等的几件见 `关键决策部/inbox/`。
+- **生效口径没变**：以上两批同样**尚未在生产生效**（镜像重烤未获授权），
+  随下一次合并停机窗与裁3/裁5 同批上车；窗内要重取的真实并发读数见 §三十四 七.2。
+- **欠账提醒（§九 仍然有效）**：`.qoder/tmp-c{3..29}*` 这批脚本与探针是本人产出的，
+  收尾时应清；容器 `/tmp` 只删自己命名的 `cNNsnap*` 与同名日志。
+
+---
+
+## 十一、2026-10-05 追加（#52：A2/A7「静态结论」那 13 项的首批核销）
+
+**做了什么**：把 A2 §五 标着"静态可确认，需构造长度不等的真实输入"的 P2-1 变成运行时对读数。
+全仓 19 个 `zip` 站点逐个归位：**13 处判红（新增 `strict=True`）/ 5 处保持滑窗 / 1 处 `# zip-pair-ok:` 标记**，
+`unclassified=0`。一把梭加 strict 会交付 6 个必然崩溃点，所以归属由 `scripts/scan_zip_pairing.py`
+（纯 stdlib AST，正 4 反 0 自证）强制，不由散文约定。
+
+**最有价值的一格**：`_cosine_similarity` 同输入两条路径两个答案——numpy 在场报维度错，
+缺席**静默给 0.5976**。这种"只在缺依赖的机器上错"的分支，用例加到 1349 条也抓不到；
+靠 `sys.modules["numpy"]=None` 强制走退路才现形。改前 S1 是 `n=3 agreement=1.0`
+（10 条预测被静默丢到 3 条，读数照样漂亮），改后判红。
+
+**权威门两侧对得上**：容器 `/tmp/c29snap20261005a`（360 文件）`GATE_RC=0` /
+`SUITE_RC=0` `1339 passed, 10 skipped` / `TARGETED_RC=0` 17 passed / `TOUCHED_RC=0` `66 passed, 6 skipped` /
+`SCAN_RC=0` / `PROBE_RC=0`（探针 sha16 `9f681245eb0ac2a9` 两侧同值）；本机 `1327 passed, 22 skipped`
+⇒ 两侧总数同为 **1349**（上批 1332 + 本批 17）。
+容器那 10 条 skip 我第一版写错了——脚本用 `tail -4` 只回显了 3 条，我据此"凑"过一组拆分；
+真实拆分是回读容器完整日志得到的（`hmmlearn` 2 / `pm4py` 2 / `river` 5 / 精简检出 1）。
+**教训：截断的日志不是读数，回读全量再登记。**
+
+## 十二、2026-10-05 追加（#53：days 极值 / 连接池 / 失联路由 / `_degrade` 空列表）
+
+**做了什么**：A2/A7「静态可确认」那批的第二轮核销，四格：
+- **P3-2 days 极值**：新增 `src/memory_agent/day_bounds.py`（`clamp_days` + 两类上界），
+  全仓 99 个 `timedelta(days=)` 站点逐个归位。改前/改后同一把尺：
+  `guard_bounded 3→41`、`guard_lo_only 18→0`、`guard_unguarded 78→58`、`marked 0→4`（站点总数 99 不变）。
+- **P3-4 连接池无界**：`_CLIENT_POOL` 改 `OrderedDict` + `POOL_MAX_ENTRIES=8` LRU，
+  淘汰时在锁外 `close()`，留痕只打 `type(exc).__name__`（异常串可能带令牌）。
+  改前 `rot=12 → entries=12 / closed_entries=0`（条目数=轮换数，一条都不退），
+  改后 `rot=30 → entries=8 / evicted=23 / evicted_closed=23`。
+  两个 `rot` 不同值是因为本机每条真连接 2.8~3.0 s，改前跑到 12 已足够显形——读的是形状不是数。
+- **P3-1 失联路由**：`scripts/scan_route_mount.py` 量出 195 个 handler 形状函数里
+  **190 挂载 / 1 别处引用 / 4 失联**（`behavior_routes.py:370/:382/:412/:430`）。
+  这 4 条**不是忘了挂**：`add/update/delete_rule` 直写 `active_rules`，而唯一生产写入点是 R3 通道的
+  promote（`rule_lifecycle.py:320`）⇒ 挂载 = 开一条绕过四条红线的旁路 ⇒ **呈 DCD，未擅自挂**。
+  量具 `SCAN_RC=1` 是设计：裁定未结前必须持续判红，那 4 行红读数就是呈件在盘凭据（不进 CI）。
+- **P3-7 `_degrade` 空列表无处放 error**：改 `DegradedList(list)` 子类带 `degraded_error`，
+  不进 JSON 载荷；变异两次各咬 2 条、恢复字节一致。
+- 新锁 **36 条**（`test_vma_p32_day_bounds.py` 30 + `test_vma_p37_degrade_list_trace.py` 6）。
+
+**权威门两侧对得上（run4 = 交付面，终树快照 `/tmp/c31snap20261005a`，365 文件，基线 HEAD `2ee9d77`）**：
+容器 `GATE_RC=0` / `SUITE_RC=0` `1375 passed, 10 skipped in 209.45s`（3.11.16）/
+`TARGETED_RC=0` **36 passed**（两套新锁全含）/ `TOUCHED_RC=0` 111 passed / `DAYSCAN_RC=0` /
+`ROUTESCAN_RC=0`（含 `SCAN_RC=1` 设计红）/ `PROBE_RC=0`（sha16 `4ff04e5ff1d947a4` 两侧同值）；
+本机 `1363 passed, 22 skipped` + `QG_RC=0` 2 passed
+⇒ 两侧总数同为 **1385**（上批 1349 + 本批 36）。
+容器 skip 10 条从完整日志现读（hmmlearn 2 / pm4py 2 / river 5 / 精简检出 1），
+本机 22 条（mcp 契约 11 / surface_parity 2 / tool_schema 3 / `/data` 视图 5 / chromadb 1）。
+**这批在容器里跑了四轮**，run1（`SUITE_RC=1`，3.11 崩溃）、run2（1369+10 中间态）、
+run3（代码终树，定向集只有 30 条）都**不作为交付面读数**——
+登记门读数必须带 run 号，否则中间态会被当成终态；引用别人的读数时先问它是第几轮、哪棵树。
+
+**这批最有价值的一格是我自己引入的缺陷**：我给 `days` 立了"查询窗口 vs 保留期两种口径"的规矩，
+然后在 `store.purge_mcp_audit` 上违反了自己写的规矩——用查询上界 3650 夹了**保留期**。
+现算的差别：`keep_days=3650 → cutoff=2016-10-07`（2000 年那条审计会被删）
+vs `keep_days=200000 → cutoff=1479-03-07`（行保留）。生产调用点传字面量 30 所以今天不响——
+**"今天不响"是缺陷的潜伏期，不是豁免理由**。空断言（只 `assert rc==0`）换成了数据留存锁。
+第二条：`clamp_days` 第一版写 `int.is_integer()`（3.12+），本机 3.13 全绿、容器 3.11 `1 failed`
+⇒ 容器门不是"多跑一遍"，是**唯一能抓的那一遍**（规矩已进路线图 §6.15）。
+第三条同样是我自己种的：`learning_api.py:183/:211` 两条 `# day-ok:` 标记的理由我写成"死代码，下架与否见 DCD"。
+**"模块是死的"不是值的性质，是待裁的状态**——标记一存在量具就永久判绿，而 DCD Q2 若裁定"接回去"，
+那两处 `timedelta(days=)` 立刻变活且门不会响。正确理由本来就在上一行（`Query(default=7, ge=1, le=90)`），
+已改成引用该事实。规矩：**写不出"这个值为什么不来自外部"，就补 clamp，不要用归属标记消音。**
+
+### 十二·补（#53 第二批，2026-10-05 同日第二批，容器 run5）
+
+**同族第三处缺陷不在代码里，在我这批新立的量具自己带上**：`scan_day_bounds.py` 把"来自 `config.*`"
+当作"运维受控"的充分条件，是一条**一跳豁免**。两个前提现读都不成立：
+1. `api/config_routes.py:20` 的 `WRITABLE_FIELDS`（现读 **77 键**）是设置页提交白名单，
+   `vision_snapshot_retention_days` 在里面，`static/js/pages/vision.js:182` 是**无 min/max 的
+   `type="number"`** ⇒ 一个输入框就能把周期任务打成 `now_local(8) - timedelta(days=10**6)` 的
+   `OverflowError`（快照清理整条抛异常）。
+2. 名字叫 `config` 的对象未必是应用配置：`learning_api.run_learning_cycle(store, config)` 收的是模块
+   自己的 `LearningConfig`，`window_days` / `eval_window_days` 既不是 `config.Config` 字段也不在白名单里。
+
+**修法**（消费侧 3 处 + 量具）：`vision_service._cleanup_snapshots` 用**保留期口径**
+`clamp_days(days, hi=LONG_WINDOW_MAX)`（越界=什么都不删，不是删成 10 年前）；`learning_api.py:118/:152`
+按 `[1, 3650]` 内联收敛（不新增跨模块 import——`learning_*` 一族的导入口径本身在 DCD Q2 里）；
+量具的 `config` 档改成**两跳**，两张表都从真源解析（`WRITABLE_FIELDS` 括号配平、`class Config` 走 AST），
+归属依次判「可写键→external」「键不在应用配置字段表→external」「其余才允许 config」，
+**读不到表时不许自动豁免**（整册按 external 判红）。`config` 的 detail 拆 `attr:`（真键名）/`var:`（携带名），
+免得下一批人把 `keep` 当配置键。规矩进路线图 §6.15（第 5 条）。
+
+**新锁 4 条**（`test_vma_p32_day_bounds.py` 30→34）：极值不清库 + 正常值不变（±1 跨午夜容差写进断言）
++ 0 仍=不触发 + `test_config_exemption_is_two_hops_not_one`（三条站点的 label/guard/归属理由逐条锁死、
+两张表子集关系）。`learning_api` 那两处**只有静态锁没有运行时锁**（该族 import 不进来、全仓零引用）；
+**我没有为了让测试能 import 而改它的导入**——那等于替 DCD Q2 做"接回去"的决定。
+
+**权威门（run5 = 本批交付面，终树 `/tmp/c32snap20261005a`，365 文件，基线 HEAD `2ee9d77`）**：
+`SOURCES_RC=0`（本批新增的预飞格：`config_routes.py 516` / `config.py 544` / `grep -c WRITABLE_FIELDS=2`
+——不先证明两张真源表在场，"快照漏文件"会被读成"代码判红"）/ `GATE_RC=0`（pyflakes 0/0/0/0，
+`.gates-baseline.txt` 一字未改）/ 容器 `SUITE_RC=0` **1379 passed, 10 skipped in 233.86s**（3.11.16，
+skip 清单与 run4 逐字相同）/ 本机 `GATES_REQUIRE=1` **1367 passed, 22 skipped** ⇒ **两侧总数同为 1389**；
+`TARGETED_RC=0` **40 passed**（36→40）；`TOUCHED_RC=0` **141 passed**
+（**口径**：run5 touched 集 12 个文件，run4 是 8 个 ⇒ 141 与 111 不是同一把尺，不能相减当增量）；
+`DAYSCAN_RC=0`：`SELFTEST_RC=0` **18 正 / 11 反 / 0 漏咬**（run4 是 8 正 8 反，按规矩 5 给每条新豁免档
+配了"前提不成立必须判红"的样本），`writable=77 app_config_fields=167 writable_not_in_config=0`，
+`guard_bounded 41→44 / unguarded 58→55 / label_external 45→48 / label_config 5→2 / marked 4 / 站点总数 99`
+（**四个数是一件事**：恰好 3 条从 config 改判 external 且同批转 bounded），容器与本机该行逐字相同；
+`ROUTESCAN_RC=0`（`195/190/1/4`，`SCAN_RC=1` 仍是设计红，四条行号与 run4 相同 ⇒ 本批没碰挂载）。
+**run5 没有 `PROBE` 这一格**（本批唯一运行时改动已被 3 条新锁按 cutoff 字符串量过，池/淘汰口径未动）
+⇒ 引用 `PROBE_RC=0` 必须带 run4。脚本这次**手写**、不从 run4 那份 `sed` 改名，就是为了不再犯
+run4 那次 `PROBESCRIPT_SCP_RC=255`（取数命令被我自己写坏）。
+读数全量在 `.qoder/tmp-c32-container.log`（93 行，非 tail 片段）；台账细节见
+`审计核实与修复_20261001.md` §三十六 §九。
+
+**下一批（#54）范围由本机量具圈定，不是照抄审计的优先级**：
+第十五轮 §九 说「**补测试，而非继续扫描**」，优先级 1 = `identity_fusion` / `behavior_predictor` /
+`api/behavior_routes`（它写"0%~10% 覆盖"）。我用本机 `coverage 7.16.1`（3.13，全量同一轮
+`1363 passed / 22 skipped`）实测量：**84% / 84% / 10%** ⇒ 前两格已被 #46/#48 两批的补测抬起来，
+审计那份读数是它自己那轮（环境还是 3.10）的快照；**只有 `behavior_routes`（10%）成立**，
+而 §三 那 4 条失联 handler 恰好就在这个文件里 ⇒ 两格是同一格，等 DCD Q1 落判后一起做。
+其余存量按审计 §十 自己诚实交代的那四堆取（54 孤儿中的 47 个、26 个 E/F 函数中的 21 个、
+B/C 类 55 处降级、20 处时区点）+ 一条硬约束：**新增排序相关单测必须用与生产一致的 DESC 数据**
+（P1-6 当年就是"测试绿、生产错"）。72h 真实环境长跑仍未做（优先级 2，需要窗口与授权口径）。
+另外 P3-2 的探针 C 段还留着 6 个 `bucket=unguarded` 的表达式级危险（daily_profile / rule_engine /
+vision_service / read_self_diary / summary_queries / change_attribution）——它们在 A/B 段与量具里已收口，
+但**"站点已收口"不等于"这些函数拿到极端入参时行为符合业务预期"**，#54 可用同一把尺逐条给现读。
+
+**这批给 #54 存量清单新加两条**：① `WRITABLE_FIELDS` 的**写入侧**校验（PUT 时就拒
+`vision_snapshot_retention_days=10**9`）与前端 `min/max` 都没有加——消费侧已不可能崩、也不可能悄悄改小，
+但"保留期的合法区间是多少"（0=关闭、极大=永久保留，中间有没有产品意义上的上限）是**口径决定不是缺陷修复**，
+已作为 **Q5** 补投进该呈件 §八（MA 倾向丙，区间数字等 DCD/SP 给）；且 API 直写会绕过前端，单加 `min/max` 只是装饰。
+② 量具只统计 `timedelta(days=…)`，同族 `hours=` / `seconds=` 未在册（已知两例：
+`learning_api.run_evaluation_cycle` 的 `eval_after_hours`、`vision_service` 门禁的 `vlm_gate_window_sec`）
+⇒ 扩不扩册另开一条，**别把 99 站点册的读数与扩册后的读数混成同一个数**。
+
+**受阻项没变**（等 DCD/SP，不自行推进）：#9 service_token 30 天双轨、#10 R2 `--apply`、
+#38 本居活动清单（明令禁止单方改内置词表）、#5 裁决跟踪、Q-B、Q6-2 日配额、FTS 短词下限、
+CVE Q1/Q2/Q3，**新增：`20261005-MA-主动规则CRUD挂载与死代码六处处置-决策申请.md` Q1~Q4 + 同日 §八 补投的 Q5**
+（主动规则 CRUD 挂载、`learning_*` 八模块 1526 行零引用处置、`insights/persona.py`、死代码六处逐条）。
+顺带纠正我上一版交接单的旧数：`learning_models.py` 实测 **191 行**，"1524 行"是把整族合计错记成单文件。
+
+---
+
+## 十三、2026-10-05 追加（#55 / #56：DCD 20261005 §二.2 四件 + 第一轮 P2-3 六处死代码核销，容器 run6）
+
+裁定：`20261005-AF用户WebUI与MA四件与CVE-裁定.md` Q1=**:53** / Q2=**:54** / Q3=**:55** / Q4=**:56** /
+引用纪律=**:58**。全部落码，细节在审计台账 §三十七 与路线图 §6.17，这里只登记会影响下一步的三件事。
+
+**1）「当前交付面读数」换到 run6**（终树快照 `/tmp/c35snap20261005c`，366 文件含 8 个 `attic/`，基线 HEAD `3826aea`）：
+容器 `SUITE_RC=0` **1413 passed, 10 skipped**、本机 `1401 passed, 22 skipped` ⇒ **两侧总数同为 1423**；
+`TARGETED_RC=0` **85**（run5 的 40→85）、`TOUCHED_RC=0` **183**（**口径**：run6 touched 集是另一套 12 文件，
+183 与 run5 的 141 不是同一把尺，不许相减当增量）；`GATE_RC=0` + `GATE_MENTIONS_ATTIC=0`；
+`ROUTESCAN_RC=0` `196/195/0/1/0/0` ⇒ §三十六 §三 那条 `195/190/unmounted=4` 的**设计红转绿**（P3-1 核销）；
+变异 M1~M5 全部咬住、`restored_identical=OK` ×5、`MUTATION_BAD=0`；`CONTAINER_BATCH_RC=0`。
+**快照 `a`/`b` 作废**（tar 后又有就地改动）。run6 无 `PROBE` 格。
+
+**2）三个静态量具的在册数被搬家改了，引用时口径必须跟着换**：
+day-bounds **99→95**（4 站点进 attic；attic 侧另扫 `total=4 external=4 bounded=2 marked=2`，**两册不许混引**）、
+zip `window` **5→4**（`attic/learning/learning_feedback.py:185`）、route-mount `handler_shaped` **195→196**。
+补的是**守恒锁**不是放松断言（`test_moved_zip_site_is_in_the_attic_not_vanished` /
+`test_learning_sites_moved_to_attic_not_vanished`）——"册子变薄"永远不许读成"缺陷清零"。
+
+**3）两条我自己的坑，往后按纪律避**：
+① 三条 `manual_*` 首版写字面 ok=True 被 `fake-ok-const` 咬 ⇒ 改**回读派生**
+（真源形状 `service_tokens.py:240` / `insights/api.py:510`），**回读为空连审计都不记**；基线一字未改。
+② `rule_engine.py` 工作区 CRLF 而 HEAD 是 LF（`core.autocrlf=true`）：diff 看着干净，
+却直接造成上一轮 `M3: PATCH_NOT_FOUND`——**量具自身故障被读成了"这处语义改不动"**。
+按字节归一后 CR=0。**凡字节级量具/变异脚本，第一步确认目标文件行尾。**
+
+**待办变化**：#55 / #56 做完；#54（乙′ 日配额 24×`UNION ALL`，k≈40，判据=夜间时段必须有事件返回）、
+#57（CVE Q1 乙 网络隔离，有效读数只有 `docker network inspect` 可达 chroma 容器数 4→2；**生效需停机窗，不自行 recreate 生产**）、
+#58（裁5 Q-A `window` 回显键 / Q-B `page_bytes` 口径 / Q-C `entity_catalog` 永久 legacy + #40 判据改口径 / Q-D 切换前参数级核对）、
+#59（本批裁定吸收已并进 §三 台账，剩 Q5 待裁）。
+**编号陷阱**：文档「#54 存量清单」与任务表 #54（日配额）撞号，引用 #54 必须说明是哪一个。
+
+## 十四、2026-10-06 追加（任务表 #61：A2/A7 静态结论核销第三批，容器 run11）
+
+### 这一批干成了什么（三行版）
+
+1. **P4-3 是真缺陷，不是观察项**：`intent_inference.py` 那句 `max(...)` 的 `now` 兜底被一条**非空但解析不出**的
+   `server_ts` 触发 ⇒ 窗口基准变成容器墙钟 ⇒ `/api/behaviors/intents` 静默交 `{"intents": []}` 且 `ok:true`；
+   非字符串 ts（如 `1700000000`）走第二条通道：过滤循环里再抛 `TypeError`，而两个调用点没有 try/except ⇒ 500。
+   已改码（新增 `_event_dt:112`、撤掉墙钟兜底）+ 3 把锁 + N1/N2 变异自咬。
+   第十三轮 :108 定级依据的那句"只在所有 ts 都失败时兜底"是**错的**，实测五行成对读数在 §三十九 §二。
+2. **三处静态结论变成有读数**：P2-4（顺序不变性，升/降/交错三档同读数）、P2-5（AST 数定义，含 `AnnAssign`；
+   旧修复只有注释在守）、P2-8（命名空间不可导入的运行时读数）。
+3. **两件呈 DCD、一件核销**：pm4py 商用档位 + 内置词表口径 → `inbox/20261006-MA-pm4py许可档位与内置词表三处口径-决策申请.md`；
+   P4-2（`define_activity` 的 `ok`）核销为"前提已过时"——审计引的那句 message 在 HEAD 上已不存在（grep=0），
+   规则现在真被套用，既有锁 `tests/test_vma_activity_semantic.py:162` 看守，**不新增出境键**。
+
+### run11 的门读数（口径：容器 `memory-agent` 3.11.16，快照 `/tmp/c37snap20261006a`，基线 HEAD `c3f2719`）
+
+`GATE_RC=0`（pyflakes 0/0/0/0）、`SUITE_RC=0`（**1449 passed / 10 skipped**，307.81s）、
+`TARGETED_RC=0`（61）、`PREVBATCH_RC=0`（69，与 run10 同数）、`TOUCHED_RC=0`（338/3 = 277+61）、
+`DAYBATCH_RC=0`（src 97 项台账与 run10 一字不动）、`ROUTEBATCH_RC=0`（197/196/0/0）、
+`MUT11_RC=0`（N1..N8 全咬，`MUTATION_BAD=0`，`restored_identical=OK`）、
+`MUT10_RC=0`（M1..M10 全咬，条数 5/6/5/8/3/2/4/1/1/24 与 run10 逐格相同）。
+`TOOLCHAIN_RC=0` 先量到 pytest 9.1.1 / pyflakes 4.0.2 —— run8 那次因为 recreate 清了 `/tmp/pylibs`，
+三条门格读成 `No module named` 而被误判"咬住了"，这一格以后每次都排第一。
+**本批无 PROBE 格**：不碰 insights 读路径，正式基准沿用 run10（0.67× / 3.28×）。
+
+### 下一个人要知道的三件事
+
+- **在役 ≠ 仓**：`/app/src/memory_agent/` 里 8 个 `learning_*.py` 都还在、`/app` 没有 `attic`。
+  attic 搬迁（任务表 #56）与网络隔离（#57）、caddy 端口 9080/9443 都卡在**镜像重烤未获授权**这一格。
+  所以任何"线上行为"的判断必须现读容器 `/app`，不能拿仓里的锁顶。
+- **量具的形状问题会被读成代码结论**：这批撞的是 UTF-8 BOM——importer 嗅 `utf-8-sig` 所以 pytest 一直绿，
+  但 `open(p, encoding="utf-8") + ast.parse` 的门读到 BOM 就 `SyntaxError`，带 `except SyntaxError: continue`
+  的扫描器会把该文件从审计覆盖面里**静默摘掉**。和上一批的 CRLF→`PATCH_NOT_FOUND` 同族。
+  顺手一件事：全仓 CR 形状在 blob 与工作区之间不一致（`* text=auto eol=lf`，约 40 个在册文件工作区带 CR），
+  本批刻意**没有**为此加锁（会带进一批既红），只按交付纪律 §六.9 保证自己写的文件字节级 CR=0。
+- **测试会冻住缺陷**：P2-4 那把顺序锁第一版按"活动列表顺序"断言，而标签来自每窗口一个 `set`，
+  同频并列时顺序本就不稳定 ⇒ 改成频次字典。凡是断言"集合类返回值的顺序"之前，先确认实现有没有承诺顺序。
+
+### 还开着的格（与本批无关，别混进 #61）
+
+任务表 #40 Q-B 的⑤⑥（13/17 个工具缺同名实现 + Q3-6 对照读数）、#58 Q-D 参数级核对（等 DB/AF 各出一句读键清单）、
+#9 token 合并窗、#10 R2 写窗、#38 本居活动清单、#5 裁决跟踪、Q5 区间数字、FTS 短词下限、
+active-rules 路径的字面偏离、端口 9080/9443 追认、A7 §5.1 三项覆盖缺口
+（`llm_ask(CC=45)` 重端点压测、72h 长跑、`voice_util` 35.1% / `behavior_predictor` 27.8%）。
+另：`scripts/hc_check.py` 是未跟踪的临时件（`import json` 未使用），不属于任何台账，请它的主人收编或删掉。
+
+## 十五、2026-10-06 追加（任务表 #40 ⑤⑥ / #58 Q-D：入参落点做成尺子，四跳量到底抓到一条现行缺陷，容器 run13d）
+
+### 这一批干成了什么（三行版）
+
+1. **DCD 20261005 §三 Q2 那句话现在能量化了**：`scripts/scan_qb_param_landing.py` 给每个形参四类判词
+   （`DROPPED` / `DEAD-RESULT` / `REGISTERED` / `LANDS`）+ `--self-test`（三档合成缺陷必须各抓到一次）+ `--strict`。
+   终树读数：`api.py` 125 / `service.py` 27 / `nlquery.py` 6 / `repository.py` 77 个形参**全部 lands**，`FINDINGS=0`。
+2. **顺着尺子读到第四跳，抓到一条现行缺陷**：门面四条报告文本面（`api.py:892-901`）写的
+   `self.core.reports.<x>(…)` 指向一个**从未挂载**的成员（`hasattr(BehaviorService,'reports')=False`），
+   调用即 `AttributeError`，再被 `@_degrade` 静默收成空页 ⇒ 已挂 `ReportBuilder()`（`service.py:376`）
+   + 2 把锁 + 3 条变异（N10/N11/N12），并把存在性量具（`scan_insights_engine_attrs.py`）从"只认一跳"
+   扩成整条链：面板从改前「**35 指向 / 0 空指向**（全绿）」变成「**39 指向（含多跳链 4）/ 0 空指向 / 0 未登记**」+ `--self-test`。
+3. **run12 的 Q3 六条收口读数钉进台账 §四十.四**：四条**齐**（含 `days` 三档单调 5789 / 38074 / 149743），
+   两条**不齐**的正文分别是 #40 ⑤⑥ 的 **9 + 4** 个工具、与 #58 Q-C 的 `entity_catalog`（后者属"永久 legacy"，不是补齐项）。
+   呈 DCD 两件：NL 异常路由解析不出时**回落全屋** vs 门面**fail-closed 答 0 条**的口径差；
+   `filters.unresolved` 使用面扩展（并**更正**上批呈文"零新增出境键"的适用范围——那句只描述任务表 #61）。
+
+### run13d 的门读数（口径：容器 `memory-agent` 3.11.16，快照 `/tmp/c37snap20261006d`，基线 HEAD `25d3b1b`，373 文件）
+
+`TOOLCHAIN_RC=0`（pytest 9.1.1 / pyflakes 4.0.2 / Python 3.11.16 —— 这一格照旧排第一，run8 那次
+recreate 清了 `/tmp/pylibs`，三条门格读成 `No module named` 被误判"咬住了"）。
+`SOURCES_RC=0`：本批指纹 `SVC_REPORTS_MOUNT=1`、`API_CORE_REPORTS=4`、`ENG_SUBOWNER/ENG_SLOTS/ENG_RESOLVE=1/1/1`、
+`CALLSITE_TESTDEFS=18`、`QBLAND_TESTDEFS=9`，七文件行数 936/1347/202/272/298/244/556 = **3855** 与仓侧按字节重读一致。
+`PROBEANOM_RC=0`（四跳成对读数，见台账 §四十.二）、`QBLAND_RC=0`（`FINDINGS=0`）+ `QBSELFTEST_RC=0`、
+`SCANS2_RC=0`（`CALLSITE_RC=0`、`ATTRS_RC=0`、`ATTRS_SELFTEST_RC=0`）、
+`GATE_RC=0`（pyflakes 0/0/0/0，`.gates-baseline.txt` 一字未改）、
+`SUITE_RC=0`（**1459 passed / 10 skipped**，384.10s；run11 同口径 1449/10 ⇒ 本批净 +10 条用例；
+`SUITE_FAILNAMES_RC=1` 是"grep 不到 FAILED"的那个数，不是失败）、
+`TARGETED_RC=0`（32）、`PREVBATCH_RC=0`（61，与 run11 同数）、`TOUCHED_RC=0`（350 passed / 3 skipped，131.71s）、
+`DAYBATCH_RC=0`（src 97 项台账与 run10/run11 一字不动；attic 那格 `guard_bounded=2 guard_unguarded=2 label_external=4 total=4`）、
+`ROUTEBATCH_RC=0`（`handler_shaped=197 mounted=196 parse_fail=0 referenced=1 unmounted=0 problems=0`，与 run11 逐格相同）。
+`MUT13_RC=0`（N1..N12 全咬，失败条数 3/2/1/1/1/1/1/1/1/3/2/2，每格同基数 34）、
+`MUT11_RC=0`（上一批八条重跑作自证，全咬，条数 2/2/1/2/2/1/3/1，基数 26/26/11/6/13/13/5/6）、
+`MUT10_RC=0`（Q6-2 分层扫描十条重跑作自证，全咬，条数 **5/6/5/8/3/2/4/1/1/24**，与 run10/run11 逐格相同）
+—— 三档各自 `restored_identical=OK`、`MUTATION_BAD=0`。
+时间戳口径：面板没打时刻戳，区间取本机日志 `.qoder/tmp-run13d.log` 的 birth/mtime（`+0800` 04:09:02→04:27:32）
+折算 UTC ⇒ **2026-10-05T20:09:02Z→20:27:32Z**，是文件时间戳不是容器墙钟。
+
+### 下一个人要知道的三件事
+
+- **"门全绿"与"链是通的"是两回事**：存在性量具只认 `ast.Name` 基座的第一跳时，四条坏链**一条都不进统计**，
+  面板那句「35 指向 / 0 空指向」当时是真的。凡"某成员存在吗"这类门，先问它**看几跳**；
+  本批把这条写进量具 docstring，并要求它自带 `--self-test`（五档合成用例里三档必须判红）。
+- **变异可以是空的**：N11 第一版阈值写成 `len(parts) > 3`，而 `parts` 里根本没有 `self` ⇒ 条件永假
+  ⇒ 变异与"什么都没改"等价，harness 老实报出 `RC=0 -> 没咬住`。这条不是坏消息，是量具在自证：
+  **看到"变异存活"先怀疑变异的形状**，再怀疑代码。新加的 `MUT_ONLY` 开关就是为单条重跑准备的。
+- **两层引号的坑，仿真器验不出来**：run13 首跑折在 `ex "…$R…"` 少一个反斜杠 ⇒ NAS 侧展开 ⇒
+  远端 `line 64: R: unbound variable`、`REMOTE_DRIVER_RC=1`、**十一格全没跑**（而仿真器在同一个 `sh` 里
+  前后脚执行，展开得刚刚好，看不出来）。出网前三件都要跑：`bash -n` + `tmp-c37-lint-remote13.py`（查未转义内层变量）+ 仿真器。
+
+## 十六、2026-10-06 追加（任务表 #63：`behavior_routes` 输入边界 + 事件循环收口，容器 run14 → run14c）
+
+### 这一批干成了什么（三行版）
+
+- 一个 1131 行、**改前覆盖率 21%** 的 HTTP 面收口成"每个数字入参都有落点或显式拒"：新增 `_num()`
+  （`api/behavior_routes.py:23-44`）铺开 **13 个 handler**，把两族旧写法清掉——裸 `int(query)` 遇
+  `"abc"` 打穿 handler 变 500（Starlette 没有 `exception_handlers`），`int(body.get(k) or 3)` 把
+  `0`/`""`/`False` **静默改值**并把 config 旋钮顶死在字面量。同一文件里 `days` 一直有守卫、`limit` 没有，
+  这种"半拉子守卫"才是最坑的：它让人以为整张面都守过了。
+- **补覆盖不是涂指标**：覆盖率现读点名 207 条未执行语句之后，顺着 `behaviors_run` 查出**一条现行缺陷**
+  （`window_minutes` 原样透传到 `activity_inference.py:260` 的 `int(... or 15)`，`"abc"`→500、
+  `0`→静默换档、`10**12`→`timedelta` OverflowError）。另两族一并收口：四处重活回 `asyncio.to_thread`、
+  `change_attribution` 的"一个数两种口径"（`clamp_days` 只管第一个消费点，半衰期按 5×10⁸ 天算）。
+- 成对现读交付：**同一把尺** 改前 21%（1447 passed）→ 终树 **69%**（1532 passed），
+  本批自设验收线 ≥60% 达成；46 条新落点用例 + 22 条变异（新增 M20/M21/M22）+ 容器权威门 run14c。
+  台账 §四十一 里另登记了**本批四次自伤**（三次量具坏、一次文档假记载），全部当场改掉并给了现读。
+
+### 下一个人要知道的三件事
+
+- **`_num` 的默认档语义要说清**：`default=None` 表示"没给就不传"，交给引擎自己的 config 默认；
+  给了就必须落在 `[lo, hi]`。上界不是随手写的：`window_minutes` 夹在 `DAY_WINDOW_MAX * 1440`
+  （= 5,256,000 分钟 = 3650 天同口径），再大 `now - timedelta(minutes=…)` 会 OverflowError。
+  `bool` 单独拒（JSON 的 `true` 不该被读成 `1`），错误文案必须点名参数——否则前端只能看到"limit 必须是整数"
+  却不知道哪个 limit。
+- **测试查询串一律 `urllib.parse.quote`**：Starlette 按 **latin-1** 解 `scope["query_string"]`，
+  裸 UTF-8 的「客厅」在 handler 里是 mojibake，过滤命中 0 行 ⇒ 用例"绿在地面上、红在断言上"。
+  同理 `LIMIT -1` 在 SQLite 里是**无上限**而不是"负数报错"，所以 `-1` 必须被守卫拒掉。
+- **锁"实现有、锁没有"的东西也要登记成锁**：`AUDIT_TRAIL_GATE`（R3 人工审核留痕）和规则视图冷却位
+  在 HEAD 就有实现，改前 **0 条用例**引用它们——这种代码下一次"顺手重构"就会掉，且门不会红。
+  本批两侧指纹都 =1，是刻意的：它证明"只加锁不加码"这一档确实存在。
+
+### 还开着的格（与本批无关，别混进 #63）
+
+任务表 #40 ⑤⑥（9 个既无同名无异名的工具 + 4 条异名语义逐条核）、#58 Q-A `window` 通用回显键 /
+Q-B `page_bytes` 登记 / Q-C `entity_catalog` 永久 legacy / Q-D 切换本体（等 AF/DB 各出一句消费方读键清单，期望 2026-10-07 前）、
+#9 token 合并窗（旧令牌连续 7 天 0 使用可下线）、#10 R2 写窗（245 不许写死，以 `pii_backfill_r2.py` dry-run 为准）、
+#38 本居活动清单、#5 裁决跟踪、Q5 区间数字、FTS 短词下限、active-rules 路径的字面偏离、
+端口 9080/9443 追认、A7 §5.1 三项覆盖缺口（`llm_ask(CC=45)` 重端点压测、72h 长跑、`voice_util` 35.1% / `behavior_predictor` 27.8%）、
+~~Q4 `behavior_routes` 覆盖率 ≥60%~~（**已核销**：任务表 #63 成对现读 21% → 69%，自设线达成，见 §十六）。
+在役面（attic 搬迁、网络隔离、端口）统一等**镜像重烤 + recreate 窗口**（未获授权）。
+
+
+---
+
+—— MA 侧执行台账 · 2026-10-04（基准 HEAD `f02eefd`）

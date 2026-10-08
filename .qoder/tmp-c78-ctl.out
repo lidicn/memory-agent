@@ -1,0 +1,7 @@
+M0_control_nothing_changed             expected=- got=- OK
+M1_dead_literal_restored               expected=no_big_table,runtime_only,single_binding got=no_big_table,runtime_only,single_binding OK
+M2_source_swapped_to_local_assembly    expected=single_binding got=single_binding OK
+M3_module_level_read                   expected=runtime_only got=runtime_only OK
+M4_names_derived_from_catalog          expected=runtime_only,single_binding got=runtime_only,single_binding OK
+TREE_GREEN=True TREE_BAD=[]
+CTL_VARIANTS=6 CTL_BAD=0

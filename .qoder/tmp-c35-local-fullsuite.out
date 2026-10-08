@@ -1,0 +1,61 @@
+............................ssssssssss..s............................... [  5%]
+........................................................................ [ 10%]
+........................................................................ [ 15%]
+........................................................................ [ 20%]
+........................................................................ [ 25%]
+........................................................................ [ 30%]
+........................................................................ [ 35%]
+.........ss............................................................. [ 40%]
+........................................................................ [ 45%]
+..........................F............................................. [ 50%]
+........................................................................ [ 55%]
+.....................................................sss................ [ 60%]
+....sss.ss.............................................................. [ 65%]
+........................................................................ [ 70%]
+........................................................................ [ 75%]
+........................................................................ [ 81%]
+..........................................................F............. [ 86%]
+........................................................................ [ 91%]
+............................................................s........... [ 96%]
+......................................................                   [100%]
+================================== FAILURES ===================================
+_________________________ test_no_new_gate_violations _________________________
+
+    def test_no_new_gate_violations():
+        """新增违规一律红；`.gates-baseline.txt` 里的存量放行，但只准减少。"""
+        report = _report()
+        lines = [v.render() for v in report.active]
+        detail = "\n".join(lines[:40]) + ("\n… 其余略" if len(lines) > 40 else "")
+>       assert not report.active, (
+            f"新增 {len(report.active)} 条门禁违规（error {report.error_count} / warn {report.warn_count}）。\n"
+            f"要么修掉，要么在 `.gates-baseline.txt` 里逐条写明为什么放行。\n{detail}"
+        )
+E       AssertionError: 新增 3 条门禁违规（error 0 / warn 3）。
+E         要么修掉，要么在 `.gates-baseline.txt` 里逐条写明为什么放行。
+E         WARN  fake-ok-const            src/memory_agent/rule_lifecycle.py:536                       RuleLifecycle.manual_add  字面量 ok=True，不来自任何实际校验
+E         WARN  fake-ok-const            src/memory_agent/rule_lifecycle.py:588                       RuleLifecycle.manual_edit  字面量 ok=True，不来自任何实际校验
+E         WARN  fake-ok-const            src/memory_agent/rule_lifecycle.py:614                       RuleLifecycle.manual_withdraw  字面量 ok=True，不来自任何实际校验
+E       assert not (Violation(rule='fake-ok-const', rel_path='src/memory_agent/rule_lifecycle.py', line=536, qualname='RuleLifecycle.manu...ecycle.py', line=614, qualname='RuleLifecycle.manual_withdraw', message='字面量 ok=True，不来自任何实际校验', level='warn', tag=''))
+E        +  where (Violation(rule='fake-ok-const', rel_path='src/memory_agent/rule_lifecycle.py', line=536, qualname='RuleLifecycle.manu...ecycle.py', line=614, qualname='RuleLifecycle.manual_withdraw', message='字面量 ok=True，不来自任何实际校验', level='warn', tag='')) = Report(active=(Violation(rule='fake-ok-const', rel_path='src/memory_agent/rule_lifecycle.py', line=536, qualname='Rule...el='warn', tag='')), stale=(), counts=(('except-pass-broad', 28), ('fake-ok-const', 176), ('swallow-and-claim-ok', 7))).active
+
+tests\test_quality_gates.py:68: AssertionError
+__________________ test_every_zip_site_in_src_is_classified ___________________
+
+    def test_every_zip_site_in_src_is_classified():
+        counts, problems = zipscan.scan_root(os.path.join(_ROOT, "src", "memory_agent"))
+        total = sum(counts.values())
+        assert problems == []
+        assert total > 0
+        assert counts.get("unclassified", 0) == 0
+        # 三类都在：说明门同时管住了「该加 strict」和「不该加 strict」两个方向
+        assert counts.get("strict", 0) >= 13
+>       assert counts.get("window", 0) >= 5
+E       AssertionError: assert 4 >= 5
+E        +  where 4 = <built-in method get of dict object at 0x000001A8FEED3080>('window', 0)
+E        +    where <built-in method get of dict object at 0x000001A8FEED3080> = {'strict': 13, 'window': 4, 'marked': 1}.get
+
+tests\test_vma_p21_zip_pairing.py:215: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_quality_gates.py::test_no_new_gate_violations - AssertionEr...
+FAILED tests/test_vma_p21_zip_pairing.py::test_every_zip_site_in_src_is_classified
+2 failed, 1398 passed, 22 skipped in 201.10s (0:03:21)

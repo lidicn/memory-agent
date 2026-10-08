@@ -1,0 +1,203 @@
+"""API 公共依赖：响应约定、鉴权助手、SSE 流式响应
+
+响应约定沿用重构前的 ``{"ok": bool, ...}``，避免破坏 Node-RED
+与既有前端的解析逻辑。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+from typing import Any, AsyncIterator, Callable
+
+from starlette.requests import Request
+from starlette.responses import JSONResponse, StreamingResponse
+
+from ..runtime import AppRuntime, get_runtime
+
+__all__ = [
+    "ok",
+    "error",
+    "_ok",
+    "_error",
+    "current_user",
+    "require_user",
+    "require_admin",
+    "json_body",
+    "runtime",
+    "sse_response",
+    "sse_pack",
+    "mask_secret",
+    "_num",
+]
+
+
+# ── 响应 ───────────────────────────────────────────────────────────────────
+
+def error(msg: str, code: int = 400, extra: dict | None = None) -> JSONResponse:
+    """失败响应。``extra`` 用于携带诊断明细（如自检各步骤），
+    让前端在报错时也能展示「到底卡在哪一步」，而不是只有一句红字。"""
+    payload: dict[str, Any] = {"ok": False, "error": msg}
+    if extra:
+        payload.update(extra)
+    return JSONResponse(payload, status_code=code)
+
+
+def ok(data: Any = None, status_code: int = 200) -> JSONResponse:
+    if data is None:
+        return JSONResponse({"ok": True}, status_code=status_code)
+    if isinstance(data, dict):
+        return JSONResponse({"ok": True, **data}, status_code=status_code)
+    return JSONResponse({"ok": True, "data": data}, status_code=status_code)
+
+
+# 兼容旧命名
+_ok = ok
+_error = error
+
+
+# ── 鉴权 ───────────────────────────────────────────────────────────────────
+
+def current_user(request: Request) -> dict | None:
+    """读取鉴权中间件写入的用户。
+
+    不同 Starlette 版本对 ``request.state`` 与 ``scope['state']`` 的绑定方式
+    不一致，这里两条路径都兜住。
+    """
+    state = request.scope.get("state")
+    if isinstance(state, dict) and state.get("user"):
+        return state["user"]
+    return getattr(request.state, "user", None)
+
+
+def require_user(request: Request) -> tuple[dict | None, JSONResponse | None]:
+    user = current_user(request)
+    if not user:
+        return None, error("未登录", 401)
+    return user, None
+
+
+def require_admin(request: Request) -> tuple[dict | None, JSONResponse | None]:
+    user = current_user(request)
+    if not user:
+        return None, error("未登录", 401)
+    if not user.get("is_admin"):
+        return None, error("需要管理员权限", 403)
+    return user, None
+
+
+# ── 运行时 ─────────────────────────────────────────────────────────────────
+
+def runtime(request: Request | None = None) -> AppRuntime:
+    if request is not None:
+        rt = getattr(request.app.state, "runtime", None)
+        if rt is not None:
+            return rt
+    return get_runtime()
+
+
+# ── 请求体 ─────────────────────────────────────────────────────────────────
+
+async def json_body(request: Request) -> dict:
+    """安全解析 JSON body。空体或非法 JSON 一律返回空字典，不抛异常。"""
+    try:
+        raw = await request.body()
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {"data": data}
+
+
+# ── SSE ────────────────────────────────────────────────────────────────────
+
+def sse_pack(event: str, data: Any) -> str:
+    payload = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+async def _sse_gen_guard(inner: AsyncIterator[str]) -> AsyncIterator[str]:
+    """SSE 流式体兜底守卫。
+
+    吞掉客户端断开（ASGI ``CancelledError``），避免 Starlette 在已发
+    ``http.response.start`` 之后又尝试发一条错误响应（又一个 start），
+    触发 ``RuntimeError: Expected ASGI message 'http.response.body', but got
+    'http.response.start'`` 把前端响应整页吞成空白。
+
+    见 ``HANDOFF_memory_agent_asgi.md``。各 generator 自身也已改为静默 return，
+    此处作为统一兜底，根治所有经 ``sse_response`` 的流式接口。
+    """
+    try:
+        async for chunk in inner:
+            yield chunk
+    except asyncio.CancelledError:
+        return
+
+
+def sse_response(generator: Callable[[], AsyncIterator[str]] | AsyncIterator[str]):
+    """构造 SSE 响应。
+
+    必须显式关闭缓冲，否则经过反向代理时会「攒够一批才吐」，
+    前端表现为「不流式」。外层用 ``_sse_gen_guard`` 包裹，统一吞掉客户端断开异常。
+    """
+    iterator = generator() if callable(generator) else generator
+    return StreamingResponse(
+        _sse_gen_guard(iterator),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ── 其他 ───────────────────────────────────────────────────────────────────
+
+def mask_secret(value: str, keep: int = 4) -> str:
+    """密钥掩码。GET /api/config 一律返回掩码值，避免密钥随页面泄露。"""
+    if not value:
+        return ""
+    if len(value) <= keep * 2:
+        return "*" * len(value)
+    return f"{value[:keep]}{'*' * 8}{value[-keep:]}"
+
+
+def _num(raw, *, name: str, cast=int, default=None, lo=None, hi=None):
+    """数字入参的统一口径：没给 → `default`；给了 → 必须转换成功且落在 `[lo, hi]`，否则拒。
+
+    改前各路由里有两族写法，都错过：裸 `int(request.query_params.get(...))` 遇到
+    `limit=abc` 直接把 handler 打成未捕获 ValueError（Starlette 500，二期 MA-07），
+    而同一个 handler 的 `days` 却有守卫；`int(body.get(k) or 3)` 则把 0/`""`/`False`
+    静默改成 3——既替调用方改了值，又把 config 上的同名旋钮顶死在字面量上。
+    这里不替调用方改值：越界与被拒都走 400，错误文案点名参数。
+
+    原先住在 `behavior_routes`，二期 MA-07/08 要求别的入口也用同一口径，故提到公共依赖
+    （"同一个 store 方法，API 侧已钳制、MCP 侧裸下推"那类不对等，根因之一就是各校各的）。
+
+    非有限值单独一档，两个理由都是实测出来的：`json.loads`（Starlette 的 `request.json()`
+    就走它）默认接受 `Infinity` / `NaN` 字面量，所以 body 能把**真** `float('inf')` 递进来，
+    而 `int(float('inf'))` 抛的是 `OverflowError`——第八轮 lesson 86 量过 `except
+    (TypeError, ValueError)` 接不住它；`NaN` 更阴险，`nan < lo` 和 `nan > hi` 恒为 False，
+    只靠上下界等于没有校验。
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default, None
+    if isinstance(raw, bool):        # JSON 的 true 不该被读成 1
+        return None, f"{name} 必须是数字"
+    try:
+        val = cast(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None, f"{name} 必须是{'整数' if cast is int else '数字'}"
+    if isinstance(val, float) and not math.isfinite(val):
+        return None, f"{name} 必须是有限数字"
+    if lo is not None and val < lo:
+        return None, f"{name} 不得小于 {lo}"
+    if hi is not None and val > hi:
+        return None, f"{name} 不得大于 {hi}"
+    return val, None

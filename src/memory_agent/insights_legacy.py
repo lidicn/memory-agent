@@ -1122,7 +1122,9 @@ class InsightService:
         out: list[dict] = []
         for e in events:
             persons = e.get("persons") or []
-            names = [p.get("name") or "未识别" for p in persons]
+            # D26 修复：「陌生人」是判定结论，不是人员身份，不放进 persons 数组
+            names = [p.get("name") or "未识别" for p in persons
+                     if p.get("name") and p.get("name") != "陌生人"]
             out.append(
                 {
                     "time": e.get("server_ts", ""),

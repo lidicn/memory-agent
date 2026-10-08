@@ -1,0 +1,306 @@
+HEAD=af3e0fe
+UNPUSHED=5
+GUARD_OK CODE_CLEAN=0
+DOC_DIRTY=3
+GUARD_OK HEAD_IS_84=af3e0fe
+GUARD_OK UNPUSHED_5=5
+GUARD_OK REMOTE_SYNTAX_RC=0
+GUARD_OK M81_PARSE_RC=0
+GUARD_OK M82_PARSE_RC=0
+GUARD_OK PROBE_PARSE_RC=0
+GUARD_OK HASHES_PARSE_RC=0
+GUARD_OK AST_auth.py=0
+GUARD_OK AST_config.py=0
+GUARD_OK AST_auth_routes.py=0
+GUARD_OK AST_app.py=0
+GUARD_OK AST_announcer.py=0
+GUARD_OK AST_runtime.py=0
+GUARD_OK AST_mqtt_bridge.py=0
+GUARD_OK AST_adm_linkage.py=0
+GUARD_OK AST_test_vma_login_rate_limit.py=0
+GUARD_OK AST_test_announcer.py=0
+GUARD_OK AST_test_vma_dcd_20261006_linkage_codes.py=0
+GUARD_OK AST_test_vma_dcd_20261002_payload.py=0
+GUARD_OK AST_test_tool_prose_promised_keys.py=0
+.qoder/tmp-c82-remote27.sh UNESCAPED=0 ODD_QUOTE_LINES=[]
+LINT_RC=0
+GUARD_OK LINT_RC=0
+FILES27=407
+GUARD_OK OUT_1ST_PRESENT=0
+GUARD_OK OUT_2ND_PRESENT=0
+GUARD_OK OUT_1ST_PRESENT=0
+GUARD_OK OUT_2ND_PRESENT=0
+GUARD_OK M81_V1_WT=True
+GUARD_OK M81_V2_KILLED=2
+GUARD_OK M81_V2_SURVIVED=0
+GUARD_OK M81_V2_INVALID=0
+GUARD_OK M81_V2_WT=True
+[M-0] 对照腿（什么都不改）rc=0 summary='207 passed in 29.00s' failed=[]
+GUARD_OK M82_V1_KILLED=10
+GUARD_OK M82_V1_SURVIVED=4
+GUARD_OK M82_V1_INVALID=0
+GUARD_OK M82_V2_KILLED=4
+GUARD_OK M82_V2_SURVIVED=0
+GUARD_OK M82_V2_WT=True
+GUARD_OK MR20_OUT_PRESENT=0
+GUARD_OK MR20_KILLED=6
+GUARD_OK MR20_SURVIVED=0
+GUARD_OK MR20_INVALID=0
+GUARD_OK MR20_WT=True
+GUARD_OK MR20_TOTALS=totals: killed=6 survived=0 invalid=0 legs=6
+[P-0] 对照腿（什么都不改）rc=0 summary='28 passed in 4.56s' failed=[]
+GUARD_OK MR20_CONTROL_PASSED=28 passed
+GUARD_OK MR20_LEGS=6
+GUARD_OK MR20_OUTENV=1
+GUARD_OK MR20_ROOTENV=1
+GUARD_OK MR20_AST=1
+GUARD_OK MR20_UNCHANGED=1
+GUARD_OK M82_TOTALS=totals: killed=4 survived=0 invalid=0 legs=4
+GUARD_OK PROBE_LOCAL_RC=0
+GUARD_OK PROBE_BAD=0
+GUARD_OK PROBE_CASES=4
+GUARD_OK LOCAL_SUITE_EXISTS=0
+....                                                                     [100%]
+1996 passed, 24 skipped in 272.98s (0:04:32)
+LOCAL_SUITE_RC=0
+GUARD_OK LOCAL_SUITE_RC=0
+GUARD_OK LOCAL_SUITE_FAILED=0
+GUARD_OK HASHES_LOCAL_RC=0
+HASH_LISTED=407 HASH_FILES=407 HASH_MISSING=0
+HASH_AGGREGATE=42de814d9143d62b920b654d11342bda5901c7371c78f7430bb5bf1ec2a9557e
+GUARD_OK HASH_MISSING=0
+GUARD_OK M81_LEGS=22
+GUARD_OK M82_LEGS=14
+GUARD_OK M81_OUTENV=1
+GUARD_OK M82_OUTENV=1
+GUARD_OK M81_AST=1
+GUARD_OK M82_AST=1
+GUARD_OK M81_UNCHANGED=1
+GUARD_OK M82_UNCHANGED=1
+GUARD_OK AUTH_RESOLVE=1
+GUARD_OK AUTH_BUDGET=1
+GUARD_OK AUTH_BACKOFF=1
+GUARD_OK AUTH_XFF_LAST=1
+GUARD_OK AUTH_SWITCH=1
+GUARD_OK AUTH_NETS_FN=1
+GUARD_OK CFG_TRUST_DEFAULT=1
+GUARD_OK CFG_CIDRS_DEFAULT=1
+GUARD_OK CFG_ENV_TRUST=1
+GUARD_OK CFG_ENV_CIDRS=1
+GUARD_OK ROUTES_TRUST=1
+GUARD_OK BASIC_RESOLVE=1
+GUARD_OK ANN_HA_FN=1
+GUARD_OK ANN_INBOX_FN=1
+GUARD_OK ANN_READY_PROP=1
+GUARD_OK ANN_PRIORITY_LINE=1
+GUARD_OK ANN_GATE_LINE=1
+GUARD_OK ANN_TRACEID=1
+GUARD_OK ANN_ENABLED_LINE=1
+GUARD_OK RT_MQTT_INJECT=1
+GUARD_OK RT_CONSTRUCT=1
+GUARD_OK MB_PUBLISH_SPEAK=1
+GUARD_OK L_RATE_DEFS=22
+GUARD_OK L_ANN_DEFS=17
+GUARD_OK L_CODE_DEFS=19
+GUARD_OK L_PROSE_DEFS=9
+GUARD_OK L_SWITCH_GATE=1
+GUARD_OK L_WIRED=1
+GUARD_OK L_HA_REJECT=1
+GUARD_OK L_HA_GARBAGE=1
+GUARD_OK L_CALLER_LOCK=1
+GUARD_OK ACP_CONFLICT_CLS=1
+GUARD_OK ACP_RAISE=1
+GUARD_OK ACP_ROUTE_EXCEPT=1
+GUARD_OK ACP_NEW_PREV=1
+GUARD_OK ACP_PROMPT_CHECK=1
+GUARD_OK ACP_NEW_OWNER=1
+GUARD_OK ACP_NEWARG=1
+GUARD_OK ACP_CHECK_DEF=1
+GUARD_OK ACP_CHECK_CALLS=4
+GUARD_OK L20_DEFS=8
+GUARD_OK L20_PARITY=1
+GUARD_OK L20_CROSS=1
+GUARD_OK L20_TRIM=1
+GUARD_OK L20_UNAUTH=1
+GUARD_OK DOCKER_PIP_032=1
+GUARD_OK DOCKER_PIP_031=0
+GUARD_OK VENDOR_WHEELS=1
+GUARD_OK VENDOR_SHA_MATCH=19bc83a67a96931c4556caec52f29c190aaa03a0a7036e0b41c242a533fb5505
+GUARD_OK VENDOR_SHA_REGISTERED=1
+GUARD_OK CR_auth.py=0
+GUARD_OK CR_config.py=0
+GUARD_OK CR_auth_routes.py=0
+GUARD_OK CR_app.py=0
+GUARD_OK CR_announcer.py=0
+GUARD_OK CR_runtime.py=0
+GUARD_OK CR_mqtt_bridge.py=0
+GUARD_OK CR_adm_linkage.py=0
+GUARD_OK CR_Dockerfile=0
+GUARD_OK CR_README.md=0
+GUARD_OK CR_test_vma_login_rate_limit.py=0
+GUARD_OK CR_test_announcer.py=0
+GUARD_OK CR_test_vma_dcd_20261006_linkage_codes.py=0
+GUARD_OK CR_test_vma_dcd_20261002_payload.py=0
+GUARD_OK CR_test_tool_prose_promised_keys.py=0
+GUARD_OK CR_tmp-c81-mut.py=0
+GUARD_OK CR_tmp-c82-mut.py=0
+GUARD_OK CR_acp_server.py=0
+GUARD_OK CR_test_acp_round20_owner_isolation.py=0
+GUARD_OK CR_tmp-r20-mut.py=0
+GUARD_OK CR_tmp-c82-probe.py=0
+GUARD_OK CR_tmp-c82-remote27.sh=0
+IN_SNAP_checked=21
+PREFLIGHT_OK=1
+GUARD_OK TAR_RC=0
+TAR_SIZE=2491145
+GUARD_OK SCP_RC=0
+GUARD_OK REMOTE_SCP_RC=0
+GUARD_OK M81_SCP_RC=0
+GUARD_OK M82_SCP_RC=0
+GUARD_OK PROBE_SCP_RC=0
+GUARD_OK MR20_SCP_RC=0
+GUARD_OK HASHES_SCP_RC=0
+GUARD_OK FILELIST_SCP_RC=0
+STAGE_RC=0
+REMOTE_NAS_SYNTAX_RC=0
+407
+SNAP_FILELIST_LINES_RC=0
+SYNC_RC=0
+2026-10-08T03:11:39+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+Python 3.11.16
+TOOLCHAIN_RC=0
+SNAP_RC=0
+HASH_LISTED=407 HASH_FILES=407 HASH_MISSING=0
+HASH_AGGREGATE=42de814d9143d62b920b654d11342bda5901c7371c78f7430bb5bf1ec2a9557e
+AUTH_RESOLVE=1
+AUTH_BUDGET=1
+AUTH_BACKOFF=1
+AUTH_XFF_LAST=1
+AUTH_SWITCH=1
+AUTH_NETS_FN=1
+CFG_TRUST_DEFAULT=1
+CFG_CIDRS_DEFAULT=1
+CFG_ENV_TRUST=1
+CFG_ENV_CIDRS=1
+ROUTES_TRUST=1
+BASIC_RESOLVE=1
+ANCHOR81_RC=0
+ANN_HA_FN=1
+ANN_INBOX_FN=1
+ANN_READY_PROP=1
+ANN_PRIORITY_LINE=1
+ANN_GATE_LINE=1
+ANN_TRACEID=1
+ANN_ENABLED_LINE=1
+RT_MQTT_INJECT=1
+RT_CONSTRUCT=1
+MB_PUBLISH_SPEAK=1
+ANCHOR82_RC=0
+L_RATE_DEFS=22
+L_ANN_DEFS=17
+L_CODE_DEFS=19
+L_PROSE_DEFS=9
+L_SWITCH_GATE=1
+L_WIRED=1
+L_HA_REJECT=1
+L_HA_GARBAGE=1
+L_CALLER_LOCK=1
+LOCKS_RC=0
+ACP_CONFLICT_CLS=1
+ACP_RAISE=1
+ACP_ROUTE_EXCEPT=1
+ACP_NEW_PREV=1
+ACP_PROMPT_CHECK=1
+ACP_NEW_OWNER=1
+ACP_NEWARG=1
+ACP_CHECK_DEF=1
+ACP_CHECK_CALLS=4
+ANCHOR20_RC=0
+L20_DEFS=8
+L20_PARITY=1
+L20_CROSS=1
+L20_TRIM=1
+L20_UNAUTH=1
+LOCKS20_RC=0
+M81_LEGS=22
+M82_LEGS=14
+MR20_LEGS=6
+M81_OUTENV=1
+M82_OUTENV=1
+MR20_OUTENV=1
+M81_AST=1
+M82_AST=1
+MR20_AST=1
+M81_UNCHANGED=1
+M82_UNCHANGED=1
+MR20_UNCHANGED=1
+MR20_ROOTENV=1
+HARNESS_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:220: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+2010 passed, 10 skipped in 469.60s (0:07:49)
+SUITE_FAILNAMES_RC=1
+AUTH_A_RC=0
+........................................................................ [ 45%]
+........................................................................ [ 91%]
+.............                                                            [100%]
+157 passed in 72.35s (0:01:12)
+ANN_B_RC=0
+.............................................s.......................... [ 84%]
+.............                                                            [100%]
+84 passed, 1 skipped in 7.86s
+PROSE_C_RC=0
+.......................................                                  [100%]
+39 passed in 30.03s
+ACP_D_RC=0
+............................                                             [100%]
+28 passed in 4.21s
+PROBE_RC=0
+CASE_switch_off SWITCH=False ENABLED=False INBOX_READY=False ROUTE=none HA_HITS=0 INBOX_HITS=0 RET=False TID_LEN=0 OK=True
+CASE_ha_wins SWITCH=True ENABLED=True INBOX_READY=True ROUTE=ha HA_HITS=1 INBOX_HITS=0 RET=True TID_LEN=0 OK=True
+CASE_fallback_no_target SWITCH=True ENABLED=False INBOX_READY=True ROUTE=inbox HA_HITS=0 INBOX_HITS=1 RET=True TID_LEN=32 OK=True
+CASE_no_route SWITCH=True ENABLED=False INBOX_READY=False ROUTE=none HA_HITS=0 INBOX_HITS=0 RET=False TID_LEN=0 OK=True
+PROBE_BAD=0
+M81_SKIPPED_IN_RUN27=1
+M82_SKIPPED_IN_RUN27=1
+MR20_RC=0
+[P-0] 对照腿（什么都不改）rc=0 summary='28 passed in 4.91s' failed=[]
+[P01] KILLED src/memory_agent/acp_server.py :: MA-36 回归：prompt 完全不校验属主（B 可读可写 A 的会话）
+[P02] KILLED src/memory_agent/acp_server.py :: MA-37 回归：new() 回到无条件覆盖 ⇒ 后来者改写属主
+[P03] KILLED src/memory_agent/acp_server.py :: 接错异常类型：属主冲突不再回错误信封，而是炸穿成 500
+[P04] KILLED src/memory_agent/acp_server.py :: 新建会话不带属主：A 随后读自己的历史被 fail-close 拒掉
+[P05] KILLED src/memory_agent/acp_server.py :: 只对会话表里存在的会话校验：被 _trim 裁掉、历史仍在的会话成了越权入口
+[P06] KILLED src/memory_agent/acp_server.py :: 空主体放行：未带 scope 的入口直接绕过属主校验
+WT_UNTOUCHED=True
+totals: killed=6 survived=0 invalid=0 legs=6
+MR20_SURVIVED_COUNT=0
+MR20_INVALID_COUNT=0
+tail: cannot open '/tmp/c82snap27_mr20_run.log' for reading: No such file or directory
+POST_HASHES_RC=0
+HASH_LISTED=407 HASH_FILES=407 HASH_MISSING=0
+HASH_AGGREGATE=42de814d9143d62b920b654d11342bda5901c7371c78f7430bb5bf1ec2a9557e
+POST_ANN_RC=0
+.......................................                                  [100%]
+39 passed in 5.06s
+POST_AUTH_RC=0
+......................                                                   [100%]
+22 passed in 3.88s
+POST_ACP_RC=0
+............................                                             [100%]
+28 passed in 3.96s
+2026-10-08T03:22:49+08:00
+REMOTE_DONE
+REMOTE_DRIVER_RC=0
+CONTAINER_BATCH_RC=0
+DRIVER27_RC=0

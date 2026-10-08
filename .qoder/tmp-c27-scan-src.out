@@ -1,0 +1,4 @@
+HITS=3
+src\memory_agent\api\behavior_routes.py:765 return conn.execute(sql, args).fetchall()
+src\memory_agent\mcp_server.py:1576 rows = conn.execute(sql, params + [rows_limit, offset]).fetchall()
+src\memory_agent\mcp_server.py:1575 total = conn.execute(count_sql, params).fetchone()[0]

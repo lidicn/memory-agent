@@ -1,0 +1,40 @@
+.FF.                                                                     [100%]
+================================== FAILURES ===================================
+______________ test_login_handler_does_not_freeze_the_event_loop ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000027614682C40>
+
+    def test_login_handler_does_not_freeze_the_event_loop(monkeypatch):
+        auth = _SlowAuth()
+        monkeypatch.setattr(ar, "runtime", lambda request=None: _RT(auth))
+    
+        async def call():
+            return await ar.login(_request({"username": "u1", "password": "pw"}))
+    
+        ticks = _ticks_during(call)
+        assert auth.login_calls == 1
+>       assert ticks >= MIN_TICKS_WHEN_OFFLOADED
+E       assert 0 >= 10
+
+tests\test_vma_a3_p22_auth_loop_blocking.py:128: AssertionError
+___________ test_auth_status_handler_does_not_freeze_the_event_loop ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000027614682FD0>
+
+    def test_auth_status_handler_does_not_freeze_the_event_loop(monkeypatch):
+        auth = _SlowAuth()
+        monkeypatch.setattr(ar, "runtime", lambda request=None: _RT(auth))
+    
+        async def call():
+            return await ar.auth_status(_request(method="GET"))
+    
+        ticks = _ticks_during(call)
+        assert auth.status_reads == 1
+>       assert ticks >= MIN_TICKS_WHEN_OFFLOADED
+E       assert 0 >= 10
+
+tests\test_vma_a3_p22_auth_loop_blocking.py:141: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_vma_a3_p22_auth_loop_blocking.py::test_login_handler_does_not_freeze_the_event_loop
+FAILED tests/test_vma_a3_p22_auth_loop_blocking.py::test_auth_status_handler_does_not_freeze_the_event_loop
+2 failed, 2 passed in 5.24s

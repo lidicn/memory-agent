@@ -1,0 +1,32 @@
+[baseline] 17 passed in 5.26s FAILED = []
+====================================================================================================
+====================================================================================================
+A1 门面 query_behavior_events 退回 Phase-4 形状（丢 member/days）
+  判红 ['test_dispatch_would_bind_every_insights_tool', 'test_every_insights_toolspec_param_lands_in_a_facade_slot', 'test_forwarded_tools_keep_both_key_generations', 'test_no_insights_tool_dies_on_a_binding_shape', 'test_outward_methods_keep_the_legacy_parameter_shape', 'test_query_behavior_events_reads_the_vision_table_and_honors_member']
+  咬住 2/2 缺 [] RESTORED=True
+
+A2 _search 不再上报扫描上限（Q4 三键消失）
+  判红 ['test_scan_annotation_tells_whether_total_is_a_scan_cap']
+  咬住 1/1 缺 [] RESTORED=True
+
+A3 climate_sessions 指回 BehaviorService 上不存在的成员
+  判红 ['test_facade_engine_pointers_all_resolve', 'test_forwarded_tools_keep_both_key_generations', 'test_legacy_outward_ledger_is_complete_in_both_directions', 'test_no_insights_tool_dies_on_a_binding_shape']
+  咬住 3/3 缺 [] RESTORED=True
+
+A4 get_last_event 不给门面代兼容键（只回 legacy 原样）
+  判红 ['test_forwarded_tools_keep_both_key_generations', 'test_get_last_event_returns_both_key_generations']
+  咬住 2/2 缺 [] RESTORED=True
+
+A5 登记表漏登 get_last_event
+  判红 ['test_ledger_size_matches_the_measured_outward_surface', 'test_legacy_outward_ledger_is_complete_in_both_directions']
+  咬住 2/2 缺 [] RESTORED=True
+
+A6 把本页条数改名成 total（谎报匹配总数）
+  判红 ['test_query_behavior_events_reads_the_vision_table_and_honors_member']
+  咬住 1/1 缺 [] RESTORED=True
+
+A7 data_quality_issues 指回不存在的引擎成员（仓内消费点那一半）
+  判红 ['test_facade_engine_pointers_all_resolve']
+  咬住 1/1 缺 [] RESTORED=True
+
+RESTORED_FINAL = True

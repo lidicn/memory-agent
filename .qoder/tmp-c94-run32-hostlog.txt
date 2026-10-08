@@ -1,0 +1,83 @@
+2026-10-08T08:18:36+08:00
+REMOTE_HEADLESS_OK
+CONTAINER_PRESENT=1
+PYTEST=9.1.1
+PYFLAKES=4.0.2
+MCP_IMPORT_OK
+Python 3.11.16
+TOOLCHAIN_RC=0
+SNAP_RC=0
+HASH_LISTED=415 HASH_FILES=415 HASH_MISSING=0
+HASH_AGGREGATE=2244c310ebfd3befab7077bdfb89c0974993c8c25541b49339fab2cfff5dfa7f
+ 10556 /tmp/c92snap32_mut32.py
+  3628 /tmp/c92snap32_anchor.py
+255182 src/memory_agent/store.py
+ 56809 src/memory_agent/insights/api.py
+ 40759 src/memory_agent/app.py
+ 27010 scripts/scan_claimed_semantics.py
+ 10276 tests/test_vma_phase4_claims_direct.py
+  9296 tests/test_vma_phase2_claims_gauge.py
+ 14790 tests/test_vma_qb_param_landing.py
+ 35317 tests/test_vma_phase2_batch3_shared_ruler.py
+463623 total
+MUTFILE_RC=0
+ANCHOR_RC=0
+ANCHOR_HARNESS /tmp/c92snap32_mut32.py legs=9 anchor_ok=9
+ANCHOR_OK=9 ANCHOR_BAD=0 ANCHOR_MISSING=0
+AST311_ALL_OK
+AST311_RC=0
+PH4_RC=0
+.............                                                            [100%]
+13 passed in 2.29s
+PH4_SKIPPED=0
+PAIR_RC=0
+........................................................................ [ 55%]
+..........................................................               [100%]
+130 passed in 73.17s (0:01:13)
+PAIR_SKIPPED=0
+LOCK_RC=0
+.......                                                                  [100%]
+7 passed in 16.91s
+MUT32_RC=0
+MUT32OUT_RC=0
+[Q-0] 对照腿（什么都不改）rc=0 summary='143 passed in 74.38s (0:01:14)' failed=[] skipped=0
+Q-0 绿：副本树与快照树同口径，后续红都是注入造成的。
+WT_UNTOUCHED=True
+totals: killed=9 survived=0 invalid=0 legs=9
+MUT32_KILLED_LINES=9
+SELFTEST_G1_RC=0
+SELFTEST_G1_LINES=7
+SCAN_G1_RC=0
+ROOT=src/memory_agent STUBS=5 PROBLEM=0 EXEMPT_TOTAL=5 EXEMPT_HIT=5 EXEMPT_STALE=0
+SELFTEST_G2_RC=0
+SELFTEST_G2_LINES=7
+SCAN_G2_RC=0
+ROOT=src/memory_agent DECLARED=9 SKIP_GUARD=1 NEED_COMPARE=0 OK=2 PROBLEM=0 EXEMPT_STALE=0
+SELFTEST_G3_RC=0
+SELFTEST_G3_LINES=11
+SCAN_G3_RC=0
+ROOT=src/memory_agent TARGETS=9 DIRECT_LOOP=6 RESIDENT_TASK=1 VIA_CALLER=2 NOT_SCHEDULED=0 NO_CALLSITE=0 PROBLEM=0 EXEMPT_STALE=0
+SELFTEST_G4_RC=0
+SELFTEST_G4_LINES=9
+SCAN_G4_RC=0
+SRC=src/memory_agent DECLARED=41 REGISTERED=29 CASES=48 UNVERIFIED=12 PROBLEM=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:220: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+2109 passed, 10 skipped in 520.91s (0:08:40)
+SUITE_SKIPPED_LINES=10
+SUITE_FAILNAMES_RC=1
+POST_HASHES_RC=0
+HASH_LISTED=415 HASH_FILES=415 HASH_MISSING=0
+HASH_AGGREGATE=2244c310ebfd3befab7077bdfb89c0974993c8c25541b49339fab2cfff5dfa7f
+POST_SCAN_G4_RC=0
+SRC=src/memory_agent DECLARED=41 REGISTERED=29 CASES=48 UNVERIFIED=12 PROBLEM=0
+MUT_DST_CLEANED_RC=0
+2026-10-08T08:41:52+08:00
+REMOTE_DONE

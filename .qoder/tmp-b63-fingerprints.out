@@ -1,0 +1,53 @@
+===== WORKSPACE =====
+DWM_IMPORT=1
+NUM_BOOL_GUARD=1
+NUM_LO_MSG=1
+NUM_HI_MSG=1
+BAD_LIMIT_NUM=1
+INTENT_LIMIT_NUM=1
+CAUSAL_ENTRY_GATE=1
+CF_GATE=1
+LEGACY_INT_BODY=2
+LEGACY_QUERY_INT=13
+OFFLOAD_TO_THREAD_TOTAL=49
+OFFLOAD_PREDICT=1
+OFFLOAD_INFER=1
+OFFLOAD_PROFILE=1
+OFFLOAD_WRITE=1
+HEAVY_NESTED=2
+CA_WINDOW_DAYS=1
+CA_DELTA_WD=1
+CA_HALF_LIFE_WD=1
+CA_HALF_LIFE_RAW=0
+CA_DESC_WD=2
+T63_TESTDEFS=28
+T63_HEAVY_NAMES=2
+T63_PROD_SHAPE=1
+R5_BLINDSPOT=1
+  1205 src/memory_agent/api/behavior_routes.py
+   695 src/memory_agent/change_attribution.py
+   550 tests/test_vma_task63_routes_input_boundary.py
+   382 tests/test_vma_r5_event_loop_offload.py
+  2832 total
+===== HEAD（改前成对读数）=====
+HEAD_DWM_IMPORT=0
+HEAD_NUM_BOOL_GUARD=0
+HEAD_BAD_LIMIT_NUM=0
+HEAD_LEGACY_INT_BODY=6
+HEAD_LEGACY_QUERY_INT=14
+HEAD_OFFLOAD_TO_THREAD_TOTAL=45
+HEAD_HEAVY_NESTED=0
+HEAD_CA_WINDOW_DAYS=0
+HEAD_CA_HALF_LIFE_WD=0
+HEAD_CA_HALF_LIFE_RAW=1
+HEAD_CA_DESC_WD=0
+ 1131 /tmp/tmp.RxJGACVDXG/br.py
+  689 /tmp/tmp.RxJGACVDXG/ca.py
+ 1820 total
+===== CR（按字节量，交付纪律 §六.9）=====
+CR src/memory_agent/api/behavior_routes.py = 0
+CR src/memory_agent/change_attribution.py = 695
+CR tests/test_vma_task63_routes_input_boundary.py = 0
+CR tests/test_vma_r5_event_loop_offload.py = 0
+CRLF_CHECK_DONE
+MEASURE_DONE

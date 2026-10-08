@@ -1,0 +1,35 @@
+HEAD=160020c ORIGIN=160020c
+FILES=352
+TAR_POST_RC=0 SIZE=2213115
+TAR_PRE_RC=0 SIZE=1882756
+SCP_c18snap20261005a_RC=0
+STAGE_RC=0
+SYNC_c18snap20261005a_RC=0
+SCP_c18pre20261005a_RC=0
+STAGE_RC=0
+SYNC_c18pre20261005a_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+........................................................................ [ 99%]
+..                                                                       [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_algo_kernel.py:91: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:119: could not import 'hmmlearn': No module named 'hmmlearn'
+SKIPPED [1] tests/test_algo_kernel.py:154: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:165: could not import 'pm4py': No module named 'pm4py'
+SKIPPED [1] tests/test_algo_kernel.py:179: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_algo_kernel.py:191: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:96: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:198: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1288 passed, 10 skipped in 200.80s (0:03:20)
+PRE_PROBE_RC=1
+47 /tmp/c18pre20261005a_q3.log
+POST_PROBE_RC=1
+48 /tmp/c18snap20261005a_q3.log
+FETCH_PRE_RC=0
+FETCH_POST_RC=0
+CONTAINER_RC=0

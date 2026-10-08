@@ -1,0 +1,6 @@
+Name                                      Stmts   Miss  Cover
+-------------------------------------------------------------
+src\memory_agent\api\behavior_routes.py     675    371    45%
+src\memory_agent\change_attribution.py      482     60    88%
+-------------------------------------------------------------
+TOTAL                                      1157    431    63%

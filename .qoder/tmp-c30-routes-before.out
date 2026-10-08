@@ -1,0 +1,11 @@
+ROOT=src handler_shaped=195 mounted=190 referenced=1 problems=4
+  UNMOUNTED            src/memory_agent/api/behavior_routes.py:382 behaviors_add_rule 
+  UNMOUNTED            src/memory_agent/api/behavior_routes.py:430 behaviors_delete_rule 
+  UNMOUNTED            src/memory_agent/api/behavior_routes.py:370 behaviors_list_rules 
+  UNMOUNTED            src/memory_agent/api/behavior_routes.py:412 behaviors_update_rule 
+  referenced-elsewhere src/memory_agent/api/insight_routes.py:42 build_insight src/memory_agent/api/insight_routes.py:167,src/memory_agent/api/llm_routes.py:33,src/memory_agent/api/llm_routes.py:401
+PROBLEM UNMOUNTED-HANDLER src/memory_agent/api/behavior_routes.py:382 behaviors_add_rule
+PROBLEM UNMOUNTED-HANDLER src/memory_agent/api/behavior_routes.py:430 behaviors_delete_rule
+PROBLEM UNMOUNTED-HANDLER src/memory_agent/api/behavior_routes.py:370 behaviors_list_rules
+PROBLEM UNMOUNTED-HANDLER src/memory_agent/api/behavior_routes.py:412 behaviors_update_rule
+SCAN_RC=1 共 4 个失联 handler

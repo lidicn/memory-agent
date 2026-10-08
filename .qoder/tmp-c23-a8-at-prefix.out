@@ -1,0 +1,229 @@
+FFFFF..F.FF..FFF...                                                      [100%]
+================================== FAILURES ===================================
+___________________ test_arrival_desc_matches_real_arrival ____________________
+
+    def test_arrival_desc_matches_real_arrival():
+        """predict_arrival_time 应返回到家时间 19.0，而非睡前 23.0。
+    
+        原 bug（DESC 取末事件）：返回 23.0（睡前）。
+        """
+        events = _make_behavior_events(days=5)
+        result = predict_arrival_time(events, "Kevin", min_days=3)
+        assert result is not None
+>       assert abs(result["predicted_hour"] - 19.0) < 0.1, (
+            f"到家时间应为 19.0，实得 {result['predicted_hour']}"
+        )
+E       AssertionError: 到家时间应为 19.0，实得 8.0
+E       assert 11.0 < 0.1
+E        +  where 11.0 = abs((8.0 - 19.0))
+
+tests\test_audit_arrival_time.py:60: AssertionError
+_________________ test_arrival_asc_also_matches_real_arrival __________________
+
+    def test_arrival_asc_also_matches_real_arrival():
+        """predict_arrival_time 不应因排序方式不同而返回离家时间 8.0。
+    
+        原 bug（ASC 取首事件）：返回 8.0（离家）。
+        这条断言专门防止"改成 ASC 即可"的错误修复方案。
+        """
+        events = _make_behavior_events(days=5)
+        # 事件按时间升序传入（模拟 ASC）
+        events_asc = sorted(events, key=lambda e: e["server_ts"])
+        result = predict_arrival_time(events_asc, "Kevin", min_days=3)
+        assert result is not None
+>       assert abs(result["predicted_hour"] - 19.0) < 0.1, (
+            f"ASC 下到家时间也应为 19.0，实得 {result['predicted_hour']}（不能只改排序）"
+        )
+E       AssertionError: ASC 下到家时间也应为 19.0，实得 8.0（不能只改排序）
+E       assert 11.0 < 0.1
+E        +  where 11.0 = abs((8.0 - 19.0))
+
+tests\test_audit_arrival_time.py:76: AssertionError
+______________________ test_arrival_is_order_independent ______________________
+
+    def test_arrival_is_order_independent():
+        """predict_arrival_time 的结果应与事件传入顺序无关。"""
+        events = _make_behavior_events(days=5)
+        events_asc = sorted(events, key=lambda e: e["server_ts"])
+        events_desc = sorted(events, key=lambda e: e["server_ts"], reverse=True)
+        r_asc = predict_arrival_time(events_asc, "Kevin", min_days=3)
+        r_desc = predict_arrival_time(events_desc, "Kevin", min_days=3)
+        assert r_asc is not None and r_desc is not None
+>       assert abs(r_asc["predicted_hour"] - r_desc["predicted_hour"]) < 0.01, (
+            f"顺序无关：ASC={r_asc['predicted_hour']}, DESC={r_desc['predicted_hour']}"
+        )
+E       AssertionError: 顺序无关：ASC=8.0, DESC=23.0
+E       assert 15.0 < 0.01
+E        +  where 15.0 = abs((8.0 - 23.0))
+
+tests\test_audit_arrival_time.py:89: AssertionError
+___________________ test_baseline_desc_matches_real_arrival ___________________
+
+    def test_baseline_desc_matches_real_arrival():
+        """compute_return_time_baseline 应返回到家中位数 19.0，而非睡前 23.0。
+    
+        原 bug（DESC 取末事件）：返回 23.0。
+        """
+        events = _make_face_events(days=5)
+        result = compute_return_time_baseline(events, "Kevin", min_days=3)
+        assert result is not None
+>       assert abs(result["median_hour"] - 19.0) < 0.1, (
+            f"回家基线中位数应为 19.0，实得 {result['median_hour']}"
+        )
+E       AssertionError: 回家基线中位数应为 19.0，实得 8.0
+E       assert 11.0 < 0.1
+E        +  where 11.0 = abs((8.0 - 19.0))
+
+tests\test_audit_arrival_time.py:102: AssertionError
+_____________________ test_baseline_is_order_independent ______________________
+
+    def test_baseline_is_order_independent():
+        """compute_return_time_baseline 的结果应与事件传入顺序无关。"""
+        events = _make_face_events(days=5)
+        events_asc = sorted(events, key=lambda e: e["server_ts"])
+        events_desc = sorted(events, key=lambda e: e["server_ts"], reverse=True)
+        r_asc = compute_return_time_baseline(events_asc, "Kevin", min_days=3)
+        r_desc = compute_return_time_baseline(events_desc, "Kevin", min_days=3)
+        assert r_asc is not None and r_desc is not None
+>       assert abs(r_asc["median_hour"] - r_desc["median_hour"]) < 0.01, (
+            f"顺序无关：ASC={r_asc['median_hour']}, DESC={r_desc['median_hour']}"
+        )
+E       AssertionError: 顺序无关：ASC=8.0, DESC=23.0
+E       assert 15.0 < 0.01
+E        +  where 15.0 = abs((8.0 - 23.0))
+
+tests\test_audit_arrival_time.py:115: AssertionError
+______________ test_exact_name_wins_over_longer_prefix_extension ______________
+
+    def test_exact_name_wins_over_longer_prefix_extension():
+        """精确匹配"电脑"应优先于更长的"电脑插座"。
+    
+        原 bug：按 friendly_name 长度降序，"电脑插座"(4字) 排在 "电脑"(2字) 前面。
+        修复后：按匹配占比排序，精确匹配(fn==query_core)得分最高 2.0。
+        """
+        ins = _make_insights()
+        result = match_device("电脑开了多久", ins)
+        assert result is not None, "应匹配到设备"
+>       assert result["query"] == "电脑", (
+            f"精确匹配应优先，期望 query='电脑'，实得 '{result['query']}'"
+        )
+E       AssertionError: 精确匹配应优先，期望 query='电脑'，实得 '电脑插座'
+E       assert '电脑插座' == '电脑'
+E         
+E         - 电脑
+E         + 电脑插座
+
+tests\test_audit_device_match.py:63: AssertionError
+_____________________ test_prefix_ambiguity_lamp_vs_strip _____________________
+
+    def test_prefix_ambiguity_lamp_vs_strip():
+        """参数化：客厅灯不应匹配到客厅灯带。"""
+        ins = _make_insights()
+        result = match_device("客厅灯开了多久", ins)
+        assert result is not None
+>       assert result["query"] == "客厅灯", (
+            f"期望 '客厅灯'，实得 '{result['query']}'"
+        )
+E       AssertionError: 期望 '客厅灯'，实得 '客厅灯带'
+E       assert '客厅灯带' == '客厅灯'
+E         
+E         - 客厅灯
+E         + 客厅灯带
+E         ?    +
+
+tests\test_audit_device_match.py:89: AssertionError
+_____________________ test_prefix_ambiguity_ac_vs_ac_plug _____________________
+
+    def test_prefix_ambiguity_ac_vs_ac_plug():
+        """参数化：主卧空调不应匹配到主卧空调插座。"""
+        ins = _make_insights()
+        result = match_device("主卧空调运行时长", ins)
+        assert result is not None
+>       assert result["query"] == "主卧空调", (
+            f"期望 '主卧空调'，实得 '{result['query']}'"
+        )
+E       AssertionError: 期望 '主卧空调'，实得 '主卧空调插座'
+E       assert '主卧空调插座' == '主卧空调'
+E         
+E         - 主卧空调
+E         + 主卧空调插座
+E         ?     ++
+
+tests\test_audit_device_match.py:100: AssertionError
+______________ test_unmatched_signal_must_not_dilute_matched_one ______________
+
+    def test_unmatched_signal_must_not_dilute_matched_one():
+        """未匹配信号不应稀释已匹配候选者的置信度。
+    
+        原 bug：total_weight 包含 candidate_id=None 的信号源权重，
+        1 路 ARCFACE 匹配 A(0.9) + 1 路 HA_FACE 未匹配 → 置信度从 0.9 被稀释到 0.6。
+        修复后：total_weight 只计有匹配的信号源，置信度保持 0.9。
+        """
+        signals = [
+            _sig("s1", Source.ARCFACE, "Alice", conf=0.9),
+            _sig("s2", Source.HA_FACE, None, conf=0.8),  # 未匹配/陌生人
+        ]
+        result = fuse("living_room", signals, roster=["Alice", "Bob"])
+>       assert result.chosen_id == "Alice", f"应选中 Alice，实得 {result.chosen_id}"
+E       AssertionError: 应选中 Alice，实得 None
+E       assert None == 'Alice'
+E        +  where None = FusionResult(chosen_id=None, confidence=0.8, level=<Level.HIGH: 'high'>, method='WEIGHTED_FUSION', scores=[CandidateSc...or_boost=0.0, score_final=0.6000000000000001)], conflicts=[], needs_review=False, degraded=False, degraded_reason=None).chosen_id
+
+tests\test_audit_identity_fusion.py:38: AssertionError
+________________ test_unmatched_signal_must_not_invert_winner _________________
+
+    def test_unmatched_signal_must_not_invert_winner():
+        """未匹配信号不应导致高置信匹配者翻盘为陌生人。
+    
+        原 bug：多路未匹配信号累积权重超过匹配信号，chosen_id 变 None。
+        修复后：已匹配候选者不受未匹配信号影响。
+        """
+        signals = [
+            _sig("s1", Source.ARCFACE, "Alice", conf=0.9),
+            _sig("s2", Source.HA_FACE, None, conf=0.7),
+            _sig("s3", Source.ELIMINATION, None, conf=0.6),
+        ]
+        result = fuse("living_room", signals, roster=["Alice", "Bob"])
+>       assert result.chosen_id == "Alice", (
+            f"未匹配信号不应翻盘，期望 Alice，实得 {result.chosen_id}"
+        )
+E       AssertionError: 未匹配信号不应翻盘，期望 Alice，实得 None
+E       assert None == 'Alice'
+E        +  where None = FusionResult(chosen_id=None, confidence=0.6499999999999999, level=<Level.MED: 'med'>, method='WEIGHTED_FUSION', scores...or_boost=0.0, score_final=0.4909090909090909)], conflicts=[], needs_review=False, degraded=False, degraded_reason=None).chosen_id
+
+tests\test_audit_identity_fusion.py:56: AssertionError
+_____________ test_weak_unmatched_signal_must_not_downgrade_level _____________
+
+    def test_weak_unmatched_signal_must_not_downgrade_level():
+        """弱未匹配信号不应把 HIGH 降级为 NEEDS_REVIEW。
+    
+        原 bug：稀释后置信度 0.6 < high_threshold(0.8)，等级降为 NEEDS_REVIEW。
+        修复后：置信度保持 0.9，等级 HIGH。
+        """
+        signals = [
+            _sig("s1", Source.ARCFACE, "Alice", conf=0.95),
+            _sig("s2", Source.HA_FACE, None, conf=0.5),
+        ]
+        result = fuse("living_room", signals, roster=["Alice", "Bob"])
+>       assert result.level == Level.HIGH, (
+            f"期望 HIGH，实得 {result.level}（confidence={result.confidence}）"
+        )
+E       AssertionError: 期望 HIGH，实得 Level.NEEDS_REVIEW（confidence=0.6333333333333333）
+E       assert <Level.NEEDS_REVIEW: 'needs_review'> == <Level.HIGH: 'high'>
+E        +  where <Level.NEEDS_REVIEW: 'needs_review'> = FusionResult(chosen_id='Alice', confidence=0.6333333333333333, level=<Level.NEEDS_REVIEW: 'needs_review'>, method='WEI...ts=[Conflict(rule='R3', status='CLOSE_RACE', details='分差太小')], needs_review=True, degraded=False, degraded_reason=None).level
+E        +  and   <Level.HIGH: 'high'> = Level.HIGH
+
+tests\test_audit_identity_fusion.py:72: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_audit_arrival_time.py::test_arrival_desc_matches_real_arrival
+FAILED tests/test_audit_arrival_time.py::test_arrival_asc_also_matches_real_arrival
+FAILED tests/test_audit_arrival_time.py::test_arrival_is_order_independent - ...
+FAILED tests/test_audit_arrival_time.py::test_baseline_desc_matches_real_arrival
+FAILED tests/test_audit_arrival_time.py::test_baseline_is_order_independent
+FAILED tests/test_audit_device_match.py::test_exact_name_wins_over_longer_prefix_extension
+FAILED tests/test_audit_device_match.py::test_prefix_ambiguity_lamp_vs_strip
+FAILED tests/test_audit_device_match.py::test_prefix_ambiguity_ac_vs_ac_plug
+FAILED tests/test_audit_identity_fusion.py::test_unmatched_signal_must_not_dilute_matched_one
+FAILED tests/test_audit_identity_fusion.py::test_unmatched_signal_must_not_invert_winner
+FAILED tests/test_audit_identity_fusion.py::test_weak_unmatched_signal_must_not_downgrade_level
+11 failed, 8 passed in 2.00s

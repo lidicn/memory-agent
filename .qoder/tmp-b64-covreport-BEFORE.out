@@ -1,0 +1,6 @@
+Name                                     Stmts   Miss  Cover
+------------------------------------------------------------
+src\memory_agent\behavior_predictor.py     111     18    84%
+src\memory_agent\identity_fusion.py        183     29    84%
+------------------------------------------------------------
+TOTAL                                      294     47    84%

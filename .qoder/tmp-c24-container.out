@@ -1,0 +1,29 @@
+HEAD=4b38623
+FILES=355
+TAR_RC=0 SIZE=2223505
+SCP_RC=0
+STAGE_RC=0
+SYNC_RC=0
+GATE_RC=0
+[gates] pyflakes: 当前 0 条，基线 0 条，新增 0，已修 0
+[gates] ✅ pyflakes 门禁通过（无新增）
+SUITE_RC=0
+SKIPPED [1] tests/test_drift.py:113: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_drift.py:125: could not import 'river': No module named 'river'
+SKIPPED [1] tests/test_vma_dcd_20261002_payload.py:198: wheel / vendor README / Dockerfile 未同时在场（精简检出），provenance 一致性无从比对
+1308 passed, 10 skipped in 217.74s (0:03:37)
+TARGETED_RC=0
+................                                                         [100%]
+16 passed in 0.59s
+DTCP_RC=0
+--- 改前（部署码 /app，机器时区 UTC）---
+MACHINE_TZ=('UTC', 'UTC') machine_offset_h=0.0 house_offset_h=8.0
+dt=2025-10-07 07:50 day=2025-10-07 hour=15
+MATCH_DT_VS_DAY=True MATCH_DT_VS_HOUR=False
+PRE_RC=0
+--- 改后（工作区快照）---
+MACHINE_TZ=('UTC', 'UTC') machine_offset_h=0.0 house_offset_h=8.0
+dt=2025-10-07 15:50 day=2025-10-07 hour=15
+MATCH_DT_VS_DAY=True MATCH_DT_VS_HOUR=True
+POST_RC=0
+CONTAINER_BATCH_RC=0

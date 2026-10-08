@@ -1,0 +1,28 @@
+SELFTEST_HIT core/p1_param_unguarded.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT core/p2_param_renamed.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT core/p3_regex_from_question.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT core/p4_lo_only.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT core/p5_marked_and_bounded.py -> CONFLICT:marked+bounded
+SELFTEST_HIT core/p6_tuple_target.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT core/p7_half_bounded.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT core/p8_bounded_only_after_site.py -> UNGUARDED-EXTERNAL
+SELFTEST_CLEAN core/n1_literal.py label=literal
+SELFTEST_CLEAN core/n2_bounded.py label=external
+SELFTEST_CLEAN core/n3_clamp_helper.py label=external
+SELFTEST_CLEAN core/n4_date_math.py label=date_math
+SELFTEST_CLEAN core/n5_config.py label=config
+SELFTEST_CLEAN core/n6_marked_external.py label=external
+SELFTEST_CLEAN core/n7_module_level_no_func.py label=literal
+SELFTEST_CLEAN core/n8_bounded_var.py label=external
+SELFTEST_HIT writable/w1_writable_attr.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT writable/w2_writable_via_var.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT writable/w3_writable_getattr.py -> UNGUARDED-EXTERNAL
+SELFTEST_CLEAN writable/w4_nonwritable_attr.py label=config
+SELFTEST_HIT unreadable/w1_writable_attr.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT unreadable/w2_writable_via_var.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT unreadable/w3_writable_getattr.py -> UNGUARDED-EXTERNAL
+SELFTEST_HIT unreadable/w4_nonwritable_attr.py -> UNGUARDED-EXTERNAL
+SELFTEST_CLEAN real-source/w1_writable_attr.py label=config
+SELFTEST_CLEAN real-source/w2_writable_via_var.py label=config
+SELFTEST_CLEAN real-source/w3_writable_getattr.py label=config
+SELFTEST_REALSOURCE_KEYS=77

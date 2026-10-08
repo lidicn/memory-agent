@@ -1,0 +1,13 @@
+腿                                      RC   读数
+M-0-control                            0    对照 failed=0 9 passed
+P1-prose-promises-a-dead-key           1    该响 failed=1 1 failed
+P2-registration-goes-stale             1    该响 failed=1 1 failed
+N1-registration-deleted                1    该响 failed=1 1 failed
+W1-plan_question-loses-window          1    该响 failed=1 1 failed
+W2-compare-loses-window                1    该响 failed=1 1 failed
+W3-degraded-envelope-drops-window      1    该响 failed=1 1 failed
+F1-probe-stops-seeding-behavior-rows   1    该响 failed=2 2 failed
+C1-coverage-table-loses-a-service      1    该响 failed=1 1 failed
+C2-climate-block-removed               1    该响 failed=5 5 failed
+MUT80_COUNT=10 MUTATION_BAD=0
+TREE_UNCHANGED=True  Files=4

@@ -1,0 +1,7 @@
+[A 退回 end_iso（旧缺陷形态）] RC=1 ['3 failed, 47 passed in 35.57s']
+    FAILED tests/test_device_event_feed.py::test_watermark_advances_so_the_same_events_are_not_fed_twice
+    FAILED tests/test_device_event_feed.py::test_window_end_plus_one_second_keeps_the_boundary_event_single
+    FAILED tests/test_device_event_feed.py::test_truncated_window_resumes_instead_of_dropping_the_tail
+[B 去掉截断续读] RC=1 ['1 failed, 49 passed in 31.81s']
+    FAILED tests/test_device_event_feed.py::test_truncated_window_resumes_instead_of_dropping_the_tail
+RESTORED=True
