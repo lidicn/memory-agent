@@ -164,9 +164,13 @@ async def execute_intent_actions(
     """
     actions = get_intent_actions(intent)
     if not actions:
+        # D17 修复：区分"意图不存在"与"意图存在但无动作"
+        known = list(INTENT_ACTIONS.keys())
         return {
             "intent": intent,
             "dry_run": dry_run,
+            "unknown_intent": intent not in INTENT_ACTIONS,
+            "available_intents": known,
             "actions": [],
             "summary": {"total": 0, "executed": 0, "skipped": 0, "need_confirm": 0},
         }

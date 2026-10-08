@@ -2140,8 +2140,12 @@ def _build_server():
     @mcp.tool()
     async def get_session_trust(session_id: str = "mcp") -> dict:
         """查某 session 声誉：avg_trust / live 占比 / 是否被锁自动晋升。"""
+        # D8 修复：session_id 非空校验，与 list/retrieve_agent_memories 口径一致
+        sid = (session_id or "").strip()
+        if not sid:
+            return {"ok": False, "error": "INVALID_PARAM: session_id 不能为空"}
         rt = get_runtime()
-        return await asyncio.to_thread(rt.agent_memory.get_session_trust, session_id)
+        return await asyncio.to_thread(rt.agent_memory.get_session_trust, sid)
 
     @mcp.tool()
     async def sweep_promote_candidates() -> dict:
