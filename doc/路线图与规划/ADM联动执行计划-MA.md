@@ -1822,8 +1822,38 @@ REGISTERED=15 CASES=17 UNVERIFIED=26 PROBLEM=0` 与本机 3.13 逐字符同）�
 **#85 到这里只剩不能自裁的**：MA-29/32/34 与 ACP sessionId 甲/乙 等 DCD 裁定（最新裁定仍为
 `decisions/20261007-MA五件与AF一件-裁定.md`，两份追补回执在 inbox 待回），MA-22 部署面那半条（compose 8086 直曝）
 按裁乙+丙留给部署面/DB 侧，**我不能自证其已收口**。
+### 6.27 容器权威门 run31（任务表 #85：`UNVERIFIED` 23 → 18 由 60 腿变异自证 + `_is_trusted_source` 收紧，2026-10-08）
 
+快照树 = `b150000`（414 文件），容器 `memory-agent` / Python 3.11.16 / pytest 9.1.1 / pyflakes 4.0.2，
+起算 06:53:54+08:00 → `REMOTE_DONE` 07:42:43+08:00（48 分 49 秒）。全档格 RC 实测：
+`TOOLCHAIN_RC=0`（含 `MCP_IMPORT_OK`）、`SNAP_RC=0`（414/414/0，聚合
+`f66629b7d18aabf6ae6675925ddc58b66cb24a775c052bd7de3504842604a1b2` = 本机串逐字符同）、
+`MUTFILE_RC=0`（四份 harness 与五件被测源文件字节数两侧同）、**`ANCHOR_RC=0`（本轮新增格：
+`ANCHOR_OK=60 ANCHOR_BAD=0 ANCHOR_MISSING=0`）**、`AST311_RC=0`、`PH3_RC=0` **41 passed / PH3_SKIPPED=0**、
+`LOCK_RC=0` **7 passed**、`NEWTWO_RC=0` **2 passed / SKIPPED=0**、
+`MUT31_RC=0` **13 腿全杀**、`MUT81_RC=0` **22 腿全杀**、`MUT85_RC=0` **11 腿全杀**、`MUT82_RC=0` **14 腿全杀**
+（四档各自 `survived=0 invalid=0` + `WT_UNTOUCHED=True`）、四把门 `SELFTEST/SCAN_RC=0`×4（G4 两侧同串
+`DECLARED=41 REGISTERED=23 CASES=36 UNVERIFIED=18 PROBLEM=0`）、`GATE_RC=0`（pyflakes 0/0/0/0）、
+**`SUITE_RC=0` = 2096 passed, 10 skipped in 681.70s**（= 2106 收集，比 run30 多 41 = 本批新用例数）、
+`POST_HASHES_RC=0` 复算同串、`MUT_DST_CLEANED_RC=0`。十条 skip 全是模块级可选依赖
+（hmmlearn×2 / pm4py×2 / river×5）+ 1 条精简检出 provenance ⇒ 零用例级 skip。
 
+**这一档存在理由**（run30 回答不了）：`UNVERIFIED` 从 23 减到 18 的前提是"这五格现在有直接断言"，
+而这句话只能由变异腿证明。13 条新腿各把那一格**退回它在 docstring 里承诺之前的写法**：
+缺 client_ip 放行 / 坏 IP 放行 / **退回 `is_private`** / 不拆 IPv4-mapped / 网表少 10-8 / ULA 换成文档段 /
+坏 CIDR 换来 `0.0.0.0/0` / 缓存短路关掉 / 判重拆掉 / prefix 存整串明文 / upsert 插第二行 /
+payload 去时间戳 / id 掺 `monotonic_ns`。其中 **T03 是本批最有价值的一条**：补断言时量出 Python 的
+`is_private` 把 TEST-NET / 保留 / 链路本地段都算私有，docstring 写的"内网段"比实现窄 ⇒ 代码按 fail-closed 收紧，
+而这条腿证明"收紧"不是空话（退回旧写法判红 3 条）。
+
+**ANCHOR 格为什么进常驻**：本批改过 `src/memory_agent/app.py` ⇒ 旧三档不再满足"源码未变就整档跳过"的条件；
+锚点漂移时 harness 只报 `INVALID`（既不算杀也不算活），读数会废在出网之后。发容器前先把 60 条锚点在被测树上
+逐条数一遍（文件键取自 harness 自己的 `FILES` 表），`ANCHOR_BAD=0 且 ANCHOR_MISSING=0` 才允许发。
+
+**DCD `20261008-AF两件与MA四回执-裁定.md` 落到本计划的部分**：MA-29 乙 / MA-32 甲 / MA-34 甲 三件从"等裁定"转为
+待落码（落点 file:line 已在台账 §二十四 表内登记），sessionId 走乙并把"下轮可再议甲"留档，run29 要求的补档由
+本轮三格完成，`scan_*` 命名保持仓规，**判例 2（入口对等性要门禁化）立项为 AST 入口对等门**，
+§五.5 升格的红线（权威门在飞期间工作树只允许 harness 一个人动）已按字面执行。
 ---
 
 ## 七、下一阶段：更紧密联动（DCD 2026-10-06）
