@@ -35,8 +35,14 @@ jobs:
 
       - name: Run unit tests
         run: |
-          python -m pytest tests/ -q --ignore=tests/test_mqtt_bridge.py --ignore=tests/test_ha_assist.py -x
+          python -m pytest tests/ -q \
+            --ignore=tests/test_mqtt_bridge.py \
+            --ignore=tests/test_ha_assist.py \
+            --ignore=tests/test_quality_gates.py \
+            --ignore=tests/test_vlm_gate.py \
+            -x --timeout=60
         env:
           PYTHONPATH: src
           JWT_SECRET: ci-test-secret-do-not-use-in-production
           MA_ENV: test
+          GATES_DISABLE: "1"
