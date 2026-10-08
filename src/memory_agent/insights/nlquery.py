@@ -117,9 +117,15 @@ class NLQueryEngine:
         entity_ids = self.resolver.resolve_ids(room=room, query=query)
         activity = self._match_activity(text)
         recommended_tool = _INTENT_TO_TOOL.get(intent, "")
+        # 审计修复（BUG-7）：plan.days 与 time_range.days 对齐，
+        # 避免顶层 days=2 与 time_range.days=1.0（"昨天"）语义冲突。
+        # time_range 解析成功时用其天数（向上取整），否则用传入默认值。
+        effective_days = int(tf.days) if tf and tf.days > 0 else days
+        if tf and tf.days > 0 and tf.days != int(tf.days):
+            effective_days = int(tf.days) + 1  # 非整数天向上取整，保证覆盖
         return QuestionPlan(
             question=text, intent=intent, route=route, room=room, query=query,
-            entity_ids=entity_ids, days=days, activity=activity,
+            entity_ids=entity_ids, days=effective_days, activity=activity,
             recommended_tool=recommended_tool,
             time_range=tf,
             hints=list(_ROUTE_HINTS.get(intent, [])),

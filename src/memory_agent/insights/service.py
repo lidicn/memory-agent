@@ -1449,9 +1449,20 @@ class BehaviorService:
 
         results = []
         for eid in targets:
-            usage = self._device_usage_one(
-                eid, tr, start_ts, window_end_ts, window_start, window_end,
-                allow_on, debounce, include_timeline, fmt_duration, is_device_on)
+            try:
+                usage = self._device_usage_one(
+                    eid, tr, start_ts, window_end_ts, window_start, window_end,
+                    allow_on, debounce, include_timeline, fmt_duration, is_device_on)
+            except Exception as exc:
+                # 审计修复（BUG-5）：per-entity 异常隔离，单个实体处理失败
+                # 不应导致整个请求无响应（SSE stream ended without matching response）。
+                usage = {
+                    "entity_id": eid, "sessions": 0,
+                    "switch_on_count": 0, "switch_off_count": 0,
+                    "total_on_seconds": 0.0, "total_on_human": "0秒",
+                    "duty_cycle_percent": 0.0, "raw_event_count": 0,
+                    "error": f"计算失败: {type(exc).__name__}: {exc}",
+                }
             meta = self._adapter.meta(eid)
             usage["friendly_name"] = meta.get("friendly_name") or eid.split(".")[-1].replace("_", " ")
             usage["room"] = meta.get("room", "")
@@ -1550,11 +1561,19 @@ class BehaviorService:
         total = sum(durations)
         span_seconds = max(1.0, window_end_ts - start_ts)
         span_days = span_seconds / 86400.0
+        # 审计修复（BUG-6）：switch_on_count 统一为「on 片段数」（与 get_device_usage_summary
+        # 的 on_off_count 同口径），原「窗口内 on 事件数」保留为 on_event_count。
+        # 已闭合片段数 = 有效片段中 open=False 的数量。
+        closed_sessions = sum(1 for seg in segments
+                              if not seg.get("open")
+                              and (float(seg["end"]) - float(seg["start"])) >= debounce)
         out: Dict[str, Any] = {
             "entity_id": eid,
             "sessions": len(durations),
-            "switch_on_count": on_count,
-            "switch_off_count": off_count,
+            "switch_on_count": len(durations),       # on 片段数（含 prior 触发的未闭合片段）
+            "switch_off_count": closed_sessions,     # 已闭合片段数
+            "on_event_count": on_count,              # 窗口内 on 事件数（原始计数）
+            "off_event_count": off_count,            # 窗口内 off 事件数（原始计数）
             "total_on_seconds": round(total, 1),
             "total_on_human": fmt_duration(total),
             "avg_session_seconds": round(total / len(durations), 1) if durations else 0,
