@@ -35,6 +35,18 @@ _ROUTE_HINTS: Dict[str, List[str]] = {
     Intent.COMPARE.value: ["试试：上周和这周比有什么变化", "试试：对比最近两周的空调使用"],
 }
 
+# D5：意图→推荐工具名映射（消除「意图名→工具名」的隐式映射，
+# 让 route_question 返回体直接告诉 Agent 下一步该调哪个工具）
+_INTENT_TO_TOOL: Dict[str, str] = {
+    Intent.DEVICE_USAGE.value: "get_device_usage",
+    Intent.BEHAVIOR.value: "get_behavior_insights",
+    Intent.ANOMALY.value: "list_behavior_anomalies",
+    Intent.RHYTHM.value: "get_behavior_drift",
+    Intent.ACTIVITY.value: "infer_activities",
+    Intent.PERSONA.value: "get_user_persona",
+    Intent.COMPARE.value: "get_behavior_insights_compare",
+}
+
 # 只有这三条路由把规划阶段的 `entity_ids` 当取数范围（DCD 20261006 §四.2 Q1 甲）。
 # rhythm/activity/persona 天生是全屋口径，不受 fail-closed 门约束。
 _ENTITY_SCOPED_ROUTES = (Intent.DEVICE_USAGE.value, Intent.BEHAVIOR.value,
@@ -104,9 +116,12 @@ class NLQueryEngine:
         query = " ".join(query.split())
         entity_ids = self.resolver.resolve_ids(room=room, query=query)
         activity = self._match_activity(text)
+        recommended_tool = _INTENT_TO_TOOL.get(intent, "")
         return QuestionPlan(
             question=text, intent=intent, route=route, room=room, query=query,
-            entity_ids=entity_ids, days=days, activity=activity, time_range=tf,
+            entity_ids=entity_ids, days=days, activity=activity,
+            recommended_tool=recommended_tool,
+            time_range=tf,
             hints=list(_ROUTE_HINTS.get(intent, [])),
             params={"has_room": bool(room), "has_query": bool(query)})
 

@@ -616,6 +616,7 @@ class QuestionPlan:
     entity_ids: List[str] = field(default_factory=list)
     days: int = 7
     activity: str = ""
+    recommended_tool: str = ""  # D5：意图→推荐工具名，消除隐式映射
     params: Dict[str, Any] = field(default_factory=dict)
     hints: List[str] = field(default_factory=list)
     time_range: Optional[TimeRange] = None
@@ -631,6 +632,7 @@ class QuestionPlan:
             "entity_ids": list(self.entity_ids),
             "days": self.days,
             "activity": self.activity,
+            "recommended_tool": self.recommended_tool,
             "params": dict(self.params),
             "hints": list(self.hints),
             "time_range": self.time_range.to_dict() if self.time_range else None,
