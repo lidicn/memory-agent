@@ -2,8 +2,8 @@
 name: insight
 description: 家庭行为洞察分析技能。当需要从家庭传感器/设备事件中提取作息节律、设备用量、异常行为，或把分析结论沉淀为可复用模板与技能时使用。通过 memory-agent 的 MCP 工具获取服务端已算好的洞察，不要自己拉原始事件硬算。
 category: insight
-version: 5
-updated_at: 2026-09-14T00:00:00
+version: 6
+updated_at: 2026-10-08T00:00:00
 ---
 
 # 家庭行为洞察分析
@@ -29,7 +29,13 @@ updated_at: 2026-09-14T00:00:00
   不要试图直接问向量库要原始事件，那是退步。
 - 想知道两层状态？`get_collect_status()` 的 `storage.relational` / `storage.vector` 字段一目了然。
 
-## 标准工作流
+## 标准工作流（三路径架构）
+0. **route_question(question)** —— 确定性摸排，返回意图/时间窗/推荐工具。
+0.5 **match_recipe(question=..., intent=...)** —— 查是否已有成熟查询剧本（路径2）。
+    - 命中（count>0）：严格按返回的 `tool_sequence` 调用工具，不要自选——token 从 8000 降到 2500。
+    - 未命中（count=0）：走路径3全自主探索（下面的步骤1-5）。
+0.6 **路径3探索成功后必须 submit_recipe** —— 把本次工具序列沉淀为剧本，系统才能自我变强。
+    回填恒为 staging，需晋升后才被后续 match_recipe 召回。
 1. `get_entity_catalog(room="主卧")` —— 用人话找设备，拿到 `entity_id` 与友好名。
 2. `get_behavior_insights(days=7)` —— 直接拿作息、活跃时段、房间分布、异常（含语义异常）。
 3. `get_device_usage(query="书房空调", days=7)` —— 开了多久、开关几次，无需手算。
@@ -39,6 +45,12 @@ updated_at: 2026-09-14T00:00:00
    Agent 下次通过 `get_skill` 即可拉到更新后的最新版本。
 
 ## 新增能力（取数更准、更直接）
+- **三路径·路径2召回 `match_recipe(question, intent, object_type, top_k)`** —— 根据问题匹配已晋升的查询剧本，
+  返回 `tool_sequence`（工具名+参数模板）。命中后严格按序列调用，无需从全量工具面自选。
+  未命中返回空列表，降级路径3全自主探索。
+- **三路径·路径3回填 `submit_recipe(intent, tool_sequence, object_type, metric, time_window, confidence)`** ——
+  全自主探索成功后，把工具序列沉淀为剧本。同构查询收敛到同一 recipe_id，重复提交自动累加 sample_count。
+  写入恒为 staging，需晋升后才被 match_recipe 召回。
 - `get_device_health(stale_days=3)` —— 主动揪失联/没电/长期静默设备。
   返回 `no_data`（从未采到）/ `stale`（最近 N 天静默）清单。`no_data` 多半是实体 ID 错或未启用。
 - `get_data_coverage(days=7)` —— 取数前先调它确认窗口完整性。`days[]` 每格给 `{day, events, active_hours, hours, empty}`，

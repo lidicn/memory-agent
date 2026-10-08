@@ -809,6 +809,51 @@ TOOL_SPECS: list = [
         pitfall="软删不硬删；必要时重新 add。",
     ),
     ToolSpec(
+        name="submit_recipe",
+        summary="三路径·路径3回填：将探索出的工具序列提交为查询剧本（recipe），恒为 staging。",
+        description=(
+            "路径3 Agent 全自主探索成功后，将工具调用序列沉淀为 recipe 供路径2召回。"
+            "同构查询（同 intent+object_type+metric+time_window+person+tool_sequence）"
+            "收敛到同一 recipe_id，重复提交自动累加 sample_count。写入恒为 staging，需晋升后才被 match_recipe 召回。"
+        ),
+        group="三路径",
+        service="agent_memory", method="submit_recipe",
+        expose=("mcp",),
+        generated=False,
+        params=[
+            _p("intent", "string", "意图类型：device_usage/compare/anomaly/presence/routine/arrival", required=True),
+            _p("tool_sequence", "array", "工具调用序列，如 [{\"tool_name\":\"get_device_usage\",\"params\":{\"query\":\"{entity_id}\",\"days\":7}}]", required=True),
+            _p("object_type", "string", "对象类型：device/room/activity/person/whole_house，默认 device", default="device"),
+            _p("metric", "string", "指标：duration/count/numeric_sum/state_share/none，默认 duration", default="duration"),
+            _p("time_window", "string", "时间窗口：today/yesterday/last_7_days/last_30_days/week_over_week/custom，默认 last_7_days", default="last_7_days"),
+            _p("person", "string", "关联成员（可选）"),
+            _p("confidence", "number", "置信度 0-1，默认 0.5", default=0.5),
+            _p("session_id", "string", "会话 ID，默认 'mcp'", default="mcp"),
+        ],
+        example="submit_recipe(intent='device_usage', tool_sequence=[{'tool_name':'get_device_usage','params':{'query':'{entity_id}','days':7}}], confidence=0.7)",
+        pitfall="写入恒为 staging；需 promote / sweep 晋升为 live 后才能被 match_recipe 召回。",
+    ),
+    ToolSpec(
+        name="match_recipe",
+        summary="三路径·路径2召回：根据问题或槽位匹配已晋升的查询剧本（recipe），返回 tool_sequence。",
+        description=(
+            "路径2入口：命中 recipe 后返回 tool_sequence，Agent 只需按序列调用对应工具，无需从全量工具面自选。"
+            "未命中返回空列表，Agent 应降级到路径3（全自主探索），探索成功后用 submit_recipe 回填。"
+        ),
+        group="三路径",
+        service="agent_memory", method="match_recipe",
+        expose=("mcp", "builtin"),
+        generated=False,
+        params=[
+            _p("question", "string", "自然语言问题（优先，做语义召回）"),
+            _p("intent", "string", "意图类型（可选，精确过滤）"),
+            _p("object_type", "string", "对象类型（可选，精确过滤）"),
+            _p("top_k", "integer", "返回条数，默认 3", default=3),
+        ],
+        example="match_recipe(question='书房空调开了多久', intent='device_usage') → 返回 recipe + tool_sequence",
+        pitfall="只召回已晋升 live 的 recipe；staging 的不会返回。未命中时降级路径3并回填。",
+    ),
+    ToolSpec(
         name="rollback_agent_memory",
         summary="回滚某会话写入的记忆（一键纠错）。",
         description="把某 session 下所有未 revoked 记忆整段回滚为 revoked（一键回滚）。",
