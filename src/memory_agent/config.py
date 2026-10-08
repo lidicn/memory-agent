@@ -205,9 +205,6 @@ class Config:
     agent_default_ttl_days: int = 30         # agent 记忆默认 TTL
     agent_sweep_interval_seconds: int = 86400  # 自动晋升 + 镜像 reconcile 扫描间隔
 
-    # ── 家庭成员 / 生活习惯档案 ───────────────────────────────────────────
-    auto_discover_persona: bool = False  # 是否主动把发现的标签推送给用户（默认关闭：仅记录、需确认才存档）
-
     # ── 电视截屏多模态（按需调用，docs/电视截屏多模态识别功能_交接单.md）────
     # 截图来自 xiaomi_miot 的 media_player 实体：attributes.capture 是电视
     # 自身的带签名 URL（有时效），因此**绝不能缓存**，每次都要重新取状态。

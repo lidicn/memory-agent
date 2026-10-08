@@ -262,21 +262,6 @@ const TPL = `
       ${resultBox('db')}
     </div>
 
-    <!-- 家庭成员与行为画像 -->
-    <div class="card p-5">
-      <div class="flex items-center gap-2.5 mb-3">
-        <div class="w-8 h-8 rounded-lg grad-brand grid place-items-center text-white">
-          <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-        </div>
-        <h3 class="font-semibold text-sm">家庭成员与行为画像</h3>
-      </div>
-      <label class="flex items-center gap-2.5 cursor-pointer">
-        <div class="switch scale-90" :class="cfg.auto_discover_persona && 'on'" @click="cfg.auto_discover_persona = !cfg.auto_discover_persona"></div>
-        <span class="text-xs text-txt-2">主动推送生活习惯发现（关闭则仅记录，需用户确认才存档）</span>
-      </label>
-      <p class="hint">开启后，AI 助手在对话中发现某成员的行为偏好（如夜猫子🦉）时会主动询问是否写入「生活习惯档案」；无论开关状态，写回前都会先征得确认。</p>
-    </div>
-
     <!-- 系统 / 在线更新 -->
     <div class="card p-5">
       <div class="flex items-center justify-between mb-4">

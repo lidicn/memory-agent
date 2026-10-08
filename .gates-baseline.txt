@@ -149,12 +149,7 @@ src/memory_agent/patterns.py#fake-ok-const#PatternManager.save_pattern
 src/memory_agent/patterns.py#fake-ok-const#PatternManager.update_pattern
 src/memory_agent/poller.py#fake-ok-const#CollectService.backfill
 src/memory_agent/poller.py#fake-ok-const#CollectService.trigger_incremental
-src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_alert
-src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_camera
-src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_light
 src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_log
-src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_tts
-src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine._action_webhook
 src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine.delete_rule
 src/memory_agent/rule_engine.py#fake-ok-const#ActiveRuleEngine.update_rule
 src/memory_agent/signal_learning.py#fake-ok-const#SignalLearningService.list_rules

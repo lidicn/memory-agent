@@ -545,7 +545,7 @@ class ActivityInferenceService:
 
     def audit_rule_recall(self, start: str | None = None, end: str | None = None,
                           days: int = 14, rooms: list | None = None, *,
-                          persist: bool = True, min_near_miss: int = 2,
+                          persist: bool = False, min_near_miss: int = 2,
                           max_gaps: int = 10,
                           extra_rules: list | None = None) -> dict:
         """审计序列规则的**召回缺口**（P1.4）。
@@ -562,7 +562,7 @@ class ActivityInferenceService:
         * **estimated_recall** = matched / eligible（规则自身口径下的召回上界估计）
         * **blocker**：对每个 near_miss 天诊断第一个匹配不上的步骤
 
-        ``persist=True`` 且某缺口出现次数 ≥ ``min_near_miss`` 时，产出**放宽建议**
+        ``persist=True``（**默认 False**，DCD 20261008 MA-34 甲）且某缺口出现次数 ≥ ``min_near_miss`` 时，产出**放宽建议**
         候选规则（去掉卡住那一步，``source="recall_gap"``）供人工审核——
         这是"补召回"的落地形式，不自动改线上规则。
         """
@@ -753,7 +753,7 @@ class ActivityInferenceService:
                      days: int = 7, rooms: list | None = None, *,
                      min_edge_support: float | None = None,
                      min_activity_support: float | None = None,
-                     persist: bool = True, emit_rules: bool = True,
+                     persist: bool = False, emit_rules: bool = True,
                      min_variant_support: int | None = None, max_rules: int = 8,
                      bucket_sec: int | None = None,
                      min_cases_per_room: int | None = None,
@@ -769,7 +769,8 @@ class ActivityInferenceService:
 
         阈值缺省取 config 的 ``process_mining_min_*``（默认 0.1 / 0.1 / 3）。
 
-        - ``persist``：异常写 ``behavior_anomalies``（按 case 幂等，保留人工复核 status）
+        - ``persist``：异常写 ``behavior_anomalies``（按 case 幂等，保留人工复核 status）；
+          **默认 False**（MA-34 甲）——只算不落，要写库的调用方必须显式传 ``persist=True``
         - ``emit_rules``：房间高频变体（支持度 ≥ ``min_variant_support``，长度 ≥3）
           写 ``candidate_rules``（source=``process``），作为**规则缺口提示**（P1.4）
         """
@@ -884,7 +885,7 @@ class ActivityInferenceService:
                    days: int = 14, rooms: list | None = None, *,
                    bucket_sec: int | None = None, window_size: int | None = None,
                    min_score: float | None = None,
-                   persist: bool = True, max_rows: int = 200000) -> dict:
+                   persist: bool = False, max_rows: int = 200000) -> dict:
         """行为活跃度的**在线异常**与**概念漂移**检测（P1.2）。
 
         与 P1.1 互补：P1.1 是"事后按天做一致性检验"（这天像不像平时的样子），
@@ -895,7 +896,8 @@ class ActivityInferenceService:
         默认按 **1 小时**分桶（作息量级；日以下抖动无意义），14 天 ≈ 336 个点。
         HST 需要 ≥ ``window_size`` 个样本才出分，样本不足时会自动下调窗口并注明。
 
-        :param persist: 漂移点/异常时段写 ``behavior_drifts``（按 (桶,类型) 幂等）
+        :param persist: 漂移点/异常时段写 ``behavior_drifts``（按 (桶,类型) 幂等）；
+                        **默认 False**（MA-34 甲），要落库请显式传 ``persist=True``
         """
         cfg = self.config
         if bucket_sec is None:

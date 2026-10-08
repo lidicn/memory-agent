@@ -176,7 +176,7 @@ async def behaviors_mine_process(request: Request):
     """手动触发过程挖掘（P1.1）：挖行为过程模型 + 一致性检验 → 行为异常 / 候选规则。
 
     body 可选：``days``（默认 7）、``start``/``end``、``rooms``(list)、
-    ``persist``、``emit_rules``、``min_variant_support``。
+    ``persist``（**默认 False**：不传就不写库）、``emit_rules``、``min_variant_support``。
     """
     _, err = require_user(request)
     if err:
@@ -206,7 +206,7 @@ async def behaviors_mine_process(request: Request):
         (body.get("end") or "").strip() or None,
         days,
         [str(r) for r in rooms] if isinstance(rooms, list) and rooms else None,
-        persist=bool(body.get("persist", True)),
+        persist=bool(body.get("persist", False)),
         emit_rules=bool(body.get("emit_rules", True)),
         min_variant_support=mvs,
         bucket_sec=bsec,
@@ -261,7 +261,8 @@ async def behavior_anomaly_update(request: Request):
 async def behaviors_mine_drift(request: Request):
     """手动触发在线异常 / 概念漂移检测（P1.2）。
 
-    body 可选：``days``（默认 14）、``bucket_sec``、``window_size``、``persist``。
+    body 可选：``days``（默认 14）、``bucket_sec``、``window_size``、
+    ``persist``（**默认 False**，MA-34 甲）。
     """
     _, err = require_user(request)
     if err:
@@ -279,7 +280,7 @@ async def behaviors_mine_drift(request: Request):
     res = await asyncio.to_thread(
         rt.activity.mine_drift, None, None, days, None,
         bucket_sec=bsec, window_size=wsize, min_score=mscore,
-        persist=bool(body.get("persist", True)),
+        persist=bool(body.get("persist", False)),
     )
     return ok(res)
 
@@ -318,7 +319,8 @@ async def behaviors_drifts(request: Request):
 async def behaviors_audit_rule_recall(request: Request):
     """规则召回审计（P1.4）：eligible/matched/near-miss + 卡点诊断（+ 可选产出放宽建议）。
 
-    body 可选：``days``（默认 14）、``rooms``(list)、``persist``、``min_near_miss``。
+    body 可选：``days``（默认 14）、``rooms``(list)、``persist``（**默认 False**，MA-34 甲）、
+    ``min_near_miss``。
     """
     _, err = require_user(request)
     if err:
@@ -337,7 +339,7 @@ async def behaviors_audit_rule_recall(request: Request):
         (body.get("end") or "").strip() or None,
         days,
         [str(r) for r in rooms] if isinstance(rooms, list) and rooms else None,
-        persist=bool(body.get("persist", True)),
+        persist=bool(body.get("persist", False)),
         min_near_miss=mnm,
     )
     return ok(res)

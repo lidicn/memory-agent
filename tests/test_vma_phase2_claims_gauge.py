@@ -1,14 +1,16 @@
-"""第十二/十四/十七/十九轮「建议加门禁」的四把量具：绿 + 不是空转 + 基线只准减。
+"""第十二/十四/十七/十九轮「建议加门禁」的量具（现在是五把）：绿 + 不是空转 + 基线只准减。
 
 审计员在原句里点名的不是某一条 bug，而是「这一族会再来」：
   第十四轮 :213-214 ⇒ scripts/scan_stub_claims_success.py（带 TODO 的桩照样回 ok:True）
   第十七轮 :153-154 ⇒ scripts/scan_source_of_truth_sync.py（文案说「真源=最新版本」，代码只判文件在不在）
   第十九轮 :153-154 ⇒ scripts/scan_cleanup_scheduled.py（清理函数没被排期 ⇒ 存量永不缩）
   第十二轮 :201-202 ⇒ scripts/scan_claimed_semantics.py（docstring 承诺的语义要有「登记 + 断言」两件套）
+  判例 2（DCD 20261008）⇒ scripts/scan_session_owner_parity.py（读 sessionId 的入口必须配属主闸）
 
 锁的口径随仓规：**import 并调用量具，不解析 stdout**——读数行给人看，判定用返回值。
 每把门都带「不是空转」的一半：先证明它在这一版树上真扫到了候选，再证明候选全过；
-否则 PROBLEM=0 可能只是「一个都没看见」。
+否则 PROBLEM=0 可能只是「一个都没看见」。唯一的例外是 G1：MA-29 乙落码后现扫**应该**是零桩，
+它的反零证据搬到了自己的 `--self-test`（合成桩必须被抓到），见 `test_stub_claims_gate_green_and_zero_after_the_ruling`。
 
 基线只准减：`BASELINE_CAP` 钉住 scan_claimed_semantics.UNVERIFIED 的条数。补了一条真断言
 就把对应行从 UNVERIFIED 删掉、移进 REGISTRY，并把 CAP 一起下调；CAP 永不下调 = 这条锁在假装工作。
@@ -16,6 +18,8 @@
 
 import importlib.util
 import os
+import subprocess
+import sys
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _SCRIPTS = os.path.join(_ROOT, "scripts")
@@ -40,6 +44,7 @@ GAUGES = (
     "scan_source_of_truth_sync",
     "scan_cleanup_scheduled",
     "scan_claimed_semantics",
+    "scan_session_owner_parity",
 )
 
 
@@ -60,8 +65,8 @@ def _test_names_in_tests():
     return names
 
 
-def test_four_gauges_on_disk_and_self_test_green():
-    """四把门先在盘上，各自的 --self-test 全绿——自检抓的是「门自己会不会漏」。"""
+def test_all_gauges_on_disk_and_self_test_green():
+    """五把门先在盘上，各自的 --self-test 全绿——自检抓的是「门自己会不会漏」。"""
     for stem in GAUGES:
         mod = _load(stem)
         assert hasattr(mod, "_self_test"), "%s 没有自检" % stem
@@ -69,15 +74,24 @@ def test_four_gauges_on_disk_and_self_test_green():
         assert rc == 0, "%s 自检失败 rc=%s" % (stem, rc)
 
 
-def test_stub_claims_gate_green_and_sees_the_stubs():
+def test_stub_claims_gate_green_and_zero_after_the_ruling():
+    """MA-29 乙落地后的口径：现扫必须**零桩零豁免**，而"不是空转"的证据搬进 `--self-test`。
+
+    原来这一格写的是 `len(rows) >= 5`（五支桩在册豁免）。裁定把它们改成如实降级之后，
+    现扫读数为 0 才是对的——但"扫到 0 可能就是量具瞎了"这条风险并没有消失，它换了位置：
+    门的自检里有一份合成桩**必须被抓到**（`SELFTEST_HIT`），所以这里同时要求自检 RC=0。
+    两条一起才等于「门还在工作，只是这一版树上没东西可抓」。
+    """
     gate = _load("scan_stub_claims_success")
     rows = gate.scan(_SRC)
-    assert len(rows) >= 5, "只扫到 %d 个桩 = 量具失效，不是通过" % len(rows)
+    assert rows == [], "MA-29 之后不该再有『带 TODO 却回 ok:True』的桩：%s" % [r["name"] for r in rows]
     assert gate.problems_of(rows) == []
-    for r in rows:
-        assert r["key"] in gate.EXEMPT, "带 TODO 却回 ok:True 的桩没有在册豁免：%s" % r["name"]
-    stale = [k for k in gate.EXEMPT if k not in {r["key"] for r in rows}]
-    assert not stale, "豁免名单里有已不存在的桩（基线只准减）：%s" % stale
+    assert gate.EXEMPT == {}, "豁免表必须随裁定一起清空（基线只准减）：%s" % sorted(gate.EXEMPT)
+    proc = subprocess.run([sys.executable, os.path.join(_SCRIPTS, "scan_stub_claims_success.py"),
+                           "--self-test"], capture_output=True, text=True, cwd=_ROOT)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SELFTEST_HIT" in proc.stdout, "自检没有正例命中 = 这一格的反零证据是空的"
+    assert "SELFTEST_MISS" not in proc.stdout and "SELFTEST_FALSE" not in proc.stdout
 
 
 def test_truth_gate_locks_seeded_version_compare():

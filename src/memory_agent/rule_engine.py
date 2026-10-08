@@ -987,6 +987,11 @@ class ActiveRuleEngine:
         （带 ``dry_run=1``），但**不派发任何副作用**。误报在试运行期被发现
         时不会真的吵到家里人。
 
+        MA-29 乙（DCD 20261008）：``alert`` / ``webhook`` / ``tts`` / ``light`` / ``camera``
+        五支动作**未实现**，返回 ``ok=False`` + ``not_implemented=True`` + ``dry_run=True``
+        并只写触发历史（``dry_run=1``）——调用方据 ``dry_run`` 记 ``logged_only``，
+        不得把它们当已派发。``log`` 与 ``infer_activity`` 是实做的，照常返回成功。
+
         ``dry_run_override`` 让调用方在不改规则mode的情况下强制试运行——
         设备 feed 的首轮（DCD Q3=(i)「通道建好、推进等人」）用它保证
         「即便规则已是 live，新通道第一遍也只记录不吵人」。
@@ -1047,14 +1052,15 @@ class ActiveRuleEngine:
         return {"ok": logged, "activity_id": row["activity_id"], "day": day}
 
     def _action_alert(self, rule: dict, event: dict, action: dict) -> dict:
-        """推送告警动作。"""
+        """推送告警动作：**未实现**（DCD 20261008 MA-29 乙）——只记历史，不派发、不报成功。"""
         message = action.get("message", f"规则触发: {rule['name']}")
         channel = action.get("channel", "bark")
-        # TODO: 调用 AlertDispatcher 或直接推送
-        logger.info(f"[RuleAlert] {channel}: {message} (规则: {rule['name']}, 事件: {event.get('kind')})")
-        # 记录触发历史
-        self._log_trigger(rule["rule_id"], event, action)
-        return {"ok": True, "channel": channel, "message": message}
+        logger.info(f"[RuleAlert] 未实现，仅记录: {channel}: {message} "
+                    f"(规则: {rule['name']}, 事件: {event.get('kind')})")
+        self._log_trigger(rule["rule_id"], event, {**action, "dispatched": False},
+                          dry_run=True)
+        return {"ok": False, "not_implemented": True, "dry_run": True,
+                "dispatched": False, "channel": channel, "message": message}
 
     def _action_log(self, rule: dict, event: dict) -> dict:
         """记录日志动作。"""
@@ -1063,41 +1069,45 @@ class ActiveRuleEngine:
         return {"ok": True}
 
     def _action_webhook(self, rule: dict, event: dict, action: dict) -> dict:
-        """调用 webhook 动作。"""
+        """调用 webhook 动作：**未实现**（MA-29 乙）——URL 缺失照旧报错，有 URL 也只记历史。"""
         url = action.get("url")
         if not url:
             return {"ok": False, "error": "webhook url 未配置"}
-        # TODO: 实际调用 webhook
-        logger.info(f"[RuleWebhook] {url}: {rule['name']}")
-        self._log_trigger(rule["rule_id"], event, action)
-        return {"ok": True, "url": url}
+        logger.info(f"[RuleWebhook] 未实现，仅记录: {url}: {rule['name']}")
+        self._log_trigger(rule["rule_id"], event, {**action, "dispatched": False},
+                          dry_run=True)
+        return {"ok": False, "not_implemented": True, "dry_run": True,
+                "dispatched": False, "url": url}
 
     def _action_tts(self, rule: dict, event: dict, action: dict) -> dict:
-        """语音播报动作。"""
+        """语音播报动作：**未实现**（MA-29 乙）——播报不会真的发生。"""
         text = action.get("text", f"规则触发: {rule['name']}")
         room = action.get("room", event.get("room", ""))
-        # TODO: 实际调用 TTS
-        logger.info(f"[RuleTTS] {room}: {text}")
-        self._log_trigger(rule["rule_id"], event, action)
-        return {"ok": True, "room": room, "text": text}
+        logger.info(f"[RuleTTS] 未实现，仅记录: {room}: {text}")
+        self._log_trigger(rule["rule_id"], event, {**action, "dispatched": False},
+                          dry_run=True)
+        return {"ok": False, "not_implemented": True, "dry_run": True,
+                "dispatched": False, "room": room, "text": text}
 
     def _action_light(self, rule: dict, event: dict, action: dict) -> dict:
-        """控制灯光动作。"""
+        """控制灯光动作：**未实现**（MA-29 乙）——灯不会被改动。"""
         device = action.get("device", "livingroom_light")
         cmd = {k: v for k, v in action.items() if k in ("on", "scene", "brightness", "color")}
-        # TODO: 实际控制灯光
-        logger.info(f"[RuleLight] {device}: {cmd}")
-        self._log_trigger(rule["rule_id"], event, action)
-        return {"ok": True, "device": device, "cmd": cmd}
+        logger.info(f"[RuleLight] 未实现，仅记录: {device}: {cmd}")
+        self._log_trigger(rule["rule_id"], event, {**action, "dispatched": False},
+                          dry_run=True)
+        return {"ok": False, "not_implemented": True, "dry_run": True,
+                "dispatched": False, "device": device, "cmd": cmd}
 
     def _action_camera(self, rule: dict, event: dict, action: dict) -> dict:
-        """控制摄像头动作。"""
+        """控制摄像头动作：**未实现**（MA-29 乙）——不会抓拍、不会转动。"""
         device = action.get("device", "livingroom_camera")
         cam_action = action.get("action", "snapshot")
-        # TODO: 实际控制摄像头
-        logger.info(f"[RuleCamera] {device}: {cam_action}")
-        self._log_trigger(rule["rule_id"], event, action)
-        return {"ok": True, "device": device, "action": cam_action}
+        logger.info(f"[RuleCamera] 未实现，仅记录: {device}: {cam_action}")
+        self._log_trigger(rule["rule_id"], event, {**action, "dispatched": False},
+                          dry_run=True)
+        return {"ok": False, "not_implemented": True, "dry_run": True,
+                "dispatched": False, "device": device, "action": cam_action}
 
     def _log_trigger(self, rule_id: str, event: dict, action: dict,
                     dry_run: bool = False) -> bool:

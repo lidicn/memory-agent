@@ -33,7 +33,6 @@ WRITABLE_FIELDS = (
     "ha_db_enabled", "ha_db_host", "ha_db_port", "ha_db_name", "ha_db_user",
     "ha_db_password", "ha_db_query_batch", "ha_db_query_timeout",
     "autoflow_acp_url", "autoflow_acp_token",
-    "auto_discover_persona",
     "member_tag_agent_writeback",
     "mcp_response_max_bytes",
     # ── 豆包管家对接（外部服务窄接口令牌）────────────────────────────────
@@ -189,7 +188,6 @@ async def get_config_api(request: Request):
             "ha_db_query_timeout": cfg.ha_db_query_timeout,
             "autoflow_acp_url": cfg.autoflow_acp_url,
             "autoflow_acp_token": mask_secret(cfg.autoflow_acp_token),
-            "auto_discover_persona": cfg.auto_discover_persona,
             "butler_token": mask_secret(cfg.butler_token),
             "vision_enabled": cfg.vision_enabled,
             "vision_device_token": mask_secret(cfg.vision_device_token),

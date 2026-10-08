@@ -37,13 +37,9 @@ TODO_MARKS = ("TODO", "FIXME", "未实现")
 
 #: 呈 DCD 待裁的桩（登记 = 承认它在，不假装它绿）。裁定落地后**必须**从这张表里删掉，
 #: 删不掉就会以 EXEMPT_STALE 反向判红。
-EXEMPT = {
-    ("rule_engine.py", "_action_alert"): "MA-29 五动作桩体：呈 DCD（20261008 回执 §四 Q1，甲=接真实现 / 乙=如实降级）",
-    ("rule_engine.py", "_action_webhook"): "MA-29 同上",
-    ("rule_engine.py", "_action_tts"): "MA-29 同上",
-    ("rule_engine.py", "_action_light"): "MA-29 同上",
-    ("rule_engine.py", "_action_camera"): "MA-29 同上",
-}
+#: DCD 20261008 MA-29 裁定乙已落码（五支动作桩改为如实降级、不再声称 ok）⇒ 本表清空，
+#: 今后再有"声称成功却没做"的桩就是 PROBLEM，不再享有豁免。
+EXEMPT = {}
 
 
 def _comments(path):

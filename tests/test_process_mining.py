@@ -323,7 +323,7 @@ def _seed_11_days(store):
 def test_mine_process_service_persists_anomalies_and_emits_rules(store):
     start, end = _seed_11_days(store)
     svc = ActivityInferenceService(_runtime(store))
-    res = svc.mine_process(start=start, end=end)
+    res = svc.mine_process(start=start, end=end, persist=True)
 
     assert res["ok"] is True
     # 装了 pm4py 的环境会自动叠加增强（engine=pure+pm4py），核心仍是纯 Python

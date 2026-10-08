@@ -97,7 +97,7 @@ def test_mine_drift_detects_regime_shift(store):
     start, end = _seed_regime_shift(store)
     svc = ActivityInferenceService(_runtime(store))
 
-    res = svc.mine_drift(start=start, end=end, bucket_sec=3600)
+    res = svc.mine_drift(start=start, end=end, bucket_sec=3600, persist=True)
     assert res["ok"] is True
     assert res["points"] >= 480                      # 补零后覆盖整段窗口
     assert res["bucket_sec"] == 3600

@@ -748,10 +748,12 @@ class AppRuntime:
                                 except Exception as _exc:  # noqa: BLE001
                                     # 稳定性审计缺陷4：purge 失败不再静默，打日志可观测
                                     print(f"[Runtime] purge_behavior_anomalies 失败: {_exc}")
+                                # MA-34 甲：三个挖掘入口默认只算不落；日任务是要落库的调用方，显式写出来
                                 pres = await asyncio.to_thread(
                                     self.activity.mine_process,
                                     None, None,
                                     int(getattr(self.config, "process_mining_days", 7) or 7),
+                                    persist=True,
                                 )
                                 if pres.get("ok"):
                                     print(
@@ -776,6 +778,7 @@ class AppRuntime:
                                 dres = await asyncio.to_thread(
                                     self.activity.mine_drift, None, None,
                                     int(getattr(self.config, "drift_days", 14) or 14),
+                                    persist=True,
                                 )
                                 if dres.get("ok"):
                                     print(
@@ -791,6 +794,7 @@ class AppRuntime:
                                     None, None,
                                     int(getattr(self.config, "rule_recall_days", 14) or 14),
                                     None,
+                                    persist=True,
                                     min_near_miss=int(getattr(
                                         self.config, "rule_recall_min_near_miss", 2) or 2),
                                 )
