@@ -39,6 +39,7 @@
     首批      SRC=src/memory_agent DECLARED=41 REGISTERED=15 CASES=17 UNVERIFIED=26 PROBLEM=0 / SCAN_RC=0
     减三格后  SRC=src/memory_agent DECLARED=41 REGISTERED=18 CASES=23 UNVERIFIED=23 PROBLEM=0 / SCAN_RC=0
     减五格后  SRC=src/memory_agent DECLARED=41 REGISTERED=23 CASES=36 UNVERIFIED=18 PROBLEM=0 / SCAN_RC=0
+    减六格后  SRC=src/memory_agent DECLARED=41 REGISTERED=29 CASES=48 UNVERIFIED=12 PROBLEM=0 / SCAN_RC=0
     首批那次还把 retrieve_agent_memories 从 REGISTRY 踢进 UNVERIFIED：它的 403 分支没有直接断言，
     原先登记的用例其实断的是 service 层的另一件事——这正是本门要抓的"用例名字像、断的不是那条语义"。
     后来补了工具本体的两条用例（正例 403 + 空参数对偶档）才把它移回 REGISTRY。
@@ -67,6 +68,10 @@ SRC_DEFAULT = "src/memory_agent"
 TESTS_DEFAULT = "tests"
 
 #: 已配到"真断言用例"的契约。cases 里的名字必须在测试文件里现读得到。
+PH4 = "test_vma_phase4_claims_direct.py"
+QB = "test_vma_qb_param_landing.py"
+B3 = "test_vma_phase2_batch3_shared_ruler.py"
+
 REGISTRY = {
     ("mcp_server.py", "save_skill"): {
         "claims": ["自增", "唯一真源"],
@@ -200,6 +205,42 @@ REGISTRY = {
                   ("test_vma_phase3_claims_direct.py",
                    "test_make_event_id_keeps_events_that_differ_only_by_subsecond_timestamp")],
     },
+    # 2026-10-08 第三批减基线六格（run32）。两种收法都要变异腿证明，不靠用例名字对上：
+    #   前三格是本批新增的直接断言（正例 + 对偶档成对）；
+    #   后三格指向**后续批次补用例时早已写进去的直接断言** —— 基线只检查"函数还在不在、
+    #   声明词还成不成立"，不检查"缺的那一半后来有没有被补上"，所以这三行的文字已经与现树不符。
+    #   把它们留在基线里 = 台账在谎报"没断"；移出去又不证明 = 台账在谎报"断了"。两头的谎都由
+    #   run32 的 N06..N09 兜住：把那三格的语义退回各自行文描述过的坏那侧，既有用例必须当场判红。
+    ("store.py", "insert_behavior_event"): {
+        "claims": ["自增"],
+        "cases": [(PH4, "test_insert_behavior_event_ids_strictly_increase_inside_one_store"),
+                  (PH4, "test_insert_behavior_event_keeps_increasing_after_the_store_is_reopened")],
+    },
+    ("store.py", "get_behavior_event"): {
+        "claims": ["自增"],
+        "cases": [(PH4, "test_get_behavior_event_returns_the_row_that_insert_wrote"),
+                  (PH4, "test_get_behavior_event_returns_none_for_an_id_that_was_never_written")],
+    },
+    ("store.py", "save_arena_snapshot"): {
+        "claims": ["递增"],
+        "cases": [(PH4, "test_save_arena_snapshot_increments_the_version_for_the_same_arena"),
+                  (PH4, "test_save_arena_snapshot_versions_are_independent_per_arena")],
+    },
+    ("api.py", "_closed_ok"): {
+        "claims": ["fail-closed"],
+        "cases": [(QB, "test_fail_closed_ok_is_derived_not_literal"),
+                  (PH4, "test_closed_ok_requires_both_self_consistency_and_a_stated_reason")],
+    },
+    ("api.py", "anomaly_report"): {
+        "claims": ["fail-closed"],
+        "cases": [(QB, "test_anomaly_report_query_lands_on_entities_or_fails_closed"),
+                  (QB, "test_fail_closed_ok_is_derived_not_literal")],
+    },
+    ("app.py", "metrics_ingest_endpoint"): {
+        "claims": ["幂等"],
+        "cases": [(B3, "test_ingest_replaces_the_same_dedupe_key_instead_of_doubling"),
+                  (B3, "test_twenty_concurrent_ingests_all_land")],
+    },
 }
 
 #: 首批基线：声明在场、但还没配到"真断言那条语义"的用例。只准减，上限见 tests 里的 BASELINE_CAP。
@@ -207,9 +248,6 @@ REGISTRY = {
 UNVERIFIED = {
     ("activity_inference.py", "mine_process"): "幂等只写在文案里，现有用例走整链而非重复喂同一批",
     ("activity_inference.py", "mine_drift"): "同上：漂移挖掘的重复喂入没有直接断言",
-    ("api.py", "_closed_ok"): "门面辅助函数，只被上层用例间接覆盖",
-    ("api.py", "anomaly_report"): "fail-closed 分支没有单独用例（异常面本身有用例）",
-    ("app.py", "metrics_ingest_endpoint"): "幂等需重复 POST 断言，现无",
     ("behavior_routes.py", "behaviors_feedback_pack"): "路由面 fail-closed 由 feedback_pack 的用例承担，路由本体无",
     ("behavior_routes.py", "behaviors_bad_case_export"): "路由本体的「拒了就不写盘」无直接断言，出境面白名单在 feedback_pack 那一侧有用例",
     ("insights_legacy.py", "data_quality_issues"): "声明词指向计数口径，现有用例只锁键位（不是同一条语义）",
@@ -219,9 +257,6 @@ UNVERIFIED = {
     ("mcp_server.py", "_idem_reserve"): "内部预留件：重复预留同一键的行为只被外层 c1 并发用例间接断到，本体无直接断言",
     ("perception_ingest.py", "from_ha_event"): "现有 test_from_ha_event 只断形状，不断重复喂同事件的幂等",
     ("perception_ingest.py", "gate_promote_to_behavior"): "晋升面的自增/幂等待重复晋升不叠加的用例",
-    ("store.py", "save_arena_snapshot"): "递增（seq/版本）无直接断言",
-    ("store.py", "insert_behavior_event"): "自增 id 断言依赖上层用例，本体无",
-    ("store.py", "get_behavior_event"): "声明词与现有用例不同条语义",
     ("store.py", "_idem_now"): "时钟辅助件，无独立断言必要但登记以封住新增",
 }
 

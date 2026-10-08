@@ -26,8 +26,9 @@ _TESTS = os.path.join(_ROOT, "tests")
 #:   首批  DECLARED=41 REGISTERED=15 CASES=17 UNVERIFIED=26 PROBLEM=0
 #:   减三格后 DECLARED=41 REGISTERED=18 CASES=23 UNVERIFIED=23 PROBLEM=0
 #:   减五格后 DECLARED=41 REGISTERED=23 CASES=36 UNVERIFIED=18 PROBLEM=0
+#:   减六格后 DECLARED=41 REGISTERED=29 CASES=48 UNVERIFIED=12 PROBLEM=0
 #: 只准改小。
-BASELINE_CAP = 18
+BASELINE_CAP = 12
 
 #: 2026-10-08 减掉的三格：它们不许静默退回 UNVERIFIED（退回=那条真断言被人删了而台账不说）。
 REDUCED_20261008 = (("repository.py", "health"),
@@ -148,6 +149,15 @@ REDUCED_20261008_B = (("app.py", "_is_trusted_source"),
                       ("task_record.py", "upsert_task_record"),
                       ("store.py", "make_event_id"))
 
+#: 2026-10-08 第三批减掉的六格（run32）。同一条规矩：不许静默退回基线。
+#: 后三格没有新增用例，它们锁的是"指向的既有用例真能判红"——由 run32 的 N06..N09 四条腿证明。
+REDUCED_20261008_C = (("store.py", "insert_behavior_event"),
+                      ("store.py", "get_behavior_event"),
+                      ("store.py", "save_arena_snapshot"),
+                      ("api.py", "_closed_ok"),
+                      ("api.py", "anomaly_report"),
+                      ("app.py", "metrics_ingest_endpoint"))
+
 
 def test_reductions_stay_registered_with_both_directions():
     """减下来的格子不许静默退回基线，也不许只剩单方向断言。
@@ -156,7 +166,8 @@ def test_reductions_stay_registered_with_both_directions():
     `activity_rules` 改成吞异常回 [] 都还能过一半用例。
     """
     gate = _load("scan_claimed_semantics")
-    for key in tuple(REDUCED_20261008) + tuple(REDUCED_20261008_B):
+    for key in (tuple(REDUCED_20261008) + tuple(REDUCED_20261008_B)
+                  + tuple(REDUCED_20261008_C)):
         assert key in gate.REGISTRY, "%s 不在 REGISTRY：用例被删了却没人记账" % (key,)
         assert key not in gate.UNVERIFIED, "%s 又出现在基线：同一函数进了两本台账" % (key,)
         assert len(gate.REGISTRY[key]["cases"]) >= 2, (
