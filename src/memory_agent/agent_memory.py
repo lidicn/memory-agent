@@ -90,7 +90,8 @@ class AgentMemoryService:
     def _validate_source_refs(self, source_refs: List[str]) -> Tuple[bool, List[str]]:
         # 合法前缀白名单:写入要求引用格式合法的溯源(防幻觉);
         # 真实可解析性在晋升佐证 / 人工复核阶段校验,故此处不强制实体已存在。
-        VALID_PREFIXES = ("event:", "insight:", "activity:")
+        # 三路径缺口A：增加 recipe: 前缀（查询剧本回填，recipe_id 由 recipe_schema 确定性生成）
+        VALID_PREFIXES = ("event:", "insight:", "activity:", "recipe:")
         invalid: List[str] = []
         for ref in source_refs:
             ref = (ref or "").strip()
@@ -182,7 +183,7 @@ class AgentMemoryService:
             # HI-38 修复：不整批拒写，过滤掉非法引用，只保留合法的
             valid_refs = [r for r in source_refs if r and r.strip() and r.strip() not in invalid]
             if not valid_refs:
-                return {"ok": False, "error": "source_refs 全部非法（需 event:/insight:/activity: 前缀）",
+                return {"ok": False, "error": "source_refs 全部非法（需 event:/insight:/activity:/recipe: 前缀）",
                         "invalid_refs": invalid, "code": 422}
             import logging
             logging.getLogger(__name__).warning(f"source_refs 过滤掉 {len(invalid)} 条非法引用: {invalid}")
@@ -671,6 +672,110 @@ class AgentMemoryService:
             scored = kept
         scored.sort(key=lambda x: -x["final_score"])
         return scored[:top_k]
+
+    # ── 三路径缺口B：recipe 回填与召回 ──────────────────────────────────
+    def submit_recipe(self, recipe_dict: dict, session_id: str = "mcp") -> dict:
+        """路径3回填：将 Agent 探索出的工具序列提交为 recipe（staging）。
+
+        recipe_dict 需符合 recipe_schema 的结构（intent/object_type/metric/time_window/
+        tool_sequence 等）。内部用 recipe_schema 生成确定性 recipe_id，序列化为 JSON
+        作为 text 写入 agent_memory collection，topic_key="recipe"。
+
+        同构查询（同 intent+object_type+metric+time_window+person+tool_sequence）
+        会收敛到同一 recipe_id，重复提交时走 merge 路径（sample_count 累加）。
+        """
+        from .recipe_schema import (
+            build_recipe, validate_recipe, serialize_recipe, deserialize_recipe,
+        )
+        from datetime import datetime, timezone
+        # 补全默认字段并生成 recipe_id（created_at 由调用方注入，本模块不取系统时间）
+        recipe = build_recipe(
+            intent=recipe_dict.get("intent", ""),
+            object_type=recipe_dict.get("object_type", "device"),
+            metric=recipe_dict.get("metric", "duration"),
+            time_window=recipe_dict.get("time_window", "last_7_days"),
+            tool_sequence=recipe_dict.get("tool_sequence", []),
+            created_at=datetime.now(timezone.utc).isoformat(),
+            source_session=session_id,
+            person=recipe_dict.get("person", ""),
+            confidence=recipe_dict.get("confidence", 0.5),
+            sample_count=recipe_dict.get("sample_count", 1),
+            status="staging",
+        )
+        errors = validate_recipe(recipe)
+        if errors:
+            return {"ok": False, "error": f"recipe 校验失败: {'; '.join(errors)}", "code": 422}
+        recipe_id = recipe.recipe_id
+        text = serialize_recipe(recipe)
+        tags = ["recipe", recipe.intent, recipe.object_type]
+        if recipe.person:
+            tags.append(recipe.person)
+        # 走 add_semantic_memory（merge=True 自动去重/累加），topic_key="recipe"
+        return self.add_semantic_memory(
+            session_id=session_id,
+            text=text,
+            tags=tags,
+            source_refs=[f"recipe:{recipe_id}"],
+            topic_key="recipe",
+            dry_run=False,
+            source="recipe",
+            merge=True,
+        )
+
+    def match_recipe(self, question: str = "", intent: str = "",
+                     object_type: str = "", top_k: int = 3) -> dict:
+        """路径2召回：根据问题或槽位匹配已晋升 live 的 recipe。
+
+        优先用 question 做向量语义召回；若提供 intent/object_type 则做精确过滤。
+        返回匹配的 recipe 列表（含 tool_sequence，Agent 可按此调用工具）。
+        """
+        from .recipe_schema import deserialize_recipe
+        if not question and not intent:
+            return {"ok": False, "error": "question 或 intent 至少提供一个", "count": 0, "recipes": []}
+        # 构造查询文本：优先 question，否则用槽位拼接
+        q = question or f"{intent} {object_type}".strip()
+        # 用 retrieve 做语义召回（state=live），然后过滤 topic_key="recipe"
+        hits = self.retrieve(q, top_k=max(top_k * 3, 10))
+        recipes = []
+        for h in hits:
+            if h.get("topic_key") != "recipe":
+                continue
+            if not h.get("text"):
+                continue
+            # 解析 recipe（dataclass，用属性访问）
+            try:
+                r = deserialize_recipe(h["text"])
+            except Exception:
+                continue
+            if intent and r.intent != intent:
+                continue
+            if object_type and r.object_type != object_type:
+                continue
+            # tool_sequence 是 List[ToolStep]，转为 dict 列表
+            tool_seq = []
+            for step in (r.tool_sequence or []):
+                if hasattr(step, "to_dict"):
+                    tool_seq.append(step.to_dict())
+                elif hasattr(step, "__dict__"):
+                    tool_seq.append(vars(step))
+                else:
+                    tool_seq.append(dict(step))
+            recipes.append({
+                "recipe_id": r.recipe_id,
+                "intent": r.intent,
+                "object_type": r.object_type,
+                "metric": r.metric,
+                "time_window": r.time_window,
+                "person": r.person or "",
+                "tool_sequence": tool_seq,
+                "confidence": r.confidence,
+                "sample_count": r.sample_count,
+                "match_score": h.get("final_score", 0.0),
+                "memory_id": h.get("memory_id"),
+            })
+            if len(recipes) >= top_k:
+                break
+        return {"ok": True, "count": len(recipes), "recipes": recipes, "schema": "ma-recipe/1"}
 
     # ── 自动晋升 sweep + reconcile（v2 #4 / #9）──────────────────────────
     def sweep_promote_candidates(self) -> dict:

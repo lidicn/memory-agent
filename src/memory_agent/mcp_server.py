@@ -1701,8 +1701,8 @@ def _build_server():
     ) -> dict:
         """把挖掘出的行为洞察写回向量库（Agent 参与式迭代）。
 
-        - source_refs 必须是可解析的真实引用：event:<event_id> 或 insight:<activity_id>
-          （insight id 来自 infer_activities 返回的每个活动 id 字段）。
+        - source_refs 必须是可解析的真实引用：event:<event_id> / insight:<activity_id> / activity:<activity_id> / recipe:<recipe_id>
+          （insight id 来自 infer_activities 返回的每个活动 id 字段；recipe id 来自 recipe_schema 确定性生成）。
         - dry_run=True（默认）：只做冲突/重复自检，不落库，agent 可先 verify。
         - 写入恒为 staging，永不自动进 live；需 promote / sweep 晋升。
         """
@@ -1712,6 +1712,69 @@ def _build_server():
             session_id, text, (tags or []), (source_refs or []),
             (ttl_days or None), topic_key, dry_run, "ma", True, "", "",
             member_id,
+        )
+
+    # ── 三路径缺口B：recipe 回填（路径3） ─────────────────────────────────
+    @mcp.tool()
+    async def submit_recipe(
+        intent: str,
+        tool_sequence: list,
+        object_type: str = "device",
+        metric: str = "duration",
+        time_window: str = "last_7_days",
+        person: str = "",
+        confidence: float = 0.5,
+        session_id: str = "mcp",
+    ) -> dict:
+        """路径3回填：将 Agent 探索出的工具序列提交为查询剧本（recipe）。
+
+        提交后恒为 staging，需 promote / sweep 晋升为 live 后才能被 match_recipe 召回。
+        同构查询（同 intent+object_type+metric+time_window+person+tool_sequence）
+        会收敛到同一 recipe_id，重复提交自动累加 sample_count。
+
+        - intent: 意图类型（device_usage/compare/anomaly/presence/routine/arrival）
+        - object_type: 对象类型（device/room/activity/person/whole_house）
+        - metric: 指标类型（duration/count/numeric_sum/state_share/none）
+        - time_window: 时间窗口（today/yesterday/last_7_days/last_30_days/week_over_week/custom）
+        - tool_sequence: 工具调用序列，如 [{"tool_name":"get_device_usage","params":{"query":"{entity_id}","days":7}}]
+        - confidence: 置信度 0-1
+        """
+        rt = get_runtime()
+        recipe_dict = {
+            "intent": intent,
+            "object_type": object_type,
+            "metric": metric,
+            "time_window": time_window,
+            "tool_sequence": tool_sequence,
+            "confidence": confidence,
+        }
+        if person:
+            recipe_dict["person"] = person
+        return await asyncio.to_thread(
+            rt.agent_memory.submit_recipe, recipe_dict, session_id,
+        )
+
+    # ── 三路径缺口B：recipe 召回（路径2） ─────────────────────────────────
+    @mcp.tool()
+    async def match_recipe(
+        question: str = "",
+        intent: str = "",
+        object_type: str = "",
+        top_k: int = 3,
+    ) -> dict:
+        """路径2召回：根据问题或槽位匹配已晋升 live 的查询剧本（recipe）。
+
+        命中后返回 tool_sequence，Agent 只需按序列调用对应工具，无需从全量工具面自选。
+        未命中时返回空列表，Agent 应降级到路径3（全自主探索）。
+
+        - question: 自然语言问题（优先，做语义召回）
+        - intent: 意图类型（可选，精确过滤）
+        - object_type: 对象类型（可选，精确过滤）
+        - top_k: 返回条数（默认3）
+        """
+        rt = get_runtime()
+        return await asyncio.to_thread(
+            rt.agent_memory.match_recipe, question, intent, object_type, top_k,
         )
 
     # ── 事件：最后关闭/打开时间 ─────────────────────────────────────────────
