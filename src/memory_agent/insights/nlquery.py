@@ -17,6 +17,9 @@ _INTENT_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (Intent.RHYTHM.value, r"几点|作息|起床|睡觉|入睡|睡眠时间|wake|sleep\s*time"),
     (Intent.ACTIVITY.value, r"洗澡|活动|做了什么|干了什么|activity|看电视|做饭|学习"),
     (Intent.PERSONA.value, r"画像|习惯|我是谁|总结|persona|character"),
+    # D3：环比/对比意图——必须含明确对比词（和…比/对比/环比/比较/差异/区别），
+    # 避免把「作息是不是变了」误判为 compare（那是 rhythm）。
+    (Intent.COMPARE.value, r"和.{0,8}比|对比|环比|比较|差异|区别|vs|versus"),
     (Intent.BEHAVIOR.value, r"待了多久|停留|待过|在[^，。？！]{0,8}(待|停)|presence|待的时间"),
     # P2：收紧泛词——去掉单独的"多久/时长"，否则"我几点睡觉多久"这类问题被误判为设备使用
     (Intent.DEVICE_USAGE.value, r"用了多久|使用时长|用了|用过|开过多久|开了多久|开过|usage"),
@@ -29,6 +32,7 @@ _ROUTE_HINTS: Dict[str, List[str]] = {
     Intent.RHYTHM.value: ["试试：我一般几点睡觉", "试试：最近作息怎么样"],
     Intent.ACTIVITY.value: ["试试：最近 7 天有哪些活动", "试试：昨天洗澡了吗"],
     Intent.PERSONA.value: ["试试：给我的用户画像", "试试：总结一下我的习惯"],
+    Intent.COMPARE.value: ["试试：上周和这周比有什么变化", "试试：对比最近两周的空调使用"],
 }
 
 # 只有这三条路由把规划阶段的 `entity_ids` 当取数范围（DCD 20261006 §四.2 Q1 甲）。
@@ -58,6 +62,9 @@ _QUERY_NOISE: Tuple[str, ...] = (
     "本周", "这周", "上月", "上个月", "本月", "这个月", "今年", "去年",
     # 单字虚词（内容字如"灯""门"留在 query 里，它们是真正的点名材料）
     "的", "在", "是", "我", "都", "还", "和", "与", "呢", "就", "有",
+    # D4：审计实测残留——"比 变化"（T2）、"谁 家"（T3）、"不 变"（T4）
+    "比", "变化", "谁", "谁家", "对比", "环比", "比较", "差异", "区别",
+    "是不是", "变了",
 )
 
 
@@ -185,6 +192,15 @@ class NLQueryEngine:
             persona_days = span_days if span_days >= 1 else max(plan.days, 14)
             data = self.service.user_persona(days=persona_days)
             return (self._persona_answer(data), data)
+        if route == Intent.COMPARE.value:
+            # D3：环比/对比路由——调用 compare_insights(compare_days=N)，
+            # 引擎内部自动对比最近 N 天与上一个等长窗口。
+            compare_days = plan.days or 7
+            data = self.service.compare_insights(compare_days=compare_days)
+            delta_summary = (data.get("summary") or data.get("delta_summary") or "")
+            if delta_summary:
+                return ("最近 %d 天对比上一周期：%s" % (compare_days, delta_summary), data)
+            return ("最近 %d 天对比上一周期数据已生成，详见返回体各维度 delta。" % compare_days, data)
         hints = "；".join(plan.hints[:2])
         return ("我还不确定你想问什么。%s" % hints, {"hints": plan.hints})
 

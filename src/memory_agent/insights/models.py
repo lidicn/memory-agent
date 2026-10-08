@@ -219,6 +219,7 @@ class Intent(str, Enum):
     RHYTHM = "rhythm"
     ACTIVITY = "activity"
     PERSONA = "persona"
+    COMPARE = "compare"
     UNKNOWN = "unknown"
 
 
