@@ -1854,6 +1854,25 @@ payload 去时间戳 / id 掺 `monotonic_ns`。其中 **T03 是本批最有价�
 待落码（落点 file:line 已在台账 §二十四 表内登记），sessionId 走乙并把"下轮可再议甲"留档，run29 要求的补档由
 本轮三格完成，`scan_*` 命名保持仓规，**判例 2（入口对等性要门禁化）立项为 AST 入口对等门**，
 §五.5 升格的红线（权威门在飞期间工作树只允许 harness 一个人动）已按字面执行。
+### 6.28 run32（2026-10-08）：语义覆盖声明第三批核销，`UNVERIFIED 18 → 12`
+
+容器权威档（`c92snap32`，HEAD `e0e684c`，08:18:36 → 08:41:52）逐格：`TOOLCHAIN_RC=0`（3.11.16 + `MCP_IMPORT_OK`）、
+`SNAP 415/415/MISSING=0` 聚合 `2244c310…dfa7f`（与本机逐字一致，POST 同值）、
+`ANCHOR_OK=9 ANCHOR_BAD=0 ANCHOR_MISSING=0`、`PH4 13 passed SKIPPED=0`、`PAIR 130 passed SKIPPED=0`、`LOCK 7 passed`、
+`MUT32 killed=9 survived=0 invalid=0` 且对照腿 `143 passed skipped=0`、`WT_UNTOUCHED=True`、
+四把门 `PROBLEM=0`（G4：`DECLARED=41 REGISTERED=29 CASES=48 UNVERIFIED=12`）、pyflakes `0/0/0/0`、
+`SUITE 2109 passed / 10 skipped / 520.91s`（2109 − 2096 = 13 = 本批新增用例数）、`MUT_DST_CLEANED_RC=0`。
+
+六格的两种收法都在这里落定：三格新增直接断言（`store.insert_behavior_event` 自增、`store.get_behavior_event` 回读、
+`store.save_arena_snapshot` 版本递增与跨分区隔离），三格指向既有断言（`api._closed_ok`、`api.anomaly_report`、
+`app.metrics_ingest_endpoint`）——后者**没有新增一行用例**，由 N06..N09 四条变异腿把那三个语义退回坏的那侧、
+让 `test_vma_qb_param_landing.py` / `test_vma_phase2_batch3_shared_ruler.py` 当场判红来证明登记不是目测。
+
+DCD `20261008-AF两件与MA四回执-裁定.md` 的三件已按裁定转为待落码（run33，任务表 #88）：MA-29 乙五支桩 + 删 G1 豁免表、
+MA-32 甲删 `auto_discover_persona` 四处、MA-34 甲 `persist` 默认翻转的六处调用点（枚举与反证已在本档现读）；
+判例 2 的入口对等门已成形（`.qoder/tmp-c93-scan_session_owner_parity.py`，真树 `BRANCHES=7 READERS=5 GUARDED=5 PROBLEM=0 STALE=0`），
+run33 移入 `scripts/` 并补锁。sessionId 走乙并已登记"下轮可再议甲"。
+
 ---
 
 ## 七、下一阶段：更紧密联动（DCD 2026-10-06）
