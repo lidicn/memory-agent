@@ -998,12 +998,16 @@ def is_device_on(state: Any, allow_on: set[str] | None = None) -> bool:
     """判断设备状态是否为「开启」。
 
     从旧版 InsightsService._usage_one 迁移而来。
-    allow_on: 若指定，只有在这个集合里的状态才算开启；否则用 OFF_STATES 判断。
+    allow_on: 若指定，只有在这个集合里的状态才算开启；否则用 OFF_STATES + EXTRA_OFF_STATES 判断。
+
+    审计修复（BUG-2）：原逻辑只排除 OFF_STATES，导致 EXTRA_OFF_STATES 中的
+    paused/clean/low 等状态被误判为「开启」。现在把 EXTRA_OFF_STATES 也纳入排除。
     """
+    from .parser.entity import EXTRA_OFF_STATES
     s = normalize_text(state)
     if allow_on:
         return s in allow_on
-    return s not in OFF_STATES
+    return s not in (OFF_STATES | EXTRA_OFF_STATES)
 
 
 

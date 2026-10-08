@@ -1498,7 +1498,8 @@ class BehaviorService:
 
         segments: List[Dict[str, Any]] = []
         cur_start: Optional[float] = None
-        if prior_event is not None and _is_on(getattr(prior_event, "state", "")):
+        prior_was_on = bool(prior_event is not None and _is_on(getattr(prior_event, "state", "")))
+        if prior_was_on:
             cur_start = start_ts
 
         on_count = off_count = 0
@@ -1518,7 +1519,12 @@ class BehaviorService:
                     segments.append({"start": cur_start, "end": ts, "open": False})
                     cur_start = None
         if cur_start is not None:
-            segments.append({"start": cur_start, "end": window_end_ts, "open": True})
+            # 审计修复（BUG-2/3）：窗口内零事件时，prior_was_on 不能反推为「一直开着」。
+            # 只有窗口内确实发生过 on 事件时，未闭合段才截断到 window_end。
+            # 零事件实体标 no_data，不算时长（否则 duty_cycle=100% 全是假阳性）。
+            if rows:
+                segments.append({"start": cur_start, "end": window_end_ts, "open": True})
+            # 零事件 + prior_was_on：不创建段，后续标注 no_data
 
         # 4) 去抖 + 统计
         timeline = []
@@ -1561,6 +1567,10 @@ class BehaviorService:
         }
         if include_timeline:
             out["timeline"] = timeline[:200]
-        if not rows and prior_event is None:
+        # 审计修复（BUG-2）：零事件实体标 no_data，不再反推「一直开着」
+        if not rows:
+            out["no_data"] = True
             out["notice"] = "该实体在窗口内没有任何事件，可能未被采集或一直未变化"
+        elif not segments and not durations:
+            out["notice"] = "窗口内有事件但无有效开启段（可能全部为遥测/状态变化）"
         return out

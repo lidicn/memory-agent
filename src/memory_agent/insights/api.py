@@ -618,8 +618,20 @@ class InsightService:
         if entity_id:
             entity_ids = [e.strip() for e in entity_id.split(",") if e.strip()]
         elif room or category or query:
-            entity_ids = [e.entity_id for e in self.resolver.resolve(
-                room=room, category=category, query=query)]
+            found = self.resolver.resolve(room=room, category=category, query=query)
+            # 审计修复（BUG-4）：room 定位默认排除遥测/存在类实体（sensor/binary_sensor 等），
+            # 否则照度传感器、人体存在传感器会被当开关设备统计时长。
+            # 显式传 category="telemetry" 或 category="presence" 时不过滤。
+            if not category:
+                found = [e for e in found if not self.resolver.is_telemetry(e.entity_id)]
+            # 审计修复（BUG-1）：query 无命中时降级——尝试 only_enabled=False + 分词匹配，
+            # 避免「书房电脑」因 only_enabled 或子串匹配过严而返回空列表。
+            if not found and query:
+                found = self.resolver.resolve(room=room, category=category,
+                                              query=query, only_enabled=False)
+                if not category:
+                    found = [e for e in found if not self.resolver.is_telemetry(e.entity_id)]
+            entity_ids = [e.entity_id for e in found]
         else:
             # legacy 契约：三种定位方式都不给不算"全屋"，算用错参数。
             # resolver.resolve 空入参会返回全部设备，直接送进 core 就变成静默扩权，
