@@ -86,6 +86,8 @@ REGISTERED_TOOLS = frozenset({
     # 自我日记读取：这一族此前只在 wire 上注册、没进准入表，于是 list_tools()
     # 看得见、调用必吃 NOT_FOUND（实测 scope_of('read_self_diary')=='unknown'）。
     "read_self_diary",
+    # 三路径缺口B：recipe 召回（读工具，查询已晋升 live 的查询剧本）
+    "match_recipe",
 })
 
 # 会改变系统状态的工具（写入库 / 改配置 / 触发采集 / 变更记忆状态）
@@ -135,6 +137,8 @@ WRITE_TOOLS = frozenset({
     "generate_self_diary",
     # 意图动作执行（dry_run=false 时触发 TTS/告警等外部动作，属写操作）
     "execute_intent_actions",
+    # 三路径缺口B：recipe 回填（写工具，将探索出的工具序列提交为 staging recipe）
+    "submit_recipe",
 })
 
 _REPORTED_UNKNOWN: set[str] = set()
