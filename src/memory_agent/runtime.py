@@ -293,6 +293,11 @@ class AppRuntime:
         self._self_diary_task = task_registry.create(
             self._periodic_self_diary(), name="runtime.self_diary"
         )
+
+        # WAL checkpoint（数据库损坏根因修复）：每小时强制 checkpoint，避免 WAL 无限增长
+        self._wal_checkpoint_task = task_registry.create(
+            self._periodic_wal_checkpoint(), name="runtime.wal_checkpoint"
+        )
         print("[Runtime] 启动完成")
 
     async def _periodic_self_diary(self) -> None:
@@ -388,6 +393,29 @@ class AppRuntime:
             # MA-31：接住之后必须让外壳看见。原来这一格只 print 就 return，
             # 于是任务永久停摆 —— print 留着（现场），raise 是给重启用的。
             print(f"[SelfDiary] 循环退出: {e}")
+            raise
+
+    async def _periodic_wal_checkpoint(self) -> None:
+        """常驻任务：每小时强制 WAL checkpoint(TRUNCATE)，避免 WAL 文件无限增长。
+
+        数据库损坏根因修复：WAL 过大时重启恢复易失败。每小时主动合并 WAL 到主库，
+        保持 WAL 文件在小尺寸。checkpoint 被阻塞时跳过本轮，不影响主流程。
+        """
+        try:
+            await asyncio.sleep(30)  # 启动稍延
+            while True:
+                try:
+                    def _ckpt():
+                        conn = self.store.connect()
+                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    await asyncio.to_thread(_ckpt)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[WALCheckpoint] 失败: {exc}")
+                await asyncio.sleep(3600)  # 每小时一次
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[WALCheckpoint] 任务退出: {e}")
             raise
 
     async def _periodic_livingroom_ai(self) -> None:

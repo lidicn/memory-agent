@@ -649,7 +649,9 @@ class Store:
             conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            # FULL：提交时 fsync WAL，崩溃时不丢事务（审计：反复损坏根因，NORMAL 模式下
+            # WAL 写入后若被 SIGKILL 可能导致 WAL 帧不完整 → 数据库损坏）。
+            conn.execute("PRAGMA synchronous=FULL")
             conn.execute("PRAGMA foreign_keys=ON")
             self._conn = conn
             return conn
@@ -1969,6 +1971,12 @@ class Store:
             if self._conn is not None:
                 try:
                     self._conn.commit()
+                    # 关闭前强制 WAL checkpoint(TRUNCATE)，把 WAL 合并回主库并截断 WAL 文件，
+                    # 避免重启时大 WAL 恢复失败导致数据库损坏（审计：反复损坏根因）。
+                    try:
+                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    except Exception:
+                        pass
                     self._conn.close()
                 except Exception:
                     pass
