@@ -1896,16 +1896,18 @@ run33 移入 `scripts/` 并补锁。sessionId 走乙并已登记"下轮可再议
 | # | 本仓状态 | 依据／剩余前置 |
 |---|----------|----------------|
 | 1 | **仓内已换 0.3.2、运行面仍未烤**：`vendor/` 只剩 `homesdk-0.3.2-py3-none-any.whl`（0.3.1 那枚已删），`Dockerfile:26` 装 0.3.2，sha 与 `homesdk/dist/VERSIONS.txt` 0.3.2 段逐字同（`19bc83a6…`）。裁定 §四 Q2 **授权换 `vendor/` + 安装行，随下一次既有变更窗进运行面、不单独开窗** ⇒ 重烤这一步照旧**不在自主决定范围内** | 呈文见 `关键决策部/inbox/20261007-MA-合并窗五件与speak调用点与0.3.2消费时机-决策申请.md`；重启可自决、重烤不可。窗口动作清单见本节末「合并窗五件」 |
-| 2 | **码先站住、线上未翻**：`LinkageJournal.reasons()` 已是 status `reasons[]` 的入参形状并经 `/api/health` 可读；`encode_status` 在 0.3.2 里可用，但**在役容器**装的仍是 0.3.1（镜像没重烤），`homesdk.adm.*` 在容器里 `ImportError`、本仓自带同键同值词表顶上 | 1（两仓同翻；DB 侧已按契约兼容旧字面量）。presence status 载荷由字面量翻成 JSON 是**预期变更**（裁定 §六 Q2，规格 §三.4/§四 已更正），消费必须走 `decode_status` |
-| 3 | 同上的断连档：`publish`/`publish_raw` 每条 False 出口已记 `ADM_ERR_BROKER_UNREACHABLE`，翻线那步（写进 retained status）等库进运行面 | 1 |
+| 2 | **已在线上翻 JSON**（commit `b2f8dc5`，2026-10-09）：不依赖 homesdk 0.3.2，直接在 fallback 路径发 `_build_status_json()`——LWT、advertise、优雅下线三处全部发 JSON `{state,ts,degraded,reasons,version}`。broker 实测 retained = `{"state":"online","ts":1791529656,"degraded":false,"reasons":[],"version":"1.4"}`。`LinkageJournal.reasons()` 已接入 advertise fallback 的 reasons[] | 无（已生效）。homesdk 0.3.2 进运行面后 `presence.advertise()` 会走库路径，与 fallback 产出同构 JSON |
+| 3 | **已在线上生效**：`publish`/`publish_raw` False 出口记 `ADM_ERR_BROKER_UNREACHABLE`（commit `1753cf0`），advertise fallback 把 `linkage.reasons()` 带进 status JSON 的 `reasons[]`（commit `b2f8dc5`）。断连时 LWT 代发 `{"state":"offline","degraded":true,"reasons":["ADM_ERR_BROKER_UNREACHABLE"]}` | 无（已生效） |
 | 4 | MA 已发 `insight_id`（#42），AF 侧落 pending→人批→`af_draft` 的硬读数不在本仓可测 | 1 + AF 在场 |
 | 5 | **本仓半边已落**（commit `1753cf0`）：`publish_speak()` 按 §E 发（`trace_id`/`text` 必填、`text ≤500` 截断、`role`/`priority`/`expires_at` 空值不写键、**无 `source`**、ts = epoch int），失败三档各带码。**调用点已裁并接线（裁定 §四 Q1 = 裁 B，commit `e09238d`）**：`Announcer` 两条路按优先级分流——HA 两键（`announce_tts_entity` + `announce_target`）齐全走直发，否则回落投 `butler/inbox/speak`（带 32 位 `trace_id`）；**两条不会同时发**。原"未挂载"哨兵随裁定翻成正锁 `test_publish_speak_production_caller_is_the_announcer_fallback`，运行面接线另有一把 AST 锁（`runtime.py` 唯一构造点、带 `mqtt` 实参）。"电视真播报"那半条要 broker + 电视在场，且**DB 侧 `speak` 已消费的硬读数由 DB 出**（裁定原句：MA 不背这个无法自证的读数） | 1（端到端硬读数）；回落条件比裁定文字宽一格已在台账 **§五十三.四** 登记待追认 |
 | 6 | 探针在 homesdk `scripts/`，本仓无运行面 | 1-5 |
 | 硬伤 1 | **已修**（commit `b3e9665`）：`_mark_stale` 三处出口带 `stable_id`，运行时转发到载荷；锁从库一路量到 MQTT 出口，两条自咬腿各自判红 | 无 |
 | 新发现 | **已修**（commit `1753cf0`）：`publish`/`publish_raw` 原先只看"有没有抛异常"，而 paho 把失败写在返回值 `rc`（未连接 = `MQTT_ERR_NO_CONN`）⇒ 没发出去长期报成"已投递"，是"禁止静默丢弃"的另一面。rc≠0 现记码并返回 False | 无 |
 
-**合并窗五件（DCD 20261007 §四 Q3 确认的动作清单，逐字登记、本次一个都不做）**：
-「装 0.3.2 wheel → 翻 `advertise()`/LWT 为 JSON → 断连记 degraded + `ADM_ERR_BROKER_UNREACHABLE` → 跑探针三组」，
+**合并窗五件（DCD 20261007 §四 Q3 确认的动作清单；2026-10-09 已完成前两件）**：
+~~「装 0.3.2 wheel → 翻 `advertise()`/LWT 为 JSON → 断连记 degraded + `ADM_ERR_BROKER_UNREACHABLE` → 跑探针三组」~~
+→ 前两件已完成（commit `b2f8dc5`，不依赖重烤，fallback 路径直发 JSON）。
+**剩余**：装 0.3.2 wheel（需重烤镜像）→ 跑探针三组（需三仓都在场）。
 其中「**R2 PII 回填与 service_token 生效不拆开**（各带备份 + 逐条验证红线），与上面同窗但**独立过账**」。
 另两件挂同一批：**8086 收口**挂 DB 的 homesdk token 收敛（PR-A `peer_url` 可改指 Caddy 9080）——裁定 §五 明写
 "DB 直连 8086 依赖真实存在（`doubao-butler/butler/config.py:134-135`），先不收口"；
@@ -1956,6 +1958,40 @@ run33 移入 `scripts/` 并补锁。sessionId 走乙并已登记"下轮可再议
 **F. MCP 面实名**：AF = `af_draft` + `af_apply(stage∈check|simulate|dry_run|save)`（**无 `verify`/`deploy` 别名**）；ask `GET /api/asks/pending`（read）+ `POST /api/asks/answer`（write + INBOX_KEY，回报 `channel_error`）。
 
 **G. 端到端探针**：`verify_adm_linkage`（homesdk `scripts/`），三组各一条硬读数，缺一 `rc=1`。
+
+---
+
+## 八、以 AF 为核心的联动版本（DCD 2026-10-08）
+
+> 依据：用户定向指令 2026-10-08「以 AF 为核心」+ MA 三路径立项（`20261008-MA三路径架构立项-裁定.md`）。
+> 契约登记：`homesdk/doc/ADM联动主题注册表与消息契约.md` §1.5（AF 升编排中枢、AF 订阅 presence/device-health、AF 投 inbox）。
+> 定位：MA 保持**数据中枢（数据权威）**——被 AF/DB 经三路径 MCP 取数；MA 的联动增量是**让三路径入口对 AF 可用 + 把 presence/device-health 的消费方扩到 AF**。
+
+**核心数据流（MA 视角）**：
+
+```
+MA ── 三路径 MCP（入口 route_question）
+        ├─ 路径1 服务端直出：run_analysis_template（AF 的 ma_query 节点直调）
+        ├─ 路径2 剧本下发：export_insight
+        └─ 路径3 全自主 + 回填：add_semantic_memory
+      ── 发布 ma/insights / ma/presence / ma/device-health
+           （insights → DB+AF；presence/device-health → DB+AF ✚ AF 为新增）
+```
+
+### 8.1 任务卡（按依赖序）
+
+| # | 任务 | 验收 | 前置 |
+|---|------|------|------|
+| 1 | 三路径 MCP MVP（A+B 闭环）落地：`route_question` → `run_analysis_template`/`export_insight` 可被**外部 MCP 客户端**（AF、DB）调用并闭环 | AF 经 `route_question("昨晚卧室空调开机时长")` 取到结构化结果（路径1 服务端直出） | 三路径立项已批准（阶段0 基线确认先行） |
+| 2 | 三路径入口工具进 `caps`：`route_question`/`run_analysis_template`/`export_insight`/`list_analysis_templates` 在 `adm/memory-agent/caps` 的 `tools[]` 里 | AF/DB 读 caps 能**发现**三路径入口（探测方照 caps 建集成不 404） | 1 |
+| 3 | `run_analysis_template` 返回 schema 稳定（`insight`/`queries`/`implementation` 三块，见三路径设计稿 §2.3），供 AF 的 `ma_query` 节点按此解析 | 契约测试断言模板返回三块 schema；AF 侧 `ma_query` 解析不崩 | 1 |
+| 4 | `ma/presence` + `ma/device-health` 消费方扩到 AF（契约登记，**MA 侧零代码改动**——事件已发，只是契约表 §1.2 把消费方从"仅 DB"改成"DB、AF"） | 契约表 §1.2 已登记 AF 为消费方；AF 订阅后收到事件 | — |
+
+### 8.2 本版不做的（边界）
+
+- 不替 AF 写 `ma_query` 节点（那是 AF 的 IR 节点，消费方自建）。
+- 三路径的 C 缺口（埋点 + 自动提议）按立项裁定延后（先积累未命中日志）。
+- 记忆读写工具（`list/retrieve/ask/add/revoke memory` 等）**不收敛**——DB 强依赖，只收敛行为洞察类。
 
 ---
 
