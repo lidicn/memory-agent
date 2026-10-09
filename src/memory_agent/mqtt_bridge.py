@@ -82,6 +82,24 @@ ADM_STATUS_TOPIC = f"adm/{ADM_MEMBER}/status"
 ADM_CAPS_TOPIC = f"adm/{ADM_MEMBER}/caps"
 ADM_ONLINE = "online"
 ADM_OFFLINE = "offline"
+ADM_VERSION = "1.4"  # 计划号（契约 §1.1 caps.version 口径）
+
+
+def _build_status_json(state: str, reasons: list[str] | None = None) -> str:
+    """构造契约 §7.1 的 status JSON 载荷。
+
+    不管 homesdk 是否在场，两条路径产出逐字节同构的 JSON——
+    DB 侧统一 ``decode_status`` 解析，兼容旧字面量但新实现一律发 JSON。
+    """
+    reasons = reasons or []
+    payload = {
+        "state": state,
+        "ts": int(time.time()),
+        "degraded": bool(reasons),
+        "reasons": reasons,
+        "version": ADM_VERSION,
+    }
+    return json.dumps(payload, separators=(",", ":"))
 
 #: 公共收件箱白名单（DB 拥有）。投递侧只写这三条，不碰 DB 内部语义主题。
 INBOX_TOPICS = frozenset({"butler/inbox/speak", "butler/inbox/notify", "butler/inbox/tv"})
@@ -152,7 +170,13 @@ def _default_client_factory(cfg: Any):
         client.on_connect = _on_connect
         # LWT 必须在 connect() **之前**设：will 是 CONNECT 报文里的字段，
         # 连上之后再 will_set，broker 永远不会知道（kill -9 后也就没人代发 offline）。
-        client.will_set(ADM_STATUS_TOPIC, ADM_OFFLINE, qos=1, retain=True)
+        # 契约 §7.1：LWT 也发 JSON（broker 代发时 ts 固定，用 0 表示"由 broker 代发"）。
+        lwt_payload = json.dumps(
+            {"state": "offline", "ts": 0, "degraded": True,
+             "reasons": ["ADM_ERR_BROKER_UNREACHABLE"], "version": ADM_VERSION},
+            separators=(",", ":"),
+        )
+        client.will_set(ADM_STATUS_TOPIC, lwt_payload, qos=1, retain=True)
         client.connect(
             getattr(cfg, "tv_mqtt_host", "") or "",
             int(getattr(cfg, "tv_mqtt_port", 1883) or 1883),
@@ -351,7 +375,10 @@ class MqttBridge:
             except Exception as exc:  # noqa: BLE001 - 旁路能力，失败不上抛
                 print(f"[MQTT] presence 广播失败（homesdk 口径）: {exc}")
                 return False
-        ok = self.publish_raw(ADM_STATUS_TOPIC, ADM_ONLINE, retain=True)
+        # homesdk 不在场：用同构 JSON 直发（契约 §7.1，不再发字面量 online）。
+        reasons = self.linkage.reasons()
+        ok = self.publish_raw(ADM_STATUS_TOPIC, _build_status_json(ADM_ONLINE, reasons),
+                              retain=True)
         if caps is not None:
             ok = self.publish_raw(ADM_CAPS_TOPIC, caps, retain=True) and ok
         self._advertised = ok
@@ -482,7 +509,10 @@ class MqttBridge:
         if client is None:
             return
         try:
-            info = client.publish(ADM_STATUS_TOPIC, state, qos=1, retain=True)
+            # 契约 §7.1：发 JSON 而非字面量
+            reasons = self.linkage.reasons() if state == ADM_OFFLINE else []
+            payload = _build_status_json(state, reasons)
+            info = client.publish(ADM_STATUS_TOPIC, payload, qos=1, retain=True)
             # 关停时 loop 线程随时会停，给这条 retained 一个有界的送达窗口
             waiter = getattr(info, "wait_for_publish", None)
             if callable(waiter):
