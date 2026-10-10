@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>数据库层专项审计报告 · memory-agent（第二轮）</title>
+<meta name="description" content="memory-agent 数据库层第二轮专项审计：以 store.py / runtime.py / backup.py / ha_db.py 与 scripts 维护脚本为对象，覆盖稳定性、安全性、功能性、性能、并发五个维度，共 20 条发现（1 严重 / 4 高 / 10 中 / 5 低）。报告核实第一轮两条数据库高危已修复，并给出恢复候选、感知表无保留策略、checkpoint 静默失效等新发现的证据链与最小修复建议。">
+<style>
+:root{
+  --bg:#0f1218; --panel:#171b23; --panel2:#1d222c; --line:#2a313d;
+  --fg:#e7ecf3; --fg2:#aab4c2; --fg3:#7b8698;
+  --crit:#ff5d5d; --high:#ff9f43; --mid:#ffd166; --low:#6cc4ff;
+  --ok:#4ade80; --accent:#8b9dff;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.72 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+.wrap{max-width:1120px;margin:0 auto;padding:32px 20px 72px}
+header.top{border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:28px}
+.eyebrow{color:var(--accent);font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 10px}
+h1{margin:0 0 10px;font-size:27px;line-height:1.34;letter-spacing:.01em}
+.sub{color:var(--fg2);font-size:14px;margin:0}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:20px}
+.meta div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:12.5px;color:var(--fg2)}
+.meta b{color:var(--fg);font-weight:600}
+h2{font-size:19.5px;margin:44px 0 14px;padding-bottom:9px;border-bottom:1px solid var(--line)}
+h2 .n{color:var(--fg3);font-weight:400;font-size:14px;margin-left:8px}
+h3{font-size:16px;margin:22px 0 8px}
+p{margin:9px 0}
+a{color:var(--accent)}
+code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:12.5px;
+  background:#0b0e14;border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:#cfe0ff;word-break:break-all}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px;margin:18px 0 6px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 15px}
+.card .k{font-size:12px;color:var(--fg3);letter-spacing:.05em}
+.card .v{font-size:27px;font-weight:700;margin-top:4px;line-height:1.1}
+.card .d{font-size:11.5px;color:var(--fg3);margin-top:4px}
+.card.crit .v{color:var(--crit)} .card.high .v{color:var(--high)}
+.card.mid .v{color:var(--mid)} .card.low .v{color:var(--low)}
+.card.ok .v{color:var(--ok)}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.4px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--fg2);font-weight:600;font-size:12.5px}
+tbody tr:nth-child(even){background:#141821}
+.f{background:var(--panel);border:1px solid var(--line);border-left-width:4px;border-radius:10px;padding:16px 18px;margin:16px 0}
+.f.crit{border-left-color:var(--crit)} .f.high{border-left-color:var(--high)}
+.f.mid{border-left-color:var(--mid)} .f.low{border-left-color:var(--low)}
+.f h3{margin:0 0 4px;font-size:15.6px}
+.f .id{color:var(--fg3);font-weight:400;margin-right:8px}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid;margin:0 5px 5px 0;white-space:nowrap}
+.t-crit{color:var(--crit);border-color:#5c2626;background:#2a1416}
+.t-high{color:var(--high);border-color:#5b3c1c;background:#2a1e10}
+.t-mid{color:var(--mid);border-color:#5a4c1c;background:#28220f}
+.t-low{color:var(--low);border-color:#1f4560;background:#0f2029}
+.t-dim{color:var(--fg2);border-color:var(--line);background:#12161e}
+.t-ok{color:var(--ok);border-color:#1f5c3a;background:#0f2419}
+.f dl{margin:10px 0 0;display:grid;grid-template-columns:88px 1fr;gap:5px 12px;font-size:13.6px}
+.f dt{color:var(--fg3);font-size:12.5px;padding-top:2px}
+.f dd{margin:0}
+.note{background:#101722;border:1px solid var(--line);border-radius:8px;padding:11px 14px;font-size:13.2px;color:var(--fg2)}
+.note b{color:var(--fg)}
+ul,ol{margin:8px 0 8px 20px;padding:0}
+li{margin:5px 0}
+.chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin:16px 0}
+.chart figcaption{color:var(--fg2);font-size:12.5px;margin-top:8px}
+footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);color:var(--fg3);font-size:12.4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">第二轮 · 数据层专项审计</p>
+  <h1>memory-agent 数据库层专项审计报告</h1>
+  <p class="sub">覆盖稳定性 / 安全性 / 功能性 / 性能 / 并发五个维度 · 代码版本 <code>1eafa85</code>（main，2026-10-10 09:18 +0800）</p>
+  <div class="meta">
+    <div><b>审计对象</b><br>E:\NAS\memory-agent（git 仓，Python）</div>
+    <div><b>设备通道</b><br>DESKTOP-J17LDCU（Windows）只读读取</div>
+    <div><b>审计日期</b><br>2026-10-10</div>
+    <div><b>审计方式</b><br>数据层源码全量精读 + 语义行普查 + 设备侧只读探查</div>
+    <div><b>与第一轮关系</b><br>第一轮为全项目通读；本轮只聚焦数据层并向下挖</div>
+    <div><b>只读承诺</b><br>未修改/删除/移动任何项目文件，未启停服务，未读 .env / certs</div>
+  </div>
+</header>
+
+<h2>一、结论摘要<span class="n">共 20 条发现</span></h2>
+
+<div class="cards">
+  <div class="card"><div class="k">发现总数</div><div class="v">20</div><div class="d">5 个维度全覆盖</div></div>
+  <div class="card crit"><div class="k">严重</div><div class="v">1</div><div class="d">D01</div></div>
+  <div class="card high"><div class="k">高</div><div class="v">4</div><div class="d">D02–D05</div></div>
+  <div class="card mid"><div class="k">中</div><div class="v">10</div><div class="d">D06–D15</div></div>
+  <div class="card low"><div class="k">低</div><div class="v">5</div><div class="d">D16–D20</div></div>
+  <div class="card ok"><div class="k">第一轮高危</div><div class="v">2/2</div><div class="d">确认已修复（含残留）</div></div>
+  <div class="card ok"><div class="k">SQL 注入</div><div class="v">0</div><div class="d">未发现可利用点</div></div>
+</div>
+
+<figure class="chart">
+<svg viewBox="0 0 640 168" width="100%" height="168" role="img" aria-label="发现严重程度分布：严重 1 条、高 4 条、中 10 条、低 5 条">
+  <g font-family="sans-serif" font-size="12" fill="#aab4c2">
+    <text x="0" y="16">严重 1</text><rect x="86" y="6" width="26" height="14" rx="3" fill="#ff5d5d"></rect>
+    <text x="0" y="52">高 4</text><rect x="86" y="42" width="104" height="14" rx="3" fill="#ff9f43"></rect>
+    <text x="0" y="88">中 10</text><rect x="86" y="78" width="260" height="14" rx="3" fill="#ffd166"></rect>
+    <text x="0" y="124">低 5</text><rect x="86" y="114" width="130" height="14" rx="3" fill="#6cc4ff"></rect>
+    <line x1="86" y1="0" x2="86" y2="140" stroke="#2a313d"></line>
+    <text x="86" y="160" fill="#7b8698">1 格 = 1 条发现 · 按维度标注见下表</text>
+  </g>
+</svg>
+<figcaption>严重程度分布（越靠上越需优先处理）。20 条中，<b>证据充分、可在代码中直接定位</b>的 18 条；<b>标注为「疑似 / 需进一步验证」</b>的 2 条（D15、D18）。</figcaption>
+</figure>
+
+<h3>按维度分布</h3>
+<table>
+  <thead><tr><th>维度</th><th>严重</th><th>高</th><th>中</th><th>低</th><th>该维度要旨</th></tr></thead>
+  <tbody>
+    <tr><td>稳定性</td><td>1</td><td>2</td><td>5</td><td>1</td><td>连接与事务纪律扎实，但<b>失败路径的可观测性</b>和<b>恢复源可信度</b>是短板</td></tr>
+    <tr><td>并发</td><td>0</td><td>1</td><td>4</td><td>1</td><td>进程内单连接 + RLock 设计正确且被静态门禁守住；<b>跨进程</b>无任何协调</td></tr>
+    <tr><td>安全性</td><td>0</td><td>0</td><td>2</td><td>2</td><td>无 SQL 注入；风险集中在<b>明文落盘</b>与<b>文件权限</b></td></tr>
+    <tr><td>功能性</td><td>1</td><td>0</td><td>3</td><td>2</td><td>读写语义与幂等总体正确；<b>外键从未生效</b>、<b>无迁移台账</b>是真问题</td></tr>
+    <tr><td>性能</td><td>0</td><td>1</td><td>2</td><td>0</td><td>索引设计有明确实测依据；<b>无界查询持全局锁</b>与 <b>FULL 同步写放大</b>是主要代价</td></tr>
+  </tbody>
+</table>
+
+<h3>最该先修的 3 条</h3>
+<table>
+  <thead><tr><th>#</th><th>条目</th><th>为什么排在最前</th><th>修复成本</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td><b>D01</b> 自动恢复的候选集包含「手工文件拷贝」这类不一致快照</td>
+      <td>这是安全网本身不可信：一旦触发，动作是「用一份缺 WAL 的库覆盖好库，并删掉 -wal/-shm」，损害不可逆。触发它的人恰好是排障时先跑 <code>db_integrity_check.py</code> 的人。</td>
+      <td>低（改候选 glob + 恢复前校验）</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><b>D02</b> <code>behavior_events</code> / <code>perception_events</code> 完全没有保留策略</td>
+      <td>全仓唯一一处「只增不减」的表，也是唯一能把「磁盘写满 → SQLite 损坏」这条链条完整走完的路径（用户明确点名的头号诱因）。随运行时间单调变差，不修就一定发生。</td>
+      <td>低（复用已有分批删除模式）</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><b>D03</b> TRUNCATE checkpoint 的结果从未被检查（静默失效）+ <b>D07</b> 跨进程并发无协调</td>
+      <td>两者是同一件事的两半：第一轮修掉了「checkpoint 没持锁」，但「被 busy 挡下仍报成功」还在，而跨进程读者/维护脚本正是制造 busy 的那一方。这层不补，每小时 checkpoint 的保证无法被验证。</td>
+      <td>低（读返回行 + 记 warning）；D07 需流程约束</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>与第一轮两条数据库高危的衔接结论</h3>
+<table>
+  <thead><tr><th>第一轮结论</th><th>本轮核实</th><th>证据（文件:行号 / 提交）</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>F1：新增的每小时 WAL checkpoint 任务未持存储层锁，直接在单例连接上跑 <code>wal_checkpoint(TRUNCATE)</code>，与业务写并发，可能静默失效</td>
+      <td><span class="tag t-ok">确认已修复</span>新增了 <code>Store.checkpoint()</code>，整段在 <code>self._lock</code> 内执行；周期任务不再自己 <code>connect()</code>，改为调用它。<br><span class="tag t-high">但「静默失效」未修完</span>→ 见 <b>D03</b></td>
+      <td>提交 <code>1eafa85</code>（<code>fix: 审计20261010 HTML报告 F1/F2/F3/F7</code>）<br><code>store.py:660-668</code>、<code>runtime.py:409</code></td>
+    </tr>
+    <tr>
+      <td>F2：<code>store.close()</code> 把 commit 与 checkpoint 的异常整体 <code>pass</code> 掉，异常路径下连连接都不关闭</td>
+      <td><span class="tag t-ok">确认已修复，且是两步修的</span>先改为 warning 日志（8f493a4），再补齐「<code>_conn</code> 先置 None + <code>finally</code> 必定关闭连接 + 三段各自记日志」（1eafa85）。异常路径现在一定会关连接。<br><span class="tag t-mid">剩余风险转移</span>→ 见 <b>D13</b>（关闭后连接会被静默重建）</td>
+      <td>提交 <code>8f493a4</code>、<code>1eafa85</code><br><code>store.py:1980-2005</code></td>
+    </tr>
+    <tr>
+      <td>修复批次「<code>synchronous=FULL</code> + 关闭前 WAL checkpoint + 每小时定期 checkpoint」是否真生效、有无引入新问题</td>
+      <td><span class="tag t-ok">三处均已落地</span><code>PRAGMA synchronous=FULL</code> 写入 <code>connect()</code>；<code>close()</code> 强制 <code>wal_checkpoint(TRUNCATE)</code>；<code>runtime</code> 每小时一次。<br><span class="tag t-mid">新问题</span>→ <b>D12</b>（FULL 带来的每次提交 fsync 写放大）；<span class="tag t-mid">覆盖面缺口</span>→ <b>D03</b></td>
+      <td><code>store.py:652-656</code>、<code>store.py:1990</code>、<code>runtime.py:399-417</code></td>
+    </tr>
+    <tr>
+      <td>修复批次「<code>密钥/用户名字段防意外清空</code>」是否真生效</td>
+      <td><span class="tag t-ok">确认生效</span>但它在 <b>HTTP 配置层</b>（<code>api/config_routes.py</code>：空串视为「没改」保持原值，显式清空需传 <code>__CLEAR__</code>），<b>不在数据库层</b>。<br><span class="tag t-mid">数据库侧同类风险仍在</span>→ <b>D14</b>（<code>add_agent_memory</code> 用 INSERT OR REPLACE 会把既有行的信任度/反馈计数清零）</td>
+      <td>提交 <code>0e51441</code><br><code>api/config_routes.py:66-76,248-262</code>；数据库侧 <code>store.py:4712-4730</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="note"><b>一句话结论：</b>数据层的<b>主路径质量高于同类项目</b>——单例连接 + RLock、参数化 SQL、幂等键占位、分批删除、FTS 自愈、覆盖索引都有实测依据和静态门禁兜底，本轮未发现可利用的注入点，也未发现「半截事务被别的线程提交」这类已被修掉的旧病复发。真正的短板集中在<b>「出错之后」</b>：失败不被观测（D03、D09）、恢复源不可信（D01）、跨进程没有约定（D07）、以及一条只增不减的表（D02）。</p>
+
+<h2>二、发现明细<span class="n">按严重程度从高到低</span></h2>
+
+<h3 style="color:var(--crit)">严重（1 条）</h3>
+
+<div class="f crit">
+  <span class="tag t-crit">严重</span><span class="tag t-dim">稳定性</span><span class="tag t-dim">功能性 · 数据完整性</span>
+  <h3><span class="id">D01</span>「自动恢复」的候选集包含手工文件拷贝（缺 -wal 的不一致快照），而产生这类拷贝的脚本正是排障时最先被执行的</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:765-771</code>（恢复候选 = <code>db_path + ".bak*"</code> 与 <code>backup_dir/ma-*.db</code> 合并后按 mtime 降序取最新）<br><code>store.py:784</code>（<code>shutil.copy2(候选, db_path)</code> 覆盖主库）<br><code>store.py:787-793</code>（覆盖后删 <code>-wal</code> / <code>-shm</code>）<br><code>scripts/db_integrity_check.py:6,11</code>（<code>BAK = f"/data/memory_agent.db.bak.{int(time.time())}"</code> 后 <code>shutil.copy2(DB, BAK)</code>）</dd>
+    <dt>触发条件</dt><dd>① 运行 <code>python scripts/db_integrity_check.py</code>——它会<b>无条件</b>先把主库文件原样复制成 <code>/data/memory_agent.db.bak.&lt;epoch&gt;</code>（本意是"动手前留个退路"）；② 此后任意一次启动时 <code>quick_check</code> 判红，<code>check_and_recover</code> 就会进入恢复分支。</dd>
+    <dt>影响</dt><dd>WAL 模式下「主库文件 + -wal」才构成一个完整数据库。文件级 <code>copy2</code> 只拿到主库那一部分，最近提交（默认自动 checkpoint 阈值 1000 页，约 4MB）全部不在里面。若这份手工拷贝的 mtime 比最近一次 <code>VACUUM INTO</code> 快照更新——排障当天必然如此——恢复动作就是<b>用一份缺最近提交的库覆盖主库，随后删掉 -wal 与 -shm</b>，把"丢的那一段"永久抹掉。整个过程会打印一行"已从备份恢复"，没有任何一致性校验拦住它。</dd>
+    <dt>为什么算严重</dt><dd>它破坏的是安全网本身：伤害不可逆，且触发者恰好是最需要它可靠的那个人。</dd>
+    <dt>最小修复</dt><dd>① 恢复候选只认 <code>backup_dir</code> 下由 <code>VACUUM INTO</code> 产出的 <code>ma-*.db</code>，把 <code>db_path + ".bak*"</code> 从候选里去掉（或仅作最后兜底）；② 覆盖主库前对每个候选跑 <code>PRAGMA integrity_check</code>，非 <code>ok</code> 就换下一个并记 warning；③ 把 <code>db_integrity_check.py</code> 的 <code>copy2</code> 改成 <code>VACUUM INTO</code>（<code>backup.py:56-76</code> 已有正确写法可抄），并把备份文件挪出主库所在目录；④ 给历史遗留的 <code>*.db.bak*</code> 加轮转（现在 <code>backup.py</code> 的 <code>_rotate</code> 只管 <code>ma-*</code> 与 <code>chroma-*</code>，这类文件永不清理）。</dd>
+  </dl>
+</div>
+
+<h3 style="color:var(--high)">高（4 条）</h3>
+
+<div class="f high">
+  <span class="tag t-high">高</span><span class="tag t-dim">稳定性 · 磁盘</span><span class="tag t-dim">性能</span>
+  <h3><span class="id">D02</span><code>behavior_events</code> 与 <code>perception_events</code> 没有任何保留策略，是全仓唯一「只增不减」的表</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:4613-4659</code>（<code>purge_old</code> 只清 <code>events</code> + <code>collect_days</code>）<br><code>runtime.py:138-167</code>（保留清理任务只调用 <code>purge_old</code> / <code>purge_idempotency</code> / <code>purge_mcp_audit</code>）<br>对照：<code>runtime.py:767-803</code> 给 <code>behavior_anomalies</code>、<code>behavior_drifts</code> 都配了 purge；<code>store.py:5260</code> 给 <code>rule_trigger_history</code> 配了保留期 + 行数上限<br>全仓检索 <code>DELETE FROM behavior_events</code> / <code>DELETE FROM perception_events</code>：<b>0 命中</b></dd>
+    <dt>触发条件</dt><dd>无需触发条件——只要服务在跑、VLM 巡检与边缘感知在写（写入路径 <code>store.py:2518</code>），这两张表就单调增长。</dd>
+    <dt>影响</dt><dd>① 主库与索引体积无上限增长，VACUUM 与整库备份（<code>VACUUM INTO</code>）耗时随之线性上升；② 磁盘写满是 SQLite 损坏最常见的诱因（也是本项目"反复损坏"排查的既有结论），而这条路径上<b>没有任何闸门</b>；③ <code>unified_events</code> 视图把这两张表与 <code>events</code> 做 <code>UNION ALL</code>，查询代价同样随之增长。</dd>
+    <dt>最小修复</dt><dd>在 <code>purge_old</code> 里按 <code>day &lt; cutoff</code> 对两张表复用同一个分批删除模式（<code>store.py:4634-4647</code> 的 rowid 子查询写法可直接照搬），并在 <code>runtime._run_retention_cleanup</code> 的同一轮里执行；同时把清理计数打进现有那行日志，便于观察是否真的在清。</dd>
+  </dl>
+</div>
+
+<div class="f high">
+  <span class="tag t-high">高</span><span class="tag t-dim">稳定性</span><span class="tag t-dim">并发</span><span class="tag t-dim">第一轮 F1 残留</span>
+  <h3><span class="id">D03</span>每小时 TRUNCATE checkpoint 的返回值从未被检查，被 busy 挡下仍报成功 —— 「静默失效」这一层没有修完</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:660-668</code>（<code>checkpoint()</code>：<code>self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")</code>，不取返回行；<code>self._conn is None</code> 时直接静默 <code>return</code>）<br><code>store.py:1990</code>（<code>close()</code> 里同样只捕异常、不看返回行）<br><code>runtime.py:399-417</code>（周期任务把 <code>store.checkpoint</code> 丢进 <code>to_thread</code>，只 <code>except Exception</code>）</dd>
+    <dt>触发条件</dt><dd>有其他连接/进程持读锁时（每日备份的 <code>VACUUM INTO</code>、维护脚本的 <code>SELECT</code>/<code>integrity_check</code>、第二条连接），<code>wal_checkpoint(TRUNCATE)</code> <b>不抛异常</b>，而是返回一行 <code>(busy, log, checkpointed)</code>。</dd>
+    <dt>影响</dt><dd>本轮 checkpoint 什么都没做，任务与日志却显示成功：WAL 不截断、文件不收缩，"每小时把 WAL 合并回主库、把重启恢复窗口压到最小"的运维保证实际上无法被验证。<b>第一轮修的是"绕开锁"，这一层是"绕过失败"。</b></dd>
+    <dt>诚实边界</dt><dd>代码里没有改动 <code>wal_autocheckpoint</code>，SQLite 默认的 1000 页自动 checkpoint 仍然生效，所以 <b>WAL 不会无限增长</b>；受影响的是"文件不收缩 / 大 WAL 不合并 / 失败不可观测"，不是"WAL 撑爆磁盘"。</dd>
+    <dt>最小修复</dt><dd>取返回行 <code>busy, log, ckpt = cur.fetchone()</code>，<code>busy != 0</code> 或 <code>ckpt &lt; log</code> 时记 warning 并计数（可暴露到健康端点）；<code>self._conn is None</code> 时也留一条可观测信号，而不是静默返回。同一段逻辑可复用到 <code>close()</code> 里的那条 PRAGMA。</dd>
+  </dl>
+</div>
+
+<div class="f high">
+  <span class="tag t-high">高</span><span class="tag t-dim">性能</span><span class="tag t-dim">并发 · 锁粒度</span>
+  <h3><span class="id">D04</span>无界聚合与「无 LIMIT」查询在全局 RLock 内执行，持锁时间等于查询时长</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:4194-4205</code> <code>entity_last_seen()</code>（<code>entities=None</code> 时对整张 events 做 <code>GROUP BY entity_id</code>）<br><code>store.py:4669-4681</code> <code>get_events_by_entity()</code>（不带 <code>day</code> 时无 LIMIT，返回该实体<b>全部</b>历史事件）<br><code>store.py:4322</code> <code>hour_histogram()</code>、<code>store.py:4446</code> <code>daily_counts_by_room()</code>（跨全表聚合）<br><code>store.py:4100-4163</code> <code>query_unified_events()</code>（本页被填满时，在<b>同一把锁内</b>继续跑三张表的 <code>COUNT(*)</code>，见 <code>store.py:4155-4156</code>、<code>4181-4192</code>）</dd>
+    <dt>触发条件</dt><dd>设备目录刷新、身份层对账、洞察回溯、MCP 工具传大范围窗口或不传窗口。</dd>
+    <dt>影响</dt><dd>单连接 + 单把全局 RLock 的模型下，这些查询的持锁时间就是查询时长，期间<b>采集写入、WebUI 查询、全部 MCP 调用一律排队</b>。同进程内没有第二条只读连接可分担（WAL 允许一写多读，但代码只建了一条连接）。作者已经量化过这个代价：<code>store.py:4616-4619</code> 自陈"一次删 30 万行持锁 143 秒，一个并发读者实测等了 143151 ms"。</dd>
+    <dt>最小修复</dt><dd>① <code>get_events_by_entity</code> 强制时间窗或 LIMIT（调用方都是"重建底层证据"，取窗口内行即可）；② <code>entity_last_seen</code> 走已有的 <code>idx_events_entity_cover</code> 并做结果缓存（设备目录不需要秒级新鲜度）；③ <code>query_unified_events</code> 的 total 在锁外或缓存里算，或对本页已满的情况直接返回 <code>total &gt;= limit</code> 的语义；④ 中期方案：为只读重查询开一条独立的 <code>mode=ro</code> 连接，彻底从写锁上摘下来。</dd>
+  </dl>
+</div>
+
+<div class="f high">
+  <span class="tag t-high">高</span><span class="tag t-dim">功能性</span><span class="tag t-dim">并发 · 事务边界</span>
+  <h3><span class="id">D05</span>多步业务操作没有用事务包住：拆分设备时逐条加锁 + 逐条提交，中途失败留下半成品状态</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:1847-1885</code> <code>split_logical_device()</code>：在候选实体的 <code>for</code> 循环里 ① 调用 <code>self.upsert_logical_device(...)</code>（该函数自己进锁 + 提交）② 再单独 <code>with self._lock: self._conn.execute(UPDATE device_health ...); self._conn.commit()</code>，循环结束后才 <code>self.delete_logical_device(stable_id)</code>。</dd>
+    <dt>触发条件</dt><dd>拆分一个含多个候选实体的自动合并设备时，循环中途抛异常（磁盘 I/O、锁超时、数据异常），或进程在循环中途退出；同时存在并发读者。</dd>
+    <dt>影响</dt><dd>① 中途失败会留下"部分候选已拆成独立设备、原合并设备仍在"的半成品，重试会与已置为 <code>user-pinned</code> 的条目冲突；② 并发读者能观察到中间态（列表里同时出现合并设备与其子设备）；③ 该函数还在 <code>with self._lock</code> 内直接使用 <code>self._conn</code>（见 D16），把"连接一定已建立"的隐式假设又绑进来一层。</dd>
+    <dt>最小修复</dt><dd>整段改用仓库里已准备好的统一入口 <code>store.transaction()</code>（<code>store.py:676-698</code>，正常退出提交、异常回滚、自动回滚失败还会记 warning），循环内只 <code>execute</code> 不 <code>commit</code>。同一模式值得顺带排查其它"循环里逐条提交"的写入路径。</dd>
+  </dl>
+</div>
+
+<h3 style="color:var(--mid)">中（10 条）</h3>
+
+<div class="f mid">
+  <span class="tag t-mid">中</span><span class="tag t-dim">功能性 · 约束</span>
+  <h3><span class="id">D06</span><code>PRAGMA foreign_keys=ON</code> 是个死开关：整套 schema 里没有一条外键</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:656</code>（<code>conn.execute("PRAGMA foreign_keys=ON")</code>）<br><code>store.py:75-393</code>（<code>_SCHEMA_SQL</code> 全文，<b>0 处</b> <code>FOREIGN KEY</code> / <code>REFERENCES</code>）<br>典型引用关系：<code>store.py:318-325</code> <code>task_records.task_id</code> → <code>tasks</code>；<code>store.py:208-230</code> <code>member_rooms / member_devices / member_tags.member_id</code> → <code>members</code>；<code>store.py:1254-1261</code> <code>rule_trigger_history.rule_id</code> → <code>active_rules</code>；<code>store.py:1300</code> <code>detected_activities.source_rule_id</code></dd>
+    <dt>触发条件</dt><dd>任何绕过 Store 的写入/删除：维护脚本直连写库、手工 SQL、以及未来新增的代码路径。</dd>
+    <dt>影响</dt><dd>外键约束<b>从来没有生效过</b>，引用完整性完全靠应用层自觉。应用层确实做了手工级联（<code>store.py:3796-3803</code> <code>delete_member</code> 手工删了三张子表），但 <code>task_records</code>、<code>rule_trigger_history</code>、<code>detected_activities.source_rule_id</code> 这些路径没有兜底；维护脚本直连时更没有任何保护。更隐蔽的代价是心理错觉——后来读代码的人看到 <code>foreign_keys=ON</code> 会以为有约束。</dd>
+    <dt>最小修复</dt><dd>二选一，别停在中间态：① 补齐 <code>REFERENCES</code>（注意 SQLite 不支持 <code>ADD CONSTRAINT</code>，需要建新表搬迁，属于带迁移成本的改动）；② 去掉这条 PRAGMA，并在 schema 注释与文档里明确写"约束在应用层，DB 不做引用校验"。当前状态（开着开关但没有约束）是最差的组合。</dd>
+  </dl>
+</div>
+
+<div class="f mid">
+  <span class="tag t-mid">中</span><span class="tag t-dim">并发 · 跨进程</span><span class="tag t-dim">稳定性</span>
+  <h3><span class="id">D07</span>服务进程与维护脚本/备份/部署脚本对同一个 SQLite 文件的多进程并发没有任何协调，也没有应用层重试退避</h3>
+  <dl>
+    <dt>位置</dt><dd>维护脚本直连生产库：<code>scripts/db_health_check.py:6</code>、<code>db_stats.py:5</code>、<code>reindex_and_cleanup.py:5</code>、<code>fix_empty_memory_id.py:7</code>、<code>delete_empty_memory_id.py:5</code>、<code>db_integrity_check.py:16</code>（都是 <code>sqlite3.connect("/data/memory_agent.db")</code>，<b>默认 timeout=5s</b>，且不设置 <code>journal_mode</code> / <code>synchronous</code> / <code>foreign_keys</code>）<br>第二条连接：<code>backup.py:71</code>（<code>VACUUM INTO</code>）、<code>deploy_nas.sh</code>（容器内再开一条连接做整库快照）<br>服务侧：<code>store.py:650</code>（<code>timeout=30.0</code>）；全仓无 <code>busy_timeout</code> 设置，无 <code>database is locked</code> 的重试/退避（仅 <code>store.py:664</code> 的注释承认了这个风险）</dd>
+    <dt>触发条件</dt><dd>在容器里执行维护脚本、每日备份窗口、部署脚本的 DB 快照与在线服务重叠。</dd>
+    <dt>影响</dt><dd>① 写写争用下服务侧最长等 30s 才抛 <code>database is locked</code>，期间所有 API/MCP 调用堆在同一把锁上；② 脚本侧只等 5s，更容易直接失败或半途退出；③ <code>reindex_and_cleanup.py</code> 的 REINDEX/DELETE 与 <code>rebuild_agent_memories_table.py:14,38,90</code> 的 <code>DROP TRIGGER</code>/重建表会在服务持有 WAL 连接时长时间独占，且重建后 FTS 索引需要重建——而服务侧只在启动时检查 FTS 健康度，于是"重建完表却没有可用关键词索引"可以一直持续到下次重启。</dd>
+    <dt>最小修复</dt><dd>① 破坏性脚本（DROP/REBUILD/REINDEX）在文件头与文档里标注"必须停机执行"，并在脚本开头检测服务是否在跑；② 所有脚本统一 <code>timeout=30</code> 且显式给 <code>journal_mode</code>/<code>synchronous</code> 设置，避免用默认档误伤；③ 服务侧对 <code>sqlite3.OperationalError: database is locked</code> 加一层有限重试（3 次 + 递增退避）并把重试计数暴露出来，这比 30s 静默阻塞更可诊断。</dd>
+  </dl>
+</div>
+
+<div class="f mid">
+  <span class="tag t-mid">中</span><span class="tag t-dim">稳定性</span><span class="tag t-dim">并发 · 潜在</span>
+  <h3><span class="id">D08</span><code>check_and_recover</code> 的恢复段完全在锁外，会直接关闭共享连接并覆盖主库文件</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:765-810</code>，其中 <code>:780</code> <code>conn = self.connect()</code>、<code>:781</code> <code>conn.close()</code>、<code>:782</code> <code>self._conn = None</code>、<code>:784</code> <code>shutil.copy2(latest_bak, self.db_path)</code>、<code>:787-793</code> 删 <code>-wal</code>/<code>-shm</code>、<code>:796-798</code> 新连接复核——<b>全部不在 <code>with self._lock</code> 内</b>（该函数里的锁只出现在内层 <code>_run()</code> 的 <code>self._db()</code>，见 <code>store.py:737</code>）。</dd>
+    <dt>触发条件</dt><dd>运行期任何一次对 <code>check_and_recover</code> 的调用。当前唯一的生产调用点是 <code>runtime.py:173</code> 的启动期调用（那时确实还没有并发），另有 7 处测试调用（<code>tests/test_db_integrity_check_mode.py</code>）。</dd>
+    <dt>影响</dt><dd>这是"当前不可达、但一旦被挪进健康巡检/定时任务就会立刻出事"的地雷：它会在别的线程正持有连接时把连接关掉、把库文件覆盖掉、把 <code>-wal</code>/<code>-shm</code> 删掉。另外 <code>close()</code> 之后 <code>_conn=None</code>，别的线程下一次 <code>self.connect()</code> 会把刚被替换的库重新打开并重建 <code>-wal</code>/<code>-shm</code>，恢复动作的原子性无从谈起。Windows 上还有额外风险：<code>shutil.copy2</code> 与 <code>os.remove</code> 在目标被其他进程/句柄占用时会直接失败（Docker Desktop、杀毒扫描、编辑器索引都可能占用）。</dd>
+    <dt>最小修复</dt><dd>把 <code>765-810</code> 整段包进 <code>with self._lock:</code>；在 docstring 与调用点显式声明"仅允许启动期单线程调用"，并在函数开头加一个 <code>self._started</code> 类的一次性守卫，防止它被误接进运行期健康检查。</dd>
+  </dl>
+</div>
+
+<div class="f mid">
+  <span class="tag t-mid">中</span><span class="tag t-dim">功能性 · 迁移</span><span class="tag t-dim">稳定性</span>
+  <h3><span class="id">D09</span>迁移没有版本台账，失败被 <code>print</code> 吞掉，可能带着「半升级」的结构启动</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:73</code>（<code>SCHEMA_VERSION = 1</code>，是个永远不变的常量）<br><code>store.py:915-918</code>（把它写进 <code>meta</code> 表，<b>不反映真实结构</b>）<br><code>store.py:889-1521</code>（几十条 <code>try/except</code>，绝大多数 <code>except</code> 只 <code>print</code> 后继续；幂等判定靠 <code>"duplicate column" in str(exc).lower()</code> 这种字符串匹配）</dd>
+    <dt>触发条件</dt><dd>任意一条 ALTER/CREATE 因磁盘满、锁超时、语句错误而失败。</dd>
+    <dt>影响</dt><dd><code>database is locked</code>、<code>disk I/O error</code>、<code>database disk image is malformed</code> 都会被当作"列已存在"之外的分支 <code>print</code> 一句后继续跑后面的迁移，于是库带着"部分升级"的结构启动，而后续代码按新结构假设去读写。没有任何地方能回答"这个库升到哪一版了"。<b>本机那份陈旧副本就是活证据</b>：12 张表、0 视图、0 触发器、无 FTS、还留着已被取代的 <code>idx_events_entity_ts</code>，而当前代码假设视图/FTS/触发器都在——旧库只能靠这一大串 <code>try</code> 一条条补，任何一条静默失败都会留下不一致。</dd>
+    <dt>最小修复</dt><dd>① 把"真实结构版本"（而不是常量）写进 <code>meta</code>，并在启动时对比、不一致时明确告警；② 幂等判定收窄到 SQLite 的 <code>"duplicate column name"</code> 错误串（当前 <code>"duplicate column"</code> 已经是这个方向，值得继续收紧到错误码/精确串）；③ 其余失败升级为可观测（计数 + 暴露到健康端点 + 至少一条 error 级日志），不再只 <code>print</code>。</dd>
+  </dl>
+</div>
+
+<div class="f mid">
+  <span class="tag t-mid">中</span><span class="tag t-dim">安全性 · 文件权限</span>
+  <h3><span class="id">D10</span>部署数据目录的敏感文件对任意本机用户可读、甚至可改（明文密钥 + 全部家庭数据）</h3>
+  <dl>
+    <dt>位置</dt><dd>本次设备侧实测（<code>E:\NAS\memory-agent\data</code> 的 ACL）：<code>NT AUTHORITY\Authenticated Users | Modify</code>、<code>BUILTIN\Users | ReadAndExecute</code>（<code>Administrators</code>/<code>SYSTEM</code> 为 FullControl）<br>同目录内容：<code>config.json</code>（<code>config.py:16</code> <code>CONFIG_FILE = "/data/config.json"</code>，明文持有 <code>jwt_secret</code>/<code>hass_token</code>/<code>llm_api_key</code>/<code>ha_db_password</code>/<code>butler_token</code> 等字段，字段清单见 <code>config.py:463-520</code> 的环境变量映射表）与 <code>memory_agent.db</code>（成员、行为、记忆、审计全在里面）</dd>
+    <dt>触发条件</dt><dd>同一台机器上任何其他本地账户或进程（不需要管理员）。</dd>
+    <dt>影响</dt><dd>① 明文凭据可被任意本机用户读取，等于 HA / LLM / 玛丽亚只读账号的凭据全部外泄；② <code>Modify</code> 还允许改写 <code>config.json</code>，等于可以劫持服务的外部凭据指向（把 LLM 端点换成自己的）；③ 家庭行为数据与成员信息同样可读。</dd>
+    <dt>诚实边界</dt><dd>这只测到了这台 Windows 开发机上的目录。生产库在 NAS 上（见"未覆盖"），其宿主目录权限本轮无法核查；容器以 <code>USER 10001:10001</code> 运行（<code>Dockerfile</code>），bind mount 的实际权限取决于 NAS 侧配置。</dd>
+    <dt>最小修复</dt><dd>把 data 目录 ACL 收窄到"运行账户 + Administrators + SYSTEM"，去掉 <code>Authenticated Users</code> 的 Modify 与 <code>Users</code> 的 ReadAndExecute；生产侧确认容器 uid 10001 对宿主 bind mount 的实际权限，避免为了让容器能写而把目录放成 0777。</dd>
+  </dl>
+</div>
+
+<div class="f mid">
+  <span class="tag t-mid">中</span><span class="tag t-dim">安全性 · 数据落盘</span><span class="tag t-dim">稳定性</span>
+  <h3><span class="id">D11</span>备份与快照全链路明文，且从不校验可恢复性</h3>
+  <dl>
+    <dt>位置</dt><dd><code>backup.py:56-76</code>（<code>VACUUM INTO</code> 到 <code>backup_dir/ma-&lt;date&gt;.db</code>，明文整库副本；<b>不跑任何完整性校验</b>）<br><code>backup.py:102-129</code>（<code>_rotate</code> 只按文件名轮转）<br><code>store.py:765-771</code>（恢复时按 mtime 取最新，同样不校验）<br><code>deploy_nas.sh</code>（把 <code>memory_agent.db</code> 再复制一份到 <code>_backups</code> 并保留 5 份，同样是明文、不校验）</dd>
+    <dt>触发条件</dt><dd>备份任务/部署脚本正常运行即可产生，无需异常条件。</dd>
+    <dt>影响</dt><dd>① 备份介质（NAS 共享目录、部署备份目录）一旦外泄即等于整库外泄，包含成员信息、记忆文本、审计记录；② 全链路没有一处验证备份"能打开、能恢复"，恢复流程会在第一次真正需要它的时候才发现快照是坏的——而那一刻通常也来不及了；③ D01 说明这条链路的"选最新"逻辑还会优先挑到不可信的文件。</dd>
+    <dt>最小修复</dt><dd>备份落盘后立即跑 <code>PRAGMA integrity_check</code>（或至少 <code>quick_check</code>），把结果写进同目录清单/文件名，并在轮转时保留最近 N 个"校验通过"的版本；备份目录单独设权限；如需跨机保存，归档加密后再落地。</dd>
+  </dl>
+</div>
+
+<div class="f mid">
+  <span class="tag t-mid">中</span><span class="tag t-dim">性能</span><span class="tag t-dim">修复代价</span>
+  <h3><span class="id">D12</span><code>synchronous=FULL</code> 与高频小事务组合的写放大 —— 第一轮 F3 修复的确定性代价</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:652-656</code>（<code>journal_mode=WAL</code> + <code>synchronous=FULL</code> + <code>foreign_keys=ON</code>，三行连着设）<br>写入侧：<code>store.py:2207-2216</code> <code>insert_events()</code>（单批 <code>executemany</code> 后 <code>commit</code>）；<code>store.py:2518-2557</code> <code>insert_perception_event()</code>（<b>每条一次 commit</b>）</dd>
+    <dt>触发条件</dt><dd>采集/感知持续写入（每批或每条一次提交）。</dd>
+    <dt>影响</dt><dd>WAL + FULL 意味着每次提交都要对 WAL 做 fsync。在 NAS、机械盘或低端 SSD 上，写入吞吐会明显下滑（每秒可提交次数是个位到几十量级），而这条链路处理的是毫秒级事件流。<code>insert_perception_event</code> 一条一提交的写法把代价放到了最大。</dd>
+    <dt>为什么列出来而不是判成缺陷</dt><dd>这是"用性能换不损坏"的自觉取舍，且第一轮明确把它当作根因修复。写在这里是为了让它<b>被显式确认为取舍</b>，而不是被当成默认最优。</dd>
+    <dt>最小修复</dt><dd>提供配置开关（如 <code>MA_DB_SYNCHRONOUS=NORMAL|FULL</code>，默认保持 FULL）；把单条提交的写入路径按批聚合（<code>insert_perception_event</code> 可提供 <code>many()</code> 版本或由调用方攒批）；如坚持 FULL，则在文档里写明吞吐预期，避免后续误判为"性能 bug"。</dd>
+  </dl>
+</div>
+
+<div class="f mid">
+  <span class="tag t-mid">中</span><span class="tag t-dim">稳定性 · 生命周期</span><span class="tag t-dim">并发 · 潜在</span>
+  <h3><span class="id">D13</span><code>close()</code> 与 <code>connect()</code> 的交互会让「已关闭的库」静默复活，关停瞬间也可能用到已关闭的连接</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:641-658</code>（<code>connect()</code> 的快速路径：<code>if self._conn is not None: return self._conn</code>，<code>_conn</code> 为 None 时<b>无条件重建连接</b>，没有"已关闭"标志）<br><code>store.py:1980-2005</code>（<code>close()</code> 持锁把 <code>_conn</code> 置 None 后关闭连接）<br><code>runtime.py:906</code>（<code>await asyncio.to_thread(self.store.close)</code> 排在取消后台任务<b>之后</b>，但不等待已经在 <code>to_thread</code> 里跑的线程结束）</dd>
+    <dt>触发条件</dt><dd>关停瞬间仍有 <code>asyncio.to_thread(store.某方法)</code> 在跑；或任何在 <code>close()</code> 之后发生的 Store 调用（例如残留定时回调、WebUI 请求在关闭窗口内）。</dd>
+    <dt>影响</dt><dd>① <code>asyncio.to_thread</code> 的工作线程不会被 asyncio 取消：某线程已通过 <code>connect()</code> 拿到连接、尚未进入锁区时 <code>close()</code> 先把连接关掉，该线程随后在锁内对已关闭连接执行 SQL，得到 <code>ProgrammingError: Cannot operate on a closed database</code>；② 反过来，<code>close()</code> 之后的任何一次 <code>connect()</code> 会把库重新打开并重建 <code>-wal</code>/<code>-shm</code>，于是"已关闭"的 Store 悄悄复活，关闭时那次 checkpoint 的努力被绕过。</dd>
+    <dt>最小修复</dt><dd>加 <code>self._closed</code> 标志：<code>connect()</code> 在此标志为真时拒绝重连（或降级为只读）；<code>close()</code> 先把它置真再关连接。关停序列改为"停止接受新任务 → 等待在途 <code>to_thread</code> 收敛（<code>asyncio.gather</code> 已登记的任务）→ checkpoint → close"。</dd>
+  </dl>
+</div>
+
+<div class="f mid">
+  <span class="tag t-mid">中</span><span class="tag t-dim">功能性 · 数据保留</span>
+  <h3><span class="id">D14</span><code>add_agent_memory</code> 用 <code>INSERT OR REPLACE</code> 且硬编码 0/''，传入既有 <code>memory_id</code> 会静默清空那一行的信任度与反馈</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:4712-4730</code>（<code>INSERT OR REPLACE INTO agent_memories</code>，VALUES 里把 <code>trust</code>、<code>auto_promote_blocked</code>、<code>mirror_dirty</code>、<code>feedback_up</code>、<code>feedback_down</code> 硬编码为 <code>0</code>，<code>valid_to</code> 硬编码为 <code>''</code>，而 <code>feedback_question</code>/<code>feedback_comment</code> 根本不在列清单里）</dd>
+    <dt>触发条件</dt><dd>任何以<b>既有</b> <code>memory_id</code> 调用 <code>add_agent_memory</code> 的路径——该方法把 <code>memory_id</code> 作为可选参数对外暴露（<code>store.py:4682-4694</code> 签名）。</dd>
+    <dt>影响</dt><dd>一旦有人传入已存在的 id，<code>OR REPLACE</code> 会删掉原行再插入：信任度、👍/👎 计数、反馈问题与评论、<code>valid_to</code> 被静默清零，且不会有任何提示。这与第一轮修掉的"密钥/用户名字段被空值意外清空"是同一类事故，只是发生在数据库层。</dd>
+    <dt>当前是否正在发生</dt><dd><b>未在发生。</b> 已逐一核对 <code>src</code> 内全部 7 个调用点——<code>agent_memory.py:223/290/323/344/369</code>、<code>mcp_server.py:2040/2147</code>、<code>runtime.py:385</code>——都不传 <code>memory_id</code>（日记类调用只传 8 个位置参数）。所以这是<b>潜在缺陷</b>，不是线上事故。</dd>
+    <dt>最小修复</dt><dd>改成 <code>INSERT ... ON CONFLICT(memory_id) DO UPDATE SET</code>（只更新文本/标签/溯源类字段）；或直接在 <code>add_agent_memory</code> 里禁止传 <code>memory_id</code>，把"更新既有行"这条路收敛到 <code>merge_update_agent_memory</code>（该方法已被 <code>agent_memory.py:337,356</code> 正常使用）。</dd>
+  </dl>
+</div>
+
+<div class="f mid">
+  <span class="tag t-mid">中</span><span class="tag t-dim">并发</span><span class="tag t-dim">疑似 · 需验证</span><span class="tag t-dim">HA 数据源</span>
+  <h3><span class="id">D15</span><code>HADBClient</code> 的单条 pymysql 连接在多线程中被锁外使用</h3>
+  <dl>
+    <dt>位置</dt><dd><code>ha_db.py:100-104</code>（<code>_get_conn()</code> 只在<b>建连握手</b>时用 <code>self._lock</code>）<br><code>ha_db.py:229-251</code>（<code>get_history()</code>：<code>cursor = conn.cursor()</code> → <code>execute</code> → <code>fetchall</code> → <code>close</code>，<b>全程在锁外</b>）</dd>
+    <dt>触发条件</dt><dd>并发调用 <code>get_history</code> / 其它查询方法（服务侧通过 <code>asyncio.to_thread</code> 调用，天然多线程），且调度器允许两个调用重叠。</dd>
+    <dt>影响</dt><dd>pymysql 连接不是线程安全的：两个线程同时对同一连接 execute，会交错读写协议包，典型表现为结果错乱、<code>Packet sequence number wrong</code>、或连接被一方 close 后另一方继续用。影响的是 HA MariaDB（外部只读数据源），<b>不是 memory_agent.db</b> 本身，所以不改变本地库的稳定性结论。</dd>
+    <dt>为什么标"疑似"</dt><dd>是否真的并发取决于采集调度是否串行化，本轮没有运行期采样来证明重叠发生过；代码结构上确实存在这个窗口。</dd>
+    <dt>最小修复</dt><dd>把 execute/fetch 也纳入 <code>self._lock</code>；或改成"每线程一个连接"的连接池。<code>ha_db_query_timeout</code>（<code>config.py:196</code>）已存在，可作为持锁上限的参考。</dd>
+  </dl>
+</div>
+
+<h3 style="color:var(--low)">低（5 条）</h3>
+
+<div class="f low">
+  <span class="tag t-low">低</span><span class="tag t-dim">稳定性 · 潜在</span>
+  <h3><span class="id">D16</span>22 处直接使用 <code>self._conn</code> 而不先 <code>connect()</code>：连接为 None 时抛 <code>AttributeError</code></h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:1784,1792,1813,1828,1833,1836,1842,1878,1891,1919,1935,1940,1966,1977,2031,2036,2044,2055,2065,2070,2083,2089</code> —— <code>logical_devices</code> / <code>device_health</code> / <code>arena_*</code> 三块的读写全部直接抓 <code>self._conn</code>，不像其它方法那样先 <code>conn = self.connect()</code>。</dd>
+    <dt>触发条件</dt><dd>启动顺序变化，或 <code>close()</code>（<code>store.py:1984</code>）与恢复路径（<code>store.py:782</code>）把 <code>_conn</code> 置 None 之后仍调用这些方法（例如 <code>get_device_health</code> 被身份层或 MCP 工具在关闭窗口内调用）。</dd>
+    <dt>影响</dt><dd>得到 <code>AttributeError: 'NoneType' object has no attribute 'execute'</code>，报错点离真正原因很远，排查成本高。当前靠「<code>init_schema</code> 一定在启动时先跑」这一隐式保证兜住，所以线上通常不出现。</dd>
+    <dt>最小修复</dt><dd>这些方法统一改为 <code>conn = self.connect()</code>，或加一个 <code>_require_conn()</code> 助手集中处理。<b>注意</b>：锁纪律静态门（<code>tests/test_vma_r6_db_lock_discipline.py:42-49</code>）把 <code>._conn</code> 视为合法的「共享连接持有者」，因此它看不见这个问题。</dd>
+  </dl>
+</div>
+
+<div class="f low">
+  <span class="tag t-low">低</span><span class="tag t-dim">稳定性 · 护栏盲区</span>
+  <h3><span class="id">D17</span><code>_db()</code> 提供的不是事务保护，而静态门禁对「conn 作为参数传递」不可见</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:671-674</code>（<code>_db()</code>：只加锁 + 取连接，异常不回滚、退出不提交——与 <code>transaction()</code>（<code>store.py:676-698</code>）语义完全不同）<br><code>store.py:837-853</code>（<code>_fts_index_healthy</code>）与 <code>store.py:855-887</code>（<code>_rebuild_agent_memory_fts</code>）：都接受外部传入的 <code>conn</code> 并自带 commit/rollback<br><code>tests/test_vma_r6_db_lock_discipline.py:68-92</code>（静态门的判定只覆盖「同一函数内是否有 <code>with</code> 锁块」）</dd>
+    <dt>触发条件</dt><dd>将来任何一次「顺手把写操作放进 <code>with self._db()</code>」，或把 FTS 辅助方法挪到锁区之外调用。</dd>
+    <dt>影响</dt><dd>写操作会留在隐式事务里，异常时既不回滚也没人提交，最终可能被另一个线程的 <code>commit</code> 一并提交——正是第六轮审计 CRITICAL-2 描述的那类事故，而这两条路径上护栏不生效。</dd>
+    <dt>当前是否成立</dt><dd><b>不成立（现状是好的）。</b> 已逐处核对：所有 <code>_db()</code> 调用点（<code>store.py:705,737,4665,4671,4785,4864,4888,2743,2779,2815,2839,3474</code>）都是纯 SELECT/PRAGMA；两个 FTS 辅助方法的调用点（<code>store.py:1033,1036</code>）都在 <code>init_schema</code> 的 <code>with self._lock</code> 内。</dd>
+    <dt>最小修复</dt><dd>给 <code>_db()</code> 补 <code>except: conn.rollback(); raise</code>（与 <code>transaction()</code> 对齐，或明确把 <code>_db()</code> 标注为「只读专用」）；把 FTS 辅助方法改成明确的「必须在锁内调用」，并在入口加 <code>self._lock._is_owned()</code> 断言；静态门增加「conn 形参若来自 <code>*.connect()</code> 则须在被调方内验证」的规则。</dd>
+  </dl>
+</div>
+
+<div class="f low">
+  <span class="tag t-low">低</span><span class="tag t-dim">安全性 · 疑似</span>
+  <h3><span class="id">D18</span>MCP 审计表落库的异常文本未脱敏（截断 500 字后直接入库）</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:1716-1722</code>（<code>INSERT INTO mcp_audit(... error)</code>，<code>error</code> 只做 <code>(error or "")[:500]</code> 截断）；读取侧 <code>store.py:1727-1752</code>（<code>list_mcp_audit</code>，保留 30 天）</dd>
+    <dt>触发条件</dt><dd>被审计的 MCP 工具抛出异常，且异常消息里含 <code>://user:pass@host</code>、<code>token=...</code>、<code>api_key=...</code> 之类的串（HTTP 客户端异常常带完整 URL）。</dd>
+    <dt>影响</dt><dd>敏感串进入审计表并通过 <code>list_mcp_audit</code> / WebUI 可见，保留 30 天。写入路径的错误处理本身是好的（旁路失败不影响主链路，异常被吞并打印）。</dd>
+    <dt>为什么标「疑似」</dt><dd>需要上游异常文本样本才能确认实际会不会带凭据；本轮没有运行期样本，属结构性风险而非已证实事件。</dd>
+    <dt>最小修复</dt><dd>入库前套一层脱敏（复用 <code>store.py:4908</code> 的 <code>_sanitize_pii</code>，或加专用正则去掉 URL 里的 userinfo 与 <code>token/key/secret/password</code> 参数）。</dd>
+  </dl>
+</div>
+
+<div class="f low">
+  <span class="tag t-low">低</span><span class="tag t-dim">功能性 · 结构一致性</span>
+  <h3><span class="id">D19</span>列级 <code>UNIQUE</code> 与命名唯一索引造成新旧库结构不一致，并留着一条永远匹配不到的 <code>DROP INDEX</code></h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:292</code>（新库走 <code>event_id TEXT UNIQUE</code>，SQLite 自动生成 <code>sqlite_autoindex_perception_events_1</code>）<br><code>store.py:977-987</code>（迁移库建命名索引 <code>idx_perception_events_event_id</code>，随后 <code>DROP INDEX IF EXISTS idx_pe_event_id</code>）<br><code>store.py:303-304</code> 的注释仍把 <code>idx_pe_event_id</code> 当作「schema 里的同名非唯一索引」，而该索引在当前 <code>_SCHEMA_SQL</code> 里已不存在</dd>
+    <dt>影响</dt><dd>同一份代码在新库与老库上产生<b>不同名字</b>的唯一索引，依赖索引名的排查脚本/文档会失准；那条 <code>DROP INDEX IF EXISTS</code> 在所有库里都是空操作（无害，但会让人误以为还有对应索引）。</dd>
+    <dt>最小修复</dt><dd>统一为「列上不写 UNIQUE + 显式命名唯一索引」（迁移友好且名字稳定），并删掉已失效的 <code>DROP INDEX</code> 与相关注释。</dd>
+  </dl>
+</div>
+
+<div class="f low">
+  <span class="tag t-low">低</span><span class="tag t-dim">安全性 · 接口面</span>
+  <h3><span class="id">D20</span><code>db_query(sql, params)</code> 是数据层唯一允许任意 SQL 的公开方法</h3>
+  <dl>
+    <dt>位置</dt><dd><code>store.py:700-708</code>；唯一调用方 <code>insights/repository.py:117-119</code>（<code>_execute()</code> 收敛为「唯一 SQL 出口」）</dd>
+    <dt>触发条件</dt><dd>未来新增调用方把用户输入拼进 <code>sql</code> 字符串。</dd>
+    <dt>影响</dt><dd>当前无风险（调用方全部使用 qmark 占位符，本轮已逐处核对），但它是整个数据层里唯一的裸 SQL 入口，缺少「禁止拼接」的硬约束。</dd>
+    <dt>最小修复</dt><dd>改为模块内私有（<code>_db_query</code>）只对 <code>insights</code> 暴露，或在 docstring 明确「禁止字符串拼接」并把它加入现有 AST 静态门禁的检查项。</dd>
+  </dl>
+</div>
+
+<h2>三、已核实为误报或不成立<span class="n">7 项</span></h2>
+
+<table>
+  <thead><tr><th>候选问题</th><th>核实结论</th><th>证据</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>SQL 注入（表名/列名/ORDER BY/LIMIT 拼接）</td>
+      <td><span class="tag t-ok">不成立</span>未发现任何可利用点。逐类核对完毕：<br>· <code>_filter_sql</code> 只生成 <code>?</code> 占位符，值全部走参数绑定<br>· ORDER BY 方向被收敛成 <code>ASC</code>/<code>DESC</code> 二选一<br>· <code>_add_in/_add_not_in</code> 的列名是硬编码字面量<br>· FTS 查询把用户输入包成 phrase 并转义内部双引号<br>· 所有 f-string SQL 的插值来自硬编码元组或白名单列集合<br>· 备份路径注入已在上一轮修掉（改为参数绑定 + 引号/NUL 校验）</td>
+      <td><code>store.py:4018-4047</code>、<code>store.py:4067</code>、<code>store.py:4199</code>、<code>insights/repository.py:144-164,317</code>、<code>store.py:4863</code>、<code>store.py:865,940,959,1042,1286,1293,3792,4558</code>、<code>store.py:3771-3774</code>（update_member 白名单）、<code>backup.py:64-73</code></td>
+    </tr>
+    <tr>
+      <td>第一轮高危 #1：周期 checkpoint 未持存储层锁</td>
+      <td><span class="tag t-ok">确认已修复</span>新增 <code>Store.checkpoint()</code> 并在 <code>self._lock</code> 内执行；周期任务不再自行 <code>connect()</code>。<br><span class="tag t-high">残留</span>见 D03（失败仍静默）</td>
+      <td>提交 <code>1eafa85</code>；<code>store.py:660-668</code>、<code>runtime.py:409</code>（修复前是内联 <code>_ckpt()</code> 直接用 <code>connect()</code>，diff 已逐行核对）</td>
+    </tr>
+    <tr>
+      <td>第一轮高危 #2：<code>close()</code> 整体 <code>pass</code>、异常路径下不关连接</td>
+      <td><span class="tag t-ok">确认已修复</span>现为：进入临界区即把 <code>_conn</code> 置 None → <code>commit</code> → <code>wal_checkpoint(TRUNCATE)</code> → <code>finally</code> 里必定 <code>conn.close()</code>，三段各自 try/except 并记 warning。<br><span class="tag t-mid">风险转移</span>见 D13（关闭后连接被静默重建）</td>
+      <td>提交 <code>8f493a4</code>、<code>1eafa85</code>；<code>store.py:1980-2005</code></td>
+    </tr>
+    <tr>
+      <td>修复批次「密钥/用户名字段防意外清空」是否生效</td>
+      <td><span class="tag t-ok">确认生效</span>但作用面是 HTTP 配置层，不是数据库层：空字符串视为「用户没改」而保持原值，显式清空需传 <code>__CLEAR__</code> 哨兵；覆盖 SECRET_FIELDS + 4 个用户名键。<br><span class="tag t-mid">数据库侧同类风险单独成立</span>见 D14</td>
+      <td>提交 <code>0e51441</code>；<code>api/config_routes.py:66-76</code>（<code>EMPTY_PRESERVE_FIELDS</code>、<code>CLEAR_SENTINEL</code>）、<code>:248-262</code></td>
+    </tr>
+    <tr>
+      <td>LIKE 通配符跨成员检索（<code>%</code>/<code>_</code> 未转义）</td>
+      <td><span class="tag t-ok">不成立</span>已有统一转义助手，仓库内 3 处 LIKE 全部带 <code>ESCAPE '\'</code></td>
+      <td><code>store.py:568-571</code>（<code>_escape_like</code>）、使用点 <code>store.py:3477</code>、<code>store.py:5038</code>、<code>store.py:5075</code>（常量匹配）</td>
+    </tr>
+    <tr>
+      <td>幂等键 TTL 口径按天存导致小时级 TTL 塌成一天（第六轮 M-1）</td>
+      <td><span class="tag t-ok">不成立</span>已有一致化迁移 UPDATE，比较口径统一为完整时间戳；<code>IDEMPOTENCY_TS_FMT</code> 常量也写明口径</td>
+      <td><code>store.py:550-551</code>、<code>store.py:1454-1460</code>、占位/完成/释放三段逻辑 <code>store.py:3185-3258</code></td>
+    </tr>
+    <tr>
+      <td>FTS5 外部内容表「整片索引丢失仍返回主表行数」导致旧守卫永不成立</td>
+      <td><span class="tag t-ok">不成立</span>判据已换成 FTS5 自身的 <code>integrity-check</code>，不健康时彻底重建并无条件 <code>rebuild</code>，重建后还会复检</td>
+      <td><code>store.py:837-853</code>（<code>_fts_index_healthy</code>）、<code>store.py:855-887</code>（<code>_rebuild_agent_memory_fts</code>）、<code>store.py:1033-1038</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>四、本次未覆盖的部分<span class="n">必须补测的清单</span></h2>
+
+<ol>
+  <li><b>生产库本体的所有实况核查。</b> 本轮代码来自本机 <code>E:\NAS\memory-agent</code>，但<b>生产不在这台机器上</b>：本机没有 <code>docker</code> 命令，本机 IP 是 <code>192.168.2.201</code>，而 <code>docker-compose.yml</code> 绑定 <code>192.168.2.200:8086</code>；按 <code>deploy_nas.sh</code>，真正的部署目录是 NAS 上的 <code>/vol1/1000/docker/memory-agent</code>（compose 把 <code>./data:/data</code> 映射进容器）。因此以下项目<b>全部未核查</b>：生产库体积与 <code>-wal</code>/<code>-shm</code> 实况、<code>PRAGMA journal_mode / synchronous / integrity_check</code> 的真实取值、生产目录权限、以及 checkpoint 在真实并发下的 busy 次数。</li>
+  <li><b>生产侧磁盘剩余空间。</b> 只测到这台 Windows 机：C: 总 231.9 GB / 剩 <b>13.5 GB（5.8%）</b>；E: 总 93.1 GB / 剩 59.6 GB（64%）；另有 D:/F: 两卷。<b>NAS 卷的剩余空间未知</b>——而数据目录恰恰在生产侧，这一项必须补测（D02 的严重性直接取决于它）。</li>
+  <li><b>运行期验证一律未做</b>（按只读边界要求，不跑测试、不启服务、不做压测）。因此属于代码推断而非实测的结论已在条目内逐条标注，主要是：D03 的「TRUNCATE 被 busy 挡下」概率与频次、D07 的实际锁等待时长、D12 的实际写入吞吐下降幅度、D15 的并发重叠是否真实发生、D18 的异常文本是否真的带凭据。</li>
+  <li><b>未精读的大文件。</b> <code>mcp_server.py</code>（144 KB）、<code>agent_memory.py</code>、<code>tool_schema.py</code>（116 KB）、<code>vision_service.py</code>、<code>app.py</code> 全文未逐行读；本轮只核对了它们与 Store 的调用点（例如 <code>add_agent_memory</code> 的 7 个调用点全部逐一确认不传 <code>memory_id</code>）以及锁纪律静态门的通过情况。若这些文件里有绕开 Store 直接建连的路径，本轮不会发现。</li>
+  <li><b>部署与 CI 的一手核对范围。</b> <code>docker-compose.yml</code>、<code>Dockerfile</code>、<code>deploy_nas.sh</code>、<code>install.sh</code>、<code>gates.sh</code>、<code>Caddyfile</code>、<code>.github/workflows/{ci,gates}.yml</code>、<code>config.example.json</code>、<code>pytest.ini</code>、<code>.gates.toml</code> 已读完：<b>CI 不触碰数据库配置</b>（只跑 pytest + AST 门禁，且 CI 里 <code>JWT_SECRET</code> 用的是明示的测试值）；<code>nodered/water_purifier_flow.json</code> 与数据库无关（净水器流程，无 DB 节点）。<b>未核对</b>：NAS 上的 <code>docker-compose.override.yml</code>（本机不存在，返回 False）、以及宿主 NAS 的 Docker/卷配置。</li>
+  <li><b>密钥与证书的实际内容。</b> 按安全边界，<code>.env</code>、<code>certs/</code>、<code>*.key/*.pem</code>、<code>config.json</code> 的内容<b>一律未读取</b>（仅记录了它们存在、以及目录 ACL）。因此本报告不对密钥强度、证书有效期、以及 <code>config.json</code> 内明文密钥的实际范围作任何断言——D10 的结论只基于文件 ACL 与代码里的字段清单。</li>
+  <li><b>HA MariaDB 与 Chroma。</b> 两者都在本次数据层审计范围之外。仅附带记录一处 HA 客户端并发观察（D15）；Chroma 侧未看。</li>
+  <li><b>旧库的完整结构快照。</b> 只对陈旧副本做了头部级只读探查（未跑 <code>integrity_check</code>，因为它是 8/15 的旧结构、对当前版本无结论价值，且设备上重读 138 MB 代价高）。</li>
+</ol>
+
+<h2>五、附录：覆盖面与自证<span class="n">为什么这不是「抽读」</span></h2>
+
+<h3>5.1 完整读取的数据层文件</h3>
+<ul>
+  <li><b>核心存储层</b>：<code>store.py</code>（5 550 行，含 <code>_SCHEMA_SQL</code> 全量 DDL、191 个方法、全部索引/视图/触发器定义与全部迁移块）、<code>runtime.py</code>（保留清理、WAL checkpoint、启动/关停序列、各常驻任务与 Store 的交互）、<code>backup.py</code>（全文 131 行）。</li>
+  <li><b>数据源与仓储</b>：<code>ha_db.py</code>（HA MariaDB 只读客户端全文）、<code>insights/repository.py</code>（SQL 构造与执行出口）、<code>history.py</code>、<code>candidate_promotion.py</code>、<code>config.py</code>（DB 路径/备份/密钥字段清单与持久化）、<code>app.py</code>、<code>day_bounds.py</code>、<code>logging_setup.py</code>、<code>src/memory_agent/sql/vMA-1.3_unified_events_view.sql</code>。</li>
+  <li><b>凭据与鉴权面（为安全性维度）</b>：<code>mcp_tokens.py</code>、<code>app_tokens.py</code>、<code>service_tokens.py</code>、<code>acp_auth.py</code>、<code>mcp_auth.py</code>、<code>auth.py</code>、<code>house_time.py</code>、<code>api/deps.py</code>。</li>
+  <li><b>维护脚本</b>：<code>scripts/db_health_check.py</code>、<code>db_integrity_check.py</code>、<code>db_stats.py</code>、<code>reindex_and_cleanup.py</code>、<code>rebuild_agent_memories_table.py</code>、<code>fix_empty_memory_id.py</code>、<code>delete_empty_memory_id.py</code>、<code>pii_backfill_r2.py</code>、<code>verify_unified_view.py</code> 的全文与设备侧连接点普查。</li>
+  <li><b>数据层测试</b>：<code>test_vma_r6_db_lock_discipline.py</code>、<code>test_db_purge_and_indexes.py</code>、<code>test_store_fts_selfheal.py</code>、<code>test_db_integrity_check_mode.py</code>、<code>test_unified_view.py</code>、<code>test_unified_events_view.py</code>、<code>test_p1_4_persons_serialization.py</code>、<code>test_p1_5_like_escape.py</code>、<code>test_p1_7_indexes_audit_async.py</code>。</li>
+  <li><b>运维面</b>：<code>docker-compose.yml</code>、<code>Dockerfile</code>、<code>deploy_nas.sh</code>、<code>install.sh</code>、<code>gates.sh</code>、<code>Caddyfile</code>、<code>.github/workflows/{ci,gates}.yml</code>、<code>config.example.json</code>、<code>pytest.ini</code>、<code>.gates.toml</code>、<code>nodered/water_purifier_flow.json</code>。</li>
+</ul>
+
+<h3>5.2 语义行普查（不靠抽读的四项证明）</h3>
+<table>
+  <thead><tr><th>普查项</th><th>做法</th><th>结果</th></tr></thead>
+  <tbody>
+    <tr><td><b>锁区覆盖分析</b></td><td>对 <code>store.py</code> 做缩进感知的区间计算：所有 <code>.execute/.executemany/.commit/.rollback</code> 是否落在 <code>with self._lock / _db() / transaction()</code> 块内</td><td>5 550 行中只有 <b>15 行</b>落在锁区之外，已逐行归因（新连接的校验查询、被锁内调用的 FTS helper 与静态 helper 的形参、跨函数调用点），<b>无一条构成真实的锁外使用</b></td></tr>
+    <tr><td><b>动态 SQL 普查</b></td><td>正则扫全仓 <code>execute/executescript</code> 附近的 f-string / <code>.format()</code> / <code>%</code> 拼接</td><td>命中 15 处，逐处核对插值来源：全部是硬编码元组、白名单列集合或占位符生成器 → <b>注入不成立</b></td></tr>
+    <tr><td><b>PRAGMA 普查</b></td><td>扫 <code>src</code> + <code>scripts</code> 全部 PRAGMA 语句</td><td>仅 5 类：<code>journal_mode</code> / <code>synchronous</code> / <code>foreign_keys</code> / <code>wal_checkpoint</code> / <code>table_info</code> / <code>integrity_check</code>+<code>quick_check</code>。<b>全仓无 <code>busy_timeout</code>、无 <code>wal_autocheckpoint</code> 调整</b>——这是 D03/D07 的判断依据</td></tr>
+    <tr><td><b>无界查询与 N+1 普查</b></td><td>按方法粒度：列出「含 SELECT + 调 fetchall 但正文无 LIMIT」的方法（28 个）；再用 AST 找「循环体内执行 SQL」的位置</td><td>28 个逐条判读（多数是小表或聚合），确认需要处理的收敛为 D04 的 4 处；循环内 SQL 命中 18 处，其中只有 <code>split_logical_device</code> 构成事务边界问题（D05），其余是迁移循环、批量插入或单次聚合</td></tr>
+    <tr><td><b>连接点普查</b></td><td>全仓检索 <code>sqlite3.connect</code>，逐个核对连接参数</td><td><code>src</code> 内 2 处（<code>store.py:650</code> 主连接、<code>store.py:796</code> 恢复期校验连接）；<code>scripts</code> 内 13 处维护脚本连接，全部默认 timeout、无 PRAGMA → D07 的证据</td></tr>
+  </tbody>
+</table>
+
+<h3>5.3 版本与提交核对</h3>
+<ul>
+  <li>审计对象为 <code>main</code> 分支 <code>1eafa85</code>（2026-10-10 09:18 +0800）。工作区<b>不是干净状态</b>（16 项改动），但改动全部落在 <code>doc/审计报告/**</code> 与 <code>.qoder/worktrees/*</code>：<b>没有任何 <code>src/</code> 下的未提交改动</b>，因此本次代码结论对应当前 <code>HEAD</code>。</li>
+  <li>本轮逐行核对了 4 个与数据层相关的修复提交的完整 diff：<code>1eafa85</code>（F1/F2/F3/F7）、<code>8f493a4</code>（close 的 warning 日志）、<code>e85febd</code>（synchronous=FULL + 关闭前 checkpoint + 每小时 checkpoint）、<code>0e51441</code>（密钥/用户名字段防意外清空）。</li>
+</ul>
+
+<footer>
+  报告生成于 2026-10-10 · 审计范围：memory-agent 数据层（数据库访问、schema、迁移、备份恢复、维护脚本、并发与权限）<br>
+  全部结论基于对 <code>main@1eafa85</code> 源码的完整读取与设备侧只读探查；未修改、未删除、未移动任何项目文件，未启动或停止任何服务，未安装依赖。<br>
+  标注为「疑似 / 需进一步验证」的条目（D15、D18）以及「未覆盖」一节的缺口，请在补测后并入下一轮结论。
+</footer>
+
+
+</div>
+</body>
+</html>

@@ -56,35 +56,28 @@ async def get_version(request: Request):
 
 
 async def check_update(request: Request):
-    """比对本地 HEAD 与远端分支，返回是否有更新。admin only。"""
+    """读取宿主预检脚本写的更新预览文件。admin only。"""
     user, err = require_admin(request)
     if err:
         return err
-    import asyncio
-    import subprocess
+    preview_path = os.path.join(DATA_DIR, ".update_available.json")
     try:
-        cfg = get_config()
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)})
-    repo = (cfg.update_repo_url or DEFAULT_REPO).strip()
-    branch = (cfg.update_branch or DEFAULT_BRANCH).strip()
-    try:
-        remote_raw = await asyncio.to_thread(
-            subprocess.run,
-            ["git", "ls-remote", repo, f"refs/heads/{branch}"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if not remote_raw.stdout.strip():
-            return JSONResponse(
-                {"ok": False, "error": "无法获取远端引用，检查仓库地址或网络连通性"}
-            )
-        remote_commit = remote_raw.stdout.strip().split()[0]
+        if not os.path.isfile(preview_path):
+            return JSONResponse({
+                "ok": True,
+                "has_update": False,
+                "message": "宿主预检脚本尚未运行，请等待 5 分钟后重试",
+            })
+        with open(preview_path, encoding="utf-8") as f:
+            preview = json.load(f)
         return JSONResponse({
             "ok": True,
-            "has_update": True,  # 容器内不跑 git，无法比 local commit，一律提示可更新
-            "latest_commit": remote_commit[:12],
-            "branch": branch,
-            "repo": repo,
+            "has_update": preview.get("has_update", False),
+            "local_commit": preview.get("local_commit", ""),
+            "local_tag": preview.get("local_tag", ""),
+            "latest_commit": preview.get("remote_commit", ""),
+            "changelog": preview.get("changelog", []),
+            "checked_at": preview.get("checked_at", ""),
         })
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)})

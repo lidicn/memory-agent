@@ -262,7 +262,7 @@ const TPL = `
       ${resultBox('db')}
     </div>
 
-    <!-- 系统 / 在线更新（宿主 sidecar 模式） -->
+    <!-- 系统更新（宿主 sidecar 模式） -->
     <div class="card p-5">
       <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-2.5">
@@ -271,41 +271,79 @@ const TPL = `
           </div>
           <div>
             <h3 class="font-semibold">系统更新</h3>
-            <p class="text-[11px] text-txt-3" x-text="'当前版本：' + (sysVer.version || '未知')"></p>
+            <p class="text-[11px] text-txt-3">
+              当前版本：<span class="font-mono text-txt-2" x-text="sysVer.version || '未知'"></span>
+              <span x-show="updateInfo && updateInfo.has_update" class="ml-2">
+                → 新版本：<span class="font-mono text-ok" x-text="updateInfo.latest_commit || ''"></span>
+              </span>
+            </p>
           </div>
         </div>
-        <button class="btn-ghost btn-xs" @click="checkUpdate()" :disabled="updating || checking">
+        <button class="btn-ghost btn-xs" @click="checkUpdate()" :disabled="checking">
           <span x-show="checking" class="spinner"></span><span>检查更新</span>
         </button>
       </div>
-      <div class="text-[11px] text-txt-2 space-y-1 mb-3">
-        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">版本</span><span class="font-mono" x-text="sysVer.version || '—'"></span></div>
-        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">分支</span><span class="font-mono truncate" x-text="sysVer.update_branch || 'main'"></span></div>
-      </div>
-      <template x-if="updateInfo && updateInfo.has_update === true">
-        <div class="mt-2 rounded-lg bg-ok/10 border border-ok/25 px-3 py-2 text-[11px] text-ok">
-          有新版本可更新（远端 <span class="font-mono" x-text="updateInfo.latest_commit"></span>）
-        </div>
-      </template>
+
+      <!-- 无更新 -->
       <template x-if="updateInfo && updateInfo.has_update === false">
-        <div class="mt-2 rounded-lg bg-white/5 px-3 py-2 text-[11px] text-txt-3">已是最新版本</div>
+        <div class="rounded-lg bg-white/5 px-3 py-2 text-[11px] text-txt-3">
+          已是最新版本 <span class="font-mono" x-text="updateInfo.local_commit || ''"></span>
+        </div>
       </template>
+
+      <!-- 有更新：显示 changelog -->
+      <template x-if="updateInfo && updateInfo.has_update">
+        <div class="rounded-lg bg-ok/5 border border-ok/20 p-3 mb-3">
+          <div class="text-[11px] font-semibold text-ok mb-2 flex items-center gap-1.5">
+            <span>✓ 发现新版本</span>
+            <span class="text-txt-3 font-normal" x-text="(updateInfo.changelog||[]).length + ' 条变更'"></span>
+          </div>
+          <div class="space-y-1 max-h-40 overflow-y-auto">
+            <template x-for="c in (updateInfo.changelog || [])" :key="c">
+              <div class="text-[11px] text-txt-2 flex gap-2">
+                <span class="text-txt-3 font-mono shrink-0" x-text="c.slice(0,7)"></span>
+                <span class="flex-1" x-text="c.slice(8)"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- 更新进行中：进度动画 -->
       <template x-if="updatePending">
-        <div class="mt-2 rounded-lg bg-brand/10 border border-brand/25 px-3 py-2 text-[11px] text-brand">
-          更新请求已提交，宿主脚本将在约1分钟内执行 git pull + 自动重启…
+        <div class="rounded-lg bg-brand/10 border border-brand/25 p-3 mb-3">
+          <div class="flex items-center gap-2 text-[11px] text-brand">
+            <span class="spinner"></span>
+            <span>更新请求已提交，宿主脚本正在执行（拉取代码 → 语法检查 → 重启）…</span>
+          </div>
+          <div class="mt-2 h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div class="h-full bg-brand rounded-full animate-pulse" style="width: 70%"></div>
+          </div>
         </div>
       </template>
+
+      <!-- 更新结果 -->
       <template x-if="updateResult">
-        <div class="mt-2 rounded-lg px-3 py-2 text-[11px] border"
+        <div class="rounded-lg border p-3 mb-3 text-[11px]"
              :class="updateResult.ok ? 'bg-ok/10 border-ok/25 text-ok' : 'bg-danger/10 border-danger/25 text-danger'">
-          <span x-text="updateResult.ok ? '✓ 更新成功' : '✕ 更新失败: ' + (updateResult.error || '')"></span>
-          <span x-show="updateResult.to" class="ml-1 font-mono" x-text="'→ ' + updateResult.to"></span>
+          <div class="font-semibold" x-text="updateResult.ok ? '✓ 更新成功' : '✕ 更新失败'"></div>
+          <div class="mt-1 font-mono" x-show="updateResult.from_tag" x-text="(updateResult.from_tag||'') + ' → ' + (updateResult.to_tag||'')"></div>
+          <div x-show="!updateResult.ok && updateResult.error" class="mt-1" x-text="updateResult.error"></div>
+          <template x-if="updateResult.ok && (updateResult.changelog||[]).length">
+            <div class="mt-2 pt-2 border-t border-white/10 max-h-32 overflow-y-auto space-y-1">
+              <template x-for="c in updateResult.changelog" :key="c">
+                <div class="flex gap-2"><span class="text-txt-3 font-mono" x-text="c.slice(0,7)"></span><span x-text="c.slice(8)"></span></div>
+              </template>
+            </div>
+          </template>
         </div>
       </template>
-      <div class="mt-4">
-        <button class="btn-primary w-full" @click="doUpdate()" :disabled="!updateInfo || !updateInfo.has_update || updating || updatePending"
-                x-text="updating ? '提交中…' : (updatePending ? '等待宿主执行…' : '更新到最新版')"></button>
-        <p class="hint mt-2">提交后由宿主脚本自动拉取最新代码并重启容器；不触碰 /data 数据。</p>
+
+      <div class="mt-2">
+        <button class="btn-primary w-full" @click="doUpdate()"
+                :disabled="!updateInfo || !updateInfo.has_update || updating || updatePending"
+                x-text="updating ? '提交中…' : (updatePending ? '正在更新…' : '更新到最新版')"></button>
+        <p class="hint mt-2">自动拉取最新代码并重启容器，不影响数据。约1-2分钟完成。</p>
       </div>
     </div>
 

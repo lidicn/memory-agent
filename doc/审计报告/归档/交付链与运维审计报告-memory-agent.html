@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>交付链与运维审计报告 · memory-agent（第三轮）</title>
+<meta name="description" content="对 E:\NAS\memory-agent 的第三轮只读代码审计：范围覆盖部署运维脚本、Docker/compose/Caddy、CI 全量、Node-RED 流程与前端静态资源。基线 main@c83106d。共 17 条发现（高 4、中 7、低 6），另核实 5 项误报；含对第一轮 CI timeout 高危的衔接结论与建议修复顺序。">
+<style>
+  :root{--bg:#0b1120;--panel:#131826;--panel2:#1b2233;--line:#232b40;--txt:#e6edf7;--txt2:#9fb0c9;--txt3:#6b7c96;--hi:#f87171;--mid:#fbbf24;--lo:#38bdf8;--ok:#34d399;--brand:#0ea5e9;}
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#0b1120,#0e1526 60%,#0b1120);color:var(--txt);font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.7;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 22px 80px}
+  h1{font-size:26px;margin:0 0 6px}
+  h2{font-size:20px;margin:38px 0 14px;padding-left:12px;border-left:4px solid var(--brand)}
+  h3{font-size:16px;margin:22px 0 8px}
+  .sub{color:var(--txt2);font-size:13px;margin-bottom:22px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .card .k{color:var(--txt3);font-size:12px;letter-spacing:.04em}
+  .card .v{font-size:20px;font-weight:700;margin-top:4px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0}
+  code,.mono{font-family:"JetBrains Mono",Consolas,monospace;font-size:13px}
+  code{background:#0d1526;border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:#bfe3ff}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;vertical-align:top;text-align:left}
+  th{background:var(--panel2);color:var(--txt2);font-weight:600}
+  .tag{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap}
+  .t-hi{background:rgba(248,113,113,.16);color:#fca5a5;border:1px solid rgba(248,113,113,.4)}
+  .t-mid{background:rgba(251,191,36,.14);color:#fcd34d;border:1px solid rgba(251,191,36,.4)}
+  .t-lo{background:rgba(56,189,248,.14);color:#7dd3fc;border:1px solid rgba(56,189,248,.4)}
+  .t-ok{background:rgba(52,211,153,.14);color:#6ee7b7;border:1px solid rgba(52,211,153,.4)}
+  .finding{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--txt3);border-radius:10px;padding:14px 16px;margin:14px 0}
+  .finding.hi{border-left-color:var(--hi)}
+  .finding.mid{border-left-color:var(--mid)}
+  .finding.lo{border-left-color:var(--lo)}
+  .finding h3{margin:0 0 8px;font-size:15px}
+  .finding p{margin:6px 0}
+  .lbl{color:var(--txt3);font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-right:6px}
+  ul{margin:8px 0 8px 20px;padding:0}
+  li{margin:4px 0}
+  .muted{color:var(--txt2)}
+  .src{color:var(--txt3);font-size:13px}
+  .kv{font-family:"JetBrains Mono",Consolas,monospace;font-size:13px;color:#bfe3ff}
+  footer{margin-top:50px;color:var(--txt3);font-size:12px;border-top:1px solid var(--line);padding-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>交付链与运维审计报告 · memory-agent</h1>
+<div class="sub">第三轮 · 主题「交付链与运维脚本」 · 全程只读 · 设备 DESKTOP-J17LDCU（Windows） · 2026-10-10</div>
+
+<div class="cards">
+  <div class="card"><div class="k">基线提交</div><div class="v mono">c83106d</div></div>
+  <div class="card"><div class="k">分支</div><div class="v">main</div></div>
+  <div class="card"><div class="k">工作区</div><div class="v" style="color:#fcd34d">脏（有未提交）</div></div>
+  <div class="card"><div class="k">本轮发现</div><div class="v">17</div></div>
+  <div class="card"><div class="k">误报核实</div><div class="v">5</div></div>
+  <div class="card"><div class="k">严重</div><div class="v" style="color:#6ee7b7">0</div></div>
+</div>
+
+<h2>一、衔接结论</h2>
+<div class="panel">
+<p><span class="lbl">基线</span> 项目根 <code>E:\NAS\memory-agent</code>，分支 <code>main</code>，<span class="kv">git rev-parse HEAD = c83106d23ba9c8b2699cf5232b342e6338400445</span>。近 10 提交（新→旧）：<span class="mono">c83106d → 1eafa85 → 8f493a4 → e427fa1 → b2f8dc5 → e85febd → 0e51441 → 40f174c → 8a3f370 → 25d709f</span>。</p>
+<p><span class="lbl">工作区状态</span> 不干净。<code>git status --porcelain</code> 显示：2 个 <code>.qoder/worktrees/</code> 被修改；<code>doc/审计报告/</code> 下 10 个 <code>R1–R6</code>/MCP 相关 md 被删除（<code> D</code>）；另有一批未跟踪的 <code>doc/执行/</code>、<code>doc/审计报告/3期/</code> 等新增文件（<code>??</code>）。这些均属文档/工作树，不影响本轮代码结论，但基线不是「干净工作区」，据此复核结论时需注明。</p>
+<p><span class="lbl">第一轮 CI timeout 高危的结论</span> <span class="tag t-ok">推翻（已修复）</span> 第一轮判定「CI 传了 <code>--timeout=60</code>，但仓库从未声明或安装 pytest-timeout」。本轮直接读文件核实：<code>.github/workflows/ci.yml</code> 第 29 行现为 <code>pip install pytest pytest-asyncio pytest-timeout</code>，已显式安装；<code>git log -S 'pytest-timeout' -- .github/workflows/ci.yml</code> 显示该修复正是第二轮的修复提交 <code>1eafa85</code>（“F2(高): CI --timeout=60 未装 pytest-timeout → CI 安装行补上”）。因此在当前 HEAD 上，<code>--timeout=60</code> 的参数解析不会失败，<strong>第一轮那条高危不再成立</strong>。注意：仓库没有 <code>requirements*.txt</code>，依赖的唯一声明文件是 <code>pyproject.toml</code>（其 dependencies 仍<strong>不含</strong> pytest/pytest-timeout），安装靠 CI 步骤里的 pip 行兜住——这是「靠 CI 记住」而非「靠依赖声明」，属可维护性隐患（见低 L5）。</p>
+</div>
+
+<h2>二、发现清单（按严重程度排序）</h2>
+<p class="muted">本轮无「严重」级。<strong>高 4 条 / 中 7 条 / 低 6 条。</strong>同一根因已合并，未拆条凑数。凭据类问题只描述性质，不引用任何值。</p>
+
+<div style="margin:16px 0;display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+  <svg width="330" height="86" viewBox="0 0 330 86" role="img" aria-label="发现数量按严重度分布：高4 中7 低6">
+    <g font-size="12" fill="#9fb0c9" font-family="system-ui">
+      <text x="0" y="16">高</text><rect x="32" y="6" width="180" height="14" rx="4" fill="#f87171" opacity=".85"/><text x="220" y="16" fill="#e6edf7">4</text>
+      <text x="0" y="44">中</text><rect x="32" y="34" width="300" height="14" rx="4" fill="#fbbf24" opacity=".85"/><text x="338" y="44" fill="#e6edf7">7</text>
+      <text x="0" y="72">低</text><rect x="32" y="62" width="258" height="14" rx="4" fill="#38bdf8" opacity=".85"/>
+      <text x="298" y="72" fill="#e6edf7">6</text>
+    </g>
+  </svg>
+  <span class="muted src">（中 7 条的条形按同一比例绘制，数值见各条目）</span>
+</div>
+
+<h3>高（High）</h3>
+
+<div class="finding hi">
+<h3>H1 · docker-compose.yml 内嵌了硬编码的 JWT_SECRET 默认值 <span class="tag t-hi">高</span></h3>
+<p><span class="lbl">位置</span><code>docker-compose.yml:37</code> — <code>JWT_SECRET: "${JWT_SECRET:-&lt;内置默认值&gt;}"</code>（默认值长度 28、纯字母数字，本报告不引用其值）。</p>
+<p><span class="lbl">触发条件</span> 部署方的 <code>.env</code> 未设置 <code>JWT_SECRET</code> 时，compose 变量插值取该内置默认值，容器以这个<strong>已随公开仓库发布</strong>的固定密钥签发/校验会话令牌。</p>
+<p><span class="lbl">实际影响</span> 任何拿到仓库的人都能用同一密钥伪造合法 JWT，绕过认证拿到管理员面（服务把 JWT 作为 WebUI 会话凭据）。<code>install.sh:35-44</code> 只在不存 <code>.env</code> 时复制 <code>.env.example</code>，而 <code>.env.example:32</code> 的 <code>JWT_SECRET</code> 也是一个固定占位串——两个默认值叠加，意味着「照文档装完」极易带上可预测密钥。</p>
+<p><span class="lbl">修复建议</span> 去掉默认值，改强制提供：<code>JWT_SECRET: "${JWT_SECRET:?JWT_SECRET 未设置，请写入 .env}"</code>；或在入口脚本里随机生成并落盘后再启动。同时把 <code>.env.example</code> 的占位串替换为明确的「必须生成」提示并在 install.sh 里校验非空。</p>
+</div>
+
+<div class="finding hi">
+<h3>H2 · deploy_nas.sh 的部署前核验行已经过期，在 set -e 下会中止部署 <span class="tag t-hi">高</span></h3>
+<p><span class="lbl">位置</span><code>deploy_nas.sh:56-58</code>，其中第 57 行 <code>grep -n 'repo:rw' docker-compose.yml</code>。脚本第 3 行是 <code>set -e</code>。</p>
+<p><span class="lbl">触发条件</span> 该脚本在 <code>git checkout -f origin/main -- .</code>（第 52 行）之后、<code>docker compose up -d --build</code>（第 61 行）之前执行这三条 <code>grep</code> 自检。实测 <code>findstr /C:"repo:rw" docker-compose.yml</code> 退出码为 1（无匹配）：compose 第 45 行已注明「在线更新已停用」，卷挂载里<strong>没有</strong> <code>repo:rw</code>。第 56 行 <code>grep -n git Dockerfile</code>、第 58 行 <code>grep -n vlm_endpoint_path src/memory_agent/config.py</code> 均能命中，唯独第 57 行必然失败。</p>
+<p><span class="lbl">实际影响</span> <code>set -e</code> 下失败的命令直接终止脚本。于是这条「备份→同步→核验→重建→启动」的部署链会在核验段退出，<strong>备份与代码同步已发生、但容器重建/重启永远不会执行</strong>，得到「看似部署了、实际还在跑旧镜像」的半成品状态，且退出码非零容易被当成失败而不是「卡在中途」。同一根因还波及文档：<code>README.md:175</code> 仍写「docker-compose 已配置 <code>.:/repo:rw</code>」，与 compose 现状矛盾（并入 M7）。</p>
+<p><span class="lbl">修复建议</span> 删除或改写第 57 行（该挂载已废弃），或把三条核验改成不会因无匹配而中断的写法（如 <code>grep -q ... || echo "核验未命中"</code>）；同时把「核验」整体移到 <code>up --build</code> <em>之后</em>，避免任何自检失败就把部署卡在中间态。</p>
+</div>
+
+<div class="finding hi">
+<h3>H3 · Node-RED 净水器流程解析的字段与后端返回结构完全对不上 <span class="tag t-hi">高</span></h3>
+<p><span class="lbl">位置</span> 流程侧 <code>nodered/water_purifier_flow.json:84</code>（名为「格式化报告」的 function 节点函数体）；后端侧 <code>src/memory_agent/api/nr_routes.py:207</code>。</p>
+<p><span class="lbl">触发条件</span> 流程 HTTP 节点固定 <code>POST http://192.168.2.200:8086/api/analyze/water_purifier</code>（流程第 58 行），拿到后端 JSON 后由 parse_result 解析。</p>
+<p><span class="lbl">实际影响</span> 后端 <code>analyze_water_purifier</code> 返回 <code>ok({"message":"分析完成","data": result})</code>，<code>result</code> 是<strong>列表</strong>，每项键为 <code>date / count / total_volume_l / avg_tds_in / avg_tds_out / tds_reduction_pct</code>（<code>nr_routes.py:193-206</code>）；无历史数据时返回 <code>ok({"message":"无历史数据","data":[]})</code>（第 152 行）。而流程函数读的是 <code>data.entity_id / data.start_time / data.end_time / data.total_records / data.days / data.daily</code>，并且逐日取 <code>day.total_l</code>——这些键后端一个都不返回。逐条后果：</p>
+<ul>
+  <li>表头几个字段渲染成 <code>undefined</code>（如「实体: undefined」「记录: undefined条 / undefined天」）；</li>
+  <li><code>for (const day of data.daily)</code> 因 <code>data.daily</code> 为 undefined 直接抛 <code>TypeError</code>，function 节点报错，后续 <code>ui_text_water</code>、<code>debug</code> 全部收不到结果——即题目所问的「界面调不通」；</li>
+  <li>即便容器取值不炸，单位键也错位：流程期待 <code>day.total_l</code>，后端给的是 <code>total_volume_l</code>。</li>
+</ul>
+<p><span class="lbl">修复建议</span> 二选一对齐：① 改流程函数（推荐，后端注释 <code>nr_routes.py:7</code> 明确「响应结构不许变更」），把 <code>data.daily→data.data</code>、<code>day.total_l→day.total_volume_l</code>，并删除后端不提供的 <code>entity_id/start_time/end_time/total_records/days</code> 或改为本地推导（<code>daily.length</code> / <code>数据条数=Σcount</code>）；② 或在后端补一个兼容层返回流程期望的字段。改完必须回归一遍该流。</p>
+</div>
+
+<div class="finding hi">
+<h3>H4 · 仓库内提交了真实可用的服务令牌 <span class="tag t-hi">高</span></h3>
+<p><span class="lbl">位置</span><code>scripts/test_ingest.sh:3</code>（<code>TOKEN="…"</code>）、<code>scripts/test_ingest_auth.sh:3</code>（<code>TOKEN="…"</code>）、<code>scripts/investigate_token_loss.sh:27</code>（<code>token = "…"</code>，写在内嵌 python 里用于 <code>store.verify()</code>）。本报告不引用其值。</p>
+<p><span class="lbl">触发条件</span> 这三个脚本随 <code>git</code> 入库并推到远端。</p>
+<p><span class="lbl">实际影响</span> 令牌是真实的服务令牌（用于调用 <code>/api/metrics/ingest</code> 等），且 <code>investigate_token_loss.sh</code> 里的那枚被用于验证服务端 <code>ServiceTokenStore.verify()</code>——说明它是能通过校验的活令牌。仓库一旦公开/被拉取，令牌即可被用来冒充调用方写入指标。<code>.dockerignore:12-14</code> 试图用 <code>scripts/*token*</code> 之类的规则把它们挡在镜像外，但这两条文件名不含 <code>token/secret/debug</code>，规则<strong>匹配不到</strong>；而且 Dockerfile 根本不 COPY <code>scripts/</code>（见 L4），所以那道防线两头都不成立。</p>
+<p><span class="lbl">修复建议</span> 立即在服务端<strong>吊销/轮换</strong>这三枚令牌；脚本改为从环境变量读取（<code>TOKEN="${MA_INGEST_TOKEN:?}"</code>）；把令牌从 git 历史中清除（<code>git filter-repo</code> / BFG），并加一条 pre-commit/CI 的密钥扫描（如 gitleaks）作为长期闸门。</p>
+</div>
+
+<h3>中（Medium）</h3>
+
+<div class="finding mid">
+<h3>M1 · CI 永久忽略 4 个测试文件，"绿"不覆盖它们 <span class="tag t-mid">中</span></h3>
+<p><span class="lbl">位置</span><code>.github/workflows/ci.yml:39-42</code>：<code>--ignore=tests/test_mqtt_bridge.py</code>、<code>test_ha_assist.py</code>、<code>test_quality_gates.py</code>、<code>test_vlm_gate.py</code>。</p>
+<p><span class="lbl">影响</span> 这 4 个文件在 CI 里永不执行，CI 绿灯对它们等于「没跑」。其中 <code>test_quality_gates.py</code> 正是 homesdk 门禁的入口（见 M5），双重失效：既被 <code>--ignore</code> 排除，门禁本体也已在 gates.yml 降级。</p>
+<p><span class="lbl">修复建议</span> 逐个给出忽略理由与恢复计划：能跑的补齐依赖后从 ignore 列表移出；确实依赖外部环境的，标注 <code>@pytest.mark.skipif</code> 并在 CI 里显示 skip 计数，而不是无声 <code>--ignore</code>。</p>
+</div>
+
+<div class="finding mid">
+<h3>M2 · 全新环境下 bind-mount 的 ./data 归属可能阻断首次启动 <span class="tag t-mid">中</span></h3>
+<p><span class="lbl">位置</span><code>Dockerfile:28-33</code>（<code>mkdir -p /data/... &amp;&amp; chown -R 10001:10001 /data /app</code>，随后 <code>USER 10001:10001</code>）；<code>docker-compose.yml:43</code>（<code>./data:/data</code>）；<code>install.sh</code> 全程不预处理 <code>data/</code>。</p>
+<p><span class="lbl">触发条件</span> 干净机器上首次 <code>docker compose up</code>，宿主机没有 <code>./data</code> 目录时，Docker 会自动以 <code>root:root</code> 创建它并覆盖镜像内已被 chown 的 <code>/data</code>。</p>
+<p><span class="lbl">实际影响</span> 以 uid 10001 运行的进程对挂载进来的 <code>/data</code> 可能无写权限，SQLite 建库/写 WAL 失败，服务起不来。<span class="tag t-mid">需运行时确认</span>（本机无 docker、生产在 NAS，未能实测；NAS 上能跑，可能因为该目录是手工预建并改过属主）。</p>
+<p><span class="lbl">修复建议</span> 在 install.sh / deploy 脚本里预建并赋权：<code>mkdir -p data &amp;&amp; chown -R 10001:10001 data</code>（或在 compose 里用命名卷 + 镜像内 chown）；README「一键安装」补一条「首次需确保 data/ 属主为 10001」。</p>
+</div>
+
+<div class="finding mid">
+<h3>M3 · 端口绑定写死到 192.168.2.200，"一键安装"实际不可移植 <span class="tag t-mid">中</span></h3>
+<p><span class="lbl">位置</span><code>docker-compose.yml:8</code>（<code>"192.168.2.200:8086:8000"</code>）、第 63-64 行（<code>192.168.2.200:9080:80</code> / <code>192.168.2.200:9443:443</code>）。</p>
+<p><span class="lbl">影响</span> 绑定的源地址是一个具体主机 IP。在任何<strong>不是</strong> 192.168.2.200 的机器上，<code>docker compose up</code> 会因 <code>cannot assign requested address</code> 失败——而 <code>install.sh:53</code> 却承诺 WebUI 在 <code>http://&lt;本机IP&gt;:8086</code>、<code>README.md:77</code> 同样写 <code>http://&lt;宿主机IP&gt;:8086</code>。文档承诺的「一键安装给任意人用」与 compose 的实际写法冲突。</p>
+<p><span class="lbl">修复建议</span> 改为可参数化：<code>"${BIND_IP:-0.0.0.0}:8086:8000"</code>，默认绑全部网卡；需要避开 Tailscale 冲突时再由 <code>.env</code> 覆盖。caddy 的 9080/9443 同理。</p>
+</div>
+
+<div class="finding mid">
+<h3>M4 · 两个同名 deploy_nas.sh 语义不同，且根脚本内嵌个人路径/固定 NAS 地址 <span class="tag t-mid">中</span></h3>
+<p><span class="lbl">位置</span> 根 <code>deploy_nas.sh</code>（在 NAS 上、<code>cd /vol1/1000/docker/memory-agent</code> 后 <code>git checkout -f origin/main -- .</code> 全量覆盖，第 4/48-52 行）；<code>scripts/deploy_nas.sh</code>（在 Windows 本机、<code>scp</code> 增量推送，第 13-20 行硬编码 <code>C:/Users/lidicn/.ssh/...</code>、<code>lidicn@192.168.2.200</code>、基线 <code>BASE="a879dd3"</code>）。</p>
+<p><span class="lbl">影响</span> 同名两脚本、运行位置与策略相反（一个全量覆盖、一个增量 diff），运维时极易互串；<code>scripts/deploy_nas.sh</code> 把用户名、内网 IP、SSH 私钥路径写死在仓里，既不可移植也泄露内网拓扑；基线 ref <code>a879dd3</code> 是写死的提交号（实测存在），一旦基线漂移增量范围就失真。</p>
+<p><span class="lbl">修复建议</span> 重命名以区分（如 <code>deploy_local_to_nas.sh</code> / <code>deploy_on_nas.sh</code>）；把 SSH/IP/基线改为环境变量或参数；README 里指明「在哪台机跑、用哪个」。</p>
+</div>
+
+<div class="finding mid">
+<h3>M5 · gates.sh 依赖的外部门禁 CLI 已不存在，本地门禁与 CI 脱节 <span class="tag t-mid">中</span></h3>
+<p><span class="lbl">位置</span><code>gates.sh:12</code> <code>homesdk-gates . --no-smoke</code>；<code>.gates.toml</code>、<code>.gates-baseline.txt</code> 为其输入；对照 <code>.github/workflows/gates.yml:7-8</code> 注释「原 homesdk-gates AST 规则门禁因 homesdk 尚未发布到 GitHub 而暂时降级为 compileall + pyflakes」。</p>
+<p><span class="lbl">影响</span> 仓库内没有任何脚本安装 <code>homesdk-gates</code>（<code>git grep homesdk</code> 无该命令的安装点，vendor 只含 <code>homesdk-0.3.2</code> wheel，不含 gates CLI）。直接跑 <code>gates.sh</code> 会 <code>command not found</code>；<code>.gates.toml</code>/<code>.gates-baseline.txt</code> 也就成了无法执行的孤儿台账。CI 的 AST 门禁实际已换成 <code>scripts/pyflakes_gate.sh</code>（<code>gates.yml:41-42</code>），两条门禁口径不统一。</p>
+<p><span class="lbl">修复建议</span> 要么删除 <code>gates.sh</code> + 两个 <code>.gates*</code> 文件，要么在脚本开头显式检测 <code>homesdk-gates</code> 不可用时给出清晰报错并指向 CI 的 pyflakes 门禁，避免「本地绿/CI 口径不一致」的错觉。</p>
+</div>
+
+<div class="finding mid">
+<h3>M6 · 净水器模板文档的解析口径与后端实现不一致 <span class="tag t-mid">中</span></h3>
+<p><span class="lbl">位置</span><code>templates/water_purifier_daily.md:4-6,19-27</code> vs <code>src/memory_agent/api/nr_routes.py:156-167</code>。</p>
+<p><span class="lbl">影响</span> 模板写：属性名是 <code>出水数据</code>，格式 <code>开始-结束-出水量mL-入水TDS,出水TDS</code>，且代码示例从 <code>parts[2]</code> 取 volume、从 <code>parts[3]</code> 取 <code>tds_out</code>、从 <code>parts[2].split(",")[1]</code> 取 <code>tds_in</code>。后端实际：属性名 <code>out_data</code>（<code>nr_routes.py:159</code>）、要求 <code>state == "on"</code>（第 156 行）、volume 取 <code>parts[2]</code>、TDS 对取 <code>parts[3].split(",")</code>（第 165-167 行）。按模板写的解析器拿不到 TDS（键名与切分位置都不同），会得到空/零值统计。</p>
+<p><span class="lbl">修复建议</span> 以代码为准更新模板（属性名 <code>out_data</code>、补 <code>state=on</code> 条件、按 <code>parts[3]</code> 切 TDS），或反过来在代码注释里锁定口径并让模板引用它。</p>
+</div>
+
+<div class="finding mid">
+<h3>M7 · README 把已停用的「WebUI 在线更新」描述为可用 <span class="tag t-mid">中</span></h3>
+<p><span class="lbl">位置</span><code>README.md:61</code>（特性列表）、<code>README.md:165-175</code>（专节，明确要求 <code>.:/repo:rw</code> 挂载）；对照 <code>docker-compose.yml:45</code> 注释「在线更新已停用：改由宿主 deploy_nas.sh 承担」且无 <code>/repo</code> 挂载；<code>src/memory_agent/api/system_routes.py</code> 与 <code>static/js/api.js:271-273</code> 仍保留 <code>/api/system/update*</code> 端点与 UI。</p>
+<p><span class="lbl">影响</span> 文档承诺的功能在当前部署形态下不可用（缺挂载、镜像内虽装了 git 但无仓库可 pull），用户按 README 操作会失败；也与 H2 的过期核验同源。</p>
+<p><span class="lbl">修复建议</span> 在 README 明确标注该功能「当前部署形态下停用」并指向 <code>deploy_nas.sh</code>；或恢复 <code>/repo</code> 挂载并重新启用。</p>
+</div>
+
+<h3>低（Low）</h3>
+
+<div class="finding lo">
+<h3>L1 · 版本号三处不一致 <span class="tag t-lo">低</span></h3>
+<p><span class="lbl">位置</span> 前端 <code>src/memory_agent/static/index.html:73</code> 与 <code>:120</code> 显示 <code>v2.0</code>；<code>src/memory_agent/__init__.py:4</code> <code>__version__ = "1.0.0"</code>、<code>pyproject.toml:3</code> <code>version = "1.0.0"</code>、<code>.github/release.yml:3-5</code> 为 <code>v1.0.0</code>。而 <code>/api/system/version</code>（<code>system_routes.py:65</code>）返回的是 <code>__version__</code>，即 1.0.0。UI 标题写 v2.0 会让「当前版本」判断失真。</p>
+<p><span class="lbl">修复建议</span> 以单一真源（<code>__version__</code>）为准，前端标题改为运行时取值或与之一致。</p>
+</div>
+
+<div class="finding lo">
+<h3>L2 · release.yml 不是 GitHub 认可的 release-notes 结构 <span class="tag t-lo">低</span></h3>
+<p><span class="lbl">位置</span><code>.github/release.yml:1-16</code>，内容为 <code>name/tag/prerelease/body</code>。GitHub 自动生成 release notes 的 <code>.github/release.yml</code> 规范要求顶层是 <code>changelog:</code>（含 <code>categories</code>）。该文件既不符合规范、也没有任何工作流读取它，属"以为生效实则被忽略"的模板。<code>pyproject</code>/<code>__init__</code> 的 1.0.0 与这里的 v1.0.0 一致，但同样未与 UI 的 v2.0 对齐（见 L1）。</p>
+<p><span class="lbl">修复建议</span> 改为规范的 <code>changelog.categories</code> 结构；若只是想留发布说明，移到 <code>doc/</code> 并改名为非保留路径。</p>
+</div>
+
+<div class="finding lo">
+<h3>L3 · Service Worker 预缓存清单不完整 <span class="tag t-lo">低</span></h3>
+<p><span class="lbl">位置</span><code>src/memory_agent/static/sw.js:8-29</code>。清单缺 <code>/static/js/nav.js</code>（<code>main.js:20</code> 引用的导航真源）、<code>pages/insight_jobs.js</code>、<code>pages/signal_rules.js</code>、<code>pages/user_manual.js</code>——而这些页面在 <code>main.js:9/13/18</code> 都被 import。</p>
+<p><span class="lbl">影响</span> 在线使用不受影响（fetch 走 stale-while-revalidate）；但断网时首屏之外的这几个页面可能取不到模块，离线壳不完整。SW 注册本身正常（<code>main.js:149</code> <code>register('/sw.js', {scope:'/'})</code>），路径与后端 <code>app.py:835</code> 的 <code>/sw.js</code> 路由一致，不是断链。</p>
+<p><span class="lbl">修复建议</span> 把上述 4 个文件补进 PRECACHE；或把页面清单改为与 <code>nav.js</code> 同源的单一真源生成，避免继续漏。</p>
+</div>
+
+<div class="finding lo">
+<h3>L4 · .dockerignore 的「令牌脚本」规则既无效也漏网 <span class="tag t-lo">低</span></h3>
+<p><span class="lbl">位置</span><code>.dockerignore:12-14</code>（<code>scripts/*token*</code> / <code>*secret*</code> / <code>*debug*</code>）；<code>Dockerfile:10-15</code> 只 <code>COPY src/</code>、<code>pyproject.toml</code>、<code>vendor/</code>。</p>
+<p><span class="lbl">影响</span> <code>scripts/</code> 目录根本不进镜像，这条规则对镜像内容没有作用；而真正含令牌的 <code>test_ingest.sh</code> / <code>test_ingest_auth.sh</code> 文件名不含 <code>token/secret/debug</code>，即使将来把 <code>scripts/</code> 加进 COPY 也挡不住。属于「防错了地方」的假防线（H4 的现状因此未被任何机制拦住）。</p>
+<p><span class="lbl">修复建议</span> 令牌治理应在源头（改为环境变量 + git 历史清理），不要把 Docker 构建上下文当作密钥闸门。</p>
+</div>
+
+<div class="finding lo">
+<h3>L5 · pytest 依赖只靠 CI 步骤记住 <span class="tag t-lo">低</span></h3>
+<p><span class="lbl">位置</span><code>.github/workflows/ci.yml:29</code>（<code>pip install pytest pytest-asyncio pytest-timeout</code>）；<code>pyproject.toml:6-20</code> 的 <code>dependencies</code> 不含测试依赖，仓库也没有 <code>requirements*.txt</code>。</p>
+<p><span class="lbl">影响</span> 第一轮的高危已被 1eafa85 修好，但修法是「在 CI 的一行 pip 里补上」，<code>--timeout=60</code>（<code>ci.yml:43</code>）与 <code>pytest-timeout</code> 的耦合没有任何声明文件承载；本地 <code>pytest --timeout</code> 仍会因缺插件报错。<code>ci.yml:46</code> 还以内联方式注入一个固定的测试用 <code>JWT_SECRET</code>（值不引用），同属「配置散落在 CI 步骤里」的可维护性味道。</p>
+<p><span class="lbl">修复建议</span> 增加 <code>[project.optional-dependencies] test = ["pytest","pytest-asyncio","pytest-timeout"]</code>，CI 改为 <code>pip install -e ".[test]"</code>，让声明成为唯一真源。</p>
+</div>
+
+<div class="finding lo">
+<h3>L6 · 一键安装默认沿用固定 JWT_SECRET 占位串 <span class="tag t-lo">低</span></h3>
+<p><span class="lbl">位置</span><code>.env.example:32</code>（<code>JWT_SECRET=</code> 后为一个固定占位串）、<code>install.sh:35-41</code>（无 <code>.env</code> 时直接 <code>cp .env.example .env</code>）。</p>
+<p><span class="lbl">影响</span> 用户若跳过「编辑 .env 填入 JWT_SECRET」的提示，服务就以一个仓库内已知的字符串作为会话密钥启动（与 H1 的 compose 默认值叠加）。install.sh 只打印提醒、不做校验。</p>
+<p><span class="lbl">修复建议</span> 与 H1 一并处理：install.sh 生成随机 JWT_SECRET 写入 .env，或在启动前非空校验并拒绝放行。</p>
+</div>
+
+<h2>三、已核实为误报或不成立</h2>
+<table>
+<thead><tr><th>候选问题</th><th>核实过程</th><th>结论</th></tr></thead>
+<tbody>
+<tr>
+  <td>第一轮高危：CI 传 <code>--timeout=60</code> 但未装 <code>pytest-timeout</code></td>
+  <td>读 <code>ci.yml:29</code> 见 <code>pip install pytest pytest-asyncio pytest-timeout</code>；<code>git log -S 'pytest-timeout'</code> 指向 1eafa85 的 diff（<code>- pip install pytest pytest-asyncio</code> → <code>+ ... pytest-timeout</code>）</td>
+  <td><span class="tag t-ok">不成立（已修复）</span></td>
+</tr>
+<tr>
+  <td>前端 <code>/manifest.webmanifest</code>（index.html:11）找不到后端路由</td>
+  <td><code>app.py:836</code> 注册 <code>Route("/manifest.webmanifest", _manifest)</code>，且 <code>PUBLIC_EXACT</code>（<code>app.py:74</code>）已放行；文件确在 <code>static/manifest.webmanifest</code></td>
+  <td><span class="tag t-ok">误报</span></td>
+</tr>
+<tr>
+  <td>Service Worker 未注册 / 路径错</td>
+  <td><code>main.js:143-149</code> 有 <code>navigator.serviceWorker.register('/sw.js',{scope:'/'})</code>，且 <code>app.py:835</code> 提供 <code>/sw.js</code>（<code>STATIC_DIR</code> 内文件存在）</td>
+  <td><span class="tag t-ok">误报</span>（仅预缓存不完整 → L3）</td>
+</tr>
+<tr>
+  <td>前端 <code>api.js:229</code> 以 DELETE 携带 JSON body 调 <code>/api/acp/tokens</code>，疑似与后端不匹配</td>
+  <td><code>api/acp_routes.py:251</code> 该路由方法为 <code>DELETE</code>，处理器 <code>acp_token_revoke</code> 在 <code>:171</code> 用 <code>await json_body(request)</code> 读 body，一致</td>
+  <td><span class="tag t-ok">不成立</span></td>
+</tr>
+<tr>
+  <td>README 内疑似存在明文密钥（第 108 行 <code>VLM_API_KEY=…</code>）</td>
+  <td>结构化核对（仅看字符形状，不引用值）：该行是已脱敏占位 <code>&lt;…-弱口令 len=7&gt;</code> 的形式，不是现存明文令牌</td>
+  <td><span class="tag t-ok">误报</span></td>
+</tr>
+</tbody>
+</table>
+
+<h2>四、本轮未覆盖</h2>
+<ul>
+  <li><strong>运行态一律未查</strong>：本机无 <code>docker</code>（生产跑在 NAS <code>/vol1/1000/docker/memory-agent</code>），未运行任何构建/测试/脚本。所有涉及「能不能起来」的判断（M2、以及 CI 是否真的绿）都只到配置层，运行时行为标注为<span class="tag t-mid">需运行时确认</span>。</li>
+  <li><strong>NAS 生产侧未触及</strong>：<code>.env</code>、<code>certs/</code>、<code>data/</code>、<code>docker compose ps/logs</code>、真实 <code>/repo</code> 挂载现状等，本机都读不到，故「生产实际用的是哪套 compose/哪个密钥」无法坐实。</li>
+  <li><strong>凭据文件按纪律未读</strong>：<code>.env</code>、<code>certs/</code> 下证书与私钥、<code>config.json</code> 等一概未读取，仅在需要处描述其问题。</li>
+  <li><strong>前端逐页未通读</strong>：<code>static/js/pages/*.js</code> 只按「外链/端口/接口」维度抽读（<code>settings.js</code>、<code>acp.js</code> 的占位地址等），未逐行审计各页面的接口调用与状态管理。</li>
+  <li><strong>未审计 <code>.qoder/</code> 下大量 <code>tmp-*</code></strong>：那是 agent 工作树副本（含各自的 deploy_nas.sh、static 快照），不属交付链，未逐份比对。</li>
+  <li><strong>未跑测试/门禁</strong>：<code>pyflakes_gate.sh</code>、CI 全量、契约门禁 <code>tests/contract</code> 均未执行（受「只读、不装依赖」约束）。</li>
+</ul>
+
+<h2>五、建议的修复顺序（按性价比）</h2>
+<table>
+<thead><tr><th>优先级</th><th>动作</th><th>对应发现</th><th>理由</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>吊销/轮换仓库内三枚服务令牌，脚本改读环境变量，清理 git 历史并加密钥扫描闸门</td><td>H4</td><td>唯一一条「已经泄露、且现在就能被利用」的问题；改动小、收益即时。</td></tr>
+<tr><td>2</td><td>去掉 compose 的 JWT_SECRET 默认值，改强制注入（<code>:?</code> 或入口随机生成）；同时处理 L6 的 .env.example 占位</td><td>H1 / L6</td><td>一行改动即可堵住「可伪造管理员令牌」，且与 H4 同属凭据面，合并一轮做。</td></tr>
+<tr><td>3</td><td>修 <code>deploy_nas.sh:57</code> 的过期核验把部署卡死的问题，并把自检移到 <code>up --build</code> 之后</td><td>H2</td><td>这是「部署链本身会中断」的直接缺陷，影响每一次发布，修起来只需删/改一行。</td></tr>
+<tr><td>4</td><td>对齐 Node-RED <code>parse_result</code> 与 <code>/api/analyze/water_purifier</code> 的字段（改流程键名）并回归该流</td><td>H3 / M6</td><td>这是「界面调不通」的根因，用户可感知；改动集中在流程函数与模板。</td></tr>
+<tr><td>5</td><td>端口绑定参数化（<code>${BIND_IP:-0.0.0.0}</code>）+ 处理 gates.sh/孤儿台账与 CI 忽略清单</td><td>M3 / M5 / M1</td><td>把「一键安装可移植」和「门禁口径统一」补齐，属结构性但改动可控。</td></tr>
+</tbody>
+</table>
+
+<footer>
+只读审计，未修改项目任何文件，未在项目目录留下产物。所有结论均落到 file:line；凡需运行才能确认的已标注「需运行时确认」。凭据值一律不引用。
+</footer>
+
+</div>
+</body>
+</html>

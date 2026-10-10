@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>memory-agent 安全审计报告 · 第四轮复核</title>
+<meta name="description" content="memory-agent 第四轮安全复核：在基线提交 c83106d 上核对第三轮 H1（compose 内嵌默认 JWT_SECRET）与 H4（仓库内提交真实 svc 服务令牌）均仍未修复，并新增同类 CI 密钥入库与凭据签发面越权、明文 HTTP 暴露、MQTT 状态主题可伪造等 13 项按严重度分级的问题，含逐条 file:line 证据、误报排除与部署侧加固清单。">
+<style>
+  :root{
+    --bg:#0b0f16; --panel:#121a26; --panel2:#0e1520; --line:#243447;
+    --ink:#e8eef6; --ink2:#a7b6c9; --ink3:#7b8ca1;
+    --crit:#ff5d6c; --high:#ff9f45; --med:#ffd447; --low:#5fd0a8;
+    --accent:#57a8ff; --accent2:#8b7dff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 700px at 12% -10%,#16233a 0%,var(--bg) 55%) no-repeat,var(--bg);
+    color:var(--ink);font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    padding:0 16px 72px}
+  .wrap{max-width:1080px;margin:0 auto}
+  header.top{padding:38px 0 20px;border-bottom:1px solid var(--line)}
+  .kicker{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  h1{margin:8px 0 6px;font-size:31px;line-height:1.25;letter-spacing:-.01em}
+  .sub{color:var(--ink2);font-size:14.5px}
+  .metacards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:20px 0 0}
+  .mc{background:linear-gradient(180deg,var(--panel) 0%,var(--panel2) 100%);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .mc .k{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);font-weight:700}
+  .mc .v{margin-top:5px;font-size:14px;color:var(--ink);overflow-wrap:anywhere}
+  .mc .v code{font-size:12.5px}
+  h2{margin:44px 0 6px;font-size:21px;letter-spacing:-.01em;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h2 .n{color:var(--accent);font-family:var(--mono);font-size:15px;margin-right:8px}
+  h3{margin:26px 0 6px;font-size:16.5px}
+  p{margin:10px 0}
+  code{font-family:var(--mono);font-size:12.6px;background:#0c141f;border:1px solid #223147;border-radius:6px;padding:1px 6px;color:#cfe3ff;overflow-wrap:anywhere}
+  pre{background:#0a121c;border:1px solid #223147;border-radius:10px;padding:12px 14px;overflow-x:auto}
+  pre code{background:none;border:0;padding:0;color:#c7d7ea;font-size:12.4px;line-height:1.65}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.6px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#141e2c;color:var(--ink2);font-size:12.4px;letter-spacing:.04em;text-transform:uppercase}
+  tbody tr:nth-child(even){background:#0f1723}
+  .flag{font-size:11px;font-weight:800;letter-spacing:.06em;padding:2px 8px;border-radius:999px;white-space:nowrap;border:1px solid}
+  .s-crit{color:#ffd7db;border-color:#6d2530;background:#3a1219}
+  .s-high{color:#ffe3c2;border-color:#6f4416;background:#3a2410}
+  .s-med{color:#fff4c2;border-color:#6e5c14;background:#392f0d}
+  .s-low{color:#d9fff0;border-color:#1d5b47;background:#0f2c23}
+  .finding{background:linear-gradient(180deg,var(--panel) 0%,#0f1725 100%);border:1px solid var(--line);border-left:4px solid var(--line);border-radius:12px;padding:16px 18px;margin:16px 0}
+  .finding.high{border-left-color:var(--high)}
+  .finding.med{border-left-color:var(--med)}
+  .finding.low{border-left-color:var(--low)}
+  .fhead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .fid{font-family:var(--mono);font-size:12.5px;color:var(--ink3)}
+  .ftitle{font-size:16.5px;font-weight:700}
+  .lbl{display:inline-block;min-width:74px;font-size:11.6px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);font-weight:800}
+  .kv{margin:8px 0 0}
+  .kv p{margin:5px 0}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  .note{background:#101a28;border:1px dashed #2c405a;border-radius:10px;padding:10px 14px;color:var(--ink2);font-size:13.6px}
+  .warn{background:#2a140f;border:1px solid #6f3a1c;border-radius:10px;padding:10px 14px}
+  .ok{background:#0f2620;border:1px solid #1d5b47;border-radius:10px;padding:10px 14px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}h1{font-size:25px}}
+  footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink3);font-size:12.8px}
+  .chartwrap{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:16px 0}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12.8px;color:var(--ink2);margin-top:6px}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">Security Audit · Round 4 · Verification Pass</div>
+  <h1>memory-agent 安全审计报告（第四轮复核）</h1>
+  <div class="sub">重点：复核第三轮两项高优先级漏洞是否已修，并继续收敛 <span class="mono">鉴权授权 / 密钥凭据 / 外部暴露 / 数据通路</span> 四条面。</div>
+
+  <div class="metacards">
+    <div class="mc"><div class="k">基线提交</div><div class="v"><code>c83106d</code><br>main 分支，与第三轮基线一致</div></div>
+    <div class="mc"><div class="k">工作区状态</div><div class="v">脏：19 项（R1–R6 审计报告 doc 删除、新增未跟踪 doc、.qoder worktree 文件改动）</div></div>
+    <div class="mc"><div class="k">代码规模</div><div class="v">src 下约 <b>200 个 .py</b>，约 11.8 万行；含 mcp_server 3075 行、store 260KB、tool_schema 116KB</div></div>
+    <div class="mc"><div class="k">本轮结果</div><div class="v"><span class="flag s-high">高 4</span> <span class="flag s-med">中 4</span> <span class="flag s-low">低 5</span><br>第三轮 H1/H4 <b>均未修复</b></div></div>
+    <div class="mc"><div class="k">未覆盖</div><div class="v">生产实况（NAS 上的 .env / config.json / 拓扑 / broker 认证 / 容器端口实测）不可达</div></div>
+    <div class="mc"><div class="k">证据口径</div><div class="v">全部结论附 <code>file:line</code>；仅按类型描述任何密钥，未读取/记录凭据字面值</div></div>
+  </div>
+</header>
+
+<h2><span class="n">00</span>衔接结论（先回答“上轮漏洞修了没有”）</h2>
+
+<div class="grid2">
+  <div class="finding high">
+    <div class="fhead"><span class="fid">H1 复核</span><span class="flag s-high">仍未修复</span></div>
+    <div class="ftitle"><code>docker-compose.yml</code> 内嵌公开默认口令 <code>change_this_to_random_string</code></div>
+    <div class="kv">
+      <p><span class="lbl">证据</span> <code>docker-compose.yml:37</code> → <code>JWT_SECRET: "${JWT_SECRET:-change_this_to_random_string}"</code>；同值亦见于 <code>.env.example:32</code> 注释。</p>
+      <p><span class="lbl">为何危险</span> <code>config.py:599-604</code> 的 fail-closed 只在 <b>空</b> 密钥时拒绝启动；compose 注入了一个<b>非空且公开可预测</b>的值，等于把这道防线就地抹掉。攻击者看到仓库即知签名密钥，可自签 HS256 会话令牌（含伪造 <code>is_admin</code>）→ 完整接管 WebUI（含 <code>POST /api/config/reveal</code> 取回真实密钥）。</p>
+      <p><span class="lbl">前提</span> 目标实例确实未覆盖该默认值；能否成立要看部署侧真实 <code>JWT_SECRET</code>（本轮不可读 → 标<b>需运行时确认</b>）。</p>
+      <p><span class="lbl">修复</span> 改成强制项：<code>JWT_SECRET: "${JWT_SECRET:?必须显式配置强随机值}"</code>，并轮换一次（会使全部既有会话失效）。</p>
+    </div>
+  </div>
+
+  <div class="finding high">
+    <div class="fhead"><span class="fid">H4 复核</span><span class="flag s-high">仍未修复 + 新增 1 处</span></div>
+    <div class="ftitle">仓库内提交了真实可用的 <code>svc_</code> 服务令牌</div>
+    <div class="kv">
+      <p><span class="lbl">证据</span> 受版本控制的明文令牌字面值：<code>scripts/test_ingest.sh:3</code>、<code>scripts/test_ingest_auth.sh:3</code>、<code>scripts/investigate_token_loss.sh:27</code>，<b>本轮新增发现</b> <code>scripts/debug_token.py:12</code>（同为 <code>svc_</code> 前缀）。</p>
+      <p><span class="lbl">影响</span> 任何拿到仓库的人可直接重放。权限面取决于签发时授予的 scope：<code>service_tokens.py:40-46</code> 的 <code>SCOPE_DENY_PREFIXES</code> 兜住了 <code>/api/config</code>、<code>/api/auth</code>、<code>/api/users</code>、<code>/api/system</code>、<code>/api/debug</code>，所以取不到明文密钥与管理员面；但这些脚本的用途（灌数据/排查令牌）意味着至少可写 <code>POST /api/events</code>、<code>POST /api/agent/memories</code>、改成员档案。</p>
+      <p><span class="lbl">前提</span> 令牌在生产令牌库中是否仍为 active —— 需在 NAS 侧核（不可读）。</p>
+      <p><span class="lbl">修复</span> 立即吊销并重发，脚本改为从环境变量读取；把“凭据不得入库”纳入门禁（可用 <code>gates.sh</code> 增一条 <code>svc_|mcp_|acp_</code> 前缀扫描）。</p>
+    </div>
+  </div>
+</div>
+
+<div class="note" style="margin-top:14px">
+  <b>本轮判定：</b>H1、H4 均<b>未修复</b>（第三轮之后 HEAD 无相关提交）。若生产环境确实使用了 compose 默认 <code>JWT_SECRET</code>，H1 的实际风险等价于“严重”；因条件依赖部署侧配置，本报告仍按第三轮口径列为“高”并显式标注待确认项。另发现同类新问题（<b>F4</b>：CI 工作流提交字面 JWT 密钥，且全仓工作流无任何 <code>secrets.</code> 引用）。
+</div>
+
+<h2><span class="n">01</span>发现清单（按严重度排序）</h2>
+
+<div class="chartwrap">
+  <svg width="100%" viewBox="0 0 900 138" role="img" aria-label="各严重度问题数量条形图：高 4、中 4、低 5">
+    <g font-family="ui-monospace,Menlo,Consolas,monospace" font-size="13" fill="#a7b6c9">
+      <text x="0" y="20">高</text><text x="0" y="58">中</text><text x="0" y="96">低</text>
+    </g>
+    <rect x="34" y="8"  width="304" height="17" rx="5" fill="#ff9f45"></rect>
+    <rect x="34" y="46" width="304" height="17" rx="5" fill="#ffd447"></rect>
+    <rect x="34" y="84" width="380" height="17" rx="5" fill="#5fd0a8"></rect>
+    <g font-family="ui-monospace,Menlo,Consolas,monospace" font-size="13" fill="#e8eef6">
+      <text x="348" y="21">4 项（F1–F4：含 H1/H4 结转 2 项）</text>
+      <text x="348" y="59">4 项（F5–F8：暴露面与通路）</text>
+      <text x="424" y="97">5 项（F9–F13：条件性/收尾）</text>
+    </g>
+    <line x1="34" y1="120" x2="880" y2="120" stroke="#243447"></line>
+    <text x="34" y="134" fill="#7b8ca1" font-size="12">1 格 = 1 项；“高”含第三轮结转</text>
+  </svg>
+  <div class="legend">
+    <span><span class="dot" style="background:var(--high)"></span>高：可实质越权 / 可直接用于绕过认证</span>
+    <span><span class="dot" style="background:var(--med)"></span>中：需要同网段或同会话前置条件</span>
+    <span><span class="dot" style="background:var(--low)"></span>低：条件性、信息面收敛或成本型</span>
+  </div>
+</div>
+
+<h3>高严重度</h3>
+
+<div class="finding high">
+  <div class="fhead"><span class="fid">F1</span><span class="flag s-high">高</span><span class="ftitle">凭据签发面只要求“已登录”：任意非管理员可自建带 write/admin 权限的 MCP 令牌与 app 令牌</span></div>
+  <div class="kv">
+    <p><span class="lbl">位置</span>
+      <code>src/memory_agent/api/mcp_routes.py:105-136</code>（<code>create_token</code>，<code>require_user</code> 在 :107）、
+      <code>mcp_routes.py:153-168</code>（<code>update_token_scopes</code>，<code>require_user</code> 在 :155）、
+      <code>api/config_routes.py:471-491</code>（app 令牌 create/revoke，<code>require_user</code> 在 :472/:485）、
+      <code>mcp_routes.py:171-193</code>（<code>/api/mcp/audit</code>，<code>require_user</code> 在 :176）。
+    </p>
+    <p><span class="lbl">对照</span> 同一个代码库里，真正“签发长期凭据”的面是 <b>admin-only</b>：<code>config_routes.py:500-531</code> 三个 service-token 端点全部 <code>require_admin</code>，:496 还有一行明写“签发凭据的面不给普通用户”。MCP 令牌（权限更大、可持久化在 <code>config.json</code>）反而没做同样收口，属设计不一致而非有意降级。</p>
+    <p><span class="lbl">攻击者视角</span> 用任意一枚有效低权会话（家庭成员账号，或被盗 JWT、或经 F2/H1 伪造的会话）：
+      <br>① <code>POST /api/mcp/tokens</code> 造一个新令牌 → ② <code>POST /api/mcp/tokens/scopes</code> 把它提成 <code>["read","write"]</code>（<code>ALL_SCOPES</code> 里甚至包含 <code>admin</code>）→ ③ 用该令牌调到 <b>写工具</b>。</p>
+    <p><span class="lbl">可达的写工具（择要）</span> <code>execute_intent_actions</code>（经 <code>intent_action.py:185-238</code> 真正派发 TTS / 告警，属物理世界动作）、<code>create_member</code>/<code>delete_member</code>、<code>promote_candidate_rule</code>/<code>advance_rule_to_live</code>（把行为规则推到生效通道）、<code>save_skill</code>、<code>trigger_collection</code>、记忆写入；<code>admin</code> scope 还能读审计通道（含已撤销记忆）。同理可 <code>POST /api/config/app-token</code> 造 app 令牌并写记忆。</p>
+    <p><span class="lbl">实际影响</span> 横向/纵向越权 + <b>凭据持久化</b>：签出的令牌是长期 API 凭据，撤销低权账号本身不会回收（令牌库独立存储）；即一枚家庭成员会话可换得一份“物理动作 + 规则引擎 + 记忆写”的常驻能力。</p>
+    <p><span class="lbl">前提</span> 一枚有效已认证会话（非未认证可达）。</p>
+    <p><span class="lbl">修复</span> ① 把 <code>/api/mcp/tokens</code>（create/revoke/scopes）、<code>/api/config/app-token(s)</code>、<code>/api/mcp/audit</code> 提级到 <code>require_admin</code>；② 非 admin 调用者不得授予 <code>write</code>/<code>admin</code> scope（在 <code>tokens.update_scopes</code> 入口按调用者身份裁剪）；③ 令牌签发写审计日志（谁在何时给谁授了什么 scope）。</p>
+  </div>
+</div>
+
+<div class="finding high">
+  <div class="fhead"><span class="fid">F2</span><span class="flag s-high">高</span><span class="ftitle">compose 内嵌可预测 JWT 签名密钥，架空 config 的 fail-closed 校验（= H1 结转）</span></div>
+  <div class="kv">
+    <p><span class="lbl">位置</span> <code>docker-compose.yml:37</code>；<code>src/memory_agent/config.py:17-19</code>（默认值与上行校验的说明）、<code>config.py:599-604</code>（空密钥拒绝启动）、<code>.env.example:32</code>（同值提示）。</p>
+    <p><span class="lbl">链路</span> 默认值公开 → 攻击者本地生成合法 HS256 JWT（<code>auth.py:261-305</code> 只验签名与过期、<code>sub</code> 取用户名）→ 以现有用户名伪造会话 → 命中 <code>app.py:170-247</code> 的 AuthMiddleware 放行 → 拿到该用户全部 WebUI 权限；若伪造 admin 则直达 <code>/api/config/reveal</code> 取真实密钥。</p>
+    <p><span class="lbl">前提</span> <b>需运行时确认</b>：部署侧 <code>.env</code> 是否已覆盖（本轮不可读，不猜）。若未覆盖，实际影响为“严重”。</p>
+    <p><span class="lbl">修复</span> 强制显式配置（<code>:?</code> 语法）或启动时拒绝已知占位值；已上线实例轮换密钥。</p>
+  </div>
+</div>
+
+<div class="finding high">
+  <div class="fhead"><span class="fid">F3</span><span class="flag s-high">高</span><span class="ftitle">仓库提交真实 <code>svc_</code> 服务令牌（4 处）（= H4 结转 + 新增）</span></div>
+  <div class="kv">
+    <p><span class="lbl">位置</span> <code>scripts/test_ingest.sh:3</code>、<code>scripts/test_ingest_auth.sh:3</code>、<code>scripts/investigate_token_loss.sh:27</code>、<code>scripts/debug_token.py:12</code>。</p>
+    <p><span class="lbl">影响</span> 仓库读者可直接重放；<code>service_tokens.py:40-46</code> 的 scope 兜底挡住了 config/auth/users/system/debug 面，但数据写面（events / agent memories / members）大概率在授权内。</p>
+    <p><span class="lbl">前提</span> 令牌是否仍 active —— <b>需运行时确认</b>（生产令牌库不可读）。</p>
+    <p><span class="lbl">修复</span> 全部吊销重发；脚本改读环境变量；把“凭据前缀扫描”加入 <code>gates.sh</code> / CI 门禁。</p>
+  </div>
+</div>
+
+<div class="finding high">
+  <div class="fhead"><span class="fid">F4</span><span class="flag s-high">高</span><span class="ftitle">CI 工作流内提交了字面 JWT 签名密钥（同类新问题）</span></div>
+  <div class="kv">
+    <p><span class="lbl">位置</span> <code>.github/workflows/ci.yml:46</code>：<code>JWT_SECRET:</code> 后为一个约 39 字符的<b>字面常量</b>（非 <code>${{ secrets.* }}</code> 引用）。核对方式：对三个工作流全文检索 <code>secrets.</code> 与 <code>${{ }}</code>，只有 <code>python-version</code> 与 <code>github.sha</code> 表达式，<b>无任何 GitHub Secrets 引用</b>——即该密钥是硬编码入库的。</p>
+    <p><span class="lbl">影响</span> ① 任何读过仓库的人都能用该密钥签发被“以该密钥启动的实例”接受的令牌；<b>若生产/测试环境沿用了这个值，等价于 F2</b>；② 反映项目未建立 Secrets 使用习惯，同类泄漏会复现。注意该值本身是测试用途（<code>MA_ENV: test</code>、<code>GATES_DISABLE: "1"</code>），因此严重度取决于是否被复用到真实环境。</p>
+    <p><span class="lbl">修复</span> 改用 <code>${{ secrets.CI_JWT_SECRET }}</code>；在仓库侧确认与生产密钥不同并轮换；补充 <code>git secrets</code>/<code>gitleaks</code> 类扫描到 CI。</p>
+  </div>
+</div>
+
+<h3>中严重度</h3>
+
+<div class="finding med">
+  <div class="fhead"><span class="fid">F5</span><span class="flag s-med">中</span><span class="ftitle">业务主端口以明文 HTTP 直曝局域/Tailnet，令牌与数据可被同网段嗅探</span></div>
+  <div class="kv">
+    <p><span class="lbl">位置</span> <code>docker-compose.yml:8</code>（<code>192.168.2.200:8086:8000</code>）、<code>docker-compose.yml:55</code> 注释明写用 <code>tailscale serve :8086</code> 暴露给整个 tailnet；<code>Caddyfile:9-32</code> 只做 TLS 终结（<code>auto_https off</code> + 自签/节点证书，无访问控制、无鉴权）。</p>
+    <p><span class="lbl">影响</span> ① 明文 HTTP 上传输 Bearer/JWT 与家庭数据，同网段可嗅探与中间人；② 暴露范围可能从 LAN 扩到整个 tailnet（<code>tailscale serve</code> 语义）；③ 8086 直连绕过 Caddy 的 TLS。</p>
+    <p><span class="lbl">前提</span> 同网段或 tailnet 内可达 —— <b>需运行时确认</b>（防火墙、tailscale serve 实际配置、NAS 拓扑本轮不可达）。</p>
+    <p><span class="lbl">修复</span> 取消 8086 端口映射（或绑 <code>127.0.0.1</code>），统一从 <code>:9443</code> 进；Caddy 增加 <code>remote_ip</code> 白名单或 <code>basicauth</code>；若保留 tailscale 暴露，前面必须加一层鉴权。</p>
+  </div>
+</div>
+
+<div class="finding med">
+  <div class="fhead"><span class="fid">F6</span><span class="flag s-med">中</span><span class="ftitle">调试运行面只要求“已登录”，可驱动 agent/LLM 运行</span></div>
+  <div class="kv">
+    <p><span class="lbl">位置</span> <code>api/debug_routes.py:369-575</code>：<code>/api/debug/llm/run</code>（:371 <code>require_user</code>）、<code>/run/{id}</code>（:462）、<code>/stream</code>（:425）、<code>/abort</code>（:489）、<code>/tasks</code>（:560）都是 <code>require_user</code>；而令牌管理（<code>:509/:534/:546</code>）才是 <code>require_admin</code>。</p>
+    <p><span class="lbl">影响</span> 任意登录用户可反复触发 agent 运行：消耗 LLM/VLM 预算、占用进程与任务表、以 <code>dbg_</code> 令牌身份留下审计记录；<code>MA_DEBUG_TRACEBACK</code> 关闭时无栈泄漏（<code>debug_routes.py:23-31</code> 已收敛），因此主要是滥用与成本面。</p>
+    <p><span class="lbl">前提</span> 一枚有效会话；实际可触达的工具集合 —— <b>需运行时确认</b>（本轮未逐行读完 <code>_execute_run</code>）。</p>
+    <p><span class="lbl">修复</span> 运行面提级 <code>require_admin</code>，或用开关默认关闭（<code>debug_mode</code> 已是默认 False，<code>config.py:324</code>，建议运行端点也据此门控）。</p>
+  </div>
+</div>
+
+<div class="finding med">
+  <div class="fhead"><span class="fid">F7</span><span class="flag s-med">中</span><span class="ftitle">只读权限即可无限次触发摄像头取帧与 VLM 调用（成本 + 隐私）</span></div>
+  <div class="kv">
+    <p><span class="lbl">位置</span> <code>mcp_scopes.py</code> 把 <code>analyze_camera</code> 归入 <b>read</b>（注释见 <code>mcp_scopes.py:6-7</code>：会花钱但不改数据的仍算 read）；<code>tool_schema.py:1066-1087</code> 与 <code>vision_service.py:1430-1516</code> 显示 <code>bypass_limits</code> <b>默认 True</b>，会忽略光线门槛与每小时上限。</p>
+    <p><span class="lbl">影响</span> 仅持有<b>只读</b>令牌（默认签发）的一方就能绕过节流，持续对房间取帧并调用 VLM：产生外部 API 费用，并可用作对居住空间的连续观察（隐私面）。</p>
+    <p><span class="lbl">修复</span> ① <code>bypass_limits</code> 默认改 False；② 小时上限对显式调用同样硬生效（放弃“显式即绕过”）；③ 把 <code>analyze_camera</code> 移入 write 或单独 <code>camera</code> scope。</p>
+  </div>
+</div>
+
+<div class="finding med">
+  <div class="fhead"><span class="fid">F8</span><span class="flag s-med">中</span><span class="ftitle">MQTT 侧信任：电视状态主题可被同网段伪造，MA 自身不做任何订阅（全仓 0 处 subscribe）</span></div>
+  <div class="kv">
+    <p><span class="lbl">位置</span> <code>tv_service.py:386-390</code>（“retained 状态话题…避免 <b>QoS0 订阅丢消息</b>”、只读不发布）、<code>tv_service.py:433-470</code>（<code>read_retained_mqtt</code> 按 <code>tv_mqtt_host/port/user/pass/topic</code> 取 retained 报文并解析为 TV 状态）；MQTT 参数可全空（<code>config.py:215-229</code>）。</p>
+    <p><span class="lbl">核对</span> 全仓检索 <code>.subscribe(</code> = 0 处（MA 只 publish：<code>mqtt_bridge.py:105-107</code> 的 <code>ma/inbox|speak|alert</code>、<code>adm/*</code>、<code>mqtt_bridge.py:254-299</code>）。</p>
+    <p><span class="lbl">影响</span> 该主题被作为“电视是否在播”的事实来源，进而影响在场/行为推断。若 broker 允许匿名或凭据薄弱，同网段任一台机器只要 <b>publish 一条 retained 报文</b>即可长期伪造该状态；反向地，MA 发布的 <code>ma/*</code>、<code>adm/*</code> 也会被同网段伪造或旁听。</p>
+    <p><span class="lbl">前提</span> broker 的 <code>allow_anonymous</code> / ACL —— <b>需运行时确认</b>（broker 配置不在仓库内）。</p>
+    <p><span class="lbl">修复</span> broker 强制认证 + 按主题 ACL（<code>tv/#</code> 只允许电视侧发布、<code>ma/#</code> 只允许 MA 发布）；MA 侧为 retained 报文加签发校验（时间戳 + HMAC）或标记为“不可信提示”不参与推断；<code>tv_mqtt_user/pass</code> 列为必填。</p>
+  </div>
+</div>
+
+<h3>低严重度</h3>
+
+<div class="finding low">
+  <div class="fhead"><span class="fid">F9</span><span class="flag s-low">低</span><span class="ftitle">无 CSRF 防护，但默认不落 Cookie → 仅在客户端自行把令牌存 Cookie 时成立</span></div>
+  <div class="kv">
+    <p><span class="lbl">核对</span> 全仓检索 <code>set_cookie</code> / <code>SameSite</code> / <code>HttpOnly</code> = <b>0 处</b>（后端不写 Cookie，令牌经响应体下发、前端以 Authorization 头回传）；但 <code>app.py:431-440</code> 的鉴权链保留了 cooky 分支（读 <code>token=</code> Cookie）。</p>
+    <p><span class="lbl">结论</span> 默认不构成 CSRF 面；若部署方（或某客户端）把 JWT 存进 Cookie 且未设 <code>SameSite</code>，则所有写端点（含 <code>/api/config/reveal</code>、<code>/api/config</code>、<code>/api/users/delete</code>）都可能被跨站请求触发。<b>条件性</b>，非当前默认配置下的漏洞。</p>
+    <p><span class="lbl">修复</span> 若坚持 Cookie 方案：加 <code>SameSite=Lax/Strict</code> + <code>HttpOnly</code> + CSRF token；否则删除该 Cookie 分支以免日后被误用。</p>
+  </div>
+</div>
+
+<div class="finding low">
+  <div class="fhead"><span class="fid">F10</span><span class="flag s-low">低</span><span class="ftitle">MCP 不可用时把导入错误文案回显给调用方（信息面已收窄）</span></div>
+  <div class="kv">
+    <p><span class="lbl">位置</span> <code>app.py:505-516</code> 的 <code>mcp_unavailable</code>：未鉴权请求也会收到 <code>MCP_IMPORT_ERROR</code> 文本。版本/仓库信息端点已收口为 admin（<code>system_routes.py:54-83</code> <code>require_admin</code>）。</p>
+    <p><span class="lbl">影响</span> 仅剩依赖/内部错误文案泄漏（利于指纹识别），不泄漏密钥。建议该分支改为固定文案，细节只进日志。</p>
+  </div>
+</div>
+
+<div class="finding low">
+  <div class="fhead"><span class="fid">F11</span><span class="flag s-low">低</span><span class="ftitle">限流只覆盖登录面，令牌签发 / MCP / VLM 调用均无限速</span></div>
+  <div class="kv">
+    <p><span class="lbl">核对</span> 爆破防护在 <code>auth.py:26-44</code>（失败计数 + 全局预算，<code>app.py:378-397</code> 使用；<code>auth_routes.py:83-108</code> 登录路径同样收口），但令牌签发、MCP 工具调用、VLM 取帧、<code>/api/debug/llm/run</code> 都无速率限制。</p>
+    <p><span class="lbl">影响</span> 已认证用户可放大外部 API 成本与 CPU/IO 占用（与 F6/F7 叠加）。建议给“签发型 + 昂贵型”端点加按用户/令牌的令牌桶。</p>
+  </div>
+</div>
+
+<div class="finding low">
+  <div class="fhead"><span class="fid">F12</span><span class="flag s-low">低</span><span class="ftitle">接入片段 URL 用请求 Host 头拼接（Host 头注入影响返回内容）</span></div>
+  <div class="kv">
+    <p><span class="lbl">位置</span> <code>api/mcp_routes.py</code> 的 <code>_base_url()</code>：优先取 <code>X-Forwarded-Host</code>，其次 <code>Host</code>，用于生成 <code>/mcp</code> 与客户端 snippets。</p>
+    <p><span class="lbl">影响</span> 不改变服务端行为，但可让返回的接入地址指向攻击者主机（复制粘贴型钓鱼 / 误导接入）。建议只信任显式配置的对外地址或严格白名单 Host。</p>
+  </div>
+</div>
+
+<div class="finding low">
+  <div class="fhead"><span class="fid">F13</span><span class="flag s-low">低</span><span class="ftitle">令牌明文仅一次性下发，但签发/提权动作未留审计</span></div>
+  <div class="kv">
+    <p><span class="lbl">核对</span> <code>mcp_routes.py:105-136</code> 的注释正确（明文只在响应出现一次，库内以哈希比对：<code>mcp_tokens.py:236-259</code>、<code>service_tokens.py:329-338</code> 用 <code>compare_digest</code>），这一点做得对。</p>
+    <p><span class="lbl">缺口</span> 与 F1 叠加：令牌<b>创建/改权重</b>本身没有审计记录（只有 MCP 工具调用有 <code>log_mcp_audit</code>，<code>mcp_server.py:302-319</code>）。建议记录 who/when/target/scopes。</p>
+  </div>
+</div>
+
+<h2><span class="n">02</span>已核实为误报 / 不成立（本轮排除）</h2>
+<div class="ok">
+<table>
+  <thead><tr><th style="width:26%">候选疑点</th><th style="width:37%">核实证据</th><th>结论</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>设备令牌“空值即放行”</td>
+      <td><code>api/face_routes.py:28-34</code>、<code>api/vision_routes.py:27-32</code>、<code>api/ha_assist_routes.py:27-37</code>：三处都先判 <code>if not token: return False</code>，再 <code>compare_digest</code></td>
+      <td><b>不成立</b>：未配置令牌时是 fail-closed，不存在“<code>Bearer </code> + 空值”绕过。</td>
+    </tr>
+    <tr>
+      <td>MCP / ACP 支持 <code>?token=</code> 取令牌</td>
+      <td>URL 令牌通道默认关闭：<code>mcp_auth.py:134-149</code>、<code>acp_auth.py:78-89</code>（需显式 env 开关）</td>
+      <td><b>默认不可达</b>：保持关闭即可；开启会把令牌写进访问日志/Referer。</td>
+    </tr>
+    <tr>
+      <td>MCP 技能读写存在路径穿越</td>
+      <td>写：<code>mcp_server.py:2761-2769</code> 字符集白名单 <code>^[A-Za-z0-9_-]+$</code>；读：<code>mcp_server.py:2859-2905</code> 先白名单再 <code>realpath</code> 二次校验（:2866-2871、:2895-2901）</td>
+      <td><b>不成立</b>：双层校验到位，属本轮“修得好的地方”。</td>
+    </tr>
+    <tr>
+      <td>命令注入 / 任意命令执行</td>
+      <td>全仓 <code>subprocess</code> 仅 <code>api/system_routes.py:42-51</code> 与 <code>:161-186</code>：argv 形式、无 <code>shell=True</code>，<code>restart_cmd</code> 经 <code>shlex.split</code>；<code>os.system</code>/<code>eval</code>/<code>exec</code>/<code>pickle</code>/<code>yaml.load</code> 全仓 0 处</td>
+      <td><b>不成立</b>。且 <code>restart_cmd</code>/<code>update_repo_url</code> <b>不在</b> <code>config_routes.py:21-60</code> 的 <code>WRITABLE_FIELDS</code> 内 → 无法经 <code>/api/config</code> 注入，需先落到宿主配置文件（降为宿主权限问题）。</td>
+    </tr>
+    <tr>
+      <td>MQTT 入站报文可驱动后端任意动作</td>
+      <td>全仓 <code>.subscribe(</code> = 0 处；MA 只 publish（<code>mqtt_bridge.py:105-107</code>、<code>:254-299</code>）</td>
+      <td><b>不成立</b>（但 TV 状态走 retained 读取，见 <b>F8</b>）。</td>
+    </tr>
+    <tr>
+      <td>密钥文件 / <code>.env</code> 入库</td>
+      <td><code>.gitignore:9-17</code> 覆盖 <code>certs/</code>、<code>*.pem</code>、<code>*.key</code>、<code>.env</code>；工作区实测 <code>certs/</code> 仅有 README</td>
+      <td><b>不成立</b>（例外是 F3 的脚本令牌与 F4 的 CI 密钥）。</td>
+    </tr>
+    <tr>
+      <td>MCP 写工具缺权限门</td>
+      <td>分发层 <code>mcp_server.py:671-684</code>：未登记工具 fail-close、写工具需 <code>write</code>；<code>mcp_scopes.py:28-142</code> 登记表 + <code>:198-246</code> 启动期断言“登记表 = 实际工具集”</td>
+      <td><b>机制成立</b>：问题不在门，而在<b>谁能发钥匙</b>（见 <b>F1</b>）。</td>
+    </tr>
+    <tr>
+      <td>生物特征经 MCP 资源外泄</td>
+      <td><code>mcp_server.py:2919-2928</code>：<code>res_member</code> 显式 <code>pop("face_feature")</code></td>
+      <td><b>不成立</b>：已做定向裁剪。</td>
+    </tr>
+    <tr>
+      <td>反馈包 / 导出泄漏密钥</td>
+      <td><code>feedback_pack.py:81-95</code> 对 API key、Bearer、JWT 做脱敏；<code>:230-234</code> 用校验过的 <code>safe_label</code> 组路径</td>
+      <td><b>不成立</b>。</td>
+    </tr>
+    <tr>
+      <td>故障注入可被远程开启</td>
+      <td><code>mcp_server.py:621-643</code> 的 <code>set_mcp_fault</code> 仅进程内函数，全仓无 HTTP/MCP 暴露点</td>
+      <td><b>不可达</b>。</td>
+    </tr>
+    <tr>
+      <td>模板导入路径穿越</td>
+      <td><code>patterns.py:324-351</code> 的 <code>import_patterns(file_path)</code> 确实直接 <code>open()</code> 调用方给的路径，但全仓<b>无任何调用点</b></td>
+      <td><b>当前不可达</b>：留作“若将来接上 API 必须限制目录”的备忘。</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2><span class="n">03</span>本轮未覆盖 / 局限（诚实交代）</h2>
+<div class="note">
+<ul>
+  <li><b>生产实况不可达</b>：NAS 上的 <code>.env</code>、<code>data/config.json</code>、Docker 实跑拓扑、broker 认证配置、防火墙与 <code>tailscale serve</code> 实际状态本轮<b>一律未核</b>。因此 F2/F3/F5/F8/F6 都带“需运行时确认”标注，不能据本报告断言生产已失陷。</li>
+  <li><b>凭据纪律</b>：未读取也不记录任何凭据字面值（<code>.env</code>、<code>data/config.json</code>、<code>certs/*</code>、脚本内令牌），仅按类型/前缀分类陈述。因此“那几枚 <code>svc_</code> 令牌是否仍有效、scope 具体是什么”需在 NAS 侧核。</li>
+  <li><b>大文件为定点深读</b>：<code>store.py</code>(260KB)、<code>tool_schema.py</code>(116KB)、<code>vision_service.py</code>(78KB)、<code>identity.py</code>、<code>candidate_promotion.py</code>、<code>behavior_routes.py</code>、<code>insights_legacy.py</code>、<code>rule_engine.py</code> 等按安全面定位阅读，未逐行通读；MCP 工具全量（100+）未逐个审权限，只核了 scope 机制与写工具清单。</li>
+  <li><b>未审范围</b>：前端 <code>src/memory_agent/static/</code>（XSS/DOM 与令牌在 localStorage 的落地方式）、<code>tests/</code>、<code>vendor/</code> 与 homesdk wheel 供应链、<code>acp_server.py</code> 协议实现细节（仅看鉴权与挂载）。</li>
+  <li><b>已知功能性缺陷（非安全，顺带）</b>：<code>deploy_nas.sh:57</code> 的在线更新仍是失配的 grep（第三轮已报，代码未变）。</li>
+</ul>
+</div>
+
+<h2><span class="n">04</span>建议修复顺序（含“必须立即作废重发”的凭据）</h2>
+<table>
+  <thead><tr><th style="width:7%">序</th><th style="width:31%">动作</th><th>说明与验收</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><b>凭据作废重发</b></td><td><code>scripts/</code> 内 4 处分 <code>svc_</code> 令牌（test_ingest.sh:3 / test_ingest_auth.sh:3 / investigate_token_loss.sh:27 / debug_token.py:12）在服务端吊销并重发；脚本改读环境变量。<b>验收</b>：旧值调用返回 401/403。</td></tr>
+    <tr><td>2</td><td><b>JWT 密钥三处收口</b></td><td>① compose 改 <code>${JWT_SECRET:?}</code> 或直接拒绝已知占位值；② CI 改 <code>${{ secrets.* }}</code>；③ 确认生产密钥 ≠ compose 默认值 ≠ CI 字面值，否则轮换（会踢掉全部会话）。</td></tr>
+    <tr><td>3</td><td><b>凭据签发面提级 admin</b></td><td><code>/api/mcp/tokens</code>（create/scopes/revoke）、<code>/api/config/app-token(s)</code>、<code>/api/mcp/audit</code> 改 <code>require_admin</code>；非 admin 不得授 <code>write</code>/<code>admin</code>；补签发审计。<b>验收</b>：低权会话调用得 403。</td></tr>
+    <tr><td>4</td><td><b>调试运行面收口</b></td><td><code>/api/debug/llm/run*</code>、<code>/tasks</code> 提级 admin 或默认关闭。</td></tr>
+    <tr><td>5</td><td><b>摄像头节流回归</b></td><td><code>bypass_limits</code> 默认 False；小时上限硬生效；考虑把 <code>analyze_camera</code> 移出 read。</td></tr>
+    <tr><td>6</td><td><b>传输收口</b></td><td>取消 8086 直曝（或绑 127.0.0.1）、统一走 9443；Caddy 加 <code>remote_ip</code>/<code>basicauth</code>；复核 <code>tailscale serve</code> 必要性。</td></tr>
+    <tr><td>7</td><td><b>MQTT 侧信任</b></td><td>broker 开认证 + 主题 ACL（<code>tv/#</code> 与 <code>ma/#</code> 分权）；<code>tv_mqtt_user/pass</code> 必填；retained 报文加时间戳/HMAC 或降级为“不可信提示”。</td></tr>
+    <tr><td>8</td><td><b>通用限流与门禁</b></td><td>签发型/昂贵型端点加令牌桶；CI 增加 <code>gitleaks</code> 类文本扫描，防同类凭据再入库。</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="n">05</span>部署侧加固清单</h2>
+<div class="grid2">
+  <div class="finding low" style="border-left-color:var(--accent)">
+    <div class="ftitle">编排与传输</div>
+    <ul>
+      <li><code>docker-compose.yml</code>：<code>JWT_SECRET</code> 改强制项；<code>ports</code> 改 <code>127.0.0.1:8086:8000</code> 或删除映射。</li>
+      <li><code>Caddyfile</code>：保留 <code>:9443</code> TLS，加访问控制；<code>tls</code> 证书来源与轮换周期写进部署文档。</li>
+      <li>MA→Node-RED(<code>1990</code>)、Node-RED→MA(<code>8086</code>)、MA→Home Assistant 目前全为明文 HTTP：至少保持同宿 docker 网络隔离，或加 TLS/mTLS。</li>
+      <li>反向代理参数：保持 <code>MA_TRUST_PROXY=0</code>（默认）；确经 Caddy 时设 <code>MA_TRUST_PROXY=1</code> + <code>MA_TRUSTED_PROXY_CIDRS=&lt;Caddy 单 IP&gt;/32</code>（<code>app.py:138-167</code>）。</li>
+    </ul>
+  </div>
+  <div class="finding low" style="border-left-color:var(--accent2)">
+    <div class="ftitle">鉴权与日志</div>
+    <ul>
+      <li>检查部署是否真的创建过普通用户；若家庭内只有 admin，F1 的实际暴露面会显著收窄（但仍应修）。</li>
+      <li>保持 <code>MA_DEBUG_TRACEBACK</code> 关闭（默认）；确认无“整份 config 打日志”的运维习惯（本轮全仓未见密钥落日志）。</li>
+      <li>URL 令牌通道保持关闭：<code>MCP_ALLOW_URL_TOKEN</code>、<code>ACP_ALLOW_URL_TOKEN</code> 不要开。</li>
+      <li>不要在 Cookie 中存 JWT；若必须，加 <code>SameSite</code>+<code>HttpOnly</code>+CSRF（对应 F9）。</li>
+    </ul>
+  </div>
+  <div class="finding low" style="border-left-color:var(--accent2)">
+    <div class="ftitle">MQTT / 外部服务</div>
+    <ul>
+      <li>broker（若与 MA 同栈）：<code>allow_anonymous false</code>、按主题 ACL、单独账号给电视侧与 MA。</li>
+      <li>Node-RED 流文件内不含凭据（<code>authType=basic</code> 的口令在 Node-RED 凭据库）——但请确认 Node-RED 编辑器本身未暴露在 LAN/tailnet。</li>
+      <li><code>butler_token</code> / <code>ha_assist_token</code> / <code>vision_device_token</code>：确认均已配置且长度足够（空值即该面关闭，见误报表）。</li>
+      <li>外部 LLM/VLM 的 <code>api_key</code> 只经 <code>/api/config</code>（admin）写入，前端回传掩码时不会覆盖真值（<code>config_routes.py:69-77,251-261</code>）。</li>
+    </ul>
+  </div>
+  <div class="finding low" style="border-left-color:var(--low)">
+    <div class="ftitle">发布与仓库</div>
+    <ul>
+      <li><code>.github/workflows/*</code> 全面改用 GitHub Secrets；轮换 CI 密钥。</li>
+      <li><code>gates.sh</code> / CI 增加凭据前缀扫描（<code>svc_</code>、<code>mcp_</code>、<code>acp_</code>、<code>sk-</code>、JWT 三段式）。</li>
+      <li>工作区当前脏（19 项，含被删的 R1–R6 审计报告）：提交前确认审计文档的去留策略，避免审计结论与证据丢失。</li>
+    </ul>
+  </div>
+</div>
+
+<h2><span class="n">06</span>附录：证据索引（file:line）</h2>
+<table>
+  <thead><tr><th style="width:22%">类别</th><th>关键位置</th></tr></thead>
+  <tbody>
+    <tr><td>鉴权中间件 / 路径分类</td><td><code>app.py:65-74,81-94,99-131,138-167,170-247,249-290,337-441</code></td></tr>
+    <tr><td>登录与账号</td><td><code>auth.py:26-44,101-137,161-181,240-328</code>；<code>api/auth_routes.py:38-116,178-187</code></td></tr>
+    <tr><td>凭据签发面（F1）</td><td><code>api/mcp_routes.py:105-136,153-168,171-193,305-323</code>；<code>api/config_routes.py:471-491,500-531</code>（对照）</td></tr>
+    <tr><td>密钥与配置面</td><td><code>api/config_routes.py:21-77,156-234,236-292,295-315</code>；<code>api/deps.py:62-87,162-168</code></td></tr>
+    <tr><td>令牌存储 / scope</td><td><code>service_tokens.py:40-46,90-124,203-252,329-338</code>；<code>mcp_tokens.py:31-34,102-110,236-259</code>；<code>mcp_scopes.py:28-142,161-171,198-246</code></td></tr>
+    <tr><td>MCP 分发与资源</td><td><code>mcp_server.py:302-319,364-376,621-643,654-684,2755-2771,2859-2905,2907-2928</code></td></tr>
+    <tr><td>设备 / HA Assist 令牌</td><td><code>api/face_routes.py:28-40</code>；<code>api/vision_routes.py:27-32</code>；<code>api/ha_assist_routes.py:27-37,58-61</code></td></tr>
+    <tr><td>调试面（F6）</td><td><code>api/debug_routes.py:23-31,369-575</code></td></tr>
+    <tr><td>系统 / 进程面</td><td><code>api/system_routes.py:38-51,54-83,86-137,161-186</code></td></tr>
+    <tr><td>摄像头节流（F7）</td><td><code>tool_schema.py:1066-1087</code>；<code>vision_service.py:1430-1516</code>；<code>mcp_scopes.py:6-7</code></td></tr>
+    <tr><td>MQTT 通路（F8）</td><td><code>tv_service.py:386-390,433-470</code>；<code>mqtt_bridge.py:105-107,146-193,254-299</code>；<code>config.py:215-229</code></td></tr>
+    <tr><td>暴露面与凭据入库（F2/F4/F5）</td><td><code>docker-compose.yml:8,37,55,63-64</code>；<code>Caddyfile:4,9-32</code>；<code>.github/workflows/ci.yml:46</code>；<code>.gitignore:9-17</code>；<code>config.py:599-604</code></td></tr>
+    <tr><td>脚本内令牌（F3）</td><td><code>scripts/test_ingest.sh:3</code>；<code>scripts/test_ingest_auth.sh:3</code>；<code>scripts/investigate_token_loss.sh:27</code>；<code>scripts/debug_token.py:12</code></td></tr>
+    <tr><td>动作派发（F1 影响面）</td><td><code>intent_action.py:185-238</code>；<code>mcp_server.py</code> 的 <code>execute_intent_actions</code> / <code>submit_recipe</code> / <code>save_skill</code> 等写工具</td></tr>
+    <tr><td>脱敏与导出</td><td><code>feedback_pack.py:81-95,230-234</code>；<code>api/deps.py:162-168</code></td></tr>
+  </tbody>
+</table>
+
+<footer>
+  <p><b>方法说明：</b>在约定基线上以只读方式核查源码与编排文件；以“攻击者视角”逐条推演前置条件与可获取物；对外部面、密钥、通路、后端动作四条链路做交叉验证；对每个疑点都给出 <code>file:line</code>，并单列“已排除的误报”与“未覆盖范围”。</p>
+  <p>任何标注 <b>需运行时确认</b> 的结论（F2/F3/F5/F6/F8）都依赖 NAS 侧生产配置，本报告不作断言；请在该侧核实后再定性。</p>
+</footer>
+
+</div>
+</body>
+</html>
