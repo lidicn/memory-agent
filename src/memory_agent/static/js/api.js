@@ -267,10 +267,11 @@ export const api = {
   visionAnalyze: (room, force, wait) => post('/api/vision/analyze', { room, force, wait }),
   behaviors: (params) => get('/api/behaviors' + qs(params)),
 
-  // ── 系统 / 在线更新（从 GitHub 拉取并重启）─────────────────
+  // ── 系统 / 在线更新（宿主 sidecar 标记文件模式）─────────────────
   systemVersion: () => get('/api/system/version'),
   systemUpdateCheck: () => get('/api/system/update/check'),
-  systemUpdate: () => post('/api/system/update', {}),
+  systemUpdate: (confirmVersion) => post('/api/system/update', { confirm_version: confirmVersion }),
+  systemUpdateStatus: () => get('/api/system/update/status'),
 
   // ── LLM ────────────────────────────────────────────────
   llmModels: () => get('/api/llm/models'),

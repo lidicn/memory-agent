@@ -262,7 +262,7 @@ const TPL = `
       ${resultBox('db')}
     </div>
 
-    <!-- 系统 / 在线更新 -->
+    <!-- 系统 / 在线更新（宿主 sidecar 模式） -->
     <div class="card p-5">
       <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-2.5">
@@ -270,32 +270,42 @@ const TPL = `
             <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="white" stroke-width="2" stroke-linecap="round"><path d="M21 2v6h-6M3 22v-6h6"/><path d="M21 8a9 9 0 00-15-3.36L3 8M3 16a9 9 0 0015 3.36L21 16"/></svg>
           </div>
           <div>
-            <h3 class="font-semibold">系统 / 在线更新</h3>
-            <p class="text-[11px] text-txt-3" x-text="'当前：' + (sysVer.commit || '未知') + (sysVer.dirty ? ' · 有未提交改动' : '')"></p>
+            <h3 class="font-semibold">系统更新</h3>
+            <p class="text-[11px] text-txt-3" x-text="'当前版本：' + (sysVer.version || '未知')"></p>
           </div>
         </div>
         <button class="btn-ghost btn-xs" @click="checkUpdate()" :disabled="updating || checking">
           <span x-show="checking" class="spinner"></span><span>检查更新</span>
         </button>
       </div>
-      <div class="text-[11px] text-txt-2 space-y-1">
-        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">分支</span><span class="font-mono truncate" x-text="sysVer.branch || '—'"></span></div>
-        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">提交</span><span class="font-mono truncate" x-text="sysVer.commit || '—'"></span></div>
-        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">标签</span><span class="font-mono truncate" x-text="sysVer.tag || '—'"></span></div>
-        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">远端</span><span class="font-mono truncate" x-text="sysVer.update_repo_url || '—'"></span></div>
+      <div class="text-[11px] text-txt-2 space-y-1 mb-3">
+        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">版本</span><span class="font-mono" x-text="sysVer.version || '—'"></span></div>
+        <div class="flex justify-between gap-3"><span class="text-txt-3 shrink-0">分支</span><span class="font-mono truncate" x-text="sysVer.update_branch || 'main'"></span></div>
       </div>
       <template x-if="updateInfo && updateInfo.has_update === true">
-        <div class="mt-3 rounded-lg bg-ok/10 border border-ok/25 px-3 py-2 text-[11px] text-ok">
-          有可用更新：本地 <span class="font-mono" x-text="updateInfo.local_commit"></span> → 远端 <span class="font-mono" x-text="updateInfo.latest_commit"></span>
+        <div class="mt-2 rounded-lg bg-ok/10 border border-ok/25 px-3 py-2 text-[11px] text-ok">
+          有新版本可更新（远端 <span class="font-mono" x-text="updateInfo.latest_commit"></span>）
         </div>
       </template>
       <template x-if="updateInfo && updateInfo.has_update === false">
-        <div class="mt-3 rounded-lg bg-white/5 px-3 py-2 text-[11px] text-txt-3">已是最新版本</div>
+        <div class="mt-2 rounded-lg bg-white/5 px-3 py-2 text-[11px] text-txt-3">已是最新版本</div>
+      </template>
+      <template x-if="updatePending">
+        <div class="mt-2 rounded-lg bg-brand/10 border border-brand/25 px-3 py-2 text-[11px] text-brand">
+          更新请求已提交，宿主脚本将在约1分钟内执行 git pull + 自动重启…
+        </div>
+      </template>
+      <template x-if="updateResult">
+        <div class="mt-2 rounded-lg px-3 py-2 text-[11px] border"
+             :class="updateResult.ok ? 'bg-ok/10 border-ok/25 text-ok' : 'bg-danger/10 border-danger/25 text-danger'">
+          <span x-text="updateResult.ok ? '✓ 更新成功' : '✕ 更新失败: ' + (updateResult.error || '')"></span>
+          <span x-show="updateResult.to" class="ml-1 font-mono" x-text="'→ ' + updateResult.to"></span>
+        </div>
       </template>
       <div class="mt-4">
-        <button class="btn-primary w-full" @click="doUpdate()" :disabled="!updateInfo || !updateInfo.has_update || updating"
-                x-text="updating ? '更新并重启中…' : '更新并重启'"></button>
-        <p class="hint mt-2">从 GitHub 拉取最新代码（fast-forward，且工作树需干净），随后重启服务；不触碰 /data 数据。</p>
+        <button class="btn-primary w-full" @click="doUpdate()" :disabled="!updateInfo || !updateInfo.has_update || updating || updatePending"
+                x-text="updating ? '提交中…' : (updatePending ? '等待宿主执行…' : '更新到最新版')"></button>
+        <p class="hint mt-2">提交后由宿主脚本自动拉取最新代码并重启容器；不触碰 /data 数据。</p>
       </div>
     </div>
 
@@ -438,10 +448,12 @@ export function settingsPage() {
     pwd: { old: '', next: '', confirm: '' },
 
     // 在线更新状态
-    sysVer: { commit: '', branch: '', tag: '', dirty: null, update_repo_url: '', update_branch: '' },
+    sysVer: { version: '', commit: '', branch: '', tag: '', dirty: null, update_repo_url: '', update_branch: '' },
     updateInfo: null,
     updating: false,
     checking: false,
+    updatePending: false,
+    updateResult: null,
 
     fmtNum, fmtTime,
 
@@ -555,15 +567,45 @@ export function settingsPage() {
 
     async doUpdate() {
       if (!this.updateInfo || !this.updateInfo.has_update) return;
-      if (!confirm('确认从 GitHub 拉取最新代码并重启服务？更新不会删除 /data 数据。')) return;
+      const ver = this.sysVer.version || '';
+      const confirmVer = await this.$store.app.ask(
+        '确认更新',
+        `即将提交更新请求到宿主脚本。请输入当前版本号 "${ver}" 以确认：`,
+        '确认更新'
+      );
+      if (!confirmVer || confirmVer.trim() !== ver) {
+        this.$store.app.warn('版本号不匹配，已取消');
+        return;
+      }
       this.updating = true;
+      this.updateResult = null;
       try {
-        const d = await api.systemUpdate();
-        if (!d.ok) { this.$store.app.err(d.error || '更新失败'); return; }
-        this.$store.app.ok('更新完成，正在重启…页面将在数秒后自动刷新');
-        setTimeout(() => location.reload(), 4000);
+        const d = await api.systemUpdate(ver);
+        if (!d.ok) { this.$store.app.err(d.error || '提交失败'); return; }
+        this.updatePending = true;
+        this.$store.app.ok('更新请求已提交，等待宿主脚本执行（约1分钟）…');
+        // 轮询状态
+        this._pollTimer = setInterval(async () => {
+          try {
+            const s = await api.systemUpdateStatus();
+            if (s.result) {
+              this.updateResult = s.result;
+              this.updatePending = s.pending;
+              clearInterval(this._pollTimer);
+              if (s.result.ok) {
+                this.$store.app.ok('更新成功，页面即将刷新');
+                setTimeout(() => location.reload(), 3000);
+              } else {
+                this.$store.app.err('更新失败：' + (s.result.error || ''));
+              }
+            } else if (!s.pending) {
+              clearInterval(this._pollTimer);
+              this.updatePending = false;
+            }
+          } catch (e) { /* 容器重启中，忽略 */ }
+        }, 5000);
       } catch (e) {
-        this.$store.app.err('更新失败：' + e.message);
+        this.$store.app.err('提交失败：' + e.message);
       } finally {
         this.updating = false;
       }
