@@ -443,12 +443,32 @@ class HistoryManager:
         }
 
     def reset_chroma(self) -> None:
+        # F2: 关闭旧 client 的底层 httpx 连接池，避免热更新时 socket 泄漏
+        self._close_chroma_client()
         self._client = None
         self._collection = None
         self._chroma_error = ""
         self._chroma_retry_after = 0.0
         self._embed_fn_cache = None
         self._embed_resolved = False
+
+    def _close_chroma_client(self) -> None:
+        """关闭 chromadb HttpClient 的底层连接池（best effort）。"""
+        client = self._client
+        if client is None:
+            return
+        try:
+            # chromadb HttpClient 内部持有 httpx 连接池；v0.4+ 有 close()
+            if hasattr(client, "close"):
+                client.close()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """关停时释放 chromadb 连接池。"""
+        self._close_chroma_client()
+        self._client = None
+        self._collection = None
 
     # ── 写入 ─────────────────────────────────────────────────────────────
 

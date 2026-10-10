@@ -634,6 +634,7 @@ class Store:
         self.backup_dir = backup_dir or ""
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
+        self._closed = False  # D13: close() 后置 True，阻止关停后静默重连
 
     # -- 连接与建表 --------------------------------------------------------
 
@@ -643,6 +644,8 @@ class Store:
         with self._lock:
             if self._conn is not None:
                 return self._conn
+            if self._closed:
+                raise RuntimeError("Store 已关闭，禁止重连")
             parent = os.path.dirname(self.db_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
@@ -664,7 +667,20 @@ class Store:
         """
         with self._lock:
             if self._conn is not None:
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if row is not None:
+                    busy, log, ckpt = row[0], row[1], row[2]
+                    if busy != 0:
+                        logging.getLogger(__name__).warning(
+                            "Store.checkpoint: WAL checkpoint 被 busy 挡下 (busy=%s log=%s ckpt=%s)",
+                            busy, log, ckpt,
+                        )
+                    elif ckpt < log:
+                        logging.getLogger(__name__).info(
+                            "Store.checkpoint: WAL 合并 %s/%s 页", ckpt, log,
+                        )
+            else:
+                logging.getLogger(__name__).debug("Store.checkpoint: 连接未建立，跳过")
 
     @contextmanager
     def _db(self):
@@ -761,19 +777,43 @@ class Store:
         result["error"] = problem
         logger.error(problem)
 
-        candidates = [self.db_path + ".bak*"]
+        # D01: 恢复候选优先级——先 VACUUM INTO 的正规快照（完整一致），
+        # .bak* 手工文件拷贝缺 WAL 数据，仅作最后兜底且恢复前必须跑 integrity_check。
+        candidates = []
         if self.backup_dir:
             candidates.append(os.path.join(self.backup_dir, "ma-*.db"))
         backups: list[str] = []
         for pat in candidates:
             backups.extend(p for p in glob.glob(pat) if os.path.isfile(p))
+        # .bak* 单独收集，排在正规快照之后
+        bak_files = [p for p in glob.glob(self.db_path + ".bak*") if os.path.isfile(p)]
         backups.sort(key=os.path.getmtime, reverse=True)
+        bak_files.sort(key=os.path.getmtime, reverse=True)
+        backups.extend(bak_files)  # 正规快照优先，bak 兜底
         if not backups:
             logger.error(
                 f"No backup found for recovery (查找位置: {', '.join(candidates)})")
             return result
 
-        latest_bak = backups[0]
+        # D01: 恢复前逐个校验候选完整性，跳过坏快照
+        latest_bak = None
+        for cand in backups:
+            try:
+                test_conn = sqlite3.connect(cand, check_same_thread=False, timeout=5.0)
+                ir = test_conn.execute("PRAGMA integrity_check").fetchone()
+                test_conn.close()
+                if ir and ir[0] == "ok":
+                    latest_bak = cand
+                    break
+                else:
+                    logger.warning(f"恢复候选 {os.path.basename(cand)} integrity_check={ir[0] if ir else 'None'}，跳过")
+            except Exception as e:
+                logger.warning(f"恢复候选 {os.path.basename(cand)} 无法打开: {e}，跳过")
+        if latest_bak is None:
+            result["error"] += "; all backup candidates failed integrity_check"
+            logger.error(result["error"])
+            return result
+
         logger.warning(f"Recovering from backup: {latest_bak}")
 
         conn = self.connect()
@@ -2002,6 +2042,7 @@ class Store:
                         logging.getLogger(__name__).warning(
                             "Store.close: 连接关闭异常: %s", e
                         )
+            self._closed = True  # D13: 标记已关闭，阻止后续 connect() 重连
 
     # -- 竞技场快照 / 结果（AutoFlow 竞技场对接）--------------------------------
 
@@ -4649,12 +4690,38 @@ class Store:
             conn.commit()
         if removed:
             print(f"[Store] 按保留策略清理 {removed} 条事件（早于 {cutoff}）")
+        # D02: behavior_events / perception_events 此前无保留策略，单调增长最终撑爆磁盘。
+        be_removed = self._purge_table_by_day("behavior_events", cutoff, step)
+        pe_removed = self._purge_table_by_day("perception_events", cutoff, step)
+        if be_removed or pe_removed:
+            print(f"[Store] 清理 behavior_events={be_removed} perception_events={pe_removed}（早于 {cutoff}）")
         # 审计 P0-8：DELETE 只把页放进空闲链，磁盘不归还文件系统（实测删 50 万行
         # 体积 198MB 纹丝不动）。NAS/树莓派盘小，删得多的那一轮顺手回收一次。
-        if removed >= PURGE_VACUUM_MIN_ROWS:
+        total_removed = removed + be_removed + pe_removed
+        if total_removed >= PURGE_VACUUM_MIN_ROWS:
             with self._lock:
                 conn.execute("VACUUM")
-            print(f"[Store] 清理后执行 VACUUM 回收磁盘（本轮删除 {removed} 条）")
+            print(f"[Store] 清理后执行 VACUUM 回收磁盘（本轮删除 {total_removed} 条）")
+        return removed
+
+    def _purge_table_by_day(self, table: str, cutoff: str, step: int) -> int:
+        """分批删除指定表中 day < cutoff 的行，复用 events 的批量删除模式。"""
+        if table not in ("behavior_events", "perception_events"):
+            return 0
+        conn = self.connect()
+        removed = 0
+        while True:
+            with self._lock:
+                cur = conn.execute(
+                    f"DELETE FROM {table} WHERE rowid IN ("
+                    f"SELECT rowid FROM {table} WHERE day < ? LIMIT ?)",
+                    (cutoff, step),
+                )
+                n = int(cur.rowcount or 0)
+                conn.commit()
+            removed += n
+            if n < step:
+                break
         return removed
 
     # ── Agent 记忆（参与式写回向量库）────────────────────────────────────────

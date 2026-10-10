@@ -902,6 +902,11 @@ class AppRuntime:
                 ha_db.close()
             except Exception as exc:
                 print(f"[Runtime] 关闭 HA MariaDB 客户端异常: {exc}")
+        # F3: 关闭 chromadb 连接池
+        try:
+            self.history.close()
+        except Exception as exc:
+            print(f"[Runtime] 关闭 chromadb 客户端异常: {exc}")
         await asyncio.to_thread(self.store.close)
         self._started = False
         print("[Runtime] 已关闭")
