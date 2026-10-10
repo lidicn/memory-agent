@@ -606,15 +606,12 @@ export function settingsPage() {
     async doUpdate() {
       if (!this.updateInfo || !this.updateInfo.has_update) return;
       const ver = this.sysVer.version || '';
-      const confirmVer = await this.$store.app.ask(
+      const yes = await this.$store.app.ask(
         '确认更新',
-        `即将提交更新请求到宿主脚本。请输入当前版本号 "${ver}" 以确认：`,
+        `即将从 GitHub 拉取最新代码并重启服务。当前版本 ${ver}，确认继续？`,
         '确认更新'
       );
-      if (!confirmVer || confirmVer.trim() !== ver) {
-        this.$store.app.warn('版本号不匹配，已取消');
-        return;
-      }
+      if (!yes) return;
       this.updating = true;
       this.updateResult = null;
       try {
@@ -622,7 +619,6 @@ export function settingsPage() {
         if (!d.ok) { this.$store.app.err(d.error || '提交失败'); return; }
         this.updatePending = true;
         this.$store.app.ok('更新请求已提交，等待宿主脚本执行（约1分钟）…');
-        // 轮询状态
         this._pollTimer = setInterval(async () => {
           try {
             const s = await api.systemUpdateStatus();
