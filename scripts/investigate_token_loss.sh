@@ -24,7 +24,11 @@ for t in store.list_tokens():
     print(f"  {t['name']}: prefix={t['prefix']} persisted={t.get('persisted')}")
 
 # 4. 验证令牌
-token = "svc_bBOOEsC7qcXcGFctr3wxz35pBM-FuNTVYAVrtMjToes"
-print(f"\n=== verify('{token[:20]}...') ===")
-print(f"result: {store.verify(token)}")
+import os
+token = os.environ.get("MA_INGEST_TOKEN", "")
+if token:
+    print(f"\n=== verify('{token[:20]}...') ===")
+    print(f"result: {store.verify(token)}")
+else:
+    print("\n=== 未设置 MA_INGEST_TOKEN 环境变量，跳过 verify ===")
 PYEOF

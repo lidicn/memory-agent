@@ -1,6 +1,7 @@
 #!/bin/bash
 # 用 wget 测试（容器内可能没有 curl）
-TOKEN="svc_bBOOEsC7qcXcGFctr3wxz35pBM-FuNTVYAVrtMjToes"
+# 令牌从环境变量读取：export MA_INGEST_TOKEN=svc_xxx
+TOKEN="${MA_INGEST_TOKEN:?请先 export MA_INGEST_TOKEN=svc_xxx}"
 echo "=== 测试 POST /api/metrics/ingest ==="
 python3 << PYEOF
 import urllib.request

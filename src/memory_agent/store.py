@@ -916,6 +916,13 @@ class Store:
                 conn.commit()
                 if not self._fts_index_healthy(conn):
                     raise RuntimeError("rebuild 之后 integrity-check 仍不通过")
+                if _tok == "unicode61":
+                    # R4-3/T3: unicode61 对中文整句切单 token，子串检索完全失效。
+                    # 此前静默降级，运维无感知；现在打 ERROR 级警告。
+                    logging.getLogger(__name__).error(
+                        "FTS5 tokenizer 降级到 unicode61——中文子串检索将完全失效！"
+                        "请确认 SQLite 是否编译了 trigram 分词器。"
+                    )
                 return _tok
             except Exception as exc:
                 last_exc = exc
@@ -4916,10 +4923,15 @@ class Store:
         return [dict(r) for r in rows]
 
     def search_agent_memories_fts(self, query: str, limit: int = 20,
-                                  state: str = "live") -> list:
+                                  state: str = "live",
+                                  member_id: str | None = None,
+                                  source: str | None = None,
+                                  trust_min: float | None = None) -> list:
         """v0.8-4 FTS5 关键词检索（混合检索的第二路）。
 
         对查询做 phrase 包裹以规避 FTS5 语法字符；bm25 rank 越小越相关。
+        member_id/source/trust_min 下推到 SQL WHERE（审计 R5-3：此前过滤在 LIMIT
+        之后，前 k 条被过滤掉后无法补召回）。
         FTS5 不可用时返回空列表（调用方回退纯向量）。
         """
         q = (query or "").strip()
@@ -4927,10 +4939,24 @@ class Store:
             return []
         # 以 phrase 包裹，转义内部双引号，避免 MATCH 语法注入
         phrase = '"' + q.replace('"', '""') + '"'
+        # R5-3: 下推过滤条件到 SQL WHERE，在 LIMIT 之前裁剪
+        where_clauses = ["a.state = ?"]
+        params: list = [state]
+        if member_id is not None:
+            where_clauses.append("a.member_id = ?")
+            params.append(member_id)
+        if source is not None:
+            where_clauses.append("a.source = ?")
+            params.append(source)
+        if trust_min is not None:
+            where_clauses.append("a.trust >= ?")
+            params.append(trust_min)
+        where_sql = " AND ".join(where_clauses)
+        params.append(limit)
         with self._db() as conn:
             try:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT a.memory_id, a.text, a.topic_key, a.state, a.trust,
                            a.source, a.tags_json, a.member_id, f.rank
                     FROM (
@@ -4939,11 +4965,11 @@ class Store:
                         WHERE agent_memories_fts MATCH ?
                     ) f
                     JOIN agent_memories a ON a.rowid = f.rid
-                    WHERE a.state = ?
+                    WHERE {where_sql}
                     ORDER BY f.rank
                     LIMIT ?
                     """,
-                    (phrase, state, limit),
+                    (phrase, *params),
                 ).fetchall()
             except Exception as exc:  # pragma: no cover
                 print(f"[Store] FTS 检索失败: {exc}")

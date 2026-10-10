@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     ports:
       # 只绑 LAN 网卡，避免与 tailscaled 在 Tailscale 网卡上的 `tailscale serve :8086` 冲突
-      - "192.168.2.200:8086:8000"
+      - "${BIND_IP:-192.168.2.200}:8086:8000"
     env_file:
       - .env
     environment:
@@ -33,8 +33,8 @@ services:
       HA_DB_NAME: "${HA_DB_NAME:-homeassistant}"
       HA_DB_USER: "${HA_DB_USER:-memory_agent_ro}"
       # 密码不在此处明文注入；以 config.json 的 ha_db_password 为准
-      # JWT密钥
-      JWT_SECRET: "${JWT_SECRET:-change_this_to_random_string}"
+      # JWT密钥：必须在 .env 中设置随机值，不提供默认值（审计 H1：防可预测密钥伪造管理员令牌）
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET 未设置，请在 .env 中写入随机字符串}"
       # 豆包管家对接令牌（外部服务窄接口：成员档案读写 + 在场查询）
       BUTLER_TOKEN: "${BUTLER_TOKEN:-}"
       PYTHONPATH: "/app/src"
@@ -60,8 +60,8 @@ services:
     ports:
       # DCD 20261005 Q3=A：NAS 宿主 80/443 被孤儿端点占用，8443 被 homelab-dashboard 占用
       # caddy 换端口 9080/9443，PWA 访问地址改为 https://192.168.2.200:9443
-      - "192.168.2.200:9080:80"
-      - "192.168.2.200:9443:443"
+      - "${BIND_IP:-192.168.2.200}:9080:80"
+      - "${BIND_IP:-192.168.2.200}:9443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./certs:/certs:ro

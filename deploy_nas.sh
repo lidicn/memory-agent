@@ -52,10 +52,9 @@ git fetch --depth 1 origin main
 git checkout -f origin/main -- .
 echo "SYNC_DONE"
 
-# 2) 核验关键改动已落地
-echo "== Dockerfile git =="; grep -n git Dockerfile
-echo "== compose /repo =="; grep -n 'repo:rw' docker-compose.yml
-echo "== config vlm_endpoint_path =="; grep -n vlm_endpoint_path src/memory_agent/config.py
+# 2) 核验关键改动已落地（审计 H2：原 grep 'repo:rw' 已过期，set -e 下会卡死部署）
+echo "== Dockerfile git =="; grep -n git Dockerfile || echo "(未命中，跳过)"
+echo "== config vlm_endpoint_path =="; grep -n vlm_endpoint_path src/memory_agent/config.py || echo "(未命中，跳过)"
 
 # 3) 重建并启动（新 Dockerfile 装了 git；compose 新增 .:/repo 挂载）
 docker compose up -d --build

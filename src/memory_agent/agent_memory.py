@@ -608,26 +608,23 @@ class AgentMemoryService:
                 self.logger.warning("向量检索失败: %s", exc)
 
         # 第二路：FTS5 关键词召回（专名/设备名/房间名，向量语义易漏）
+        # R5-3: member_id/source/trust_min 下推 SQL WHERE，LIMIT 前裁剪
+        # R5-2: 用 bm25 rank 归一化后代入 fts 分量，替代二元 1.0
+        fts_member_id = member_id if member_id else ""
         try:
-            fts_rows = self.store.search_agent_memories_fts(question, limit=k, state="live")
+            fts_rows = self.store.search_agent_memories_fts(
+                question, limit=k, state="live",
+                member_id=fts_member_id, source=source, trust_min=trust_min,
+            )
         except Exception:
             fts_rows = []
         for r in fts_rows:
             mid = r["memory_id"]
-            if source and (r.get("source") or "ma") != source:
-                continue
-            if trust_min is not None and float(r.get("trust", 0.0)) < trust_min:
-                continue
-            # WO-ADM-001 R-60：FTS 路按成员归属过滤（SQL 层不支持，结果层过滤）
-            # vMA-1.2.2: member_id fail-closed —— 空 member_id 只保留公共记忆
-            if member_id:
-                if (r.get("member_id") or "") != member_id:
-                    continue
-            else:
-                if (r.get("member_id") or "") != "":
-                    continue
+            # R5-2: bm25 rank 越小越相关，归一化为 [0,1]：1/(1+|rank|)
+            raw_rank = float(r.get("rank", 0.0) or 0.0)
+            fts_score = 1.0 / (1.0 + abs(raw_rank))
             if mid in merged:
-                merged[mid]["fts"] = 1.0
+                merged[mid]["fts"] = max(float(merged[mid].get("fts", 0.0)), fts_score)
             else:
                 merged[mid] = {
                     "memory_id": mid,
@@ -637,7 +634,7 @@ class AgentMemoryService:
                     "source": r.get("source", "ma"),
                     "member_id": r.get("member_id", ""),
                     "topic_key": r.get("topic_key", ""),
-                    "fts": 1.0,
+                    "fts": fts_score,
                 }
 
         # 融合重排：语义为主 + 关键词增强 + 信任微调

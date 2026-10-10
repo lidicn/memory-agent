@@ -1,6 +1,7 @@
 #!/bin/bash
 # 测试 /api/metrics/ingest 鉴权
-TOKEN="svc_-xd8ZTmbld1bRur9Ya4KipJFu_7I5Bb0Dnf9L2kWUhM"
+# 令牌从环境变量读取：export MA_INGEST_TOKEN=svc_xxx
+TOKEN="${MA_INGEST_TOKEN:?请先 export MA_INGEST_TOKEN=svc_xxx}"
 echo "=== 测试 autoforge 令牌 ==="
 curl -s -X POST http://127.0.0.1:8000/api/metrics/ingest \
   -H "Authorization: Bearer $TOKEN" \
