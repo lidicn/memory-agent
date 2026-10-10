@@ -1,28 +1,25 @@
-"""系统 / 在线更新（从 GitHub 拉取最新代码并自重启）
+"""系统 / WebUI 自更新（宿主侧 sidecar 模式）
 
-设计要点
---------
-* 容器通过 docker-compose 把宿主机仓库根挂载到 ``/repo``（见 docker-compose.yml），
-  因此容器内 ``git`` 操作作用在宿主机仓库（含被 bind 挂载的 ``./src``），更新即时生效。
-* 安全约束：
-  - 仅 ``git pull --ff-only``（fast-forward），绝不 ``--force`` / 合并，避免覆盖本地改动。
-  - 工作树 dirty（有未提交改动）时拒绝更新，提示先 ``git stash`` / ``commit``。
-  - 不触碰 ``/data`` 等持久化数据卷；配置以原子写、容错读为前提，升级不破坏。
-  - 写操作（apply_update）需管理员。
-* 重启策略：若配置了 ``restart_cmd`` 则执行它（如 ``docker compose restart`` 或
-  ``systemctl restart``）；否则回退为读取 ``/proc/1/cmdline`` 通过 ``os.execv``
-  重启当前进程（docker 绑定挂载下即加载新代码）。
+DCD 20261010 裁定：
+- Q1=B：不开放容器内写宿主源码（P0-10 安全红线），改为宿主侧 sidecar
+- Q4=B：admin JWT + 二次确认（输入当前版本号）
+
+流程：
+  1. admin 在 WebUI 点"检查更新" → GET /api/system/update/check
+  2. admin 点"更新"，输入当前版本号确认 → POST /api/system/update
+  3. 容器写标记文件 /data/.update_request.json（宿主机 data 卷可见）
+  4. 宿主 cron 每分钟轮询标记文件，执行 git fetch → checkout → py_compile → docker restart
+  5. 宿主脚本写结果到 /data/.update_result.json
+  6. admin 可通过 GET /api/system/update/status 查看进度
 """
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import os
+import time
 
 from memory_agent import __version__ as __app_version__
-import shlex
-import subprocess
-
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -32,40 +29,22 @@ from .deps import require_admin
 
 _LOG = logging.getLogger("system.update")
 
-# docker-compose 挂载的宿主机仓库根；可用环境变量覆盖以适配非标准部署。
-REPO_DIR = os.getenv("REPO_DIR", "/repo").rstrip("/") or "/repo"
+DATA_DIR = os.getenv("MA_DATA_DIR", "/data").rstrip("/") or "/data"
+MARKER_PATH = os.path.join(DATA_DIR, ".update_request.json")
+RESULT_PATH = os.path.join(DATA_DIR, ".update_result.json")
 
 DEFAULT_REPO = "https://github.com/lidicn/memory-agent.git"
 DEFAULT_BRANCH = "main"
 
 
-async def _git(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
-    """在仓库目录执行 git，转线程避免阻塞事件循环。"""
-    return await asyncio.to_thread(
-        subprocess.run,
-        args,
-        cwd=REPO_DIR,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-
-
 async def get_version(request: Request):
-    """返回当前版本信息：commit / branch / tag / dirty / 更新源。
-
-    WO-MA-004 ①：原无门，暴露内部版本/分支/仓库地址。改为 require_admin，
-    与 apply_update 同级别。version 信息含 commit/branch/repo_url，
-    属于内部实现细节，不应对未认证请求公开。
-    """
+    """返回当前版本信息。admin only。"""
     user, err = require_admin(request)
     if err:
         return err
     info: dict = {
         "version": __app_version__,
-        "repo_dir": REPO_DIR,
         "commit": "", "branch": "", "tag": "", "dirty": None,
-        "update_repo_url": "", "update_branch": "",
     }
     try:
         cfg = get_config()
@@ -73,26 +52,16 @@ async def get_version(request: Request):
         info["update_branch"] = cfg.update_branch or DEFAULT_BRANCH
     except Exception:
         pass
-    try:
-        info["commit"] = (await _git(["git", "rev-parse", "--short", "HEAD"])).stdout.strip()
-        info["branch"] = (await _git(["git", "rev-parse", "--abbrev-ref", "HEAD"])).stdout.strip()
-        info["tag"] = (await _git(["git", "describe", "--tags", "--always"])).stdout.strip()
-        info["dirty"] = bool((await _git(["git", "status", "--porcelain"])).stdout.strip())
-    except Exception as exc:  # 非 git 仓库 / 无 git 时优雅降级
-        info["error"] = str(exc)
     return JSONResponse(info)
 
 
 async def check_update(request: Request):
-    """比对本地 HEAD 与远端分支，返回是否有更新。
-
-    WO-MA-004 ①：原无门，内含 git ls-remote 出网点（未认证即可触发出网，
-    且单次请求可占线程池 120 秒）。改为 require_admin，出网点必须落在
-    有门路径后。
-    """
+    """比对本地 HEAD 与远端分支，返回是否有更新。admin only。"""
     user, err = require_admin(request)
     if err:
         return err
+    import asyncio
+    import subprocess
     try:
         cfg = get_config()
     except Exception as exc:
@@ -100,130 +69,125 @@ async def check_update(request: Request):
     repo = (cfg.update_repo_url or DEFAULT_REPO).strip()
     branch = (cfg.update_branch or DEFAULT_BRANCH).strip()
     try:
-        local = (await _git(["git", "rev-parse", "HEAD"])).stdout.strip()
-        remote_raw = (await _git(["git", "ls-remote", repo, f"refs/heads/{branch}"])).stdout.strip()
-        if not remote_raw:
+        remote_raw = await asyncio.to_thread(
+            subprocess.run,
+            ["git", "ls-remote", repo, f"refs/heads/{branch}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if not remote_raw.stdout.strip():
             return JSONResponse(
                 {"ok": False, "error": "无法获取远端引用，检查仓库地址或网络连通性"}
             )
-        remote_commit = remote_raw.split()[0]
+        remote_commit = remote_raw.stdout.strip().split()[0]
         return JSONResponse({
             "ok": True,
-            "has_update": local != remote_commit,
-            "local_commit": local[:12],
+            "has_update": True,  # 容器内不跑 git，无法比 local commit，一律提示可更新
             "latest_commit": remote_commit[:12],
             "branch": branch,
+            "repo": repo,
         })
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)})
 
 
 async def apply_update(request: Request):
-    """拉取最新代码并重启（管理员）。
+    """提交更新请求（admin JWT + 版本号二次确认）。
 
-    WO-MA-001 / 审计 P0-10：容器内可写仓库挂载已摘除，在线更新统一走
-    宿主机 deploy_nas.sh。本端点检测到 REPO_DIR 不可写时返回结构化停用错误，
-    而不是抛 500 / traceback。
+    DCD Q4=B：必须在 body 里传 confirm_version 且等于当前版本号。
+    容器不执行 git 操作，只写标记文件给宿主 sidecar。
     """
     user, err = require_admin(request)
     if err:
         return err
-    # 前置检查：REPO_DIR 必须存在且可写，否则在线更新已停用
-    if not os.path.isdir(REPO_DIR) or not os.access(REPO_DIR, os.W_OK):
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    confirm_version = (body.get("confirm_version") or "").strip()
+    if not confirm_version:
         return JSONResponse({
             "ok": False,
-            "error": "在线更新已停用，请用宿主 deploy_nas.sh",
-            "detail": f"REPO_DIR={REPO_DIR} 不存在或不可写（WO-MA-001 / 审计 P0-10）",
-        }, status_code=503)
+            "error": "需要确认版本号",
+            "detail": f"请在 body 中传 confirm_version=\"{__app_version__}\"",
+        }, status_code=400)
+
+    if confirm_version != __app_version__:
+        return JSONResponse({
+            "ok": False,
+            "error": "版本号不匹配，已拒绝更新",
+            "expected": __app_version__,
+            "received": confirm_version,
+        }, status_code=400)
+
+    # 检查是否已有进行中的更新请求
+    if os.path.isfile(MARKER_PATH):
+        return JSONResponse({
+            "ok": False,
+            "error": "已有更新请求进行中，请等待宿主脚本执行完成",
+        }, status_code=409)
+
     try:
         cfg = get_config()
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)})
-    branch = (cfg.update_branch or DEFAULT_BRANCH).strip()
+    except Exception:
+        cfg = None
+    branch = (getattr(cfg, "update_branch", None) or DEFAULT_BRANCH).strip()
 
-    try:
-        # 1) dirty 检测：有未提交改动则拒绝，避免更新后状态混乱
-        status = (await _git(["git", "status", "--porcelain"])).stdout.strip()
-        if status:
-            return JSONResponse({
-                "ok": False,
-                "dirty": True,
-                "error": "工作树有未提交改动，已拒绝更新。请先在宿主机执行 git stash / commit，或使用 restart_cmd 托管的重启流程。",
-            })
+    # 写标记文件（原子写：先写临时文件再 rename）
+    marker = {
+        "ref": branch,
+        "requested_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "requested_by": user.get("username", "admin"),
+        "version": __app_version__,
+    }
+    tmp_path = MARKER_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(marker, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, MARKER_PATH)
 
-        # 2) fetch + fast-forward pull（绝不 force / merge）
-        await _git(["git", "fetch", "origin", branch])
-        pull = await _git(["git", "pull", "--ff-only", "origin", branch])
-        if pull.returncode != 0:
-            return JSONResponse({
-                "ok": False,
-                "error": "git pull --ff-only 失败（本地分支可能已分叉，需先 rebase）",
-                "detail": (pull.stderr or pull.stdout).strip()[:500],
-            })
+    # 清除旧结果
+    if os.path.isfile(RESULT_PATH):
+        os.remove(RESULT_PATH)
 
-        # 3) 重启：优先 restart_cmd，否则 re-exec 当前进程
-        restart_cmd = (cfg.restart_cmd or "").strip()
-        if restart_cmd:
-            # 安全（审计 O2）：移除 shell=True，避免 restart_cmd（可经配置修改）
-            # 造成命令注入。用 shlex 拆分后直接 exec，不再经过 shell 解释，
-            # 因此不支持 &&/|/重定向 等 shell 语法；复合命令请写成脚本再由本字段调用。
-            try:
-                cmd_argv = shlex.split(restart_cmd)
-            except ValueError as exc:
-                return JSONResponse({
-                    "ok": False,
-                    "error": f"restart_cmd 解析失败（检查引号是否闭合）：{exc}",
-                })
-            if not cmd_argv:
-                return JSONResponse({"ok": False, "error": "restart_cmd 为空"})
-            subprocess.Popen(
-                cmd_argv, cwd=REPO_DIR,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            return JSONResponse({
-                "ok": True, "restarting": True, "via": "restart_cmd",
-                "message": (pull.stdout or "").strip()[:500],
-            })
-
-        await _reexec()
-        return JSONResponse({
-            "ok": True, "restarting": True, "via": "reexec",
-            "message": (pull.stdout or "").strip()[:500],
-        })
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)})
+    _LOG.info("更新请求已提交：ref=%s by=%s", branch, user.get("username"))
+    return JSONResponse({
+        "ok": True,
+        "message": "更新请求已提交，宿主脚本将在约1分钟内执行 git pull + 重启",
+        "marker": MARKER_PATH,
+        "expected_delay_sec": 60,
+    })
 
 
-async def _reexec() -> None:
-    """通过 /proc/1/cmdline 重启当前进程（加载绑定挂载的新代码）。
+async def update_status(request: Request):
+    """查看更新进度。admin only。"""
+    user, err = require_admin(request)
+    if err:
+        return err
 
-    先让当前 HTTP 响应返回，再用 call_later 延迟触发 execv，避免响应未发出即被杀。
-    """
-    try:
-        with open("/proc/1/cmdline", "rb") as f:
-            parts = f.read().split(b"\x00")
-        cmd = [p.decode("utf-8", "replace") for p in parts if p]
-        if not cmd:
-            return
-        loop = asyncio.get_event_loop()
-        loop.call_later(0.6, lambda: os.execv(cmd[0], cmd))
-    except Exception as exc:  # 无 /proc（如 Windows 开发环境）时静默跳过
-        _LOG.warning("reexec 不可用：%s", exc)
+    pending = os.path.isfile(MARKER_PATH)
+    result = None
+    if os.path.isfile(RESULT_PATH):
+        try:
+            with open(RESULT_PATH, encoding="utf-8") as f:
+                result = json.load(f)
+        except Exception:
+            result = None
+
+    return JSONResponse({
+        "pending": pending,
+        "result": result,
+        "current_version": __app_version__,
+    })
 
 
 async def breakers_status(request: Request):
-    """v0.9 离线降级：各依赖断路器状态（LLM / embedding …）。
-
-    WO-MA-004 ①：原无门，暴露内部熔断器状态（可用于探测服务依赖和
-    降级状态）。改为 require_admin。
-
-    ``degraded`` 列出当前非 closed 的断路器名，便于判断「是否在降级运行」。
-    """
+    """各依赖断路器状态。admin only。"""
     user, err = require_admin(request)
     if err:
         return err
     from ..circuit_breaker import all_states
-
     states = all_states()
     return JSONResponse({
         "breakers": states,
@@ -236,7 +200,7 @@ ROUTES = [
     Route("/api/system/breakers", breakers_status, methods=["GET"]),
     Route("/api/system/update/check", check_update, methods=["GET"]),
     Route("/api/system/update", apply_update, methods=["POST"]),
+    Route("/api/system/update/status", update_status, methods=["GET"]),
 ]
-
 
 __all__ = ["ROUTES"]

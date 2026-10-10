@@ -168,6 +168,8 @@ class AppRuntime:
     async def startup(self) -> None:
         if self._started:
             return
+        from .startup_health import set_state
+        set_state("db_check")
         print("[Runtime] 启动中…")
         rec = await asyncio.to_thread(self.store.check_and_recover)
         if rec.get('recovered'):
@@ -202,6 +204,8 @@ class AppRuntime:
         await self.collector.start()
         self.vision.start()
         self._started = True
+        from .startup_health import set_state
+        set_state("ready")
         self._sweep_task = task_registry.create(
             self._periodic_agent_memory_sweep(), name="runtime.agent_memory_sweep"
         )

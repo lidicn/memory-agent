@@ -498,8 +498,9 @@ async def homepage(request: Request):
 
 
 async def liveness(request: Request):
-    """无需鉴权的存活探针。"""
-    return JSONResponse({"ok": True, "service": "memory-agent"})
+    """无需鉴权的存活探针。启动期间返回 ok:false + starting:true。"""
+    from .startup_health import health_dict
+    return JSONResponse(health_dict())
 
 
 async def mcp_unavailable(request: Request):
