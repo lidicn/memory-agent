@@ -1975,11 +1975,15 @@ class Store:
                     # 避免重启时大 WAL 恢复失败导致数据库损坏（审计：反复损坏根因）。
                     try:
                         self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.getLogger(__name__).warning(
+                            "Store.close: WAL checkpoint(TRUNCATE) 失败: %s", e
+                        )
                     self._conn.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.getLogger(__name__).warning(
+                        "Store.close: commit/close 异常: %s", e
+                    )
                 self._conn = None
 
     # -- 竞技场快照 / 结果（AutoFlow 竞技场对接）--------------------------------
