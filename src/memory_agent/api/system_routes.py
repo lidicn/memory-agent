@@ -46,10 +46,21 @@ async def get_version(request: Request):
         "version": __app_version__,
         "commit": "", "branch": "", "tag": "", "dirty": None,
     }
+    # 从宿主预检脚本写的 .update_available.json 读取当前 commit（容器内无 .git）
+    preview_path = os.path.join(DATA_DIR, ".update_available.json")
+    try:
+        if os.path.isfile(preview_path):
+            with open(preview_path, encoding="utf-8") as f:
+                preview = json.load(f)
+            info["commit"] = preview.get("local_commit", "")
+            info["tag"] = preview.get("local_tag", "")
+    except Exception:
+        pass
     try:
         cfg = get_config()
         info["update_repo_url"] = cfg.update_repo_url or DEFAULT_REPO
         info["update_branch"] = cfg.update_branch or DEFAULT_BRANCH
+        info["branch"] = cfg.update_branch or DEFAULT_BRANCH
     except Exception:
         pass
     return JSONResponse(info)
