@@ -16,6 +16,8 @@ LOG="$DATA_DIR/update.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
+export GIT_SSH_COMMAND="ssh -i /home/lidicn/.ssh/id_ed25519_github -o StrictHostKeyChecking=no"
+
 [ ! -f "$MARKER" ] && exit 0
 
 log "=== 收到更新请求 ==="

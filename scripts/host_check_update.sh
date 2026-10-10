@@ -8,6 +8,7 @@ REPO_DIR="/vol1/1000/docker/memory-agent"
 DATA_DIR="$REPO_DIR/data"
 PREVIEW="$DATA_DIR/.update_available.json"
 
+export GIT_SSH_COMMAND="ssh -i /home/lidicn/.ssh/id_ed25519_github -o StrictHostKeyChecking=no"
 cd "$REPO_DIR"
 git fetch --quiet origin main 2>/dev/null || true
 
