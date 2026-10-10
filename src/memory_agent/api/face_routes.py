@@ -66,6 +66,11 @@ async def face_node_register(request: Request):
     room = (body.get("room") or "").strip()
     if not node_id or not url:
         return error("node_id 与 url 必填")
+    # M19: SSRF 护栏——识别时会把摄像头帧 POST 到该 url
+    from ..outbound_guard import validate_outbound_url
+    _err = validate_outbound_url(url)
+    if _err:
+        return error(f"节点 url 不被允许: {_err}")
     reg = runtime(request).face
     res = reg.register(node_id, node_type, url, room)
     if not res.get("ok"):

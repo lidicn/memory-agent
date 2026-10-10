@@ -325,7 +325,7 @@ class Config:
 
     # ── 备份 / 灾难恢复（先于 v0.8 存量记忆改写就位）──────────────────────────
     # SQLite 主库 VACUUM 快照 + chroma 数据目录快照（可选）+ 14 份轮转。
-    backup_enabled: bool = False
+    backup_enabled: bool = True
     backup_dir: str = "/data/backups"
     backup_retention: int = 14
     # chroma 数据目录（可选）：若 MA 容器能访问 chroma 持久卷则整目录快照；

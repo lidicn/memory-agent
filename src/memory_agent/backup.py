@@ -95,7 +95,11 @@ class BackupManager:
             results["chroma"] = "skipped（chroma_data_dir 未配置或不可访问）"
 
         # ── 轮换 ──
-        results["retained"] = self._rotate(backup_dir, retention)
+        # M22 修复：备份失败时不轮转，避免旧备份被删导致丢失恢复点
+        if results.get("ok"):
+            results["retained"] = self._rotate(backup_dir, retention)
+        else:
+            results["retained"] = "skipped（备份失败，保留旧备份）"
         return results
 
     def _rotate(self, backup_dir: str, retention: int) -> int:

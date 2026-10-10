@@ -115,6 +115,13 @@ async def vision_test_llm(request: Request):
         return err
     body = await json_body(request)
     stream = (body.get("stream") or "").strip() or None
+    # M18: SSRF 护栏——vlm_base_url 可被 body 控制，会把摄像头帧+API Key POST 到任意地址
+    from ..outbound_guard import validate_outbound_url
+    _vlm_url = (body.get("vlm_base_url") or "").strip()
+    if _vlm_url:
+        _err = validate_outbound_url(_vlm_url)
+        if _err:
+            return error(f"vlm_base_url 不被允许: {_err}")
     rt = runtime(request)
     try:
         result = await asyncio.to_thread(

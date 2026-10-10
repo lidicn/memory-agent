@@ -192,7 +192,8 @@ class IdentityService:
         try:
             row = self.store.get_device_health(entity_id)
         except Exception:
-            return True
+            # M15 修复：读健康表异常时 fail-closed，不把已下线实体混入故障转移候选
+            return False
         if not row:
             return True
         return (row.get("state") or "active") == "active"

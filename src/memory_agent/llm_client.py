@@ -521,9 +521,11 @@ class LLMRouter:
                 return result
             except LLMError as exc:
                 errors.append(str(exc))
+                br.record_failure(str(exc))  # M20: 后端级计数
                 continue
             except Exception as exc:
                 errors.append(str(exc))
+                br.record_failure(str(exc))  # M20: 后端级计数
                 continue
         summary = "; ".join(errors) if errors else "所有大模型后端均不可用"
         br.record_failure(summary)

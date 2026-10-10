@@ -143,12 +143,20 @@ def _hash_password(password: str) -> str:
 def _verify_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
 
+class StateUnreadable(Exception):
+    """状态文件已损坏，拒绝后续覆盖写入（M6/M21 护栏）。"""
+
+
 class AuthManager:
     """用户认证管理器"""
-    
+
     def __init__(self, config):
         self.config = config
         self.users_file = config.users_file
+        # M6/M21：状态损坏护栏。_state_poisoned=True 时写侧拒绝覆盖；
+        # 读侧用 _cached_users（最后一次成功加载的快照）降级为只读。
+        self._state_poisoned = False
+        self._cached_users: Dict[str, Any] = {}
         self._ensure_file()
         self._seed_initial_admin()
     
@@ -181,16 +189,28 @@ class AuthManager:
         _LOG.warning("已根据 INIT_ADMIN_USER 种子化初始管理员账号: %s", username)
 
     def _load_users(self) -> Dict[str, Any]:
-        """加载用户数据"""
+        """加载用户数据。成功时缓存快照；失败时置位 poison 并返回缓存降级只读。"""
         try:
             with open(self.users_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as exc:  # 审计 A3：裸 except 会连 KeyboardInterrupt 一起吞
+                data = json.load(f)
+            self._cached_users = data  # M6: 缓存最后一次成功加载的快照
+            self._state_poisoned = False
+            return data
+        except Exception as exc:
             _LOG.warning("读取用户文件失败 %s: %s", self.users_file, exc)
+            self._state_poisoned = True
+            if self._cached_users:
+                _LOG.warning("状态文件不可读，降级为只读缓存（%d 个账号）", len(self._cached_users))
+                return self._cached_users
             return {}
-    
+
     def _save_users(self, users: Dict[str, Any]):
-        """保存用户数据（原子写，避免中断损坏账号文件）"""
+        """保存用户数据（原子写，避免中断损坏账号文件）。
+        M6：状态文件已损坏时拒绝覆盖写入，保留损坏原件待人工恢复。"""
+        if self._state_poisoned:
+            raise StateUnreadable(
+                f"用户文件 {self.users_file} 已损坏，拒绝覆盖写入。"
+                "请人工修复后重启服务。")
         directory = os.path.dirname(self.users_file) or "."
         os.makedirs(directory, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(prefix=".users-", suffix=".tmp", dir=directory)

@@ -197,6 +197,12 @@ async def acp_test_outbound(request: Request):
     ).strip()
     if not url or not token:
         return error("请先填写对端 ACP URL 与 Token 再测试连通性")
+    # M16: SSRF 护栏
+    from ..outbound_guard import guard_outbound_url
+    try:
+        guard_outbound_url(url)
+    except ValueError as exc:
+        return error(str(exc))
     endpoint = url.rstrip("/") + "/acp"
     payload: dict[str, Any] = {
         "jsonrpc": "2.0",

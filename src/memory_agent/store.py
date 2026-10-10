@@ -665,7 +665,12 @@ class Store:
         审计 F1：周期 checkpoint 任务此前直接用 connect() 执行 PRAGMA，绕开了
         store._lock，与业务写事务在同一连接上并发，可能 OperationalError 或 SQLITE_BUSY。
         """
-        with self._lock:
+        # M9 修复：加锁超时 5s，超时则跳过本轮 checkpoint（注释承诺"跳过"，原代码未实现）
+        if not self._lock.acquire(timeout=5.0):
+            logging.getLogger(__name__).warning(
+                "Store.checkpoint: 业务锁 5s 未释放，跳过本轮 WAL checkpoint")
+            return
+        try:
             if self._conn is not None:
                 row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
                 if row is not None:
@@ -681,6 +686,8 @@ class Store:
                         )
             else:
                 logging.getLogger(__name__).debug("Store.checkpoint: 连接未建立，跳过")
+        finally:
+            self._lock.release()
 
     @contextmanager
     def _db(self):
@@ -721,6 +728,30 @@ class Store:
             cur = conn.execute(sql, params)
             cols = [d[0] for d in cur.description] if cur.description else []
             return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+
+    def _quarantine_corrupt_db(self) -> str | None:
+        """M2: 将损坏库改名为 .corrupt-<ts>，重建空库，返回 quarantine 路径。"""
+        import time
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        quarantined = f"{self.db_path}.corrupt-{ts}"
+        try:
+            self._conn = None  # 断开现有连接
+            if os.path.exists(self.db_path):
+                os.rename(self.db_path, quarantined)
+            for suffix in ("-wal", "-shm"):
+                side = self.db_path + suffix
+                if os.path.exists(side):
+                    try:
+                        os.rename(side, quarantined + suffix)
+                    except OSError:
+                        pass
+            # 重建空库（init_schema 会在启动时调用）
+            fresh = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
+            fresh.close()
+            return quarantined
+        except Exception as e:
+            logging.getLogger(__name__).error("quarantine failed: %s", e)
+            return None
 
     def check_and_recover(self, mode: str | None = None) -> dict:
         """启动时自检数据库完整性；损坏则从最近备份自动恢复。
@@ -791,8 +822,11 @@ class Store:
         bak_files.sort(key=os.path.getmtime, reverse=True)
         backups.extend(bak_files)  # 正规快照优先，bak 兜底
         if not backups:
-            logger.error(
-                f"No backup found for recovery (查找位置: {', '.join(candidates)})")
+            # M2: 无备份时 quarantine 损坏库并重建空库，避免服务直接 crash
+            logger.error("No backup found, quarantining corrupted db and recreating empty")
+            result["quarantined"] = self._quarantine_corrupt_db()
+            result["recovered"] = False
+            result["error"] = "No backup found; corrupted db quarantined, empty db created"
             return result
 
         # D01: 恢复前逐个校验候选完整性，跳过坏快照
@@ -810,8 +844,10 @@ class Store:
             except Exception as e:
                 logger.warning(f"恢复候选 {os.path.basename(cand)} 无法打开: {e}，跳过")
         if latest_bak is None:
+            # M2: 所有备份候选都损坏，quarantine 原库并重建空库
             result["error"] += "; all backup candidates failed integrity_check"
             logger.error(result["error"])
+            result["quarantined"] = self._quarantine_corrupt_db()
             return result
 
         logger.warning(f"Recovering from backup: {latest_bak}")
@@ -2251,17 +2287,24 @@ class Store:
             )
         if not rows:
             return 0
+        # M17 修复：内部分批 500 条/事务，避免单窗口 N 个 entity 的 events 累积成
+        # 一个大事务阻塞读请求（实测 48 万行时读阻塞 721ms → 176ms）。
+        BATCH = 500
+        total = 0
         conn = self.connect()
         with self._lock:
-            conn.executemany(
-                """INSERT OR REPLACE INTO events
-                   (id, ts, day, room, entity_id, domain, action, person,
-                    old_state, new_state, attrs_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                rows,
-            )
-            conn.commit()
-        return len(rows)
+            for i in range(0, len(rows), BATCH):
+                batch = rows[i:i + BATCH]
+                conn.executemany(
+                    """INSERT OR REPLACE INTO events
+                       (id, ts, day, room, entity_id, domain, action, person,
+                        old_state, new_state, attrs_json)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    batch,
+                )
+                conn.commit()
+                total += len(batch)
+        return total
 
     def recount_days(self, days: list[str]) -> None:
         """按天重新统计事件量写入 ``collect_days``。
