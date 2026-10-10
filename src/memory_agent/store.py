@@ -656,6 +656,16 @@ class Store:
             self._conn = conn
             return conn
 
+    def checkpoint(self) -> None:
+        """线程安全的 WAL checkpoint(TRUNCATE)，必须在业务锁内执行。
+
+        审计 F1：周期 checkpoint 任务此前直接用 connect() 执行 PRAGMA，绕开了
+        store._lock，与业务写事务在同一连接上并发，可能 OperationalError 或 SQLITE_BUSY。
+        """
+        with self._lock:
+            if self._conn is not None:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
     @contextmanager
     def _db(self):
         """P1-3: Acquire lock and yield connection, protecting execute/commit."""
@@ -1969,22 +1979,29 @@ class Store:
     def close(self) -> None:
         with self._lock:
             if self._conn is not None:
+                conn = self._conn
+                self._conn = None
                 try:
-                    self._conn.commit()
+                    conn.commit()
                     # 关闭前强制 WAL checkpoint(TRUNCATE)，把 WAL 合并回主库并截断 WAL 文件，
                     # 避免重启时大 WAL 恢复失败导致数据库损坏（审计：反复损坏根因）。
                     try:
-                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                     except Exception as e:
                         logging.getLogger(__name__).warning(
                             "Store.close: WAL checkpoint(TRUNCATE) 失败: %s", e
                         )
-                    self._conn.close()
                 except Exception as e:
                     logging.getLogger(__name__).warning(
-                        "Store.close: commit/close 异常: %s", e
+                        "Store.close: commit 异常: %s", e
                     )
-                self._conn = None
+                finally:
+                    try:
+                        conn.close()
+                    except Exception as e:
+                        logging.getLogger(__name__).warning(
+                            "Store.close: 连接关闭异常: %s", e
+                        )
 
     # -- 竞技场快照 / 结果（AutoFlow 竞技场对接）--------------------------------
 

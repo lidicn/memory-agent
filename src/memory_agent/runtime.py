@@ -405,10 +405,7 @@ class AppRuntime:
             await asyncio.sleep(30)  # 启动稍延
             while True:
                 try:
-                    def _ckpt():
-                        conn = self.store.connect()
-                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    await asyncio.to_thread(_ckpt)
+                    await asyncio.to_thread(self.store.checkpoint)
                 except Exception as exc:  # noqa: BLE001
                     print(f"[WALCheckpoint] 失败: {exc}")
                 await asyncio.sleep(3600)  # 每小时一次

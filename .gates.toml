@@ -23,7 +23,8 @@ write_path_globs = [
     "src/memory_agent/agent_memory.py",     # 三副本一致性主写路径
     "src/memory_agent/store*.py",
     "src/memory_agent/api/*_routes.py",
-    "src/memory_agent/insights.py",
+    "src/memory_agent/insights/*.py",       # 洞察包（原 insights.py 已包化为目录）
+    "src/memory_agent/insights_legacy.py",
 ]
 
 forbid_local_consent_tables = true   # WO-GATE-001 §八：入口只能收窄，防止日后在 MA 长自己的同意词表
