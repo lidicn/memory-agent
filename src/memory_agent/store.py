@@ -735,7 +735,13 @@ class Store:
         ts = time.strftime("%Y%m%d-%H%M%S")
         quarantined = f"{self.db_path}.corrupt-{ts}"
         try:
-            self._conn = None  # 断开现有连接
+            # B-03: 必须先 close 再置 None，否则 SQLite 文件句柄仍持有，Windows rename 必败
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
             if os.path.exists(self.db_path):
                 os.rename(self.db_path, quarantined)
             for suffix in ("-wal", "-shm"):
@@ -824,9 +830,14 @@ class Store:
         if not backups:
             # M2: 无备份时 quarantine 损坏库并重建空库，避免服务直接 crash
             logger.error("No backup found, quarantining corrupted db and recreating empty")
-            result["quarantined"] = self._quarantine_corrupt_db()
+            qpath = self._quarantine_corrupt_db()
+            result["quarantined"] = qpath
             result["recovered"] = False
-            result["error"] = "No backup found; corrupted db quarantined, empty db created"
+            if qpath:
+                result["error"] = "No backup found; corrupted db quarantined, empty db created"
+            else:
+                result["error"] = "No backup found AND quarantine failed; corrupted db may still be in place"
+                result["quarantine_failed"] = True
             return result
 
         # D01: 恢复前逐个校验候选完整性，跳过坏快照
@@ -847,7 +858,10 @@ class Store:
             # M2: 所有备份候选都损坏，quarantine 原库并重建空库
             result["error"] += "; all backup candidates failed integrity_check"
             logger.error(result["error"])
-            result["quarantined"] = self._quarantine_corrupt_db()
+            qpath = self._quarantine_corrupt_db()
+            result["quarantined"] = qpath
+            if not qpath:
+                result["quarantine_failed"] = True
             return result
 
         logger.warning(f"Recovering from backup: {latest_bak}")

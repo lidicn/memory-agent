@@ -129,6 +129,8 @@ class SessionStore:
         )
         for s, _ in oldest[: len(self._sessions) - self._max]:
             self._sessions.pop(s, None)
+            # C-14: 同步清理 _CONV，否则淘汰的 session 历史永远残留
+            _CONV.pop(s, None)
 
 
 _STORE = SessionStore()

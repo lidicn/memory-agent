@@ -153,7 +153,7 @@ async def change_password(request: Request):
 
 
 async def list_users(request: Request):
-    _, err = require_user(request)
+    _, err = require_admin(request)
     if err:
         return err
     return ok({"users": runtime(request).auth.list_users()})

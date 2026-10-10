@@ -11,7 +11,7 @@ import asyncio
 from starlette.requests import Request
 from starlette.routing import Route
 
-from .deps import _num, current_user, error, json_body, ok, require_user, runtime
+from .deps import _num, current_user, error, json_body, ok, require_admin, require_user, runtime
 
 # PATCH 允许局部更新的字段。
 # profile_json 是豆包管家的成员档案（作息/兴趣/课程），schema 归管家所有，
@@ -72,7 +72,7 @@ async def member_detail(request: Request):
 
 
 async def member_update(request: Request):
-    _, err = require_user(request)
+    _, err = require_admin(request)
     if err:
         return err
     member_id = request.path_params.get("member_id", "")
@@ -119,7 +119,7 @@ async def member_patch(request: Request):
 
 
 async def member_delete(request: Request):
-    _, err = require_user(request)
+    _, err = require_admin(request)
     if err:
         return err
     member_id = request.path_params.get("member_id", "")

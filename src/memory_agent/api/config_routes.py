@@ -469,7 +469,7 @@ async def list_app_tokens(request: Request):
 
 
 async def create_app_token(request: Request):
-    _, err = require_user(request)
+    _, err = require_admin(request)
     if err:
         return err
     body = await json_body(request)
@@ -482,7 +482,7 @@ async def create_app_token(request: Request):
 
 
 async def revoke_app_token(request: Request):
-    _, err = require_user(request)
+    _, err = require_admin(request)
     if err:
         return err
     name = request.path_params.get("name", "")

@@ -1211,38 +1211,46 @@ class VisionService:
         self, room: str, persons: list[dict], trigger: str, device_ts: int | None,
         camera: str | None = None, client: str | None = None,
     ) -> dict:
-        """TV 端人脸事件（spec §5.1）。空 persons = 「房间没人了」，直接入库不调 VLM。"""
+        """TV 端人脸事件（spec §5.1）。空 persons = 「房间没人了」，直接入库不调 VLM。
+
+        返回 dict 中 vlm_dispatched=False 且 needs_vlm=True 时，
+        调用方（异步路由层）应自行 task_registry.create 派发 analyze_room。
+        """
         if persons:
-            # 有身份变化 → 触发一次识别（同步等 VLM 结果意义不大，走异步任务）
-            # 第五轮审计 MEDIUM：同房间上一次识别没跑完就不再投。TV 高频上报时
-            # 逐条投线程会把「一次身份变化」变成 N 个堆叠的 VLM 调用。
             if room in self._vlm_inflight:
                 counts = self._skip_counts.setdefault(room, {})
                 counts["vlm_inflight"] = counts.get("vlm_inflight", 0) + 1
                 return {"accepted": True, "deduped": True, "vlm_dispatched": False,
+                        "needs_vlm": False,
                         "reason": f"房间 {room} 上一次识别仍在执行"}
             self._vlm_inflight.add(room)
-            task = task_registry.create(
-                asyncio.to_thread(
-                    self.analyze_room, room,
-                    trigger=trigger or "identity_change",
-                    persons=persons, device_ts=device_ts, client=client,
-                ),
-                name=f"vision.analyze_room.{room}",
-            )
-
-            def _clear_inflight(_task, _room=room):
-                self._vlm_inflight.discard(_room)
-
-            task.add_done_callback(_clear_inflight)
-            return {"accepted": True, "deduped": False, "vlm_dispatched": True}
+            # B-01: 不在工作线程里调 asyncio.create_task，由路由层在事件循环侧派发
+            return {"accepted": True, "deduped": False, "vlm_dispatched": False,
+                    "needs_vlm": True}
         self.store.insert_behavior_event({
             "room": room, "camera_src": camera or (self.camera_for_room(room) or {}).get("stream", ""),
             "persons": [], "count": 0, "action": "房间无人",
             "trigger": trigger or "count_change", "device_ts": device_ts,
             "status": "ok", "client": client or "",
         })
-        return {"accepted": True, "deduped": False, "vlm_dispatched": False}
+        return {"accepted": True, "deduped": False, "vlm_dispatched": False, "needs_vlm": False}
+
+    def _dispatch_face_vlm(self, room: str, persons: list[dict], trigger: str,
+                            device_ts: int | None, client: str | None = None) -> None:
+        """在事件循环侧派发 VLM 分析任务（由异步路由调用）。"""
+        task = task_registry.create(
+            asyncio.to_thread(
+                self.analyze_room, room,
+                trigger=trigger or "identity_change",
+                persons=persons, device_ts=device_ts, client=client,
+            ),
+            name=f"vision.analyze_room.{room}",
+        )
+
+        def _clear_inflight(_task, _room=room):
+            self._vlm_inflight.discard(_room)
+
+        task.add_done_callback(_clear_inflight)
 
     # ── 无 TV 房间巡检 ───────────────────────────────────────────────────
 

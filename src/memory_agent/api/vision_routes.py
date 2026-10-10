@@ -189,6 +189,10 @@ async def events_face(request: Request):
         rt.vision.record_face_event, room, persons, trigger, device_ts,
         camera=body.get("camera"), client=client,
     )
+    # B-01: VLM 派发改在事件循环侧（不能在 to_thread 工作线程里 create_task）
+    if result.get("needs_vlm"):
+        rt.vision._dispatch_face_vlm(room, persons, trigger, device_ts, client=client)
+        result["vlm_dispatched"] = True
     return ok(result, status_code=202)
 
 

@@ -2192,10 +2192,19 @@ def _build_server():
             except Exception as _e:
                 _log.warning("审计日志写入失败（不阻断查询）: %s", _e)
         # revoked 永不经 MCP 面返回（即使 admin 也只能经专门审计通道）
-        if state == "revoked":
-            _tok, _scopes, _origin = _caller_context()
-            if "admin" not in (_scopes or []):
-                return {"ok": False, "error": "revoked 记忆仅 admin 审计通道可访问", "code": 403}
+        # B-05 修复：state="all" 会直穿守卫返回 revoked 行，改为白名单制
+        _tok, _scopes, _origin = _caller_context()
+        _is_admin = "admin" in (_scopes or [])
+        _allowed_states = {"live", "staging", "pending_review"}
+        if _is_admin:
+            _allowed_states |= {"revoked", "all"}
+        if state not in _allowed_states:
+            return {
+                "ok": False,
+                "error": f"state={state} 需要 admin scope 或不合法；"
+                         f"普通令牌只允许: live/staging/pending_review",
+                "code": 403,
+            }
         return await asyncio.to_thread(
             rt.agent_memory.list_agent_memories, state, "", member_id
         )

@@ -9,7 +9,7 @@ from starlette.requests import Request
 from starlette.routing import Route
 
 from .. import mcp_server
-from .deps import _num, error, json_body, ok, require_user, runtime
+from .deps import _num, error, json_body, ok, require_admin, require_user, runtime
 
 
 def _base_url(request: Request) -> str:
@@ -138,7 +138,7 @@ async def create_token(request: Request):
 
 async def revoke_token(request: Request):
     """撤销 Token。用 POST + body，规避部分客户端不支持 DELETE 带 body。"""
-    _, err = require_user(request)
+    _, err = require_admin(request)
     if err:
         return err
     body = await json_body(request)
@@ -151,8 +151,8 @@ async def revoke_token(request: Request):
 
 
 async def update_token_scopes(request: Request):
-    """调整令牌权限（v0.7.5：read / read+write）。"""
-    _, err = require_user(request)
+    """调整令牌权限（v0.7.5：read / read+write / admin）。需管理员。"""
+    _, err = require_admin(request)
     if err:
         return err
     body = await json_body(request)
