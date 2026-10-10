@@ -52,11 +52,11 @@ if ! git fetch --force origin "$REF" >> "$LOG" 2>&1; then
 fi
 log "fetch 成功"
 
-# checkout
-if ! git checkout -f "$REF" >> "$LOG" 2>&1; then
-    log "ERROR: git checkout 失败"
+# reset to origin/$REF (checkout -f main 不会移动分支指针到 origin/main)
+if ! git reset --hard "origin/$REF" >> "$LOG" 2>&1; then
+    log "ERROR: git reset 失败"
     TO_SHA="$FROM_SHA"; TO_TAG="$FROM_TAG"
-    write_result False "git checkout 失败，代码可能有冲突"
+    write_result False "git reset 失败，代码可能有冲突"
     rm -f "$MARKER"
     exit 1
 fi
@@ -74,7 +74,7 @@ print(json.dumps(commits, ensure_ascii=False))
 # py_compile
 if ! python3 -m py_compile src/memory_agent/*.py >> "$LOG" 2>&1; then
     log "ERROR: py_compile 失败，回滚"
-    git checkout -f "$FROM_SHA" >> "$LOG" 2>&1
+    git reset --hard "$FROM_SHA" >> "$LOG" 2>&1
     write_result False "语法检查失败，已自动回滚"
     rm -f "$MARKER"
     exit 1
