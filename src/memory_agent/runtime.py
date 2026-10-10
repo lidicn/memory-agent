@@ -170,13 +170,25 @@ class AppRuntime:
             return
         from .startup_health import set_state
         set_state("db_check")
-        print("[Runtime] 启动中…")
+        print("[Runtime] 启动中（DB 检查后台进行，health 已就绪）…")
+        # DCD 20261010 Q3: DB 检查挪后台，lifespan 立即返回，Uvicorn 先接请求
+        self._init_task = task_registry.create(self._init_background(), name="runtime.init")
+
+    async def _init_background(self) -> None:
+        """后台完成 DB 初始化 + 采集器启动。"""
+        import logging
+        _log = logging.getLogger("runtime.init")
+        from .startup_health import set_state
+        _log.info("DB 检查开始")
         rec = await asyncio.to_thread(self.store.check_and_recover)
         if rec.get('recovered'):
-            print(f"[Runtime] DB recovered: {rec['backup_used']}")
+            _log.info("DB recovered: %s", rec['backup_used'])
         elif rec.get('error'):
-            print(f"[Runtime] DB warning: {rec['error']}")
+            _log.warning("DB warning: %s", rec['error'])
+        else:
+            _log.info("DB 完整性 OK")
         await asyncio.to_thread(self.store.init_schema)
+        _log.info("schema 初始化完成")
 
         stale = await asyncio.to_thread(self.store.mark_stale_jobs)
         if stale:
