@@ -15,11 +15,30 @@ export GIT_SSH_COMMAND="ssh -i /home/lidicn/.ssh/id_ed25519_github -o StrictHost
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
 write_result() {
-    python3 -c "
-import json,sys
-r = {'ok': $1, 'from': '$FROM_SHA', 'from_tag': '$FROM_TAG', 'to': '$TO_SHA', 'to_tag': '$TO_TAG', 'error': '''$2''', 'changelog': json.loads('''$CHANGELOG''')}
-json.dump(r, open('$RESULT','w'), ensure_ascii=False, indent=2)
-" 2>/dev/null || true
+    # $1=ok(true/false)  $2=error_message
+    export _UR_OK="$1"
+    export _UR_ERR="$2"
+    export _UR_FROM="$FROM_SHA"
+    export _UR_FROM_TAG="$FROM_TAG"
+    export _UR_TO="$TO_SHA"
+    export _UR_TO_TAG="$TO_TAG"
+    export _UR_CHANGELOG="$CHANGELOG"
+    export _UR_RESULT="$RESULT"
+    python3 << 'PYEOF' >> "$LOG" 2>&1
+import json, time, os
+r = {
+    "ok": os.environ.get("_UR_OK", "False") == "True",
+    "from": os.environ.get("_UR_FROM", "unknown"),
+    "from_tag": os.environ.get("_UR_FROM_TAG", "unknown"),
+    "to": os.environ.get("_UR_TO", "unknown"),
+    "to_tag": os.environ.get("_UR_TO_TAG", "unknown"),
+    "error": os.environ.get("_UR_ERR", ""),
+    "changelog": json.loads(os.environ.get("_UR_CHANGELOG", "[]")),
+    "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+}
+with open(os.environ["_UR_RESULT"], "w") as f:
+    json.dump(r, f, ensure_ascii=False, indent=2)
+PYEOF
 }
 
 [ ! -f "$MARKER" ] && exit 0
@@ -52,7 +71,7 @@ if ! git fetch --force origin "$REF" >> "$LOG" 2>&1; then
 fi
 log "fetch 成功"
 
-# reset to origin/$REF (checkout -f main 不会移动分支指针到 origin/main)
+# reset to origin/$REF
 if ! git reset --hard "origin/$REF" >> "$LOG" 2>&1; then
     log "ERROR: git reset 失败"
     TO_SHA="$FROM_SHA"; TO_TAG="$FROM_TAG"
