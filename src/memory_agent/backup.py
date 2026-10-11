@@ -54,26 +54,32 @@ class BackupManager:
         if db_path and os.path.exists(db_path):
             dest = os.path.join(backup_dir, f"ma-{stamp}.db")
             try:
-                # VACUUM INTO 不允许目标文件已存在（同一天内重跑会直接报错），
-                # 因此先删除当日旧快照再导出，保证可重复执行。
-                if os.path.exists(dest):
-                    os.remove(dest)
-                # mode=ro：只读打开源库，避免与运行中的写连接互锁；
-                # VACUUM INTO 把整库导出到全新文件，不受只读限制。
-                # 安全（审计 O1）：VACUUM INTO 目标路径来自配置，原先用 f-string 拼接
-                # 存在 SQL 注入面（路径含引号可逃逸）。改用参数绑定；并对路径做基本
-                # 校验作双保险。
+                # MA40b: 先 VACUUM INTO 临时文件，成功后再原子替换当日快照。
+                # 原先先 os.remove(dest) 再 VACUUM INTO，若源库损坏则 VACUUM 失败，
+                # 当日唯一好快照已被删除。
+                tmp_dest = dest + ".tmp"
+                if os.path.exists(tmp_dest):
+                    os.remove(tmp_dest)
                 if "'" in dest or "\x00" in dest:
                     raise ValueError("备份目标路径含非法字符（引号/NUL）")
-                # NEW-P1-2：不用 mode=ro 只读连接（WAL 模式下可能看不到最新提交），
-                # 改用普通连接 + VACUUM INTO 产生一致性快照。VACUUM INTO 不修改源库。
                 conn = sqlite3.connect(db_path, timeout=30.0)
                 try:
-                    conn.execute("VACUUM INTO ?", (dest,))
+                    conn.execute("VACUUM INTO ?", (tmp_dest,))
                 finally:
                     conn.close()
+                # VACUUM 成功后才替换旧快照
+                if os.path.exists(dest):
+                    os.remove(dest)
+                os.rename(tmp_dest, dest)
                 results["db"] = dest
             except Exception as exc:
+                # 清理临时文件
+                tmp_dest = dest + ".tmp"
+                if os.path.exists(tmp_dest):
+                    try:
+                        os.remove(tmp_dest)
+                    except OSError:
+                        pass
                 results["db_error"] = f"{type(exc).__name__}: {exc}"
                 results["ok"] = False
         else:
