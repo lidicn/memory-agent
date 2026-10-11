@@ -224,7 +224,7 @@ class MqttBridge:
 
     def status(self) -> dict:
         """连接 / 退避 / 关停状态快照。"""
-        retry_after = max(0.0, self._retry_after - time.time())
+        retry_after = max(0.0, self._retry_after - time.monotonic())
         return {
             "enabled": self.enabled,
             "available": self.available,
@@ -534,12 +534,12 @@ class MqttBridge:
             return self._client
         if self._closed:
             return None
-        if time.time() < self._retry_after:
+        if time.monotonic() < self._retry_after:
             return None  # 退避冷却中，不重复尝试建连（避免每轮刷日志）
         client = self._factory(self.config)
         if client is None:
             wait = self._reconnect_interval()
-            self._retry_after = time.time() + wait
+            self._retry_after = time.monotonic() + wait
             print(f"[MQTT] 连接失败，将在 {int(wait)}s 后重试（不影响主流程）")
             return None
         self._client = client

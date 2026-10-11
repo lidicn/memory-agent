@@ -360,8 +360,10 @@ class AuthManager:
 
         剩余秒数取整到「至少 1 秒」：`int()` 向下取整在只剩不到 1 秒时会给出 0，
         而 0 会被路由侧的文案算成"0 分钟后重试"，等于告诉对方现在就能再试。
+
+        MA30: 用 monotonic 而非 wall clock，NTP 阶跃不会清零计数或提前解除锁定。
         """
-        now = time.time()
+        now = time.monotonic()
         with _login_guard:
             if _login_global_until > now:
                 return False, max(1, int(_login_global_until - now))
@@ -383,7 +385,7 @@ class AuthManager:
         走的是切片原地写（`[:]`），所以只有退避到期时间这一个需要 `global`。
         """
         global _login_global_until
-        now = time.time()
+        now = time.monotonic()  # MA30: monotonic 防 NTP 阶跃清零
         global_breach = 0
         with _login_guard:
             _prune_login(now)  # MA-21：每次写入顺带做全局清理（对齐 _prune_revoked）
