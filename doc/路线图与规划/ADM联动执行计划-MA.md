@@ -1873,6 +1873,28 @@ MA-32 甲删 `auto_discover_persona` 四处、MA-34 甲 `persist` 默认翻转�
 判例 2 的入口对等门已成形（`.qoder/tmp-c93-scan_session_owner_parity.py`，真树 `BRANCHES=7 READERS=5 GUARDED=5 PROBLEM=0 STALE=0`），
 run33 移入 `scripts/` 并补锁。sessionId 走乙并已登记"下轮可再议甲"。
 
+### 6.29 外部审计 20261012（round-003）三件落码 + run32 之后 21 个未过门提交的 28 条既有红（2026-10-12，HEAD `fdbadda`）
+
+报告 `doc/审计报告/审计报告_memory-agent_20261012.md`（已由平台侧 round-003 产出，本仓核实后移入 `doc/审计报告/归档/`）。
+三件里 D1/D2 直接采纳，D3 采纳两条、拒一条；报告自己的「当日闭环段」两条与现树不符（D2 已修、D1 实为 9 处而非 6 处），
+逐条对撞与证据见核实册 §五十九。契约侧同时按 `ADM联动主题注册表与消息契约.md` §7.1 收口：
+`adm/*/status` 改 JSON `{state, ts, degraded, reasons[], version}`，`version` 与 `caps.version` 同取 `PLAN_VERSION`（不再写死 `"1.4"`），
+presence 分支按 `advertise` 形参判库新旧 —— 0.3.1 那版只会发裸字面量 `online`，一律不走，保证"装没装库"在线上逐字同构。
+
+本机前置读数（Python 3.13.2，权威档 = run34）：13 个既有红文件集合 `28 failed, 286 passed, 3 skipped` → **`330 passed, 3 skipped`**；
+六把门（含新入门 `scan_import_time_env_cast.py`）self-test + 真树 `PROBLEM=0`，门现读 `SITES=0`；
+100 条变异腿锚点现数（mut34 12 + mut33 28 + mut31 13 + c81 22 + c85 11 + c82 14）；
+mut34 首轮 `killed=9 survived=3` ⇒ 三条 SURVIVED 全部**补用例**（不删腿），复跑 **`killed=12 survived=0 invalid=0`、`WT_UNTOUCHED=True`**。
+
+这一档对"联动"这件事的两点直接意义：
+
+1. **§7.1 的同构性必须由腿守，而不是由注释守。** 三条 SURVIVED 的成因是既有 presence 替身一律长成 0.3.2 的样子，
+   "判旧分支"从头到尾空跑 —— 指派对端（DB 席）的兼容承诺如果只有一个实现路径被测过，等于没承诺。
+2. **报告快照 ≠ 线上口径。** §九:173 的"未修"与 §九:177 的"建议顺带修 `vision_service.py:1344`"都出自一次未复读代码的登记；
+   本仓的处置是每条现读都配一条能判红的腿（H01/C01/V01/S01/D01/M01..M05），读数会随提交漂移，腿不会。
+
+仍不能自证、需 SP 窗口的：MA-22 部署面那半条（compose 8086 直曝）、§七 六件里的合并窗与重烤。MA-22 已呈 DCD。
+
 ---
 
 ## 七、下一阶段：更紧密联动（DCD 2026-10-06）
