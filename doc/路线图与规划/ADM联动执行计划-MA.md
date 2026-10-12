@@ -1895,6 +1895,21 @@ mut34 首轮 `killed=9 survived=3` ⇒ 三条 SURVIVED 全部**补用例**（不
 
 仍不能自证、需 SP 窗口的：MA-22 部署面那半条（compose 8086 直曝）、§七 六件里的合并窗与重烤。MA-22 已呈 DCD。
 
+**run34 容器权威档已出数并认账（2026-10-12 收官，逐格实数见核实册 §六十）**：容器 `Python 3.11.16` + `MCP_IMPORT_OK`，
+快照树与本机聚合哈希逐字同（`HASH_LISTED=426 / HASH_MISSING=0`，`HASH_AGGREGATE=db9d1a37…691c59`），
+容器侧 `ANCHOR_OK=100 BAD=0 MISSING=0`；用例格 AUDIT12 15、PRESENCE 34+1（精简检出 provenance，已登记）、KEYS 19、
+DBLOCK 19、BATCH3 155、OFFLOAD 105、**CONTRACT 44 passed / `CONTRACT_SKIPPED=0`**（本机因 mcp 旧 SDK 跳的 11 条在容器一条不跳）；
+**100 条变异腿全杀**（12/28/13/22/11/14，`survived=0 invalid=0`，每格 `WT_UNTOUCHED=True`）；六把门 self/scan 全 `PROBLEM=0`
+（G4 `UNVERIFIED=12` == 活量 CAP、G6 `SITES=0`）；`SUITE_RC=0` = `2221 passed, 11 skipped, 105 subtests passed in 2652.31s`；
+POST 二次哈希同值、`MUT_DST_CLEANED_RC=0`、`REMOTE_DONE`。
+
+**唯一判红那格是门自己没跑到**：`GATE_RC=1` —— 出网清单只含 `src tests scripts`，`.gates/pyflakes-baseline.txt` 从未进容器，
+"pyflakes 基线只准减"在权威面上一直是空门，而本机没有 pyflakes（禁 pip install）⇒ 两侧都没拦。把基线补进副本树现读
+**`当前 5 条，基线 0 条`**（`agent_memory.py:685` 死名 / `recipe_schema.py:21` 只活在 `# type:` 注释的 `Optional`+`Union` /
+`rule_lifecycle.py:59` 死 `import os` / `runtime.py:187` 重复导入 `set_state`），已由 `3e33f64` 归零，改后容器副本树
+`GATE_REDO_RC=0`、`AST311_PYF_OK=4`、锚点仍 100/100、本机相关用例 `126 passed`。**run35 的两条硬前置**：本枚动了 `src` ⇒ 100 腿复跑；
+出网清单必须带 `.gates/`，否则这一格照样是空门。
+
 ---
 
 ## 七、下一阶段：更紧密联动（DCD 2026-10-06）
