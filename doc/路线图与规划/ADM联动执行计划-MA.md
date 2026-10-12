@@ -1910,6 +1910,32 @@ POST 二次哈希同值、`MUT_DST_CLEANED_RC=0`、`REMOTE_DONE`。
 `GATE_REDO_RC=0`、`AST311_PYF_OK=4`、锚点仍 100/100、本机相关用例 `126 passed`。**run35 的两条硬前置**：本枚动了 `src` ⇒ 100 腿复跑；
 出网清单必须带 `.gates/`，否则这一格照样是空门。
 
+### 6.30 DCD 20261010 四问补登记 + 规格 §95「MA：`print()` 布尔出口」射程判定（2026-10-12，任务表 #91 / #92）
+
+两件都是"联动"这条线上的账，逐条证据在核实册 §六十一 / §六十二，本节只登记对联动的影响。
+
+**一、#91：裁定早已执行，缺的是账。** `20261010-AF拆码与MA自更新四问-裁定.md` 的 MA 四问 = Q1 **B** / Q2 **A** / Q3 **批准** / Q4 **B**，
+现读全部落码（`docker-compose.yml:41-44` 无 `./:/repo:rw`、`api/system_routes.py:1/33/34/35/50/51/75` sidecar 形状 +
+`:29/43/72/104/119-127` admin JWT 与 `confirm_version` 双闸、`runtime.py:177/178`+`:224/225` 与 `startup_health.py:38-42` 与
+`app.py:501` 三键非阻塞探针，Q2=A 零改动）。跨仓那一半（AF Q1/Q2/Q3 甲：新增 `ADM_ERR_PUBLISH_REFUSED` + 库侧 `rc→语义` 翻译 +
+ACL 拒绝时 `reasons` 指真因）在 MA 的接口面是 `mqtt_bridge.py:326-339`：**现在仍把所有 `rc≠0` 记成 `ADM_ERR_BROKER_UNREACHABLE`**，
+等 homesdk 出版后换成库的结构化结果，本仓不自建第二份映射表（判例"被守卫的模块不许自带第二份真值"）。
+⇒ 契约 §7.2 表加行时 MA 同步 `_CONTRACT_CODES`（`adm_linkage.py:28-35`）与那一处选码，这两格都在别人手里，不在 MA 自决射程。
+
+**二、#92：§95 的 MA 格已经归零，别按上界立项。** 规格 `homesdk-0.3.2-规格.md:95` 原话是"替换为 `adm.errors` 常量"
+⇒ 射程 = ADM 出境通道的失败出口。全仓 ADM 通道失败点（`mqtt_bridge.py:287/295/302/311/316/323/338/439/462/521`）
+每一处 `print` 之后都跟 `_note("ADM_ERR_*", …)` 且 `return False` ⇒ **出口本来就是具名码，§95 无需改动**。
+分类量具的 `133 → A 类 16` 经逐条复核（`.qoder/tmp-c98-print-exit-detail.py`）排除 11、真红 5：
+`agent_memory.py:305`（召回失败读成"查过无近邻"）、`arena.py:201`（查询失败算成 `novelty=1.0` 且不重复）、
+`arena.py:251`（题目库没写进去仍报"已锁定"）、`insights_legacy.py:1669`（引用标记扫不动 ⇒ 报"未被模板引用"）、
+`insights_legacy.py:1689`（质量扫描抛异常 ⇒ `data_quality_count=0` 读成"没有质量问题"）。
+这一族修它要动**出境语义**（复用 `note`/`reason` 文案 / 新增具名降级键 / 改判 `ok=False`）——三种形状 DB 侧读判据各不相同，
+⇒ 呈 DCD 定向请求，不在 MA 自办射程；裁定回来后再落码 + 补能判红的腿。
+
+**三、与 run35 的关系**：#91/#92 都只动 doc 与本仓 `.qoder/` helper，未改 `src/tests/scripts` ⇒ 不进 run35 变异射程；
+run35 的射程仍是 `6225355..HEAD` 那 4 个 src 文件（`1/1`、`9/4`、`0/1`、`0/1` 行）⇒ 100 腿 + 六把门 + 全量回归复跑，
+且**出网清单这一档补 `.gates/`**（`HASH_LISTED` 相应 +1，当场量不写死）。
+
 ---
 
 ## 七、下一阶段：更紧密联动（DCD 2026-10-06）
