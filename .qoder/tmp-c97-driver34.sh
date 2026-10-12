@@ -119,10 +119,10 @@ for cell in "audit12|tests/test_vma_audit_20261012_fixes.py" \
   want=$(collected $files)
   got=$(passedof .qoder/tmp-c97-${name}-local.out); got=${got:-0}
   skip=$(skippedof .qoder/tmp-c97-${name}-local.out); skip=${skip:-0}
-  # 本机 skip 只准是"模块级可选依赖"那一类（本机 mcp 旧 SDK / river / provenance 精简检出）。
+  # 本机 skip 只准是"模块级可选依赖"那一类（本机 mcp 旧 SDK / mcp 不可用 / river / provenance 精简检出）。
   # 判据不是"skip 数等于我记忆的 N"，而是"每一条 SKIPPED 行的理由都在这张名单里"——
   # 新增一条说不清理由的 skip（例如 fixture 坏掉导致整模块静默跳过）就在这格判红。容器侧另有一格 SKIPPED=0 的硬门。
-  UNDOC=$(grep -E '^SKIPPED \[' .qoder/tmp-c97-${name}-local.out | grep -vcE '本机 mcp|本机 .*SDK|可选依赖|river|provenance|精简检出' || true)
+  UNDOC=$(grep -E '^SKIPPED \[' .qoder/tmp-c97-${name}-local.out | grep -vcE '本机 mcp|本机 .*SDK|可选依赖|mcp 不可用|river|provenance|精简检出' || true)
   echo "CELL $name collected=$want passed=$got skipped=$skip undocumented=$UNDOC"
   guard CELL_ACCOUNTED_$name "$want" "$((got + skip))"
   guard CELL_UNDOC_SKIP_$name 0 "$UNDOC"

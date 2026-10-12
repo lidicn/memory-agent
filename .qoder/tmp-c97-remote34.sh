@@ -14,6 +14,8 @@
 #     2 PRESENCE：§7.1 status JSON + 载荷版本不变式两文件单跑。
 #     3 KEYS：承诺键 ↔ 运行时契约 + 文案点名键两文件单跑（本批翻面的两条旧锁在这里）。
 #   4/4b/4c R6+DB、VACUUM 锁、STARTUP：D3 相关既有锁。
+#     4d CONTRACT：tests/contract 单跑（计划 §8.1 件 3 的三块 schema 锁；本机这一档跳 11 条，
+#                  容器有 mcp ⇒ CONTRACT_SKIPPED 必须为 0，否则那 11 条是假登记）。
 #     5 MUT34：本批 12 腿，副本树 /tmp/c97mut34，快照树只读。
 #  6..10 MUT33/31/81/85/82：旧五档 28+13+22+11+14 = 88 腿全量复跑。
 #    11 G1..G6：六把门 self-test + 现扫（G6 = 导入期 env 转换，本轮新入门）。
@@ -90,6 +92,12 @@ ex "cd $L && PYTHONPATH=$L:$L/src:/tmp/pylibs JWT_SECRET=ci-test python -m pytes
 echo OFFLOAD_RC=$?
 tail -3 ${L}_offload.log
 grep -c '^SKIPPED' ${L}_offload.log | sed 's/^/OFFLOAD_SKIPPED=/'
+
+# 格 4d：CONTRACT —— MA↔DB 契约面（本机 11 条因 mcp 旧 SDK 静默跳过，容器里必须一条不跳）
+ex "cd $L && PYTHONPATH=$L:$L/src:/tmp/pylibs JWT_SECRET=ci-test python -m pytest tests/contract -q -rs" > ${L}_contract.log 2>&1
+echo CONTRACT_RC=$?
+tail -3 ${L}_contract.log
+grep -c '^SKIPPED' ${L}_contract.log | sed 's/^/CONTRACT_SKIPPED=/'
 
 # 格 5：MUT34 —— 本批 12 腿
 ex "cd $L && MUT_ROOT=$L MUT_DST=/tmp/c97mut34 MUT_OUT=/tmp/c97mut34.out MUT_PY=python PYTHONPATH=$L:$L/src:/tmp/pylibs JWT_SECRET=ci-test python ${L}_mut34.py" > ${L}_mut34.log 2>&1
