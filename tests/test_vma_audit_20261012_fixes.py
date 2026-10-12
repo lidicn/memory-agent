@@ -291,33 +291,36 @@ def test_two_requests_in_two_threads_do_not_share_a_tmp(tmp_path, monkeypatch):
     连「两次两个名字」都交不出来，会直接判红。
     """
     marker, _ = _point_at(tmp_path, monkeypatch)
-    barrier = threading.Barrier(2, timeout=5)
+    # 对齐点选 `request.json()`：它在 apply_update 顶部只被 await 一次（system_routes.py:110），
+    # 且在 `os.path.isfile(MARKER_PATH)`（:136）之前 —— 两趟都从那里过去，后到的一趟必然还看不到
+    # marker。挂在全局 time.strftime 上做栅栏会二次进入（组装 marker 与结果文件都要取时间），
+    # 慢的那一趟等到超时就整条腿断掉（全量回归里实测复现过）。
+    barrier = threading.Barrier(2, timeout=60)
     names = threading.local()
-    uuid_calls = []
-    real_uuid4 = system_routes.uuid.uuid4
-    real_strftime = system_routes.time.strftime
+    replaced = []
+    real_replace = os.replace
+    # Windows 上并发 replace 同一个目标会抛 WinError 5（Linux 的 rename(2) 没有这条约束，生产路径
+    # 在容器里）。串行化只影响"哪一个先落地"，不影响这一格要量的东西：两趟各自的临时名。
+    replace_lock = threading.Lock()
 
-    def counting_uuid4():
-        value = real_uuid4()
-        uuid_calls.append(value.hex[:8])
-        return value
+    def recording_replace(src, dst):
+        replaced.append(os.path.basename(src))
+        with replace_lock:
+            return real_replace(src, dst)
 
-    def _wait_then_stamp(*a, **k):
-        # marker 的组装点在 isfile 检查之后、写临时文件之前：在这里对齐两趟，
-        # 后到的那趟必然已经读过了「还没有 marker」。只对这两条腿生效，
-        # 免得把全局 time.strftime 的其它调用方（pytest / logging）一起挂到栅栏上。
-        if getattr(names, "user", None) is not None:
-            barrier.wait()
-        return real_strftime(*a, **k)
+    def _adm_user(request):
+        return {"username": names.user}, None
 
-    monkeypatch.setattr(system_routes, "require_admin", lambda req: ({"username": names.user}, None))
+    monkeypatch.setattr(system_routes, "require_admin", _adm_user)
     monkeypatch.setattr(system_routes, "get_config", lambda: types.SimpleNamespace(update_branch="b-" + names.user))
-    monkeypatch.setattr(system_routes.uuid, "uuid4", counting_uuid4)
-    monkeypatch.setattr(system_routes.time, "strftime", _wait_then_stamp)
+    monkeypatch.setattr(system_routes.os, "replace", recording_replace)
 
     def run(user):
         names.user = user
-        resp = asyncio.run(system_routes.apply_update(_Request()))
+        try:
+            resp = asyncio.run(system_routes.apply_update(_Request(on_call=barrier.wait)))
+        except threading.BrokenBarrierError as exc:
+            raise AssertionError("两趟请求没能在写 marker 之前对齐（栅栏断了）") from exc
         return resp.status_code
 
     codes = []
@@ -325,16 +328,19 @@ def test_two_requests_in_two_threads_do_not_share_a_tmp(tmp_path, monkeypatch):
     for t in threads:
         t.start()
     for t in threads:
-        t.join(30)
+        t.join(90)
     assert len(codes) == 2, codes
-    assert 200 in codes, codes
+    # 两趟都从 isfile 检查过去了（marker 还没落盘），所以都该是 200，不是一趟 200 一趟 409。
+    assert codes == [200, 200], codes
 
     with open(marker, encoding="utf-8") as fh:
         written = json.load(fh)
     # marker 必须是**某一个请求的完整载荷**，不能是两条腿拼出来的（ref 与 requested_by 同源）。
     assert written["ref"] == "b-" + written["requested_by"], written
     assert written["requested_by"] in ("alice", "bob"), written
-    assert len(set(uuid_calls)) == len(uuid_calls), "两趟请求共用了临时名：%s" % uuid_calls
+    assert len(replaced) == 2, "两趟请求没有各自写过一次临时文件：%s" % replaced
+    assert len(set(replaced)) == 2, "两趟请求共用了临时名：%s" % replaced
+    assert all(".tmp." in n for n in replaced), "临时名没有随机后缀：%s" % replaced
     assert [f for f in os.listdir(str(tmp_path)) if ".tmp" in f] == []
 
 

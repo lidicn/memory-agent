@@ -21,6 +21,9 @@ if _SRC not in sys.path:
 from memory_agent.runtime import AppRuntime  # noqa: E402
 
 _STARTUP_SRC = inspect.getsource(AppRuntime.startup)
+#: DCD 20261010 Q3 之后，任务注册整体搬进后台协程 `_init_background`；
+#: startup 只剩"设状态 + 起这个后台任务"。所以形状锁要成对读：注册落在哪、启动链断没断。
+_INIT_SRC = inspect.getsource(AppRuntime._init_background)
 
 
 class _Reconciler:
@@ -79,8 +82,10 @@ def test_non_dict_result_is_coerced_before_publishing():
 
 
 def test_startup_no_longer_awaits_the_first_reconcile():
-    """startup 只做任务注册；首次对账进后台协程。"""
+    """startup 只做任务注册；首次对账进后台协程（注册落在 `_init_background`）。"""
     assert "asyncio.to_thread(self.identity_reconciler.reconcile)" not in _STARTUP_SRC, (
         "startup 里又出现了同步等待的对账调用——这是 P1-12 的原始形态")
-    assert "self._first_identity_reconcile()" in _STARTUP_SRC, (
-        "startup 必须注册首次对账，否则逻辑映射要等到第一个周期才有")
+    assert "self._first_identity_reconcile()" in _INIT_SRC, (
+        "首次对账必须注册在后台链里，否则逻辑映射要等到第一个周期才有")
+    assert "self._init_background()" in _STARTUP_SRC, (
+        "startup 不再起 `_init_background` ⇒ 后台链上的所有任务注册（含首次对账）都成了死代码")

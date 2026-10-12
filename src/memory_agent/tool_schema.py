@@ -84,8 +84,8 @@ TOOL_SPECS: list = [
         ],
         example="route_question(question=\"昨天书房电脑开了多久\") → 计划：get_device_usage(query='书房电脑', days=2)",
         pitfall="这是规划工具不是数据工具：返回体里没有'下一步工具名'那样的键。要看的键是 route/intent——"
-                "取值是意图名（device_usage/behavior/anomaly/rhythm/activity/persona，认不出来时 auto），"
-                "再按那一类去调对应数据工具（如 device_usage → get_device_usage）才能真正取数。",
+                "取值是意图名（device_usage/behavior/anomaly/rhythm/activity/persona/compare，认不出来时 auto），"
+                "再按那一类去调对应数据工具（如 device_usage → get_device_usage、compare → get_behavior_insights_compare）才能真正取数。",
     ),
     ToolSpec(
         name="get_entity_catalog",

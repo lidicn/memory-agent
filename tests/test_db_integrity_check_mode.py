@@ -207,7 +207,12 @@ def test_both_red_restores_the_newest_backup(db_path, monkeypatch):
     st2.close()
 
 
-def test_both_red_without_backup_leaves_db_alone(db_path, monkeypatch):
+def test_both_red_without_backup_quarantines_but_keeps_the_original(db_path, monkeypatch):
+    """双双判红且一处备份都没有：M2 不覆盖、不删除，把原件**改名隔离**再建空库。
+
+    这条比旧写法（"leaves db alone"）更硬：旧断言只查原路径的 tag，而新行为会在原路径
+    建一个空库——真数据去了哪里必须被单独钉住，否则"隔离"退化成"覆盖"也测不出来。
+    """
     st = Store(db_path, tz_offset_hours=0.0)
     st.init_schema()
     st.close()
@@ -217,9 +222,18 @@ def test_both_red_without_backup_leaves_db_alone(db_path, monkeypatch):
     _fake_pragmas(st2, {"quick_check": "wrong", "integrity_check": "still wrong"})
     res = st2.check_and_recover()
 
-    assert res["recovered"] is False
-    assert res["error"] == "integrity_check failed: still wrong"
-    assert _read_mark(db_path) == "original"
+    assert res["recovered"] is False, "无备份时不许谎报恢复成功"
+    assert res["pragma"] == "integrity_check"
+    qpath = res["quarantined"]
+    assert qpath and os.path.exists(qpath), (
+        "判红的库没有落到隔离文件——数据被就地销毁了：%r" % (qpath,))
+    assert os.path.basename(qpath).startswith("a.db.corrupt-"), qpath
+    assert _read_mark(qpath) == "original", "隔离文件里丢了原始内容"
+    assert not os.path.exists(db_path + "-wal") and not os.path.exists(db_path + "-shm"), (
+        "WAL/SHM 没跟着隔离：空库会读到旧库的半截页")
+    assert os.path.exists(db_path), "隔离后没在原路径重建空库，服务起不来"
+    assert _read_mark(db_path) == "", "重建出来的库不是空的"
+    assert res["error"] == "No backup found; corrupted db quarantined, empty db created"
     st2.close()
 
 

@@ -163,6 +163,8 @@ def test_periodic_reconnect_after_cooldown(monkeypatch):
     """broker 长期不可达时，越过退避窗口后会重新尝试建连（不再永久放弃，v0.6 修复）。"""
     clock = {"t": 1000.0}
     monkeypatch.setattr("memory_agent.mqtt_bridge.time.time", lambda: clock["t"])
+    # MA30b：重连退避改用 monotonic（`self._retry_after`），假时钟不给这一口就永远停在真实钟上
+    monkeypatch.setattr("memory_agent.mqtt_bridge.time.monotonic", lambda: clock["t"])
     calls = []
 
     def factory(cfg):
@@ -183,6 +185,8 @@ def test_reconnects_when_broker_returns(monkeypatch):
     """broker 恢复后，越过冷却窗口再试即可成功建连并推送，无需重启 MA。"""
     clock = {"t": 2000.0}
     monkeypatch.setattr("memory_agent.mqtt_bridge.time.time", lambda: clock["t"])
+    # MA30b：重连退避改用 monotonic（`self._retry_after`），假时钟不给这一口就永远停在真实钟上
+    monkeypatch.setattr("memory_agent.mqtt_bridge.time.monotonic", lambda: clock["t"])
     state = {"up": False}
 
     def factory(cfg):

@@ -271,6 +271,19 @@ def _stub_vision(monkeypatch):
     return svc, vs
 
 
+def _dispatch_like_the_route(svc, result, room, persons, trigger="identity_change",
+                             device_ts=None):
+    """逐字照 `api/vision_routes.py:193-195`：只有 `needs_vlm` 为真时，路由层才建任务并回填。
+
+    B-01 之后 `record_face_event` 自己**不**投线程（工作线程里 create_task 会落到错误的循环），
+    所以"派发"这一步必须由调用方完成——测试若跳过这步，钉的就不是生产链路。
+    """
+    if result.get("needs_vlm"):
+        svc._dispatch_face_vlm(room, persons, trigger, device_ts)
+        result["vlm_dispatched"] = True
+    return result
+
+
 async def test_face_event_throttles_while_room_busy(monkeypatch):
     """同一房间上一次识别没落地前，第二条身份变化不再投线程（审计 MEDIUM 2）。"""
     svc, vs = _stub_vision(monkeypatch)
@@ -287,12 +300,21 @@ async def test_face_event_throttles_while_room_busy(monkeypatch):
     monkeypatch.setattr(vs.VisionService, "analyze_room", fake)
 
     r1 = svc.record_face_event("客厅", [{"name": "甲"}], "identity_change", None)
-    assert r1["vlm_dispatched"] is True and r1["deduped"] is False
+    assert r1["needs_vlm"] is True and r1["deduped"] is False
+    assert r1["vlm_dispatched"] is False, (
+        "record_face_event 又在工作线程里自行派发了——B-01 的修法就是把派发交回事件循环侧")
+    assert runs == [], "还没派发就开跑了"
+    r1 = _dispatch_like_the_route(svc, r1, "客厅", [{"name": "甲"}])
+    assert r1["vlm_dispatched"] is True
     await asyncio.to_thread(entered.wait, 5)
     assert "客厅" in svc._vlm_inflight
 
     r2 = svc.record_face_event("客厅", [{"name": "乙"}], "identity_change", None)
     assert r2["deduped"] is True and r2["vlm_dispatched"] is False
+    assert r2["needs_vlm"] is False, (
+        "节流位还在却又要路由层派发——同房间会并发跑两次识别")
+    r2 = _dispatch_like_the_route(svc, r2, "客厅", [{"name": "乙"}])
+    assert r2["vlm_dispatched"] is False, "路由层照 needs_vlm 派发却派出去了"
     assert svc._skip_counts["客厅"]["vlm_inflight"] == 1
     assert runs == ["客厅"]
 
@@ -305,6 +327,8 @@ async def test_face_event_throttles_while_room_busy(monkeypatch):
 
     entered.clear()
     r3 = svc.record_face_event("客厅", [{"name": "乙"}], "identity_change", None)
+    assert r3["needs_vlm"] is True
+    r3 = _dispatch_like_the_route(svc, r3, "客厅", [{"name": "乙"}])
     assert r3["vlm_dispatched"] is True
     await asyncio.to_thread(entered.wait, 5)
     release.set()
@@ -323,10 +347,15 @@ async def test_other_room_is_not_blocked(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(vs.VisionService, "analyze_room", fake)
-    assert svc.record_face_event("客厅", [{"name": "甲"}], "t", None)["vlm_dispatched"]
+    r = _dispatch_like_the_route(svc, svc.record_face_event("客厅", [{"name": "甲"}], "t", None),
+                                 "客厅", [{"name": "甲"}], trigger="t")
+    assert r["vlm_dispatched"] is True
     await asyncio.to_thread(entered.wait, 5)
     r = svc.record_face_event("书房", [{"name": "甲"}], "t", None)
-    assert r["vlm_dispatched"] is True and r["deduped"] is False
+    assert r["needs_vlm"] is True and r["deduped"] is False, (
+        "客厅在跑却把书房也拦下了——节流位串了房间")
+    r = _dispatch_like_the_route(svc, r, "书房", [{"name": "甲"}], trigger="t")
+    assert r["vlm_dispatched"] is True
     release.set()
     for _ in range(100):
         if not svc._vlm_inflight:

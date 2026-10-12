@@ -76,7 +76,10 @@ def clean_login_state():
 def fake_clock():
     clock = {"t": 2_000_000.0}
     original = auth_module.time
-    auth_module.time = types.SimpleNamespace(time=lambda: clock["t"])
+    # MA30：锁定窗口与退避改用 monotonic 时钟（NTP 阶跃不许把锁清零），所以假时钟必须同时
+    # 喂 time 与 monotonic 两个读口——只给 time.time 的话，生产代码当场 AttributeError。
+    auth_module.time = types.SimpleNamespace(time=lambda: clock["t"],
+                                             monotonic=lambda: clock["t"])
     try:
         yield clock
     finally:

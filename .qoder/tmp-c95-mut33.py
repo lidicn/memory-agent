@@ -95,7 +95,7 @@ CFG_FIELD = (
     '    member_tag_agent_writeback: bool = False          '
     '# 默认关；开启后 confirm_member_tag 才被放行\n')
 CRITES_TUPLE = '    "member_tag_agent_writeback",\n'
-JS_ANCHOR = '    <!-- 系统 / 在线更新 -->\n'
+JS_ANCHOR = '    <!-- 系统更新（宿主 sidecar 模式） -->\n'
 JS_READD = (
     '    <!-- 家庭成员与行为画像 -->\n'
     '    <div class="card p-5">\n'

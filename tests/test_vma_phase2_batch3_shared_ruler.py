@@ -394,10 +394,11 @@ def clean_login_state():
 
 @pytest.fixture
 def fake_clock():
-    """只替换 `auth` 模块命名空间里的 `time`（该模块内 `time.` 只有 `time.time()`）。"""
+    """只替换 `auth` 模块命名空间里的 `time`（MA30 后该模块读 `time.time()` 与 `time.monotonic()`）。"""
     clock = {"t": 2_000_000.0}
     original = auth_module.time
-    auth_module.time = types.SimpleNamespace(time=lambda: clock["t"])
+    auth_module.time = types.SimpleNamespace(time=lambda: clock["t"],
+                                             monotonic=lambda: clock["t"])
     try:
         yield clock
     finally:

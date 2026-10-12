@@ -82,7 +82,18 @@ ADM_STATUS_TOPIC = f"adm/{ADM_MEMBER}/status"
 ADM_CAPS_TOPIC = f"adm/{ADM_MEMBER}/caps"
 ADM_ONLINE = "online"
 ADM_OFFLINE = "offline"
-ADM_VERSION = "1.4"  # 计划号（契约 §1.1 caps.version 口径）
+
+
+def _status_version() -> str:
+    """`status.version` 的真源＝计划号 `PLAN_VERSION`（契约 §7.1「与 caps.version 同口径」）。
+
+    这里曾经写死 `"1.4"`：`adm/memory-agent/caps` 由 `runtime.adm_caps()` 报 `PLAN_VERSION`，
+    同一个仓的两条 retained 载荷给出两个版本号，DB 侧按 §7.1 对账就永远对不上——
+    正是 DCD 20261002 Q7 要避免的那个形状。所以取数走同一处，不在本模块留第二份号。
+    """
+    from . import PLAN_VERSION
+
+    return PLAN_VERSION
 
 
 def _build_status_json(state: str, reasons: list[str] | None = None) -> str:
@@ -97,9 +108,23 @@ def _build_status_json(state: str, reasons: list[str] | None = None) -> str:
         "ts": int(time.time()),
         "degraded": bool(reasons),
         "reasons": reasons,
-        "version": ADM_VERSION,
+        "version": _status_version(),
     }
     return json.dumps(payload, separators=(",", ":"))
+
+
+def _presence_carries_plan_version(presence: Any) -> bool:
+    """库的 ``advertise`` 能不能按 §7.1 带上本仓计划号。
+
+    判据取签名里的 ``version`` 形参：0.3.2 起有（status 发 JSON），0.3.1 没有——那一版只会发
+    字面量 ``online``，两条路就不同构了。线上跑的容器目前仍是 0.3.1（Dockerfile 装的是 0.3.2，
+    镜像重建前的窗口边界），所以这里按形参判，而不是按"库在不在场"判。
+    """
+    import inspect
+    try:
+        return "version" in inspect.signature(presence.advertise).parameters
+    except (TypeError, ValueError):  # 拿不到签名（C 扩展/装饰器吞掉）⇒ 当作不带计划号
+        return False
 
 #: 公共收件箱白名单（DB 拥有）。投递侧只写这三条，不碰 DB 内部语义主题。
 INBOX_TOPICS = frozenset({"butler/inbox/speak", "butler/inbox/notify", "butler/inbox/tv"})
@@ -173,7 +198,7 @@ def _default_client_factory(cfg: Any):
         # 契约 §7.1：LWT 也发 JSON（broker 代发时 ts 固定，用 0 表示"由 broker 代发"）。
         lwt_payload = json.dumps(
             {"state": "offline", "ts": 0, "degraded": True,
-             "reasons": ["ADM_ERR_BROKER_UNREACHABLE"], "version": ADM_VERSION},
+             "reasons": ["ADM_ERR_BROKER_UNREACHABLE"], "version": _status_version()},
             separators=(",", ":"),
         )
         client.will_set(ADM_STATUS_TOPIC, lwt_payload, qos=1, retain=True)
@@ -367,15 +392,17 @@ class MqttBridge:
             self._advertised = False
             return False
         presence = homesdk_presence()
-        if presence:
+        if presence and _presence_carries_plan_version(presence):
             try:
-                presence.advertise(client, ADM_MEMBER, caps=caps)
+                presence.advertise(client, ADM_MEMBER, caps=caps,
+                                   version=_status_version())
                 self._advertised = True
                 return True
             except Exception as exc:  # noqa: BLE001 - 旁路能力，失败不上抛
                 print(f"[MQTT] presence 广播失败（homesdk 口径）: {exc}")
                 return False
-        # homesdk 不在场：用同构 JSON 直发（契约 §7.1，不再发字面量 online）。
+        # homesdk 不在场，或在场但只会发 legacy 字面量（0.3.1）：用同构 JSON 直发
+        #（契约 §7.1，两条路对 broker 必须同形，否则"装了库"会改变 DB 侧解析结果）。
         reasons = self.linkage.reasons()
         ok = self.publish_raw(ADM_STATUS_TOPIC, _build_status_json(ADM_ONLINE, reasons),
                               retain=True)

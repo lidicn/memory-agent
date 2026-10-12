@@ -74,7 +74,7 @@ PROBE_MUST_HAVE_ROWS = ("search_events", "query_behavior_events", "get_device_us
 #: 未罩住的 service ⇒ 登记为什么罩不住（离线跑不出读数），条数由门自己核对
 NOT_PROBED = {
     "static": (44, "静态说明类工具，无后端载荷可探"),
-    "agent_memory": (13, "要 chroma/向量库与写侧状态，离线探不出稳定读数"),
+    "agent_memory": (15, "要 chroma/向量库与写侧状态，离线探不出稳定读数"),
     "templates": (5, "要模板库与调度态"),
     "history": (3, "要 HA 历史 API"),
     "arena": (3, "要 LLM 生成"),
@@ -121,6 +121,7 @@ REGISTERED = {
         "anomaly": "route/intent 的取值",
         "rhythm": "route/intent 的取值",
         "persona": "route/intent 的取值",
+        "compare": "route/intent 的取值；文案点名的对应数据工具 `get_behavior_insights_compare` 走工具名那条路",
         "auto": "route 认不出来时的取值",
         "template_id": "指认 `run_analysis_template` 的入参，不是本工具的键",
     },

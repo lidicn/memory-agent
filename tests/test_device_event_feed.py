@@ -805,6 +805,9 @@ def test_startup_registers_the_device_feed_task():
     import inspect
 
     from memory_agent.runtime import AppRuntime
-    src = inspect.getsource(AppRuntime.startup)
+    # DCD 20261010 Q3 把任务注册整体挪进后台协程：startup 只负责起 `_init_background`。
+    # 所以这一格要读的是"注册在后台链里"+"启动链没断"，读 startup 的函数体只会把搬家读成丢任务。
+    src = inspect.getsource(AppRuntime._init_background)
     assert 'name="runtime.device_feed"' in src
     assert "_periodic_device_feed()" in src
+    assert "self._init_background()" in inspect.getsource(AppRuntime.startup)

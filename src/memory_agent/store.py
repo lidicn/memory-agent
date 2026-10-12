@@ -670,28 +670,47 @@ class Store:
 
         审计 F1：周期 checkpoint 任务此前直接用 connect() 执行 PRAGMA，绕开了
         store._lock，与业务写事务在同一连接上并发，可能 OperationalError 或 SQLITE_BUSY。
+
+        M9：等锁 5s 拿不到就跳过本轮（checkpoint 是周期任务，本轮不做无损）。
+        这条"尝试拿锁"的形状用 `_lock_try` 表达成真正的 `with` 锁区：静态门
+        （test_vma_r6_db_lock_discipline）只认 `with ..._lock` 形状，手工 acquire/finally
+        release 会让锁区里的共享连接读成"未加锁"——那正是它要抓的形状，不该由门让步。
         """
-        # M9 修复：加锁超时 5s，超时则跳过本轮 checkpoint（注释承诺"跳过"，原代码未实现）
-        if not self._lock.acquire(timeout=5.0):
+        with self._lock_try("Store.checkpoint", 5.0) as held:
+            if not held:
+                return
+            if self._conn is None:
+                logging.getLogger(__name__).debug("Store.checkpoint: 连接未建立，跳过")
+                return
+            row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if row is None:
+                return
+            busy, log, ckpt = row[0], row[1], row[2]
+            if busy != 0:
+                logging.getLogger(__name__).warning(
+                    "Store.checkpoint: WAL checkpoint 被 busy 挡下 (busy=%s log=%s ckpt=%s)",
+                    busy, log, ckpt,
+                )
+            elif ckpt < log:
+                logging.getLogger(__name__).info(
+                    "Store.checkpoint: WAL 合并 %s/%s 页", ckpt, log,
+                )
+
+    @contextmanager
+    def _lock_try(self, where: str, timeout: float):
+        """尝试持锁：拿到 yield True，超阈值 yield False（调用方据此跳过本轮）。
+
+        与 `_lock_with_contention_warning` 的区别是语义方向：那个是"必须拿到，只是等久了要
+        说一声"，这个是"拿不到就跳过"，所以它不能替调用方等下去。两条都保证 release 落在
+        finally，锁区在 AST 上是真的 `with` 块。
+        """
+        if not self._lock.acquire(timeout=timeout):
             logging.getLogger(__name__).warning(
-                "Store.checkpoint: 业务锁 5s 未释放，跳过本轮 WAL checkpoint")
+                "%s: 业务锁 %gs 未释放，跳过本轮", where, timeout)
+            yield False
             return
         try:
-            if self._conn is not None:
-                row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                if row is not None:
-                    busy, log, ckpt = row[0], row[1], row[2]
-                    if busy != 0:
-                        logging.getLogger(__name__).warning(
-                            "Store.checkpoint: WAL checkpoint 被 busy 挡下 (busy=%s log=%s ckpt=%s)",
-                            busy, log, ckpt,
-                        )
-                    elif ckpt < log:
-                        logging.getLogger(__name__).info(
-                            "Store.checkpoint: WAL 合并 %s/%s 页", ckpt, log,
-                        )
-            else:
-                logging.getLogger(__name__).debug("Store.checkpoint: 连接未建立，跳过")
+            yield True
         finally:
             self._lock.release()
 

@@ -83,10 +83,14 @@ def _last(client, suffix):
 def test_adm_caps_version_is_the_plan_number_not_the_package_version():
     caps = runtime_mod.AppRuntime.adm_caps(types.SimpleNamespace())
     assert caps["version"] == PLAN_VERSION
-    # 这两个号**必须**能不同：包版本是 pyproject 的内部实现号（1.0.0），
-    # 计划号是各仓对外沟通的口径（vMA-x.y.z）。断言相等就是把裁定又改回去。
-    assert caps["version"] != __version__
+    # 裁定 Q7 的实质是「caps 报计划号」这一条，两号**能否**不同不是它的内容：
+    # commit 5bb9d30 之后 `__version__` 就以 PLAN_VERSION 为基础号（部署态再拼 git short hash，
+    # a70b34d），所以这里锁的是"caps 跟着计划号走、且计划号是包版本的前身"，
+    # 而不是原来那句 `caps != __version__`——那句在干净检出里必然红。
     assert re.fullmatch(r"\d+\.\d+\.\d+", caps["version"]), caps["version"]
+    assert __version__ == PLAN_VERSION or __version__.startswith(PLAN_VERSION + "+"), __version__
+    # 两号一旦脱钩（有人把包版本改回 1.0.0 之类），caps 也不许跟着漂。
+    assert caps["version"] == PLAN_VERSION
 
 
 # ── Q2：device-health 别名 + 保留迁移方向 ────────────────────────────────────

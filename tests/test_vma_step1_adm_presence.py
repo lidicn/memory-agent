@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import inspect
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,7 @@ _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
+from memory_agent import PLAN_VERSION  # noqa: E402
 from memory_agent import mqtt_bridge as mb  # noqa: E402
 from memory_agent import runtime as runtime_mod  # noqa: E402
 from memory_agent.config import Config  # noqa: E402
@@ -123,7 +125,13 @@ def test_lwt_is_registered_before_connect(monkeypatch):
     monkeypatch.setattr(mb, "MQTT_AVAILABLE", True)
     client = mb._default_client_factory(_cfg())
     assert order == ["will_set", "connect", "loop_start"]
-    assert client.will == ("adm/memory-agent/status", "offline", 1, True)
+    topic, payload, qos, retain = client.will
+    assert (topic, qos, retain) == ("adm/memory-agent/status", 1, True)
+    # 契约 §7.1：LWT 也发 JSON；broker 代发时本进程报不了时间，ts 固定 0 表示"这条不是自己写的"。
+    will = json.loads(payload)
+    assert will["state"] == "offline" and will["degraded"] is True and will["ts"] == 0
+    assert will["reasons"] == ["ADM_ERR_BROKER_UNREACHABLE"], will
+    assert will["version"] == PLAN_VERSION, "status.version 必须与 caps.version 同口径"
 
 
 # ── 2. presence：两条路同构 ─────────────────────────────────────────────────
@@ -134,7 +142,10 @@ def test_advertise_publishes_retained_status_and_caps_without_library():
     assert bridge.advertise({"mcp": True, "tools": ["ask_memory"], "version": "1.0.0"}) is True
     status = _last(client, "adm/memory-agent/status")
     caps = _last(client, "adm/memory-agent/caps")
-    assert status["payload"] == "online" and status["retain"] is True and status["qos"] == 1
+    assert status["retain"] is True and status["qos"] == 1
+    body = json.loads(status["payload"])          # 契约 §7.1：status 不再是字面量
+    assert body["state"] == "online" and body["degraded"] is False and body["reasons"] == []
+    assert body["version"] == PLAN_VERSION, "写死的第二份版本号会把这条对账劈成两半"
     assert caps["retain"] is True and caps["qos"] == 1
     assert json.loads(caps["payload"])["tools"] == ["ask_memory"]
 
@@ -146,14 +157,20 @@ def test_advertise_without_caps_publishes_only_status():
 
 
 def _stub_presence(captured):
-    """按 homesdk.presence.advertise 的真实行为做替身（retained online + caps）。"""
+    """按 **homesdk 0.3.2** 的 `presence.advertise` 真实行为做替身：retained JSON status + caps。
 
-    def advertise(client, name, caps=None, offline=False):
+    0.3.1 那版发的是字面量 `online`，而 §7.1 之后两条路必须同构；本仓的实现用
+    `mqtt_bridge._presence_carries_plan_version` 按 `version` 形参判库的新旧，判旧就自绘 JSON。
+    替身必须带 `version` 形参，否则这条开关在本用例里是空跑的。
+    """
+
+    def advertise(client, name, caps=None, offline=False, version=""):
         captured["name"] = name
-        if offline:
-            client.publish(f"adm/{name}/status", "offline", qos=1, retain=True)
-            return
-        client.publish(f"adm/{name}/status", "online", qos=1, retain=True)
+        captured["version"] = version
+        state = "offline" if offline else "online"
+        payload = json.dumps({"state": state, "ts": int(time.time()), "degraded": False,
+                              "reasons": [], "version": version}, separators=(",", ":"))
+        client.publish(f"adm/{name}/status", payload, qos=1, retain=True)
         if caps is not None:
             client.publish(f"adm/{name}/caps", json.dumps(caps, ensure_ascii=False),
                            qos=1, retain=True)
@@ -172,10 +189,77 @@ def test_library_and_library_free_paths_are_indistinguishable_on_the_wire():
     _bridge(lib_client, presence=_stub_presence(captured)).advertise(caps)
 
     assert captured["name"] == "memory-agent"
+    # 库那一路也必须拿到本仓计划号，而不是"caps 里那个 1.0.0"——两条路的 version 同源才谈得上同构。
+    assert captured["version"] == PLAN_VERSION, captured
     assert [p["topic"] for p in lib_client.published] == [p["topic"] for p in plain.published]
     for lib, ours in zip(lib_client.published, plain.published):
         assert lib["retain"] == ours["retain"] and lib["qos"] == ours["qos"]
-        assert lib["payload"] == ours["payload"]  # status 是裸串、caps 是 JSON 串，两边逐字相同
+        a, b = json.loads(lib["payload"]), json.loads(ours["payload"])
+        if lib["topic"].endswith("/status"):
+            # status 里的 ts 是墙钟秒，两条路各读一次时间，跨秒就不可能逐字节相同；
+            # 除 ts 之外必须完全一致，同构判据的其余部分一寸不让。
+            assert isinstance(a.pop("ts"), int) and isinstance(b.pop("ts"), int)
+        assert a == b, (lib["topic"], a, b)
+
+
+def _legacy_presence(captured):
+    """按 homesdk **0.3.1** 的 advertise 形状做替身：没有 version 形参，只会发裸字面量。
+
+    替身自己判形参并抛 TypeError，而不是靠签名不匹配——真库那句 `advertise(..., version=)`
+    是在绑定阶段就炸的，函数体一行都不会执行；先把调用意图记下来，才能让"该不该调它"
+    这一格读出区别（只看库在不在场的那条腿就是这样混过用例面的）。
+    """
+
+    def advertise(client, name, caps=None, offline=False, **kwargs):
+        captured["called"] = True
+        captured["kwargs"] = sorted(kwargs)
+        if "version" in kwargs:
+            raise TypeError("0.3.1 的 advertise() 没有 version 形参")
+        state = "offline" if offline else "online"
+        client.publish(f"adm/{name}/status", state, qos=1, retain=True)
+        if caps is not None:
+            client.publish(f"adm/{name}/caps", json.dumps(caps, ensure_ascii=False),
+                           qos=1, retain=True)
+
+    return SimpleNamespace(advertise=advertise)
+
+
+def test_library_without_version_param_is_never_asked_to_broadcast():
+    """判旧分支：库在场但只会发裸字面量 ⇒ 本仓自己发同构 JSON，一次都不碰它的 advertise。
+
+    `_presence_carries_plan_version` 唯一的用武之地就是"库在场 + 签名旧"这一格。
+    把它退化成"只看库在不在场"（或签名探测恒真），旧库会当场 TypeError、广播直接失败，
+    而只喂 0.3.2 替身的用例面看不见——两条腿都在这一格判红。
+    """
+    caps = {"mcp": True, "tools": ["ask_memory"], "version": "1.0.0"}
+    plain = _Client()
+    _bridge(plain).advertise(caps)
+
+    captured: dict = {}
+    old = _Client()
+    _bridge(old, presence=_legacy_presence(captured)).advertise(caps)
+
+    assert captured == {}, "0.3.1 的 advertise 被调用了：它发的是裸字面量，§7.1 的 JSON 同构当场破"
+    assert [p["topic"] for p in old.published] == [p["topic"] for p in plain.published], old.topics()
+    for theirs, ours in zip(old.published, plain.published):
+        assert theirs["retain"] == ours["retain"] and theirs["qos"] == ours["qos"]
+        a, b = json.loads(theirs["payload"]), json.loads(ours["payload"])
+        if theirs["topic"].endswith("/status"):
+            assert isinstance(a.pop("ts"), int) and isinstance(b.pop("ts"), int)
+        assert a == b, (theirs["topic"], a, b)
+
+
+def test_status_degraded_flag_is_derived_from_reasons():
+    """§7.1 的 degraded 位由 reasons 决定：挂着原因却说"不降级"，对端就没有可动作的信号。
+
+    这一格盯的不是键在不在（M03 那类），而是键的**取值口径**：reasons 非空必须 True。
+    """
+    quiet = json.loads(mb._build_status_json("online", []))
+    down = json.loads(mb._build_status_json("offline", ["ADM_ERR_BROKER_UNREACHABLE"]))
+    assert quiet["degraded"] is False and quiet["reasons"] == []
+    assert down["degraded"] is True, "reasons 非空却报不降级"
+    assert down["reasons"] == ["ADM_ERR_BROKER_UNREACHABLE"]
+    assert down["state"] == "offline" and down["version"] == PLAN_VERSION
 
 
 def test_advertise_refuses_when_the_client_is_not_connected():
@@ -210,7 +294,7 @@ def test_close_publishes_retained_offline():
     bridge.advertise({"mcp": True})
     bridge.close()
     status = _last(client, "adm/memory-agent/status")
-    assert status["payload"] == "offline" and status["retain"] is True
+    assert json.loads(status["payload"])["state"] == "offline" and status["retain"] is True
 
 
 def test_new_client_resets_the_advertised_flag():
@@ -327,8 +411,12 @@ def test_adm_caps_shape_follows_the_contract_table():
 
 
 def test_startup_advertises_before_the_first_interval():
-    src = inspect.getsource(runtime_mod.AppRuntime.startup)
-    assert "ensure_advertised(self.adm_caps())" in src
+    # 任务注册搬家到 `_init_background`（DCD 20261010 Q3）之后，这一格的判据不变：
+    # 广播必须发生在启动链里，而不是只挂在周期任务的第一轮之后——否则进程起来到第一个
+    # interval 之间，探测方读不到 retained，就把在线的 MA 读成离线。
+    init_bg = inspect.getsource(runtime_mod.AppRuntime._init_background)
+    assert "ensure_advertised(self.adm_caps())" in init_bg
+    assert "self._init_background()" in inspect.getsource(runtime_mod.AppRuntime.startup)
     loop = inspect.getsource(runtime_mod.AppRuntime._periodic_mqtt_presence)
     assert "ensure_advertised(self.adm_caps())" in loop  # 断连重连后补发
 

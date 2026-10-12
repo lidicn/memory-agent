@@ -558,15 +558,22 @@ def test_retention_cleanup_retries_after_failure(monkeypatch):
 
 
 def test_retention_task_is_registered_at_startup():
-    """调用点形状锁：startup 注册的是常驻任务本体（不是跑一次就返回的协程包装）。"""
+    """调用点形状锁：注册的必须是常驻任务本体（不是跑一次就返回的协程包装）。
+
+    注册位从 `startup` 搬到了 `_init_background`（DCD 20261010 Q3：DB 检查走后台），
+    所以这一格读两处——任务落在后台链里，且 startup 真的把这条链起来。
+    """
     with open(os.path.join(_SRC, "memory_agent", "runtime.py"), encoding="utf-8") as f:
         src = f.read()
     fn = _func_node(src, "_run_retention_cleanup")
     assert any(isinstance(n, ast.While) for n in ast.walk(fn)), (
         "_run_retention_cleanup 必须是 while 常驻循环（MA-35）"
     )
-    startup = _func_node(src, "startup")
+    init_bg = _func_node(src, "_init_background")
     assert any(
         isinstance(n, ast.Attribute) and n.attr == "_run_retention_cleanup"
-        for n in ast.walk(startup)
-    ), "startup 里应能看到这个任务名"
+        for n in ast.walk(init_bg)
+    ), "_init_background 里应能看到这个任务名"
+    startup = _func_node(src, "startup")
+    assert any(isinstance(n, ast.Attribute) and n.attr == "_init_background"
+               for n in ast.walk(startup)), "startup 没起后台链 ⇒ 整批任务注册都是死代码"

@@ -8,16 +8,23 @@ ToolSpec 的 summary/description/pitfall/params、随包 SKILL.md、人读 user_
 |---|---|---|
 | `get_data_quality`：`data_quality_issues` | `issues`（+ `checks[]`） | `insights/service.py:1276 data_quality` 走新引擎 |
 | `ask_memory`：`semantic_hints`/`agent_memory_hints` | `hints`（仅 `return_hints=True` 时） | `insights/nlquery.py:118-133 ask()` |
-| `route_question`：`recommended_tool` | 没有这个键；能读的是 `route`/`intent` | `insights/api.py:839 plan_question` → `QuestionPlan.to_dict()` |
+| `route_question`：`recommended_tool` | **现在有**——但不是文案赢了，是键按裁定补进了实现 | `54842ec`（D5）→ `insights/models.py:635 QuestionPlan.to_dict()` |
 
-三个 legacy 名只在 `insights_legacy.py` 里作为键存在（本轮实测：全仓 grep 除文案外无活口）。
+`data_quality_issues`/`semantic_hints`/`agent_memory_hints` 三个 legacy 名只在
+`insights_legacy.py` 里作为键存在（本轮实测：全仓 grep 除文案外无活口）。
 按 DCD 20261005 裁5 Q-B 的方向——**切的是文案，不是往出境载荷里加键**（加键要走载荷键名登记）。
+
+`recommended_tool` 是这一族的**例外，且有据**：20261008《三路径 MCP 审计报告》§9.2 P1 点名
+"返回体增加 `recommended_tool` 字段，消除「意图名→工具名」的隐式映射"，`54842ec` 照裁定落了码。
+所以第 6 条不是"放水改断言"，而是把钉的方向跟着裁定翻过来：**键必须在，且值只能是真注册的工具名**
+（或意图认不出来时的空串）——规划面给模型指路，指一个不存在的工具比不指更糟。
 
 **为什么每条都配一个"该不响"的对偶**：
 - `data_quality_issues` 在 `get_device_health` 的文案里**留着是对的**：裁5 Q1=A 把 device_health
   整条交回 legacy，legacy 真的产出该键（`insights_legacy.py:1711`）。所以第 3 条把这格钉住，
   防止下一个人在"全仓清零死键"的冲动下把它也改掉——那才是真把文案和载荷改拧了。
-- 第 6 条锁 `plan_question` 的载荷里**不许**凭空长出 `recommended_tool`：本族的修法只有改文案。
+- 第 6 条锁 `plan_question` 的 `recommended_tool`：D5 之后键必须在、值必须是 `TOOL_NAMES` 里的真名
+  或空串；同时继续锁"不许凭空长出别的出境键"（`next_tool`/`steps`/…那一条腿一字未动）。
 - 第 8 条锁"文案里列举的取值"本身：pitfall 现在写的是意图名清单，清单必须等于 `Intent` 枚举真值，
   否则修一条假承诺换来的是另一条假承诺。
 - 第 9、10 条是扫描短名单的最后一行：`get_climate_sessions` 文案里的 `current_temperature`
@@ -44,7 +51,9 @@ if _SRC not in sys.path:
 from memory_agent.config import Config  # noqa: E402
 from memory_agent.insights import InsightService  # noqa: E402
 from memory_agent.insights.models import EntityInfo, Intent  # noqa: E402
+from memory_agent.insights.nlquery import _INTENT_TO_TOOL  # noqa: E402
 from memory_agent.store import Store  # noqa: E402
+from memory_agent.tool_schema import TOOL_NAMES  # noqa: E402
 
 _MCP_SOURCE = os.path.join(_SRC, "memory_agent", "mcp_server.py")
 _SPEC_SOURCE = os.path.join(_SRC, "memory_agent", "tool_schema.py")
@@ -75,8 +84,10 @@ CLIMATE_LEG = [
 #: `get_data_quality` 文案点名、且载荷顶层真的在的键（本轮运行时实测的 12 格里取对外有意义的）
 QUALITY_PROMISED = ("checks", "issues", "score", "total_events", "missing_days",
                     "noise_ratio", "summary", "filters", "window", "agent_memory", "ok")
-#: 三个 legacy 死名：在新引擎载荷里不存在
-DEAD = ("data_quality_issues", "semantic_hints", "agent_memory_hints", "recommended_tool")
+#: 三个 legacy 死名：在新引擎载荷里不存在。
+#: （`recommended_tool` 曾在此列——它由 20261008 三路径报告 §9.2 P1 要求补入、`54842ec` 已落，
+#: 现由下面的第 6 条按"必须存在且只能指向真工具名"钉住。）
+DEAD = ("data_quality_issues", "semantic_hints", "agent_memory_hints")
 
 
 def _ev(entity_id, day, minute, state, domain):
@@ -235,13 +246,28 @@ def test_ask_memory_copy_names_hints_not_the_legacy_pair():
     assert "hints" in desc and "semantic_hints" not in desc and "agent_memory_hints" not in desc
 
 
-def test_plan_question_payload_has_no_invented_recommended_tool(svc):
-    """`recommended_tool` 从没在新引擎里存在过：本族的修法只有改文案这一条。"""
-    out = svc.plan_question("书房电脑昨天用了多久")
+def test_plan_question_recommended_tool_points_at_a_registered_tool(svc):
+    """D5 之后 `recommended_tool` 是真键：钉它**不许指向未注册的工具**，而不是钉它不存在。
 
-    assert "recommended_tool" not in out
+    旧断言（"载荷里不许出现这个键"）的前提是"这个键从没在新引擎里存在过"，该前提已被
+    `54842ec` 推翻——键是 20261008《三路径 MCP 审计报告》§9.2 P1 点名要补的。翻过来之后判据
+    比原来更硬：值必须落在运行时注册表 `TOOL_NAMES` 里、整张意图映射表逐格核，认不出意图时
+    给空串；"不许自落未登记键"那条腿原样保留。
+    """
+    named = svc.plan_question("书房电脑昨天用了多久")
+    unknown = svc.plan_question("随便说句话")
+
+    assert "recommended_tool" in named, "D5 落的键又消失了：文案与载荷再次对不上"
+    assert named["intent"] == "device_usage"
+    assert named["recommended_tool"] == "get_device_usage"
+    assert named["recommended_tool"] in TOOL_NAMES, (
+        "规划面指向了未注册的工具名：%r" % named["recommended_tool"])
+    assert unknown["intent"] == "unknown" and unknown["recommended_tool"] == "", (
+        "意图认不出来却给出推荐工具——指错路比不指路更糟")
+    for intent, tool in _INTENT_TO_TOOL.items():
+        assert tool in TOOL_NAMES, "意图 %r 映射到未注册的工具 %r" % (intent, tool)
     for dead in ("next_tool", "suggested_tool", "tool", "steps"):
-        assert dead not in out, "规划面多出了出境键 %r——加键要走载荷键名登记，不许自落" % dead
+        assert dead not in named, "规划面多出了出境键 %r——加键要走载荷键名登记，不许自落" % dead
 
 
 def test_route_question_copy_only_names_keys_plan_question_returns(svc):
@@ -251,9 +277,10 @@ def test_route_question_copy_only_names_keys_plan_question_returns(svc):
     text = "%s %s %s" % (spec.get("summary", ""), spec.get("description", ""),
                          spec.get("pitfall", ""))
 
-    assert "recommended_tool" not in text, "route_question 的文案又许诺 `recommended_tool`"
+    # D5 之后 `recommended_tool` 是真键，不再走"文案不许点名"的禁令；改为并进下面的通用腿：
+    # 文案一旦点名它，就必须能在载荷里读到（点名本身不再是红，点名了却读不到才是红）。
     promised = _snake_tokens(text) & {"route", "intent", "entity_ids", "time_range", "hints",
-                                      "question", "days", "template_id"}
+                                      "question", "days", "template_id", "recommended_tool"}
     missing = [k for k in sorted(promised) if k not in out and k != "template_id"]
     assert not missing, "文案点名但 plan_question 载荷没有的键：%s" % (missing,)
     assert promised, "文案一个键都没点名，等于没告诉模型该读什么"
