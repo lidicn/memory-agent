@@ -131,6 +131,49 @@ def test_no_phantom_spec_on_the_wire_surface():
     assert not ghost, f"ToolSpec 登记了但 MCP 面没有实现：{ghost}"
 
 
+#: 派工单-MA-三路径MVP-20261012 §二 判据 2 点名的四个入口。⛔ 不跨文件 import：
+#: presence 档那份名单与本档各自成面，跨档 import 会让两档的读数器互相污染。
+THREE_PATH_ENTRIES = ("route_question", "run_analysis_template",
+                      "export_insight", "list_analysis_templates")
+
+
+def test_three_path_entries_are_callable_not_just_advertised():
+    """caps/目录报出的名字必须真有实现面且进了 scope 准入表，否则就是"看得见却调不动"。"""
+    for name in THREE_PATH_ENTRIES:
+        spec = tool_schema.SPEC_BY_NAME[name]
+        assert name in WIRE or (spec.generated and name in GENERATED_MCP), (
+            f"{name} 在 caps 里报出，但 wire 与 generated 两面都没有实现"
+            "（第一轮 P0-2 的幽灵形状）")
+        assert scope_of(name) != "unknown", (
+            f"{name} 未进 scope 准入表，任何令牌调用都吃 NOT_FOUND")
+
+
+def test_generated_mcp_tools_have_resolvable_dispatch_targets():
+    """全部 generated × mcp 的 spec，`dispatch()` 那对 (service, method) 必须取到方法。
+
+    取不到时调用只会拿到『后端未实现工具：…』这类错误，而 caps 照报不误。
+    """
+    import inspect
+    import re
+
+    from memory_agent import runtime as runtime_mod
+
+    bind = dict(re.findall(r"self\.([a-z_0-9]+)\s*=\s*([A-Z][A-Za-z0-9_]*)\(",
+                           inspect.getsource(runtime_mod.AppRuntime)))
+    checked = 0
+    for spec in tool_schema.TOOL_SPECS:
+        if not spec.generated or "mcp" not in (spec.expose or ()) or spec.service == "static":
+            continue
+        cls_name = bind.get(spec.service)
+        assert cls_name, f"{spec.name}: runtime 上没有 self.{spec.service} = <Class>( 构造点"
+        target = getattr(runtime_mod, cls_name, None)
+        assert target is not None, f"{spec.name}: runtime 模块里取不到 {cls_name}"
+        assert getattr(target, spec.method, None) is not None, (
+            f"{spec.name}: 派发目标 {cls_name}.{spec.method} 不存在")
+        checked += 1
+    assert checked, "generated 面为空 = 读数器或 schema 变了，这条腿会空过"
+
+
 def test_every_wire_tool_is_scope_registered():
     """未进 REGISTERED_TOOLS/WRITE_TOOLS 的工具，`scope_of` 返回 unknown，
     分发层按 P0-3 一律 NOT_FOUND——工具「看得见却调不动」就是这样造出来的。"""

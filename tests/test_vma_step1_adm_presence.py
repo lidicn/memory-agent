@@ -410,6 +410,51 @@ def test_adm_caps_shape_follows_the_contract_table():
     assert caps["version"]
 
 
+#: 派工单-MA-三路径MVP-20261012 §二 判据 2 点名的四个入口。
+THREE_PATH_ENTRIES = ("route_question", "run_analysis_template",
+                      "export_insight", "list_analysis_templates")
+
+
+def test_three_path_entries_are_discoverable_in_adm_caps():
+    """等值腿锁的是"与 TOOL_NAMES 同集"，挡不住某一枚整体掉出目录那一族回归（本仓少报过 35 枚）。
+
+    工单判据 2 要的是上游能否按名字发现入口，所以这里逐枚点名，⛔ 不拿集合等式代劳。
+    """
+    caps = runtime_mod.AppRuntime.adm_caps(SimpleNamespace())
+    for name in THREE_PATH_ENTRIES:
+        assert name in caps["tools"], (
+            f"adm/memory-agent/caps 少 {name} ⇒ 上游按名字发现不到该入口")
+
+
+def test_real_adm_caps_reaches_both_publish_paths_by_name():
+    """判据 2 的报文层：不止 `adm_caps()` 返回值里有名字，**发出去那一次调用**也得逐名都在。
+
+    两条路各量一次（无库时本仓同构直发、有库时交 `presence.advertise`），并锁 retain/qos——
+    探测方读的是 retained，非 retained 的 caps 等于没发。
+    ⛔ 口径边界：量的是交给客户端的那次 publish 调用，不是 broker 上 retained 的回读
+    （后者要窗口与探针，不归本仓，已作为缺口交回链主）。
+    """
+    caps = runtime_mod.AppRuntime.adm_caps(SimpleNamespace())
+
+    plain = _Client()
+    assert _bridge(plain).advertise(caps) is True
+    entry = _last(plain, mb.ADM_CAPS_TOPIC)
+    direct = json.loads(entry["payload"])
+    assert entry["retain"] is True and entry["qos"] == 1, (
+        "caps 非 retained 或 qos≠1 ⇒ 探测方按零往返读不到能力清单")
+
+    captured = {}
+    lib = _Client()
+    assert _bridge(lib, presence=_stub_presence(captured)).advertise(caps) is True
+    via_lib = json.loads(_last(lib, mb.ADM_CAPS_TOPIC)["payload"])
+    assert captured["name"] == "memory-agent"
+
+    assert direct == via_lib, "装没装库 caps 报文形状不该变（契约 §7.1 两条路同构）"
+    for name in THREE_PATH_ENTRIES:
+        assert name in direct["tools"], f"直发的 caps 报文缺 {name}"
+        assert name in via_lib["tools"], f"库那一路的 caps 报文缺 {name}"
+
+
 def test_startup_advertises_before_the_first_interval():
     # 任务注册搬家到 `_init_background`（DCD 20261010 Q3）之后，这一格的判据不变：
     # 广播必须发生在启动链里，而不是只挂在周期任务的第一轮之后——否则进程起来到第一个

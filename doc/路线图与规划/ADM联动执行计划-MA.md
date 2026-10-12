@@ -2069,11 +2069,67 @@ MA ── 三路径 MCP（入口 route_question）
 >   断言键集含 `{ok, insight}` 且**任何一条返回都没把 `queries`/`implementation` 平铺到顶层**）。两条实测 `2 passed`。
 > - **件 4**：契约表 `ADM联动主题注册表与消息契约.md:55/:56` 的消费方列已写 `DB、**AF**（2026-10-08 新增）`，MA 侧零代码改动。
 
+> **补记（2026-10-12 · 链主派工单对撞）：上面件 2 那一格，MA 侧当场补了四条直接腿；件 3 的口径分叉已由链主裁甲收口。**
+
+> - **件 2 的直接腿已补（三条）**：等值腿 `caps["tools"] == list(TOOL_NAMES)` 挡不住"四枚整体消失"那一族回归
+>   （MA 真出过事：35 个 MCP 工具没进 `ToolSpec` ⇒ caps 系统性少报）。现补：
+>   ① `tests/test_vma_step1_adm_presence.py::test_three_path_entries_are_discoverable_in_adm_caps`——逐枚点名四名在 `adm_caps()["tools"]` 里；
+>   ② `tests/test_mcp_surface_parity.py::test_three_path_entries_are_callable_not_just_advertised`——点名的四枚必须有实现面
+>   （手写 `@mcp.tool()` 或 `register_simple_tools` 动态注册，现读 `route_question` 属后者）且 `scope_of` 不是 unknown；
+>   ③ `::test_generated_mcp_tools_have_resolvable_dispatch_targets`——对全部 `generated × mcp` 的 spec 锁 `dispatch()` 的
+>   `(service, method)` 取得到方法：取不到时调用只会拿到"后端未实现工具：…"这类错误，而 caps 照报不误（`tool_schema.py:1896-1901`）。
+>   本机读数（`git archive HEAD src tests` 副本树，2026-10-12 20:18）`3 passed in 2.72s`，负控 N1-N4＋M0 见执行记录。容器权威档：run36（PRESENCE 格）。
+>   ⚠️ 顺带登记一处**惰性元数据**（今天不构成缺陷）：`run_analysis_template`/`list_analysis_templates` 的
+>   `spec.service/method` 写的是 `templates.run`/`templates.list_templates`，而 `TemplateManager` 实际只有
+>   `run_template`（模块级函数）与 `list_all`（`runtime.py:75` 的 `self.templates = TemplateManager(...)`）。
+>   这两枚 `expose=('mcp',)`、`generated=False`，走的是手写 wire 函数，永不进 `dispatch()`，所以元数据当前无人消费
+>   （`spec.service` 的读者只有 `tool_schema.py:1794-1799` 的自检与 `:1896-1901` 的派发）。
+>   ⇒ 记在这里是为了：若哪天给它们加 `builtin`/`arena` 或改 `generated=True`，腿 ③ 会当场判红，而不是等线上报错。
+> - **件 2 再加一层（腿 D，报文级）**：`caps` 从"返回值里有名字"升级到"发到 topic 上的那一次调用里有名字"。
+>   `tests/test_vma_step1_adm_presence.py::test_real_adm_caps_reaches_both_publish_paths_by_name`——假客户端顶掉建连工厂，
+>   两条发布路各量一次：MA 同构直发那一支（`mqtt_bridge.py:404-411`）断言 `adm/memory-agent/caps`（`:82`）恰好发一次、
+>   `retain=True`、`qos=1`、载荷键集 `{mcp, tools, version}`、四名逐个在 `payload["tools"]` 里；presence 在场那一支
+>   （`:395-403`）拿到**同一个** caps 对象，且两支的报文逐字节同形（契约 §7.1）。
+>   ⚠️ 草稿期这两条是分开的两条腿（`test_caps_publish_carries_three_path_entries` / `test_presence_branch_is_handed_the_same_caps_object`，
+>   副本树 M_0 基线 `2 passed in 3.92s`，负控 `M_A/M_B/M_C/M_0` 四档全对，`.qoder/tmp-c98-caps-negctl2.out`；
+>   `M_A` 首跑我期望写窄了：caps 是同一份对象，少报名字对两支消费面同红 ⇒ **改期望、未松腿**），入库终形**合成一条**——
+>   因为"少报名字"对两支是同一次消费，合一才能把同构断言写在同一个载荷对上；合并后的读数与注入矩阵以下面的十档终形演练为准。
+>   ⚠️ **口径边界**：这一层量的是"MA 交给客户端的那次 publish 调用"，⛔ 不是 broker retained 回读——后者容器内无
+>   `mosquitto_sub`、凭据不在 MA 手里、⛔ 不开合并窗，归链主。
+> - **入库终形演练**（改档名/换 helper 之后必须再实跑一次，⛔ 别拿草稿绿当代终形绿）：驱动
+>   `.qoder/tmp-c98-land-dryrun.py`，读数 `.qoder/tmp-c98-land-all.out`，入库由 `.qoder/tmp-c98-land-exec.py` 直插同一批常量（⛔ 不手抄）。
+>   `git archive HEAD src tests` 副本树里按锚点真插进两个既有档 ⇒ base `41 passed, 2 skipped` → landed `45 passed, 2 skipped`（**+4 条、零连带红**）；
+>   共十档（base／landed＋注入 N1／N2／N3／N4／M_A／M_B／M_C／M0）**全 OK**（`WT_UNTOUCHED=True`）。判据口径：注入必须让**指名的新腿**红，
+>   既有老腿跟着红记为"额外红腿"（同一回归被两处接住，算好事）；**新腿互相跟着红＝过咬**，判 MISMATCH。
+>   ⚠️ 其中 **N2（删 `route_question` 的 scope 准入）只有腿 B 红**——既有两条 scope 老腿扫的是 wire 面，
+>   `route_question` 属 `generated` 动态注册面，它们一声不响 ⇒ 腿 B 补的是盲区，不是重复劳动。
+>   ⚠️ 这一轮还抓到我自己一处错：终形里 `json.loads(_last(...))` 漏了 `["payload"]`（草稿取的是 `msg["payload"]`），
+>   首跑 `TypeError: the JSON object must be str, bytes or bytearray, not dict` 判红 ⇒ 已修，落库按 dryrun 里的常量直插。
+
 ### 8.2 本版不做的（边界）
 
 - 不替 AF 写 `ma_query` 节点（那是 AF 的 IR 节点，消费方自建）。
 - 三路径的 C 缺口（埋点 + 自动提议）按立项裁定延后（先积累未命中日志）。
 - 记忆读写工具（`list/retrieve/ask/add/revoke memory` 等）**不收敛**——DB 强依赖，只收敛行为洞察类。
+
+### 8.3 链主派工单 20261012 的三条判据（MA 侧现读与归属）
+
+> 入口件：`E:\NAS\ADM链主\派工单-MA-三路径MVP-20261012.md`（出单 2026-10-12）。
+> 回执长内容：`E:\NAS\关键决策部\inbox\20261012-MA-链主派工单三路径MVP三条判据现读回执.md`；
+> 指路已写进裁定书末尾：`decisions/20261008-ADM以AF为核心联动版本-裁定.md` **§六**（"2026-10-12 同日追加 · MA 侧回执指路"，⛔ 行号不钉死，按小节标题现读）。
+
+| 工单判据 | MA 侧现读（HEAD `e0c3f29`，工作树 `src tests scripts doc` 干净 ⇒ 读入库面） | 归属 |
+|---|---|---|
+| 1 `grep -rn "route_question" src/` 有命中 | **成立**。两口径并列：`--include='*.py'` ⇒ 11／10／14／5（四枚依次为 `route_question`／`run_analysis_template`／`export_insight`／`list_analysis_templates`）；全文件仅排除 `.pyc`（工单字面口径）⇒ 13／20／17／10。差额逐文件归位在 `skills_bundle/insight/SKILL.md`、`static/js/pages/user_manual.js`、`static/js/pages/mcp.js`（文案/前端面引用，非实现缺失）。 | 无需 MA 动作 |
+| 2 caps `tools[]` 含四入口 | **成立，且已锁到"可调面"而不只是"清单"**：`runtime.py:537-552` 的 `tools` 即 `tool_schema.TOOL_NAMES`（`:1774` 按 `expose∋"mcp"` 派生，92/95），四枚成员关系当场量全 `True`；再往下当场量三层——实现面（`WIRE` 手写 87 枚含三枚模板工具、`GENERATED_MCP` 5 枚含 `route_question`）、scope 准入（`scope_of` 四枚全 `read`，非 unknown）、派发目标可解析（全表面扫描 **holes=0／unchecked=0**）。**broker 报文级读数未取**（NAS 无 `mosquitto_sub`、凭据不在 MA 手里、工单 §三 ⛔ 不开合并窗）⇒ 如实登记为缺口，⛔ 不冒充实盘。 | MA 补四条腿（A/B/C 见 §8.1 补记，D＝publish 调用级报文形状，见上一条），报文级证据等窗口 |
+| 3 模板返回三块 schema | **口径分叉，不是缺件**：三块按设计稿 `doc/架构/三路径架构设计-v1.0.md:83/:85` 属 `export_insight`（`templates.py:378-413`），MCP 出口套一层（`mcp_server.py:2686-2693`）；两条契约腿在册（`test_ma_db_contract.py:480-490`/`:493-506`）。`run_analysis_template` 返 `ok/template/window/entities/summary_text`（`templates.py:693-705`）顶层**无**三块。AF 席同日独立得出同一读数（裁定书 §五）。 | **已裁：甲**（链主 2026-10-12 `E:\NAS\ADM链主\投递\MA-01.md` §一）⇒ MA 本轮**零代码**，既有返回键一律不动；MA 回执在 `投递\回执\MA-01.md`，覆盖口径另见裁定书 §六·补。分叉成因是工单 `:43` 把三块挂到了 `run_analysis_template` 上，责任在链主那条线，不占 MA 工程量。 |
+
+> **判据 3 的甲／乙已量过再收口**（⛔ 不是"选了省事的"）：乙案（给 `run_template` 顶层附三块）我按 7 处改动（T1–T7）在 `git archive HEAD` 副本树实跑过三档对照——
+> base `104 passed, 16 skipped`；patched（乙全落）`105 passed, 17 skipped`；patched 但抽掉形状腿 T3 `1 failed, 104 passed, 17 skipped`，唯一红腿是 `test_run_template_carries_three_block_schema`，工作树 `WT_UNTOUCHED=True`。
+> ⇒ 乙的工程量与副作用都真实（+1 条腿、零连带红），但它是**跨仓载荷新增**且收益按 `关键决策部工作制度.md:114` 属"量不出来"那一格 ⇒ 链主按测量否决权裁甲，MA 侧同意：同一能力不该有两个出口两种形状。乙案补丁档留在 `.qoder/tmp-c98-yi-patch.py`（**未落库**），若将来改判可直接复用。
+
+⛔ 边界照工单 §三：不改 AF/DB 的仓（链主台账 `ADM链路台账.md` 那四行我未动过，现读由链主按 `投递\MA-01.md` §四 自行改口完毕）；不开合并窗；三路径 C 缺口（埋点＋自动提议）仍按立项裁定延后。
+> broker 报文级 caps 读数那一格**不归 MA**：容器内无 `mosquitto_sub`、broker 凭据不在 MA 手里、⛔ 不开合并窗，三件同时成立 ⇒ 这一格已作为 MA 回执 `投递\回执\MA-01.md` R4 交回链主，MA 侧不冒充实盘、也不认领窗口。
 
 ---
 
