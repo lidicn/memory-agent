@@ -184,7 +184,6 @@ class AppRuntime:
         """后台完成 DB 初始化 + 采集器启动。"""
         import logging
         _log = logging.getLogger("runtime.init")
-        from .startup_health import set_state
         _log.info("DB 检查开始")
         rec = await asyncio.to_thread(self.store.check_and_recover)
         if rec.get('recovered'):

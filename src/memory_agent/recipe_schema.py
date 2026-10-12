@@ -163,6 +163,11 @@ class Recipe:
         return cls(**values)
 
 
+# type: 注释里反复用到的两个形状（pyflakes 不读 type 注释，别名让它们成为真引用）
+RecipeLike = Union[Recipe, Mapping[str, Any]]
+OptionalMapping = Optional[Mapping[str, Any]]
+
+
 # ---------------------------------------------------------------- 内部工具
 
 def _jsonable(value):
@@ -412,7 +417,7 @@ def _semantic_identity(data):
 # ---------------------------------------------------------------- 公共 API
 
 def make_recipe_id(recipe):
-    # type: (Union[Recipe, Mapping[str, Any]]) -> str
+    # type: (RecipeLike) -> str
     """确定性 id：同内容同 id，不同内容不同 id。
 
     id 只取决于语义核心，与 recipe_id / created_at / confidence / sample_count /
@@ -429,7 +434,7 @@ def make_recipe_id(recipe):
 
 
 def validate_recipe(recipe, check_id_consistency=False):
-    # type: (Union[Recipe, Mapping[str, Any]], bool) -> List[str]
+    # type: (RecipeLike, bool) -> List[str]
     """返回错误列表；空列表 = 通过。永不抛异常，非空即应拒绝。"""
     errors = []  # type: List[str]
     if isinstance(recipe, Recipe):
@@ -484,7 +489,7 @@ def validate_recipe(recipe, check_id_consistency=False):
 
 
 def serialize_recipe(recipe):
-    # type: (Union[Recipe, Mapping[str, Any]]) -> str
+    # type: (RecipeLike) -> str
     """Recipe（或合法 mapping）→ JSON 字符串（稳定键序、中文不转义、可读缩进）。"""
     if isinstance(recipe, Recipe):
         data = recipe.to_dict()
@@ -508,7 +513,7 @@ def deserialize_recipe(json_str):
 
 
 def resolve_params(params_template, context_dict=None):
-    # type: (Mapping[str, Any], Optional[Mapping[str, Any]]) -> Dict[str, Any]
+    # type: (Mapping[str, Any], OptionalMapping) -> Dict[str, Any]
     """替换 {placeholder}。
 
     * 整串就是占位符（如 "{days}"）→ 直接换成 context 原始值，保留类型；

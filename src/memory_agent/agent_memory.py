@@ -682,7 +682,7 @@ class AgentMemoryService:
         会收敛到同一 recipe_id，重复提交时走 merge 路径（sample_count 累加）。
         """
         from .recipe_schema import (
-            build_recipe, validate_recipe, serialize_recipe, deserialize_recipe,
+            build_recipe, validate_recipe, serialize_recipe,
         )
         from datetime import datetime, timezone
         # 补全默认字段并生成 recipe_id（created_at 由调用方注入，本模块不取系统时间）
