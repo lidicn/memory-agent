@@ -10,7 +10,10 @@
 #
 #   尺1 语法与形状：远端 bash -n、两层引号 lint、helper 与本批 LF 件 ast + CR 按字节 = 0、
 #        本机 CRLF 旧件只验可解析（CR 判据交给入库 blob）、100 条腿锚点静态现数；
-#   尺2 本机读数必须真在盘上且判据当场量：各格 passed == --collect-only 现量、六把门 self/scan
+#   尺2 本机读数必须真在盘上且判据当场量：各格 passed+skipped == --collect-only 现量、且每条 SKIPPED 的
+#        理由都在"本机可选依赖"名单内（本机 mcp 旧 SDK / river / provenance 精简检出，undocumented=0）——
+#        第一版写的是 `passed == collected`，被 offload 格三条实打实的本机 mcp skip 判红（102/105），
+#        换成"账要对得上 + skip 理由要可查"后不放过静默 skip，也不逼容器外的用例硬跑；六把门 self/scan
 #        RC=0 且 PROBLEM=0、G4 CAP == len(UNVERIFIED)、12 腿这一趟现跑（rc 落 .rc）、
 #        全量回归 .out + .rc 都在盘且 failed=0、`.coverage` 不在盘；
 #   尺3 树 = HEAD：代码面工作树干净、filelist 含本批件、聚合哈希当场量、入库 blob 先验非空再验 CR=0、
@@ -38,12 +41,14 @@ AST() { "$PY" -c "import ast,io,sys;ast.parse(io.open(sys.argv[1],encoding='utf-
 collected() { "$PY" -m pytest "$@" --collect-only -q -p no:cacheprovider 2>/dev/null | grep -oE '^[0-9]+ test' | grep -oE '^[0-9]+'; }
 #: 读本机读数档里的 "N passed"（没有则返回空）
 passedof() { grep -oE '[0-9]+ passed' "$1" 2>/dev/null | tail -1 | grep -oE '^[0-9]+'; }
+#: 同上取 "N skipped"（pytest 零 skip 时根本不打这一段，空串交给调用处的 ${x:-0}）
+skippedof() { grep -oE '[0-9]+ skipped' "$1" 2>/dev/null | tail -1 | grep -oE '^[0-9]+'; }
 
-CHANGED="src/memory_agent/env_cfg.py src/memory_agent/store.py src/memory_agent/runtime.py src/memory_agent/rule_lifecycle.py src/memory_agent/mcp_server.py src/memory_agent/api/system_routes.py src/memory_agent/mqtt_bridge.py src/memory_agent/tool_schema.py src/memory_agent/__init__.py src/memory_agent/agent_memory.py src/memory_agent/history.py scripts/scan_import_time_env_cast.py scripts/scan_claimed_semantics.py tests/test_vma_audit_20261012_fixes.py tests/test_vma_step1_adm_presence.py tests/test_vma_dcd_20261002_payload.py .gates-baseline.txt"
+CHANGED="src/memory_agent/env_cfg.py src/memory_agent/store.py src/memory_agent/runtime.py src/memory_agent/rule_lifecycle.py src/memory_agent/mcp_server.py src/memory_agent/api/system_routes.py src/memory_agent/mqtt_bridge.py src/memory_agent/tool_schema.py src/memory_agent/__init__.py src/memory_agent/agent_memory.py src/memory_agent/history.py scripts/scan_import_time_env_cast.py scripts/scan_claimed_semantics.py tests/test_vma_audit_20261012_fixes.py tests/test_vma_step1_adm_presence.py tests/test_vma_dcd_20261002_payload.py tests/contract/test_ma_db_contract.py .gates-baseline.txt"
 #: 本机工作树**本来就是** CRLF 的一件（autocrlf=true：入库 blob 是 LF）
 CRLF_NATIVE="tests/test_mqtt_bridge.py"
 #: 工作树必须是 LF 的本批件（CR 按字节量 = 0）
-LF_NATIVE="src/memory_agent/env_cfg.py src/memory_agent/store.py src/memory_agent/runtime.py src/memory_agent/rule_lifecycle.py src/memory_agent/mcp_server.py src/memory_agent/api/system_routes.py src/memory_agent/mqtt_bridge.py src/memory_agent/tool_schema.py src/memory_agent/__init__.py src/memory_agent/agent_memory.py src/memory_agent/history.py scripts/scan_import_time_env_cast.py scripts/scan_claimed_semantics.py tests/test_vma_audit_20261012_fixes.py tests/test_vma_step1_adm_presence.py tests/test_vma_dcd_20261002_payload.py tests/test_tool_prose_promised_keys.py tests/test_vma_promised_keys_runtime_contract.py tests/test_vma_r5_event_loop_offload.py tests/test_vma_phase2_batch3_shared_ruler.py tests/test_vma_phase2_claims_gauge.py tests/test_vma_login_rate_limit.py tests/test_rounds11_19_ma25_35_fixes.py tests/test_startup_identity_nonblocking.py tests/test_db_integrity_check_mode.py tests/test_device_event_feed.py tests/test_recipe_schema.py .gates-baseline.txt"
+LF_NATIVE="src/memory_agent/env_cfg.py src/memory_agent/store.py src/memory_agent/runtime.py src/memory_agent/rule_lifecycle.py src/memory_agent/mcp_server.py src/memory_agent/api/system_routes.py src/memory_agent/mqtt_bridge.py src/memory_agent/tool_schema.py src/memory_agent/__init__.py src/memory_agent/agent_memory.py src/memory_agent/history.py scripts/scan_import_time_env_cast.py scripts/scan_claimed_semantics.py tests/test_vma_audit_20261012_fixes.py tests/test_vma_step1_adm_presence.py tests/test_vma_dcd_20261002_payload.py tests/contract/test_ma_db_contract.py tests/test_tool_prose_promised_keys.py tests/test_vma_promised_keys_runtime_contract.py tests/test_vma_r5_event_loop_offload.py tests/test_vma_phase2_batch3_shared_ruler.py tests/test_vma_phase2_claims_gauge.py tests/test_vma_login_rate_limit.py tests/test_rounds11_19_ma25_35_fixes.py tests/test_startup_identity_nonblocking.py tests/test_db_integrity_check_mode.py tests/test_device_event_feed.py tests/test_recipe_schema.py .gates-baseline.txt"
 HELPERS=".qoder/tmp-c97-mut34.py .qoder/tmp-c97-remote34.sh .qoder/tmp-c95-mut33.py .qoder/tmp-c91-anchor-check.py .qoder/tmp-c68-hashes.py .qoder/tmp-c91-mut31.py .qoder/tmp-c81-mut.py .qoder/tmp-c85-mut.py .qoder/tmp-c82-mut.py"
 NEWFILES="src/memory_agent/env_cfg.py scripts/scan_import_time_env_cast.py tests/test_vma_audit_20261012_fixes.py"
 
@@ -106,14 +111,21 @@ for cell in "audit12|tests/test_vma_audit_20261012_fixes.py" \
             "keys|tests/test_vma_promised_keys_runtime_contract.py tests/test_tool_prose_promised_keys.py" \
             "dblock|tests/test_vma_r6_db_lock_discipline.py tests/test_vma_r6_longrun_fixes.py tests/test_startup_identity_nonblocking.py" \
             "batch3|tests/test_vma_phase2_batch3_shared_ruler.py tests/test_vma_login_rate_limit.py tests/test_mqtt_bridge.py" \
-            "offload|tests/test_vma_r5_event_loop_offload.py tests/test_db_integrity_check_mode.py tests/test_rounds11_19_ma25_35_fixes.py tests/test_device_event_feed.py"; do
+            "offload|tests/test_vma_r5_event_loop_offload.py tests/test_db_integrity_check_mode.py tests/test_rounds11_19_ma25_35_fixes.py tests/test_device_event_feed.py" \
+            "contract|tests/contract/test_ma_db_contract.py"; do
   name=${cell%%|*}; files=${cell#*|}
   rcprev=$("$PY" -m pytest $files -q -rs -p no:cacheprovider > .qoder/tmp-c97-${name}-local.out 2>&1; echo $?)
   guard CELL_RC_$name 0 "$rcprev"
   want=$(collected $files)
-  got=$(passedof .qoder/tmp-c97-${name}-local.out)
-  echo "CELL $name collected=$want passed=$got"
-  guard CELL_PASSED_$name "$want" "$got"
+  got=$(passedof .qoder/tmp-c97-${name}-local.out); got=${got:-0}
+  skip=$(skippedof .qoder/tmp-c97-${name}-local.out); skip=${skip:-0}
+  # 本机 skip 只准是"模块级可选依赖"那一类（本机 mcp 旧 SDK / river / provenance 精简检出）。
+  # 判据不是"skip 数等于我记忆的 N"，而是"每一条 SKIPPED 行的理由都在这张名单里"——
+  # 新增一条说不清理由的 skip（例如 fixture 坏掉导致整模块静默跳过）就在这格判红。容器侧另有一格 SKIPPED=0 的硬门。
+  UNDOC=$(grep -E '^SKIPPED \[' .qoder/tmp-c97-${name}-local.out | grep -vcE '本机 mcp|本机 .*SDK|可选依赖|river|provenance|精简检出' || true)
+  echo "CELL $name collected=$want passed=$got skipped=$skip undocumented=$UNDOC"
+  guard CELL_ACCOUNTED_$name "$want" "$((got + skip))"
+  guard CELL_UNDOC_SKIP_$name 0 "$UNDOC"
 done
 
 # 12 腿在本机现跑一遍（靶全在本仓可读面 ⇒ 本机就该全杀）；rc 落到 .rc，读数不靠上一档的旧档。
@@ -130,14 +142,14 @@ guard MUT_LOCAL_SURVIVED 0 "$(grep -oE 'survived=[0-9]+' $MUTL | tail -1 | cut -
 guard MUT_LOCAL_INVALID 0 "$(grep -oE 'invalid=[0-9]+' $MUTL | tail -1 | cut -d= -f2)"
 guard MUT_LOCAL_WT_UNTOUCHED True "$(grep -oE 'WT_UNTOUCHED=[A-Za-z]+' $MUTL | tail -1 | cut -d= -f2)"
 # 全量回归由前置步骤现跑并落档（.out + .rc）；这一格读的就是那两份产物，缺一份就判红。
-guard SUITE_LOCAL_FILE 1 "$([ -f .qoder/tmp-c97-suite-local2.out ] && [ -f .qoder/tmp-c97-suite-local2.rc ] && echo 1 || echo 0)"
-SUMMARY=$(grep -oE '[0-9]+ (passed|failed|error)' .qoder/tmp-c97-suite-local2.out | tail -1)
-SUITE_FAILED=$(grep -oE '[0-9]+ failed' .qoder/tmp-c97-suite-local2.out | tail -1 | grep -oE '^[0-9]+')
+guard SUITE_LOCAL_FILE 1 "$([ -f .qoder/tmp-c97-suite-local3.out ] && [ -f .qoder/tmp-c97-suite-local3.rc ] && echo 1 || echo 0)"
+SUMMARY=$(grep -oE '[0-9]+ (passed|failed|error)' .qoder/tmp-c97-suite-local3.out | tail -1)
+SUITE_FAILED=$(grep -oE '[0-9]+ failed' .qoder/tmp-c97-suite-local3.out | tail -1 | grep -oE '^[0-9]+')
 echo "SUITE_SUMMARY_TAIL=$SUMMARY SUITE_FAILED_N=${SUITE_FAILED:-0}"
 guard SUITE_LOCAL_SUMMARY 1 "$([ -n "$SUMMARY" ] && echo 1 || echo 0)"
 guard SUITE_LOCAL_FAILED 0 "${SUITE_FAILED:-0}"
-guard SUITE_LOCAL_RC 0 "$(grep -oE 'SUITE2_RC=[0-9]+' .qoder/tmp-c97-suite-local2.rc | cut -d= -f2)"
-grep -E 'passed|SUITE2_RC' .qoder/tmp-c97-suite-local2.out .qoder/tmp-c97-suite-local2.rc | tail -3
+guard SUITE_LOCAL_RC 0 "$(grep -oE 'SUITE2_RC=[0-9]+' .qoder/tmp-c97-suite-local3.rc | cut -d= -f2)"
+grep -E 'passed|SUITE2_RC' .qoder/tmp-c97-suite-local3.out .qoder/tmp-c97-suite-local3.rc | tail -3
 guard COVERAGE_ARTIFACT 0 "$([ -f .coverage ] && echo 1 || echo 0)"
 
 # ── 尺3：树 = HEAD，本批件已入库，聚合哈希当场量，入库 blob 无 CR ──

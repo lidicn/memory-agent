@@ -2014,6 +2014,20 @@ MA ── 三路径 MCP（入口 route_question）
 | 3 | `run_analysis_template` 返回 schema 稳定（`insight`/`queries`/`implementation` 三块，见三路径设计稿 §2.3），供 AF 的 `ma_query` 节点按此解析 | 契约测试断言模板返回三块 schema；AF 侧 `ma_query` 解析不崩 | 1 |
 | 4 | `ma/presence` + `ma/device-health` 消费方扩到 AF（契约登记，**MA 侧零代码改动**——事件已发，只是契约表 §1.2 把消费方从"仅 DB"改成"DB、AF"） | 契约表 §1.2 已登记 AF 为消费方；AF 订阅后收到事件 | — |
 
+> 四件逐条现读（2026-10-12，本机 3.13.2；件 3 的"契约测试断言三块 schema"此前是缺的，本轮补上）：
+>
+> - **件 1/2**：`route_question`、`run_analysis_template`、`export_insight`、`list_analysis_templates` 四条现在场于
+>   `tool_schema.TOOL_NAMES`（当场量 `TOOL_NAMES_N=92`，四条 `IN_TOOL_NAMES=True`），caps 由 `runtime.adm_caps()` 取同一张表 ⇒ 探测方照 caps 建集成不会 404。
+> - **件 3**：三块由 `templates.TemplateManager.export_insight` 产出（`src/memory_agent/templates.py:385` `insight`、`:394` `queries`、`:404` `implementation`、`:408` `metadata`）；
+>   **MCP 出口多套一层**——`mcp_server.py:2693` 是 `return {"ok": True, "insight": data}`，于是 AF 侧读三块的落点是 `parsed["insight"]` 之下，不是顶层；
+>   若把三块平铺到顶层，AF 的解析要跟着改（跨仓接口）。这条区别现在由两条锁把住：
+>   `tests/contract/test_ma_db_contract.py::test_export_insight_returns_the_three_blocks`（真树内置模板 `ac_runtime_daily` 导出，
+>   断言顶层键集恰为 `{insight, queries, implementation, metadata}`、`insight` 含 `id/name/pattern/confidence`、`queries[0]` 含
+>   `entity_id/attribute/pattern/value/time_range`、`implementation` 恰为 `{nr_condition, nr_action}`）与
+>   `::test_mcp_export_insight_nests_the_three_blocks_under_one_key`（AST 只读 `mcp_server` 的 `export_insight` 返回字典，
+>   断言键集含 `{ok, insight}` 且**任何一条返回都没把 `queries`/`implementation` 平铺到顶层**）。两条实测 `2 passed`。
+> - **件 4**：契约表 `ADM联动主题注册表与消息契约.md:55/:56` 的消费方列已写 `DB、**AF**（2026-10-08 新增）`，MA 侧零代码改动。
+
 ### 8.2 本版不做的（边界）
 
 - 不替 AF 写 `ma_query` 节点（那是 AF 的 IR 节点，消费方自建）。

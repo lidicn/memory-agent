@@ -468,3 +468,39 @@ def test_db_error_text_helper_still_reads_ma_error():
     err = {"ok": False, "error": {"code": "NOT_FOUND", "message": "成员不存在"}}
     payload = json.dumps(err, ensure_ascii=False)
     assert json.loads(payload)["error"]["message"] == "成员不存在"
+
+
+# ── 计划 §8.1 第 3 条：模板返回「三块」schema（路径2 剧本下发）────────────────
+# 设计稿 §2.3 说的三块 = `insight` / `queries` / `implementation`。这三块由
+# `templates.TemplateManager.export_insight` 产出，MCP 面（`mcp_server.export_insight`）
+# 把**整个**导出件挂在响应的 `insight` 键下 ⇒ AF 的 `ma_query` 节点第一步取
+# `parsed["insight"]`，三块在它**里面**，不在响应顶层。这条区别是 AF 侧解析的落点，
+# 所以两块各锁一次：源头的键集 + 出口的那一层嵌套。
+
+def test_export_insight_returns_the_three_blocks(tmp_path):
+    from memory_agent.templates import TemplateManager
+
+    mgr = TemplateManager(str(tmp_path))
+    data = mgr.export_insight("ac_runtime_daily")
+    assert data, "内置模板 ac_runtime_daily 导不出来 = 路径2 根本没有内容可下发"
+    assert set(data) == {"insight", "queries", "implementation", "metadata"}, sorted(data)
+    assert set(data["insight"]) >= {"id", "name", "pattern", "confidence"}, sorted(data["insight"])
+    assert isinstance(data["queries"], list) and data["queries"], "queries 为空则 AF 拼不出条件"
+    assert set(data["queries"][0]) == {"entity_id", "attribute", "pattern", "value", "time_range"}
+    assert set(data["implementation"]) == {"nr_condition", "nr_action"}
+
+
+def test_mcp_export_insight_nests_the_three_blocks_under_one_key():
+    """锁住"MCP 出口只加一层 `insight`"这个形状——AF 按顶层读三块会全部读空。"""
+    import ast
+
+    tree = ast.parse(_mcp_source())
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "export_insight"), None)
+    assert fn, "mcp_server 里找不到 export_insight 的定义"
+    returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+    shapes = [{k.value for k in n.value.keys if k is not None and isinstance(k, ast.Constant)}
+              for n in returns if isinstance(n.value, ast.Dict)]
+    assert {"ok", "insight"} in shapes, f"MCP 面的返回键集变了：{shapes}"
+    flat = [s for s in shapes if {"queries", "implementation"} <= s]
+    assert not flat, "三块被平铺到顶层了 ⇒ 与 `insight` 嵌套口径冲突，AF 侧解析要跟着改（跨仓接口）"
