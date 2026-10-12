@@ -1947,6 +1947,11 @@ mut34 首轮 `killed=9 survived=3` ⇒ 三条 SURVIVED 全部**补用例**（不
 ```
 
 - `reasons` 非空 ⇒ `degraded=true`，元素 = `ADM_ERR_*`；`version` = 计划号（AF 2.6 / MA **1.4** / DB 2.7）；
+  > **本行括号里的 MA 号是 2026-10-06 那次快照，现以契约权威版为准**：`ADM联动主题注册表与消息契约.md:47`
+  > （裁定 20261002 Q7）明写 `caps.version` 报 `x.y.z` 计划号"如 MA 的 **1.2.3**"，`:227` 要求 status 的 `version`
+  > 与 `caps.version` **同口径**。本仓据此把 `mqtt_bridge` 里写死的 `"1.4"` 摘掉，改由 `_status_version()` 单源取
+  > `from . import PLAN_VERSION`（现值 `1.2.3`）；变异腿 M01（写死 1.4）实测 KILLED。按本节开头立的规矩"两者冲突以契约表为准"，
+  > 这里不呈 DCD，只把冲突落在册面上。
 - 消费端**兼容旧字面量**：非 JSON 的 `online`/`offline` → 按 `{"state":"online|offline"}` 解析，**不得丢弃**。
 
 **B. 统一错误码**：
