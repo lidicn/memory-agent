@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import time
+import uuid
 
 from memory_agent import __version__ as __app_version__
 from starlette.requests import Request
@@ -107,8 +108,13 @@ async def apply_update(request: Request):
     body = {}
     try:
         body = await request.json()
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 — 空 body / 表单编码 / 非 JSON 都从这条路过
+        # 咽下异常却不留痕，运维端看到的就只有"点了没反应"；随后缺 confirm_version 会照样 400。
+        _LOG.warning("[update] 请求体不是 JSON，按空 body 继续：%r", exc)
+    if not isinstance(body, dict):
+        # JSON 数组/字符串合法但不是本接口的载荷形状；不挡住的话下面的 .get 会抛 AttributeError → 500。
+        _LOG.warning("[update] 请求体是 %s，按空 body 继续", type(body).__name__)
+        body = {}
 
     confirm_version = (body.get("confirm_version") or "").strip()
     if not confirm_version:
@@ -146,10 +152,20 @@ async def apply_update(request: Request):
         "requested_by": user.get("username", "admin"),
         "version": __app_version__,
     }
-    tmp_path = MARKER_PATH + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(marker, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, MARKER_PATH)
+    # D2（审计 20261012）：临时名曾是固定的 MARKER_PATH + ".tmp" —— 两名管理员并发点
+    # 「检查更新」时两次 json.dump 会写同一个文件，内容交错后 marker 的 ref/requested_by
+    # 可能来自不同请求，宿主脚本按错误的 ref 执行 git pull + 重启。随机后缀 + fsync 后再 rename。
+    tmp_path = "%s.tmp.%s" % (MARKER_PATH, uuid.uuid4().hex[:8])
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(marker, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, MARKER_PATH)
+    except Exception:
+        if os.path.isfile(tmp_path):
+            os.remove(tmp_path)
+        raise
 
     # 清除旧结果
     if os.path.isfile(RESULT_PATH):

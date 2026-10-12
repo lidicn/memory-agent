@@ -44,6 +44,7 @@ import threading
 import time
 
 from .day_bounds import clamp_days
+from .env_cfg import env_float, env_int
 from .mcp_context import caller as _caller_context
 from .mcp_errors import (
     ALL_CODES,
@@ -281,12 +282,12 @@ MCP_CALL_STATS: dict = {}
 MCP_STATS_LOCK = threading.Lock()
 # 审计 M2：单级阈值会把「冷启动 ~60s」与「偶发慢查询」混为一谈（前者必然触发，
 # 反而淹没后者）。拆成两级：SLOW（>=5s，INFO）与 HEAVY（>=30s，WARNING，重点排查）。
-MCP_SLOW_MS = float(os.getenv("MCP_SLOW_MS", "5000"))
-MCP_HEAVY_MS = float(os.getenv("MCP_HEAVY_MS", "30000"))
+MCP_SLOW_MS = env_float("MCP_SLOW_MS", 5000, lo=1)
+MCP_HEAVY_MS = env_float("MCP_HEAVY_MS", 30000, lo=1)
 _mcp_stats_log = logging.getLogger("mcp.stats")
 _log = logging.getLogger(__name__)  # 稳定性审计第二轮：_log 未定义导致错误路径崩溃
 # 审计 M1：MCP 调用统计上限，防止进程级无限增长（内存泄漏）
-MCP_MAX_STATS_ENTRIES = int(os.getenv("MCP_MAX_STATS_ENTRIES", "500"))
+MCP_MAX_STATS_ENTRIES = env_int("MCP_MAX_STATS_ENTRIES", 500, lo=1)
 
 
 def _extract_error_text(result):

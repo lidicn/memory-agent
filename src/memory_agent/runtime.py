@@ -23,6 +23,7 @@ from typing import Any
 from .analysis import AnalysisService
 from .auth import AuthManager
 from .config import Config, get_config
+from .env_cfg import env_float
 from . import adm_linkage, house_time
 from .face_node_registry import FaceNodeRegistry
 from .ha_client import HAClient
@@ -53,6 +54,11 @@ from .livingroom_ai import LivingRoomAIIngest
 from .candidate_promotion import get_promoter
 from .causal_scanner import CausalScanner
 from .announcer import Announcer
+
+# D3（稳定性/功能性审计 20261012）：/health 的七路探测原先共用一个 gather 且没有各自超时，
+# 最慢的一路（chroma 客户端默认 60s、VACUUM 期间的 store.stats）就能把 /health 拖住几十秒 →
+# 外部存活探针超时杀容器 → 崩溃-重建 churn。每路限时，慢的那一路降级而不是拖垮整面。
+HEALTH_PROBE_TIMEOUT_SECONDS = env_float("MA_HEALTH_PROBE_TIMEOUT_SECONDS", 5.0, lo=0.5)
 
 
 class AppRuntime:
@@ -1046,11 +1052,17 @@ class AppRuntime:
         embed_task = asyncio.to_thread(self.history.embedding_status)
 
         ha, llm, stats, chroma, nr, ha_db, embedding = await asyncio.gather(
-            ha_task, llm_task, store_task, chroma_task, nr_task, ha_db_task, embed_task,
+            # 每一路各自限时：某一路慢/挂只让那一路降级为 timeout，不让它决定 /health 的耗时。
+            # wait_for 到点会取消等待，但 asyncio.to_thread 起的线程无法中断——它跑完后结果被丢弃。
+            *(asyncio.wait_for(t, HEALTH_PROBE_TIMEOUT_SECONDS) for t in
+              (ha_task, llm_task, store_task, chroma_task, nr_task, ha_db_task, embed_task)),
             return_exceptions=True,
         )
 
         def _safe(value: Any, fallback: dict) -> dict:
+            if isinstance(value, asyncio.TimeoutError):
+                return {**fallback, "timeout": True,
+                        "error": "探测超过 %gs 未返回" % HEALTH_PROBE_TIMEOUT_SECONDS}
             return value if isinstance(value, dict) else {**fallback, "error": str(value)}
 
         # 采集滞后：最近一条事件距现在多久（无事件则 None）

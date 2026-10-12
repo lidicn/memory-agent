@@ -65,13 +65,16 @@ from .device_feed import BINARY_STATES, DEVICE_TRIGGER, FEED_TAGS
 from .rule_engine import DEVICE_EVENT_KIND
 from .store import (CANDIDATE_ACCEPTED, CANDIDATE_PRE_ENGINE, CANDIDATE_PROMOTED,
                     CANDIDATE_SOURCE_MANUAL)
+from .env_cfg import env_float, env_int
 
 logger = logging.getLogger("memory_agent.rule_lifecycle")
 
 # 红线 1：晋升所需的最少独立证据日数
-MIN_EVIDENCE = int(os.getenv("MA_RULE_MIN_EVIDENCE", "3"))
+# D1（审计 20261012）：两条红线原本是模块期裸 int()/float() —— env 写错不是"配置没生效"，
+# 而是 `import memory_agent.rule_lifecycle` 直接炸；0/负值则把红线静默关掉。
+MIN_EVIDENCE = env_int("MA_RULE_MIN_EVIDENCE", 3, lo=1)
 # 红线 2：试运行观察期天数
-DRY_RUN_DAYS = float(os.getenv("MA_RULE_DRY_RUN_DAYS", "3"))
+DRY_RUN_DAYS = env_float("MA_RULE_DRY_RUN_DAYS", 3, lo=1)
 
 MODE_DRY_RUN = "dry_run"
 MODE_LIVE = "live"

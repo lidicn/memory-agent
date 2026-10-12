@@ -734,15 +734,22 @@ class AgentMemoryService:
         # 用 retrieve 做语义召回（state=live），然后过滤 topic_key="recipe"
         hits = self.retrieve(q, top_k=max(top_k * 3, 10))
         recipes = []
+        # 召回到的 recipe 行没能进结果的原因有三种（缺 text / 解析失败 / tool_sequence 形状不认），
+        # 原先一律静默 continue，对外却回 ok=True ——「库里那些行不存在」。计个数，让 ok 有依据。
+        dropped = []
         for h in hits:
             if h.get("topic_key") != "recipe":
                 continue
             if not h.get("text"):
+                dropped.append(h.get("memory_id") or "?")
+                self.logger.warning("[AgentMemory] match_recipe 丢弃一条 text 为空的 recipe 行")
                 continue
             # 解析 recipe（dataclass，用属性访问）
             try:
                 r = deserialize_recipe(h["text"])
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 — 单行脏数据不许拖垮整次召回
+                dropped.append(h.get("memory_id") or "?")
+                self.logger.warning("[AgentMemory] match_recipe 丢弃一条无法解析的 recipe 行：%r", exc)
                 continue
             if intent and r.intent != intent:
                 continue
@@ -772,7 +779,8 @@ class AgentMemoryService:
             })
             if len(recipes) >= top_k:
                 break
-        return {"ok": True, "count": len(recipes), "recipes": recipes, "schema": "ma-recipe/1"}
+        return {"ok": not dropped, "count": len(recipes), "recipes": recipes,
+                "schema": "ma-recipe/1", "dropped_rows": len(dropped)}
 
     # ── 自动晋升 sweep + reconcile（v2 #4 / #9）──────────────────────────
     def sweep_promote_candidates(self) -> dict:

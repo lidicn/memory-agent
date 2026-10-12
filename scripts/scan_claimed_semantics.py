@@ -81,6 +81,20 @@ REGISTRY = {
         "claims": ["fail-closed"],
         "cases": [("test_perception_ingest.py", "test_ingest_event_fail_closed")],
     },
+    # 36a6e86 新增的 recipe_schema 带了两处 fail-closed 声明却没配登记（G4 判红两条）。
+    # 补的是**直调**用例：deserialize 的间接用例隔着 json.dumps，换实现就会悄悄不再覆盖 from_dict。
+    ("recipe_schema.py", "from_dict"): {
+        "claims": ["fail-closed"],
+        "cases": [("test_recipe_schema.py", "test_missing_required_field_raises_value_error"),
+                  ("test_recipe_schema.py", "test_wrong_types_raise_value_error"),
+                  ("test_recipe_schema.py", "test_non_mapping_input_raises_value_error"),
+                  ("test_recipe_schema.py", "test_unknown_enum_values_are_kept_not_rejected")],
+    },
+    ("recipe_schema.py", "deserialize_recipe"): {
+        "claims": ["fail-closed"],
+        "cases": [("test_recipe_schema.py", "test_deserialize_structural_problems_raise"),
+                  ("test_recipe_schema.py", "test_deserialize_invalid_json_raises")],
+    },
     ("service_tokens.py", "scope_matches"): {
         "claims": ["fail-closed"],
         "cases": [("test_service_tokens.py", "test_scope_matches_fails_closed_on_empty")],

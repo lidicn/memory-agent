@@ -345,6 +345,50 @@ class TestSerializationRoundTrip(unittest.TestCase):
             rs.deserialize_recipe(123)
 
 
+class TestFromDictFailClosed(unittest.TestCase):
+    """`Recipe.from_dict` 自己的 fail-closed 断言（原先只经 deserialize_recipe 间接覆盖）。
+
+    登记口径（scan_claimed_semantics 的「登记 + 断言」两件套）要求打在**被声明的那个函数**上：
+    间接用例隔着 json.dumps，改天 deserialize 换实现就会悄悄不再覆盖 from_dict。
+    """
+
+    def test_missing_required_field_raises_value_error(self):
+        data = _valid_recipe_dict()
+        del data["metric"]
+        with self.assertRaises(ValueError):
+            rs.Recipe.from_dict(data)
+
+    def test_wrong_types_raise_value_error(self):
+        for name, bad in (("tool_sequence", "steps"), ("confidence", "high"), ("created_at", 20261008)):
+            data = _valid_recipe_dict()
+            data[name] = bad
+            with self.subTest(field=name):
+                with self.assertRaises(ValueError):
+                    rs.Recipe.from_dict(data)
+
+    def test_unsupported_tool_step_raises_value_error(self):
+        data = _valid_recipe_dict()
+        data["tool_sequence"] = ["not-a-step"]
+        with self.assertRaises(ValueError):
+            rs.Recipe.from_dict(data)
+
+    def test_non_mapping_input_raises_value_error(self):
+        for bad in (None, 123, "[]", [1, 2]):
+            with self.subTest(value=bad):
+                with self.assertRaises(ValueError):
+                    rs.Recipe.from_dict(bad)
+
+    def test_unknown_enum_values_are_kept_not_rejected(self):
+        """声明的后半句：结构层 fail-closed，枚举漂移**保留原值**（校验交给 validate_recipe）。"""
+        data = _valid_recipe_dict()
+        data["intent"] = "future_intent"
+        data["status"] = "draft"
+        recipe = rs.Recipe.from_dict(data)
+        self.assertEqual(recipe.intent, "future_intent")
+        self.assertEqual(recipe.status, "draft")
+        self.assertTrue(rs.validate_recipe(recipe), "结构层放行后，枚举拒绝必须由 validate 负责")
+
+
 # -------------------------------------------------------------- resolve_params
 
 class TestResolveParams(unittest.TestCase):

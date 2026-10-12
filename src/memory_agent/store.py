@@ -27,6 +27,7 @@ from typing import Any
 
 from . import house_time
 from .day_bounds import (LONG_WINDOW_MAX, _clamped, clamp_days, clamp_minutes)
+from .env_cfg import env_float, env_int
 
 SCHEMA_VERSION = 1
 
@@ -49,10 +50,15 @@ CANDIDATE_SOURCE_INFERENCE = "inference"
 CANDIDATE_SOURCE_MANUAL = "manual"
 
 # 审计 S8：语音问答缓存软上限，超过则按创建时间淘汰最旧 10% 防止无限增长
-_VOICE_CACHE_MAX = int(os.getenv("MA_VOICE_CACHE_MAX", "2000"))
+# D1（审计 20261012）：这里曾经是裸 int(os.getenv(...)) —— 一个坏 env 会在导入期炸掉整个进程。
+_VOICE_CACHE_MAX = env_int("MA_VOICE_CACHE_MAX", 2000, lo=1)
 
 # DCD R1：反馈携带的问题/评论文本入库前截断上限（防止用户粘贴整段对话撑爆元数据行）
-_FEEDBACK_TEXT_MAX = int(os.getenv("MA_FEEDBACK_TEXT_MAX", "500"))
+_FEEDBACK_TEXT_MAX = env_int("MA_FEEDBACK_TEXT_MAX", 500, lo=1)
+
+# D3（审计 20261012）：业务锁的「无声等待」阈值。等锁超过这个时间就记 warning（不改变阻塞语义），
+# 让"VACUUM/慢事务占住锁几十秒"这件事在日志里看得见，而不是只能从容器被探针杀掉倒推。
+DB_LOCK_WARN_AFTER_SECONDS = env_float("MA_DB_LOCK_WARN_AFTER_SECONDS", 3.0, lo=0.5)
 
 # 反馈置信度调整只对这三个枚举值生效；其余入参（含空串与用户自由文本）一律不动置信度。
 # 第七轮审计 P7：调用点曾把自由文本当 outcome 传，形参错位后反馈静默丢失、接口仍回成功。
@@ -690,9 +696,27 @@ class Store:
             self._lock.release()
 
     @contextmanager
+    def _lock_with_contention_warning(self, where: str):
+        """业务锁的统一入口：等锁超过阈值先记一条 warning，然后照旧等下去。
+
+        口径与 checkpoint 的 `acquire(timeout=5.0)` 对齐（审计 20261012 · D3 第 2 条），但**不**把
+        超时变成异常：这些调用点遍布写路径，"拿不到锁就失败"会让一次 VACUUM 波及全部业务写。
+        超时只负责把「谁在抢锁、抢了多久」变成日志里的事实。
+        """
+        if not self._lock.acquire(timeout=DB_LOCK_WARN_AFTER_SECONDS):
+            logging.getLogger(__name__).warning(
+                "[Store] %s 等业务锁超过 %gs（持锁方可能是慢事务或清理期的 VACUUM），继续等待",
+                where, DB_LOCK_WARN_AFTER_SECONDS)
+            self._lock.acquire()
+        try:
+            yield
+        finally:
+            self._lock.release()
+
+    @contextmanager
     def _db(self):
         """P1-3: Acquire lock and yield connection, protecting execute/commit."""
-        with self._lock:
+        with self._lock_with_contention_warning("_db"):
             yield self.connect()
 
     @contextmanager
@@ -705,7 +729,7 @@ class Store:
         调用方不再需要手写 try/except/rollback——也不容易漏。
         """
         conn = self.connect()
-        with self._lock:
+        with self._lock_with_contention_warning("transaction"):
             try:
                 yield conn
                 conn.commit()
@@ -739,8 +763,9 @@ class Store:
             if self._conn is not None:
                 try:
                     self._conn.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "[Store] 隔离损坏库时关闭连接失败，继续重命名：%r", exc)
                 self._conn = None
             if os.path.exists(self.db_path):
                 os.rename(self.db_path, quarantined)
@@ -4763,6 +4788,10 @@ class Store:
         # 体积 198MB 纹丝不动）。NAS/树莓派盘小，删得多的那一轮顺手回收一次。
         total_removed = removed + be_removed + pe_removed
         if total_removed >= PURGE_VACUUM_MIN_ROWS:
+            # 审计 20261012 · D3 建议"VACUUM 移出业务锁"——这一条**不采纳**，理由：本仓是
+            # 单连接 + 全局锁（connect() 复用 self._conn），把 VACUUM 挪到独立连接会让它与
+            # 业务写事务在 SQLite 层相撞，换来的是写路径 SQLITE_BUSY 而不是健康面挂住。
+            # 崩溃链改在两处掐断：/health 每路探测各自限时（runtime.health），等锁超过阈值记 warning。
             with self._lock:
                 conn.execute("VACUUM")
             print(f"[Store] 清理后执行 VACUUM 回收磁盘（本轮删除 {total_removed} 条）")

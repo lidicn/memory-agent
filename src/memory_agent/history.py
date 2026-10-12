@@ -461,8 +461,11 @@ class HistoryManager:
             # chromadb HttpClient 内部持有 httpx 连接池；v0.4+ 有 close()
             if hasattr(client, "close"):
                 client.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            # best effort 不等于不留痕：关停期连接池炸了，下次复用的就是这条脏 client。
+            import logging
+
+            logging.getLogger(__name__).warning("[history] 关闭 chroma 连接池失败（忽略继续）：%r", exc)
 
     def close(self) -> None:
         """关停时释放 chromadb 连接池。"""

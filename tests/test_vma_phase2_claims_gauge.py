@@ -1,4 +1,4 @@
-"""第十二/十四/十七/十九轮「建议加门禁」的量具（现在是五把）：绿 + 不是空转 + 基线只准减。
+"""第十二/十四/十七/十九轮「建议加门禁」的量具（现在是六把）：绿 + 不是空转 + 基线只准减。
 
 审计员在原句里点名的不是某一条 bug，而是「这一族会再来」：
   第十四轮 :213-214 ⇒ scripts/scan_stub_claims_success.py（带 TODO 的桩照样回 ok:True）
@@ -6,6 +6,7 @@
   第十九轮 :153-154 ⇒ scripts/scan_cleanup_scheduled.py（清理函数没被排期 ⇒ 存量永不缩）
   第十二轮 :201-202 ⇒ scripts/scan_claimed_semantics.py（docstring 承诺的语义要有「登记 + 断言」两件套）
   判例 2（DCD 20261008）⇒ scripts/scan_session_owner_parity.py（读 sessionId 的入口必须配属主闸）
+  审计 20261012 · D1（§四 工具漏报第 2 条）⇒ scripts/scan_import_time_env_cast.py（导入期裸 int(env) 杀启动）
 
 锁的口径随仓规：**import 并调用量具，不解析 stdout**——读数行给人看，判定用返回值。
 每把门都带「不是空转」的一半：先证明它在这一版树上真扫到了候选，再证明候选全过；
@@ -45,6 +46,7 @@ GAUGES = (
     "scan_cleanup_scheduled",
     "scan_claimed_semantics",
     "scan_session_owner_parity",
+    "scan_import_time_env_cast",
 )
 
 
@@ -66,7 +68,7 @@ def _test_names_in_tests():
 
 
 def test_all_gauges_on_disk_and_self_test_green():
-    """五把门先在盘上，各自的 --self-test 全绿——自检抓的是「门自己会不会漏」。"""
+    """六把门先在盘上，各自的 --self-test 全绿——自检抓的是「门自己会不会漏」。"""
     for stem in GAUGES:
         mod = _load(stem)
         assert hasattr(mod, "_self_test"), "%s 没有自检" % stem
