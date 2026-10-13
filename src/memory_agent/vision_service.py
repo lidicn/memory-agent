@@ -55,6 +55,18 @@ def _insight_id(session_id: str, alert_type: str, day: str) -> str:
     raw = f"{session_id}|{alert_type}|{day}".encode("utf-8")
     return "ma-ins-" + hashlib.sha1(raw).hexdigest()[:16]
 
+
+def _body_sha8(payload: dict) -> str:
+    """投递体的 sha8——序列方式与 `MqttBridge.publish_raw` 逐字相同，所以对得上抓包字节。
+
+    `ma/insights` 按 DCD 20260929 裁定 **retain=False**，broker 侧不留快照；日志里又
+    ⛔ 落房间名与 person（出境纪律）。这一枚就是两头唯一的公共锚点：出资人在窗口里
+    拿订阅件的 `sha8=` 与本行现算比对，才能说「MA 确实发过、且发的就是这一条」。
+    """
+    body = json.dumps(payload, ensure_ascii=False)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:8]
+
+
 # ── 视觉识别提示词预设（供 MCP / 内置 LLM 共用）─────────────────────────────
 # 调优集中在此，避免散落到多处。custom 由调用方自由输入。
 _PROMPT_PRESETS: dict[str, str] = {
@@ -1144,31 +1156,38 @@ class VisionService:
         # 旧键（type/alert_type/message）保留到 DB/AF 迁完再摘——只加不减，避免
         # 把「键名对齐」做成又一次静默归零（同裁定 §四 判例 1）。
         persons_list = [p for p in (persons or []) if isinstance(p, dict)]
+        body = {
+            "type": "alert",
+            "source": "ma",
+            "kind": "security.stranger",
+            "insight_id": insight_id,
+            "trace_id": trace_id,
+            "ts": ts_iso,
+            "room": room,
+            "alert_type": "stranger",
+            "message": message,
+            "summary": f"{room} 出现未识别人员（{len(strangers)} 人）",
+            "persons": persons_list,
+            "evidence": [
+                {
+                    "name": p.get("name") or "",
+                    "via": p.get("via") or "",
+                    "confidence": float(p.get("confidence") or p.get("match_confidence") or 0.0),
+                }
+                for p in persons_list
+            ],
+            "snapshot_url": snapshot_url,
+        }
+        ok = False
         try:
-            mqtt.publish_raw(topic, {
-                "type": "alert",
-                "source": "ma",
-                "kind": "security.stranger",
-                "insight_id": insight_id,
-                "trace_id": trace_id,
-                "ts": ts_iso,
-                "room": room,
-                "alert_type": "stranger",
-                "message": message,
-                "summary": f"{room} 出现未识别人员（{len(strangers)} 人）",
-                "persons": persons_list,
-                "evidence": [
-                    {
-                        "name": p.get("name") or "",
-                        "via": p.get("via") or "",
-                        "confidence": float(p.get("confidence") or p.get("match_confidence") or 0.0),
-                    }
-                    for p in persons_list
-                ],
-                "snapshot_url": snapshot_url,
-            }, retain=False)
+            ok = mqtt.publish_raw(topic, body, retain=False)
         except Exception as exc:  # noqa: BLE001
             print(f"[Vision] 异常 MQTT 推送失败（已忽略）: {exc}")
+        # 这一跳的返回值此前被丢掉、异常又被吞：非 retained 的投递在盘上零痕迹，
+        # 于是 `ma_publishes_insights` 的现网半边永远⛔ 能事后自证（判例 1 的形状：
+        # 「改过配置」⛔ 等于「真的发过一次」）。出声行只落锚点，⛔ 落房间名/person。
+        print(f"[Vision] ma/insights 投递: ok={ok} topic={topic} "
+              f"insight_id={insight_id} retained=False body_sha8={_body_sha8(body)}")
         # 双通道的另一半（ADM 联动计划 第 1 步 ①）：投 DB 的公共收件箱，让 DB 决定
         # 要不要说话。收件箱载荷只带文字，不带 snapshot_url——快照路径进音箱链路上等于
         # 把内部存储位置广播出去，而播报本身用不到它。
