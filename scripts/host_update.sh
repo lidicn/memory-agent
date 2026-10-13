@@ -57,6 +57,15 @@ BACKUP="$DATA_DIR/update-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
 tar czf "$BACKUP" -C "$REPO_DIR" --exclude='.git' --exclude='data' src/ docker-compose.yml >> "$LOG" 2>&1
 log "备份: $BACKUP"
 
+# 备份回收：每收一次请求就留一枚 tar.gz，⛔ 无上限会吃穿 data 卷
+# （2026-10-13 现读：部署目录 64 枚共 143 MB，最旧那批是 10-10 bring-up 期按分钟连点留下的）。
+# 排在"备份创建之后"⇒ 本次新件必落在最新 N 枚里、不会被自己删掉。
+# 旧部署目录可能还没有这个脚本（它随本次更新才被拉进来），所以失败只记 WARN，⛔ 不阻断本次更新。
+PRUNER="$REPO_DIR/scripts/prune_update_backups.py"
+if [ -f "$PRUNER" ]; then
+    python3 "$PRUNER" --dir "$DATA_DIR" --keep 10 >> "$LOG" 2>&1 || log "WARN: 备份回收未成功（不影响本次更新）"
+fi
+
 TO_SHA=""
 TO_TAG=""
 CHANGELOG="[]"
