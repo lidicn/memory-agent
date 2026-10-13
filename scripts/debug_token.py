@@ -9,6 +9,6 @@ for k, v in st.items():
 # 验证 autoforge 令牌
 from memory_agent.service_tokens import get_service_token_store
 store = get_service_token_store()
-token = "svc_-xd8ZTmbld1bRur9Ya4KipJFu_7I5Bb0Dnf9L2kWUhM"
+token = "svc_****"
 result = store.verify(token)
 print(f"\nautoforge verify result: {result}")
