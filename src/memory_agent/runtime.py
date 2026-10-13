@@ -39,7 +39,7 @@ from .researcher import ResearcherService
 from .activity_inference import ActivityInferenceService
 from .llm_client import LLMRouter
 from .mcp_tokens import MCPTokenStore
-from .mqtt_bridge import MqttBridge, reset_presence_probe
+from .mqtt_bridge import MqttBridge, conn_params, reset_presence_probe
 from .backup import BackupManager
 from .template_validate import validate_all
 from .poller import CollectService
@@ -1001,6 +1001,11 @@ class AppRuntime:
         self.identity.tz_offset_hours = self.config.tz_offset_hours
         self.identity_reconciler.tz_offset_hours = self.config.tz_offset_hours
         self.mqtt.config = self.config
+        # 运营指令（联动路线图 rev 6「MQTT 口令轮换」）判据要求换完后本仓能正常发布/订阅，
+        # 而凭据是建连那一刻烤进 paho 客户端的：只重绑 config ⇒ 新口令永不上线。
+        if conn_params(old) != conn_params(self.config):
+            self.mqtt.reset_client()
+            print("[Runtime] MQTT 建连参数变更，已丢弃缓存客户端，下次发布用新凭据重连")
         # homesdk 可能是热更新之后才到位的（与 house_time 同一口径：探测缓存必须可解）
         reset_presence_probe()
         adm_linkage.reset_errors_probe()

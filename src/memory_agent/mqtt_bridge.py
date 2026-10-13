@@ -592,3 +592,37 @@ class MqttBridge:
             client.disconnect()
         except Exception:  # noqa: BLE001
             pass
+
+    def reset_client(self) -> bool:
+        """丢弃缓存的客户端，让下一次发布按**当前 config** 重新建连。
+
+        凭据（user/pass）与 broker 地址是建连那一刻一次性烤进 paho 客户端的，
+        轮换口令后只重绑 ``self.config`` 并不会让新值生效——要么重启进程，要么走这里。
+
+        ⛔ 复用 `close()`：那会把 ``_closed`` 置真，之后 publish() 永久空转。
+        也⛔ 在这里发 offline：桥还活着，发了就是让探测方读到假掉线；
+        新客户端建起来后由 `ensure_advertised()` 重新广播 online。
+        """
+        client = self._client
+        self._client = None
+        self._advertised = False
+        self._retry_after = 0.0
+        if client is None:
+            return False
+        try:
+            client.loop_stop()
+            client.disconnect()
+        except Exception as exc:  # noqa: BLE001
+            # 断不开也照样丢弃（它本来就要被替换），但如实出声：paho 卡住时这是唯一线索。
+            # ⛔ 写成 `pass`——本仓门禁 `except-pass-broad` 会把它报成新增违规，而基线只准减。
+            print(f"[MQTT] 重置时断开旧客户端失败（已丢弃，不影响下次用新参数重连）：{type(exc).__name__}")
+        return True
+
+
+def conn_params(cfg: Any) -> tuple:
+    """建连参数快照：只有这几枚变更才需要 `MqttBridge.reset_client()`。
+
+    主题前缀、在场间隔、退避窗口都每次发布现读，⛔ 烤在客户端里，不进本尺。
+    """
+    return tuple((getattr(cfg, name, None) or "")
+                 for name in ("tv_mqtt_host", "tv_mqtt_port", "tv_mqtt_user", "tv_mqtt_pass"))

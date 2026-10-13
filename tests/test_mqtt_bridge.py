@@ -1,10 +1,11 @@
 """MQTT 实时推送桥测试（v0.4）
 
 不连真 broker：client_factory 注入桩客户端，断言主题、载荷与 retain 语义。
-重点验证「旁路能力」的三条承诺：
+重点验证「旁路能力」的四条承诺：
 1. 未启用 / 建连失败时 publish 返回 False 且不抛错
 2. 建连失败只试一次，不反复重连刷日志
 3. 主流程不受推送失败影响
+4. 轮换 broker 口令后新值能上线（`reset_client()`；`reload_config()` 里那条接缝见本档末尾）
 """
 
 import json
@@ -18,7 +19,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
 from memory_agent.config import Config  # noqa: E402
-from memory_agent.mqtt_bridge import MQTT_AVAILABLE, MqttBridge  # noqa: E402
+from memory_agent.mqtt_bridge import MQTT_AVAILABLE, MqttBridge, conn_params  # noqa: E402
 
 
 class _FakeClient:
@@ -200,3 +201,112 @@ def test_reconnects_when_broker_returns(monkeypatch):
     assert bridge.publish("presence", {}) is True   # 重连成功并推送
     assert bridge._client is not None
     assert len(bridge._client.published) == 1
+
+
+# ── 凭据轮换：建连参数变更后新值必须能上线（联动路线图 rev 6《⛔ 运营指令》①）────
+#
+# 依据：`_default_client_factory` 在**建连那一刻**把 `tv_mqtt_user/tv_mqtt_pass` 交给
+# paho（mqtt_bridge.py:191-193），而 `_ensure_client()` 一旦有客户端就原样复用 ⇒
+# 「换完口令本仓还能正常发布」这条判据原先只能靠重启进程满足。
+
+
+def _recording_factory(box):
+    def factory(cfg):
+        client = _FakeClient()
+        box.append(cfg)
+        return client
+    return factory
+
+
+def test_client_is_cached_so_a_bare_config_rebind_changes_nothing():
+    """负控：下面几条腿都建立在「客户端只建一次」这个事实上。它若塌了，重置腿就是空锁。"""
+    seen = []
+    cfg = _cfg(ma_mqtt_enabled=True, tv_mqtt_user="svc", tv_mqtt_pass="old")
+    bridge = MqttBridge(cfg, client_factory=_recording_factory(seen))
+    assert bridge.publish("presence", {}) is True
+    cfg.tv_mqtt_pass = "new"                      # 只改配置、不重置
+    assert bridge.publish("presence", {}) is True
+    assert len(seen) == 1, "客户端没被缓存 ⇒ 「轮换后不生效」这个前提⛔ 在了，本档要重读"
+
+
+def test_reset_client_makes_the_new_credential_take_effect():
+    seen = []
+    cfg = _cfg(ma_mqtt_enabled=True, tv_mqtt_user="svc", tv_mqtt_pass="old")
+    bridge = MqttBridge(cfg, client_factory=_recording_factory(seen))
+    assert bridge.publish("presence", {}) is True
+    old_client = bridge._client
+    cfg.tv_mqtt_pass = "new"
+    assert bridge.reset_client() is True
+    assert bridge.publish("presence", {}) is True
+    assert len(seen) == 2, "重置后应当重新建连一次"
+    assert old_client.disconnected is True          # 旧连接要收掉，别留僵尸连接
+    assert bridge._client is not old_client
+
+
+def test_reset_client_is_not_close():
+    """`close()` 之后发布永久空转；`reset_client()` 之后必须还能发——两者⛔ 可互换。"""
+    bridge = MqttBridge(_cfg(ma_mqtt_enabled=True, tv_mqtt_pass="p"),
+                        client_factory=lambda c: _FakeClient())
+    assert bridge.publish("presence", {}) is True
+    bridge.reset_client()
+    assert bridge._closed is False
+    assert bridge.publish("presence", {}) is True
+
+    closed = MqttBridge(_cfg(ma_mqtt_enabled=True, tv_mqtt_pass="p"),
+                        client_factory=lambda c: _FakeClient())
+    assert closed.publish("presence", {}) is True
+    closed.close()
+    assert closed.publish("presence", {}) is False
+
+
+def test_reset_client_without_a_live_connection_is_quiet():
+    bridge = MqttBridge(_cfg(ma_mqtt_enabled=True), client_factory=lambda c: _FakeClient())
+    assert bridge.reset_client() is False
+
+
+def test_conn_params_watches_only_build_time_parameters():
+    cfg = _cfg(tv_mqtt_host="10.0.0.1", tv_mqtt_port=1883, tv_mqtt_user="svc", tv_mqtt_pass="old")
+    before = conn_params(cfg)
+    cfg.ma_mqtt_topic_prefix = "other"        # 前缀/间隔/超时每次发布现读，⛔ 烤进客户端
+    cfg.ma_mqtt_presence_interval = 15
+    cfg.tv_mqtt_timeout_s = 9.0
+    assert conn_params(cfg) == before, "非建连参数进尺 ⇒ 改个主题前缀也会重连"
+    cfg.tv_mqtt_pass = "new"
+    assert conn_params(cfg) != before
+
+
+def test_conn_params_tolerates_missing_attributes():
+    import types
+
+    assert conn_params(types.SimpleNamespace()) == ("", "", "", "")
+
+
+def test_runtime_reload_resets_the_mqtt_client_on_conn_change():
+    """接缝腿（AST，⛔ 文本锚点）：`reload_config()` 里必须有一条**条件本身就是建连参数比对**
+    的重置调用。文本锚点接不住「条件被掏空」——`if False and conn_params(old) != …` 里
+    两个子串都还在，腿照样绿（本档踩过：首版就是文本锚点，变异 M1 活了下来）。
+    """
+    import ast
+    import inspect
+
+    from memory_agent import runtime
+
+    def _calls_reset(node) -> bool:
+        for inner in ast.walk(node):
+            if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr == "reset_client"):
+                return True
+        return False
+
+    tree = ast.parse(inspect.getsource(runtime.AppRuntime.reload_config).strip())
+    guards = []
+    for node in ast.walk(tree):
+        test = getattr(node, "test", None)
+        if not (isinstance(node, ast.If) and isinstance(test, ast.Compare)
+                and isinstance(test.ops[0], ast.NotEq)):
+            continue
+        sides = [test.left, *test.comparators]
+        if all(isinstance(s, ast.Call) and getattr(s.func, "id", "") == "conn_params" for s in sides):
+            guards.append(node)
+    assert guards, "reload_config 里按 conn_params 比对的那条守卫⛔ 在了（换成常量/文本条件＝红）"
+    assert any(_calls_reset(node) for node in guards), "守卫在了，但 body 里没调 reset_client() ⇒ 新口令仍不上线"
