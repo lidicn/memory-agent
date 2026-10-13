@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """`ma/insights` 那一跳的装载级出声面（判例 1 的延伸：「改过配置」⛔ 等于「真的发过一次」）。
 
-射程：只罩 `VisionService._maybe_publish_alert` 的投递结果出声行与它的出境纪律。
+射程：只罩 `VisionService._maybe_publish_alert` 的**两条**投递结果出声行——`ma/insights`
+（桥的 `publish_raw`）与 `butler/inbox/notify`（桥的 `publish_notify`）——与它们各自的出境纪律。
 ⛔ 覆盖载荷键名与键序（那是 `test_vma_dcd_20261004_insight_id.py` 与 DB/AF 契约的活），
 ⛔ 覆盖 broker 真连（现网半边等窗口）。
-反向必填腿：`MqttBridge.publish_raw` 的序列口径一旦变更，`_body_sha8` 就与 broker 侧
-抓包字节对不上 ⇒ 由 `test_egress_sha8_shares_the_bridges_serialization` 单独咬住。
+反向必填腿：① `MqttBridge.publish_raw` 的序列口径一旦变更，`_body_sha8` 就与 broker 侧
+抓包字节对不上 ⇒ 由 `test_egress_sha8_shares_the_bridges_serialization` 单独咬住；
+② 桥的 `INBOX_NOTIFY_TOPIC` 字面量一旦改名，出声行会继续报旧名⇒日志里的主题与 broker
+上真实主题分家（窗口按这行对账就会对错 topic）⇒ 由 `test_notify_topic_literal_matches_the_bridges_constant` 单独咬住。
 """
 
 import hashlib
@@ -21,13 +24,15 @@ ROOM = "客厅"
 
 
 class _FakeMqtt:
-    """只记不发的两面桩：`publish_raw` 的返回值由测试指定（True/False/抛）。"""
+    """只记不发的两面桩：两条投递的返回值各自由测试指定（True/False/抛）。"""
 
-    def __init__(self, result=True, raises=None):
+    def __init__(self, result=True, raises=None, notify_result=True, notify_raises=None):
         self.raw = []
         self.notifies = []
         self._result = result
         self._raises = raises
+        self._notify_result = notify_result
+        self._notify_raises = notify_raises
 
     def publish_raw(self, topic, payload, retain=False):
         self.raw.append((topic, payload, retain))
@@ -36,8 +41,11 @@ class _FakeMqtt:
         return self._result
 
     def publish_notify(self, title, body, *, trace_id, channel="", priority=0):
-        self.notifies.append({"title": title, "body": body, "trace_id": trace_id})
-        return True
+        self.notifies.append({"title": title, "body": body, "trace_id": trace_id,
+                              "channel": channel, "priority": priority})
+        if self._notify_raises is not None:
+            raise self._notify_raises
+        return self._notify_result
 
 
 def _service(mqtt):
@@ -163,4 +171,99 @@ def test_egress_sha8_shares_the_bridges_serialization():
     )
     assert "json.dumps(payload, ensure_ascii=False)" in service_src, (
         "`_body_sha8` 的序列口径与桥不一致了"
+    )
+
+
+# ── 收件箱（`butler/inbox/notify`）那一跳：`e2e_speak_on_device` 缺口在 MA 的前置 ──────────
+
+NOTIFY_MARKER = "butler/inbox/notify 投递"
+
+
+def _notify_line(out):
+    lines = [l for l in out.splitlines() if NOTIFY_MARKER in l]
+    assert len(lines) == 1, f"收件箱投递行应恰好一条，实得 {len(lines)}：{out!r}"
+    return lines[0]
+
+
+def test_notify_line_names_the_anchor_and_only_the_anchor(monkeypatch, capsys):
+    """收件箱跳发成功⇒恰一行，带 `ok=True` 与 `trace_id`（窗口就靠这两个字段与 DB 侧对账）。"""
+    mqtt = _FakeMqtt(result=True, notify_result=True)
+    _, payload = _publish(monkeypatch, mqtt)
+    line = _notify_line(capsys.readouterr().out)
+    assert "ok=True" in line
+    assert f"trace_id={payload['trace_id']}" in line
+
+
+def test_notify_refusal_still_speaks(monkeypatch, capsys):
+    """★ 咬「返回值又被丢掉」：桥返回 False（未启用／未连接／缺 trace_id 都走这条），
+    出声行必须写 `ok=False` 而不是沉默。"""
+    mqtt = _FakeMqtt(result=True, notify_result=False)
+    _publish(monkeypatch, mqtt)
+    assert "ok=False" in _notify_line(capsys.readouterr().out)
+
+
+def test_notify_line_distinguishes_sent_from_refused(monkeypatch, capsys):
+    """同一调用点喂两种返回值⇒两行必须读得出区别。`notify_ok` 的初值是 False，
+    所以只断言 `ok=False` 的腿⛔ 能咬「丢掉返回值」，这一枚才是那行的存在理由。"""
+    def _line(notify_result):
+        capsys.readouterr()
+        _publish(monkeypatch, _FakeMqtt(result=True, notify_result=notify_result))
+        return _notify_line(capsys.readouterr().out)
+
+    sent, refused = _line(True), _line(False)
+    assert "ok=True" in sent and "ok=False" in refused
+    assert sent != refused, f"`ok=` 是常量不是投递结果：{sent!r}"
+
+
+def test_notify_raising_speaks_once_and_leaves_the_insights_line_intact(monkeypatch, capsys):
+    """收件箱是旁路：它抛异常⇒原「已忽略」行还在、另恰一条 `ok=False`，
+    而 `ma/insights` 那行⛔ 被带倒（两跳各恰一条，窗口才读得出哪半坏了）。"""
+    mqtt = _FakeMqtt(result=True, notify_raises=RuntimeError("inbox down"))
+    _publish(monkeypatch, mqtt)
+    out = capsys.readouterr().out
+    assert "收件箱通知投递失败" in out
+    assert "ok=False" in _notify_line(out)
+    insights = [l for l in out.splitlines() if "ma/insights 投递" in l]
+    assert len(insights) == 1 and "ok=True" in insights[0], f"旁路把主投递一起带走了：{out!r}"
+
+
+def test_notify_egress_line_carries_no_room_no_text(monkeypatch, capsys):
+    """出境锁（收件箱跳）：这行只允许锚点——房间名／标题／正文／快照 URL 一个都⛔ 进。"""
+    mqtt = _FakeMqtt(result=True, notify_result=True)
+    _publish(monkeypatch, mqtt)
+    line = _notify_line(capsys.readouterr().out)
+    for forbidden in (ROOM, "出现未识别人员", "陌生人", "snap.jpg"):
+        assert forbidden not in line, f"出境面漏出 {forbidden!r}：{line!r}"
+
+
+def test_the_two_channels_share_one_trace_id_on_the_egress_face(monkeypatch, capsys):
+    """跨仓排障锚点：`ma/insights` 载荷的 `trace_id` ＝ 收件箱出声行的 `trace_id` ＝
+    收件箱载荷的 `trace_id`。三处分家，「MA 发了、DB 为什么没说话」就串不成一条链。"""
+    mqtt = _FakeMqtt(result=True, notify_result=True)
+    _, payload = _publish(monkeypatch, mqtt)
+    line = _notify_line(capsys.readouterr().out)
+    tid = line.split("trace_id=")[1].split()[0]
+    assert tid == payload["trace_id"], f"两跳的 trace_id 分家：{tid!r} vs {payload['trace_id']!r}"
+    assert mqtt.notifies[-1]["trace_id"] == tid
+
+
+def test_notify_topic_literal_matches_the_bridges_constant():
+    """反向必填腿：出声行里的主题名是手抄字面量——本席⛔ 为此新增 `vision_service`→`mqtt_bridge`
+    的模块级依赖（那份 try 装 paho，把它拉进来本机面就⛔ 稳），所以两侧一致只能由本腿钉：
+    桥改常量⇒本腿先红。
+
+    第二枚断言查的是「那串字面量还在不在出声行里」，所以整行被删时本腿也红：
+    运行时面另有六枚在咬，两面对的是同一事实（这行没了），⛔ 算过咬。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    src_root = os.path.join(here, os.pardir, "src", "memory_agent")
+    with open(os.path.join(src_root, "mqtt_bridge.py"), encoding="utf-8") as f:
+        bridge_src = f.read()
+    with open(os.path.join(src_root, "vision_service.py"), encoding="utf-8") as f:
+        service_src = f.read()
+    assert 'INBOX_NOTIFY_TOPIC = "butler/inbox/notify"' in bridge_src, (
+        "桥的收件箱主题常量改了字面量⇒`vision_service` 出声行里那串手抄名当场过期"
+    )
+    assert NOTIFY_MARKER in service_src, (
+        "`vision_service` 的收件箱出声行不再报这个主题名（措辞改了或行删了）"
     )

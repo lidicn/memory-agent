@@ -1191,13 +1191,18 @@ class VisionService:
         # 双通道的另一半（ADM 联动计划 第 1 步 ①）：投 DB 的公共收件箱，让 DB 决定
         # 要不要说话。收件箱载荷只带文字，不带 snapshot_url——快照路径进音箱链路上等于
         # 把内部存储位置广播出去，而播报本身用不到它。
+        # 与 `ma/insights` 那一跳同一族缺陷：`publish_notify` 每条出口都返回 bool（禁用／
+        # 未连接／缺 trace_id 一律 False），调用点把它丢掉⇒「MA 投了、DB 没说话」与
+        # 「MA 压根没投出去」在盘上同形。这一行只落锚点，⛔ 落 title/body（两者都含房间名）。
+        notify_ok = False
         try:
-            mqtt.publish_notify(
+            notify_ok = mqtt.publish_notify(
                 f"{room} 出现未识别人员", message,
                 trace_id=trace_id, channel="vision", priority=5,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[Vision] 收件箱通知投递失败（已忽略）: {exc}")
+        print(f"[Vision] butler/inbox/notify 投递: ok={notify_ok} trace_id={trace_id}")
 
     def _register_failure(
         self, room: str, stream: str, trigger: str, error: str,
