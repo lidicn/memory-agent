@@ -203,7 +203,7 @@ MA 的 `.env`（`/vol1/1000/docker/memory-agent/.env`）：
 MA_MQTT_ENABLED=1
 TV_MQTT_HOST=192.168.2.200
 TV_MQTT_PORT=1883
-TV_MQTT_USER=butler
+TV_MQTT_USER=<服务用户名，⛔ 值不落纸，见 20261013 裁定 §四(a)>
 TV_MQTT_PASS=<REDACTED-web口令len=24>
 ```
 
