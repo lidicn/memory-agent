@@ -8,9 +8,11 @@
 4. 轮换 broker 口令后新值能上线（`reset_client()`；`reload_config()` 里那条接缝见本档末尾）
 """
 
+import hashlib
 import json
 import os
 import sys
+import types
 
 import pytest
 
@@ -18,6 +20,7 @@ _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
+from memory_agent import mqtt_bridge  # noqa: E402
 from memory_agent.config import Config  # noqa: E402
 from memory_agent.mqtt_bridge import MQTT_AVAILABLE, MqttBridge, conn_params  # noqa: E402
 
@@ -310,3 +313,103 @@ def test_runtime_reload_resets_the_mqtt_client_on_conn_change():
             guards.append(node)
     assert guards, "reload_config 里按 conn_params 比对的那条守卫⛔ 在了（换成常量/文本条件＝红）"
     assert any(_calls_reset(node) for node in guards), "守卫在了，但 body 里没调 reset_client() ⇒ 新口令仍不上线"
+
+
+# ---- 判例 1：轮换的判据是"新口令真的建起过一次连"，⛔"配置文件已改" ----
+
+
+def test_conn_fingerprint_carries_no_credential_value():
+    cfg = _cfg(tv_mqtt_user="butler", tv_mqtt_pass="rotated-pass-value")
+    fp = mqtt_bridge.conn_fingerprint(cfg)
+    for secret in ("butler", "rotated-pass-value", "192.168.2.200"):
+        assert secret not in fp, f"指纹里漏出了值本体 {secret}"
+    host8, rest = fp.split(":", 1)
+    port, user8, pass8 = rest.split("/")
+    assert port == "1883"
+    assert host8 == hashlib.sha256(b"192.168.2.200").hexdigest()[:8]
+    assert user8 == hashlib.sha256(b"butler").hexdigest()[:8]
+    assert pass8 == hashlib.sha256(b"rotated-pass-value").hexdigest()[:8]
+
+
+def test_conn_fingerprint_is_stable_and_moves_with_the_password():
+    old = _cfg(tv_mqtt_user="butler", tv_mqtt_pass="first-pass")
+    same = _cfg(tv_mqtt_user="butler", tv_mqtt_pass="first-pass")
+    new = _cfg(tv_mqtt_user="butler", tv_mqtt_pass="second-pass")
+    assert mqtt_bridge.conn_fingerprint(old) == mqtt_bridge.conn_fingerprint(same)
+    assert mqtt_bridge.conn_fingerprint(old).split("/")[-1] != mqtt_bridge.conn_fingerprint(new).split("/")[-1]
+
+
+def test_conn_fingerprint_marks_unset_credentials_as_dash():
+    fp = mqtt_bridge.conn_fingerprint(_cfg())
+    assert fp.endswith("-/-"), f"未配的 user/pass 该读成 `-`，实读 {fp}"
+
+
+class _StubPahoClient:
+    """够 `_default_client_factory` 走完建连流程的最小 paho 面（⛔ 碰网络）。"""
+
+    def __init__(self, *args, **kwargs):
+        self.auth = None
+        self.connect_args = None
+        self.on_connect = None
+        self.loop_started = False
+
+    def reconnect_delay_set(self, *a):
+        pass
+
+    def username_pw_set(self, user, password):
+        self.auth = (user, password)
+
+    def will_set(self, topic, payload, qos=0, retain=False):
+        pass
+
+    def connect(self, host, port, keepalive=60):
+        self.connect_args = (host, port, keepalive)
+
+    def loop_start(self):
+        self.loop_started = True
+
+
+def _stub_paho(monkeypatch):
+    monkeypatch.setattr(mqtt_bridge, "mqtt", types.SimpleNamespace(
+        Client=_StubPahoClient,
+        CallbackAPIVersion=types.SimpleNamespace(VERSION1=1),
+    ))
+    monkeypatch.setattr(mqtt_bridge, "MQTT_AVAILABLE", True)
+
+
+def test_connect_success_log_names_the_credential_in_use(monkeypatch, capsys):
+    _stub_paho(monkeypatch)
+    cfg = _cfg(tv_mqtt_user="butler", tv_mqtt_pass="rotated-pass-value")
+    client = mqtt_bridge._default_client_factory(cfg)
+    assert client.auth == ("butler", "rotated-pass-value"), "桩客户端没收到这枚凭据＝后面读数无意义"
+    capsys.readouterr()
+    client.on_connect(client, None, {}, 0)
+    out = capsys.readouterr().out
+    assert "已连接 broker" in out
+    assert mqtt_bridge.conn_fingerprint(cfg) in out, "成功行⛔ 带凭据指纹＝判例 1 那条判据仍然读不出来"
+    assert "rotated-pass-value" not in out and "butler" not in out
+
+
+def test_rejected_connect_log_names_the_credential_in_use(monkeypatch, capsys):
+    _stub_paho(monkeypatch)
+    cfg = _cfg(tv_mqtt_user="butler", tv_mqtt_pass="rotated-pass-value")
+    client = mqtt_bridge._default_client_factory(cfg)
+    capsys.readouterr()
+    client.on_connect(client, None, {}, 5)
+    out = capsys.readouterr().out
+    assert "连接被拒绝" in out and "未授权" in out
+    assert mqtt_bridge.conn_fingerprint(cfg) in out
+
+
+def test_late_callback_reports_the_credential_that_actually_connected(monkeypatch, capsys):
+    """指纹必须在**建连那一刻**定下来：同一枚 Config 事后被改了，旧客户端的迟到回调⛔ 能把旧连接报成新凭据。"""
+    _stub_paho(monkeypatch)
+    cfg = _cfg(tv_mqtt_user="butler", tv_mqtt_pass="first-pass")
+    old_fp = mqtt_bridge.conn_fingerprint(cfg)
+    client = mqtt_bridge._default_client_factory(cfg)
+    cfg.tv_mqtt_pass = "second-pass"
+    capsys.readouterr()
+    client.on_connect(client, None, {}, 0)
+    out = capsys.readouterr().out
+    assert old_fp in out, "迟到回调丢了建连时的指纹 ⇒ 轮换读数无法归位到那次真建连"
+    assert mqtt_bridge.conn_fingerprint(cfg) not in out, "回调读的是改过的 cfg＝假绿"

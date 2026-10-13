@@ -24,6 +24,7 @@ TVPilot / DeskPilot 希望在状态变化时**被推送**，而不是轮询 MA�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -60,10 +61,11 @@ def _on_connect(client, userdata, flags, rc, *args):  # noqa: ANN001
     rc=5）**不会抛异常**，而后续的 ``publish()`` 仍会返回成功，导致消息被静默
     丢弃、订阅方永远收不到。这里显式打印结果，让连接问题可见。
     """
+    tail = f"（本次建连的凭据指纹 {args[0]}）" if args else ""
     if rc == 0:
-        print("[MQTT] 已连接 broker")
+        print(f"[MQTT] 已连接 broker{tail}")
     else:
-        print(f"[MQTT] 连接被拒绝: {_CONNACK_TEXT.get(rc, f'rc={rc}')}")
+        print(f"[MQTT] 连接被拒绝: {_CONNACK_TEXT.get(rc, f'rc={rc}')}{tail}")
 
 
 def _new_trace_id() -> str:
@@ -191,8 +193,11 @@ def _default_client_factory(cfg: Any):
     user = getattr(cfg, "tv_mqtt_user", "") or ""
     if user:
         client.username_pw_set(user, getattr(cfg, "tv_mqtt_pass", "") or "")
+    fp = conn_fingerprint(cfg)
     try:
-        client.on_connect = _on_connect
+        # 指纹在建连那一刻算并绑进回调，⛔ 事后从 cfg 反查：轮换后旧客户端的
+        # 迟到回调若读新 cfg，会把旧连接报成新凭据（判据正是"哪一把凭据建的连"）。
+        client.on_connect = lambda c, u, fl, rc, *a: _on_connect(c, u, fl, rc, fp)
         # LWT 必须在 connect() **之前**设：will 是 CONNECT 报文里的字段，
         # 连上之后再 will_set，broker 永远不会知道（kill -9 后也就没人代发 offline）。
         # 契约 §7.1：LWT 也发 JSON（broker 代发时 ts 固定，用 0 表示"由 broker 代发"）。
@@ -626,3 +631,21 @@ def conn_params(cfg: Any) -> tuple:
     """
     return tuple((getattr(cfg, name, None) or "")
                  for name in ("tv_mqtt_host", "tv_mqtt_port", "tv_mqtt_user", "tv_mqtt_pass"))
+
+
+def _sha8(value: Any) -> str:
+    """值本体的 sha256 前 8 位；空值给 `-`，免得"没配"读成一枚固定哈希。"""
+    text = "" if value is None else str(value)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8] if text else "-"
+
+
+def conn_fingerprint(cfg: Any) -> str:
+    """``sha8(host):port/sha8(user)/sha8(pass)`` ——⛔ 含任何值本体。
+
+    判例 1（``decisions/20261013-MQTT两枚对撞与热轮换缺口与MA键名更正-裁定.md`` §二）：
+    「配置面改了」⛔ 等于「生效了」，轮换类判据必须落到"新口令已实际用于一次成功建连"。
+    这一枚就是那句话的载体：它进 ``_on_connect`` 的成功行与拒绝行，出资人拿新口令现算
+    ``sha256(...)[:8]`` 对得上尾段，才算这条腿闭合。
+    """
+    host, port, user, pw = conn_params(cfg)
+    return f"{_sha8(host)}:{port}/{_sha8(user)}/{_sha8(pw)}"
