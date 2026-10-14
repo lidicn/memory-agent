@@ -13,7 +13,7 @@ JS 不报错，只是 `undefined`，于是那一块面板静默变成空白/`—
   HARD     = 前端读的键两者都没有 ⇒ 首要嫌疑；SHAPE = 宇宙里有、顶层解不到 ⇒ 嵌套/分支形状交人判；
   GREEN_BY_HELPER = 只有走通 helper 边才判绿的键 ⇒ **逐条按 file:line 抽查那条边**（存在性结论登记前抽查）。
   UNKNOWN  = 表达式解不动（内建名、动态派发、跨模块同名歧义），单独报数——
-             **面数必须打进读数头**，否则又是一次"扫了个空却写了假读数"（§四十九 六）。
+             **面数必须打进读数头**，否则又是一次"扫了个空却写了假读数"（核实册 §四十九 六）。
 
 用法：
     python scripts/scan_webui_payload_keys.py            # 全表
@@ -275,6 +275,10 @@ def _accept_host(cand, chain_segs):
 _THREAD_WRAPPERS = {"to_thread", "run_sync", "run", "gather"}
 #: 失败信封：`return error("…")` / `err("…")`，顶层形状固定（`deps.py:38-44`，extra 才带明细）。
 FAIL_ENVELOPES = {"error", "err"}
+#: 声形保真的信封：只**追加**固定几把顶层键、原样透出第一实参的载荷（`adm_linkage.with_degradation`
+#: 收 `dict(payload)` ⇒ 顶层＝入参键 ∪ 这两把）。不认这条边，用了它的 handler 会整体退化成盲区
+#: （`agentMemories` 实测如此），而盲区在报表里长得和绿灯一样。
+PASSTHROUGH_ENVELOPES = {"with_degradation": ("degraded", "degraded_scans")}
 #: 鉴权早退的变量名：全仓统一写法 `_, err = require_user(request)` → `if err: return err`（返回的是 JSONResponse）。
 FAIL_VARS = {"err", "error"}
 
@@ -352,6 +356,18 @@ def resolve_payload(expr, idx, depth, visited, evidence, handler_node=None, befo
                                             idx, depth, visited, evidence)
             return resolve_payload(inner, idx, depth, visited, evidence,
                                    handler_node, before_line)
+        if nm in PASSTHROUGH_ENVELOPES:
+            sub, nh = resolve_payload(v.args[0] if v.args else None, idx, depth,
+                                      visited, evidence, handler_node, before_line)
+            if v.args:
+                # 留下这层的出证：绿是"透传规则"给的，不记就没人知道它在读 `adm_linkage.py:104`
+                host_segs = ([root] if root else []) + segs[:-1]
+                cands = [c for c in idx.get(nm, []) if _accept_host(c, host_segs)]
+                if cands:
+                    cand = next((c for c in cands if not c[4]), cands[0])
+                    evidence.append("%s:%d#%s%s%s" % (cand[0], cand[1], (cand[2] + ".") if cand[2] else "",
+                                                      nm, "(嵌套)" if cand[4] else ""))
+            return sub | set(PASSTHROUGH_ENVELOPES[nm]), nh
         if nm in _NON_HELPER or depth < 0:
             return keys, needs_human | {nm}
         return _resolve_by_name(nm, ([root] if root else []) + segs[:-1], idx, depth, visited, evidence)
@@ -400,7 +416,7 @@ def route_keysets(routes_dir, app_py, idx=None, depth=2):
 
     RESOLVED = 按真信封语义把 return 表达式解到底得到的顶层键（`ok(helper(x))`、`{**result}` 都能解），
     每条解出的边都留 `helper=file:line#name` 证据，**同名多义单列**——同名函数在 core/legacy 两家都有时
-    不带限定词的边会把两家的键并成一锅（§四十九 六），所以多义那格尺不自行判绿。
+    不带限定词的边会把两家的键并成一锅（核实册 §四十九 六），所以多义那格尺不自行判绿。
     LOOSE = handler 函数体任意深度 dict 字面量键的并集（宇宙，宽松判）。
     """
     handlers = {}   # fn name -> dict(resolved, loose, unknown, evidence, needs_human)
@@ -594,7 +610,7 @@ def _capture():
 
 
 def selftest():
-    """四条控制腿（尺自己也得被咬，§四十九 六）：
+    """六条控制腿（尺自己也得被咬，核实册 §五十）：
 
     L1 注入一条**已知不存在**的读键 ⇒ 必须落在 HARD；
     L2 真键（handler 直接返回的顶层 `trend`）⇒ 三条嫌疑格都不许出现——
@@ -607,6 +623,13 @@ def selftest():
        否则 L3 的绿是巧合不是解析。
     L5 只把**生产方的键名**改掉（`"sweep"`→`"sweep_moved"`）⇒ 同样必须落 HARD。这一条才对齐真实缺陷族：
        键名换了、前端没跟着换；L4 那种"整文件消失"太粗暴，掩盖了"宇宙里别处也巧同名"的可能。
+    L6 键保形透传（`with_degradation`，DCD 20261014 裁甲新加的信封）的两半腿，打在**同一条面**
+       `agentMemories` 上：这一面不许留在 CHAIN_UNKNOWN，`degraded`（规则追加的两把键之一）判绿，
+       而同一面的假键必须落 HARD。
+       为什么非要成对：本轮把裁甲的降级键铺进实现后，这条面**从"能判"退化成"看不清"**（`看不清=dict`）——
+       盲区在报表里和绿灯长得一模一样，等于尺自己失明。只给"能判绿"的半边，规则写成"什么键都放行"
+       也能过；只给"假键响"的半边，压根没走透传这条边也能过。
+       摘掉 `PASSTHROUGH_ENVELOPES` 再跑 ⇒ `L6=False`、`SELFTEST_BAD=1`、`SELFTEST_RC=1`（实测）。
 
     副本树开在 `.qoder/` 下面，不用 `tempfile`：本机仓库在 E: 而 `%TEMP%` 在 C:，
     跨盘时 `os.path.relpath` 直接 `ValueError: path is on mount 'E:', start on mount 'C:'`（首跑就撞）。
@@ -625,7 +648,9 @@ def selftest():
             text = fh.read()
         probe = ("\n// __c77_ctl__\nasync function __c77_ctl(){const r=await api.collectStats();"
                  "const s=await api.agentMemorySweep();"
-                 "return r.trend.length + r.__key_that_does_not_exist__ + s.sweep;}\n")
+                 "const m=await api.agentMemories();"
+                 "return r.trend.length + r.__key_that_does_not_exist__ + s.sweep"
+                 " + m.degraded + m.__wd_that_does_not_exist__;}\n")
         with open(page, "w", encoding="utf-8", newline="") as fh:
             fh.write(text + probe)
 
@@ -656,6 +681,15 @@ def selftest():
         _lines0, sec0 = _capture()
         l5 = any("key=sweep" in l for l in sec0.get("HARD", []))
 
+        # L6 键保形透传（`with_degradation`）的两半控制腿，打在**同一条面**上：
+        #   L6a 这一面不许留在 CHAIN_UNKNOWN（不许用"承认看不清"换绿灯）；
+        #   L6b 面上 `degraded`（透传规则追加的那两把之一）判绿，而同一条面上的假键必须落 HARD。
+        # 只有一半的腿都不算数：只有 L6a 可能是尺整体失明；只有 L6b 又可能压根没走透传这条边。
+        wd_blind = any(l.strip().startswith("agentMemories ") for l in sec.get("CHAIN_UNKNOWN", []))
+        l6_green = "degraded" not in suspect_keys
+        l6_hard = any("key=__wd_that_does_not_exist__" in l for l in sec.get("HARD", []))
+        l6 = (not wd_blind) and l6_green and l6_hard
+
         os.remove(os.path.join(dst, "src", "memory_agent", "agent_memory.py"))
         _lines2, sec2 = _capture()
         l4 = any("key=sweep" in l for l in sec2.get("HARD", []))
@@ -664,9 +698,12 @@ def selftest():
         print("SELFTEST_FACES %s" % (header[0] if header else "?"))
         print("SELFTEST_LEGS L1_fake_fires_in_HARD=%s L2_toplevel_key_silent=%s "
               "L3_helper_key_green_not_hard=%s L4_helper_home_removed_flips_to_HARD=%s "
-              "L5_producer_key_rename_flips_to_HARD=%s" % (
-                  l1, l2, (l3_green and not l3_hard), l4, l5))
-        bad = sum([not l1, not l2, not (l3_green and not l3_hard), not l4, not l5])
+              "L5_producer_key_rename_flips_to_HARD=%s "
+              "L6_passthrough_face_readable_green_and_hard=%s" % (
+                  l1, l2, (l3_green and not l3_hard), l4, l5, l6))
+        print("SELFTEST_L6_DETAIL blind_face=%s degraded_green=%s fake_key_hard=%s" % (
+            wd_blind, l6_green, l6_hard))
+        bad = sum([not l1, not l2, not (l3_green and not l3_hard), not l4, not l5, not l6])
         print("SELFTEST_BAD=%d" % bad)
         print("SELFTEST_RC=%d" % (0 if bad == 0 else 1))
         return 0 if bad == 0 else 1

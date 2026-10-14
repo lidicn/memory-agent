@@ -4,7 +4,7 @@
 这一族缺陷（"实现改了、消费方没跟着改"）在**给人看的界面**上最阴：JS 读不存在的键不抛异常，
 只是 `undefined`，于是那块面板静默变空白/`—`，日志里一个字都没有——用户看到的是"功能没了"。
 本轮用尺扫过 100 个 api.js 方法 / 208 条路由 / 67 个 JS 读点，**今天没有出货缺陷**（HARD=0），
-12 条"只有走通 helper 边才判绿"的读键逐条按 `file:line` 抽查过（台账 §五十）。
+12 条"只有走通 helper 边才判绿"的读键逐条按 `file:line` 抽查过（核实册 §五十）。
 这条锁把今天的绿钉住：日后任何一侧改键名而另一侧没跟，这里就红。
 
 **为什么不解析 stdout**：`scripts/scan_webui_payload_keys.py:main()` 是给人看的报表，
@@ -12,14 +12,19 @@
 那会让"某条边是否被钉住"取决于同路由上别名的边有几条 ⇒ 截断挪到打印，锁读全量元组。
 
 **每条锁的对偶**：
-- 第 1 条防止"尺扫了个空却写假读数"（面数地板 + `unparsed==0`）；§四十九 六 那一格的老毛病。
+- 第 1 条防止"尺扫了个空却写假读数"（面数地板 + `unparsed==0`）；核实册 §四十九 六 那一格的老毛病。
 - 第 2 条是缺陷门本身：HARD / SHAPE / NESTED_MISS / ORPHAN 四格归零。
 - 第 3 条把 12 条 helper 边的**生产方**按 `文件#类.方法` 钉住（不钉行号：行号会在无关改动里漂，
   而"键名/符号改名"才是这条锁要抓的事）。
-- 第 4 条让尺自己也被咬：五条控制腿必须在 pytest 里真跑过（L5 = 把生产方键名改掉 ⇒ 必须响）。
+- 第 4 条让尺自己也被咬：六条控制腿必须在 pytest 里真跑过（L5 = 把生产方键名改掉 ⇒ 必须响；
+  L6 = 键保形透传那条面**既不许留在盲区、面上假键又必须落 HARD**，两半打在同一个面上）。
 - 第 5 条钉尺的**口径前提**：`deps.py` 的 `ok()`/`error()` 信封语义。信封一改，本尺的解包规则就作废，
   锁先红一次，逼着重新校准，而不是悄悄把新语义当旧语义判绿。
 - 第 6 条钉"承认看不清"的那 5 个面：新增盲区必须显式登记，不许混进绿灯。
+- 第 7 条钉**键保形透传**（`adm_linkage.with_degradation`，DCD 20261014 裁甲）这条口径前提：尺那张透传表
+  必须还等于模块里的键名常量，且实调用出来的顶层确实是「入参键 ∪ 两把声明键」。生产方一改形（比如把
+  明细挂进子键），尺的解包规则就作废 ⇒ 先在这里红，逼着重新校准。第 6 条与本条是一对：本轮真实撞过的坑是
+  铺进这个信封后 `agentMemories` **从能判退化成看不清**，而盲区在报表里和绿灯长得一模一样。
 
 **响过的证据**（副本树里打补丁、真树不动）：把 `agent_memory.py:702` 的 `"sweep"` 改名成 `"sweep_moved"` 再跑尺
 ⇒ `agentMemorySweep` 那条 helper 边判绿消失（green 行 0 条）、同一条读键落进 HARD
@@ -149,3 +154,24 @@ def test_acknowledged_blind_faces_do_not_grow_quietly(faces):
     seen = sorted({m for m, _p, _why in faces["unknown_chain"]})
     assert seen == ["arenaAnalytics", "createAppToken", "health", "listAppTokens",
                     "memberInsightFeedback"], seen
+
+
+def test_passthrough_envelope_still_key_preserving(faces):
+    """`with_degradation`（DCD 20261014 裁甲）按**键保形**解：顶层＝入参键 ∪ 那两把声明键。
+
+    这条锁与第 5 条同族，钉的是尺的另一处口径前提。它一响就说明生产方改形了
+    （比如把明细挂到某个子键下面），尺手里那张表随之作废 ⇒ 必须重新校准，⛔ 继续按旧口径判绿。
+    反面教训是本轮真实撞过的：铺进这个信封之后、加规则之前，`agentMemories` 那条面**从能判退化成
+    看不清**（`看不清=dict`）——而盲区在报表里和绿灯长得一模一样。所以第 6 条（盲区名单）与这条要一起过。
+    """
+    from memory_agent import adm_linkage
+
+    assert scan.PASSTHROUGH_ENVELOPES == {
+        "with_degradation": (adm_linkage.DEGRADED_KEY, adm_linkage.DEGRADED_SCANS_KEY)}, \
+        "尺的透传表与 adm_linkage 的键名常量脱钩了"
+    out = adm_linkage.with_degradation({"sweep": 1, "reconcile": 2}, [])
+    assert set(out) == {"sweep", "reconcile", "degraded", "degraded_scans"}, sorted(out)
+    assert out["degraded"] is False and out["degraded_scans"] == []
+    assert not any("agentMemories" == m for m, _p, _w in faces["unknown_chain"]), \
+        "agentMemories 又退回盲区了 ⇒ 透传规则失效，第 1 条地板与第 6 条名单都救不了它"
+
