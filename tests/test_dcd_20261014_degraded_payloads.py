@@ -321,3 +321,29 @@ def test_摘掉声明的载荷会被行为腿判红():
     out = adm_linkage.with_degradation({"ok": True}, [])
     assert out["degraded"] is False and out["degraded_scans"] == []
     assert "degraded_scans" in out  # 恒在：⛔ 只在出事时才有这一格
+
+
+# ── 出货文案面的「怎么读」锁 ────────────────────────────────────────────────
+# 裁定 §一 硬前置：声明键必须是**必读**键，否则「甲只是把假读数从无标记变成有标记但没人读」。
+# 契约表那一栏归 DCD、DB 读侧归 DB（本席⛔ 替对端报已落），但**本仓自己出货的两面文案**是
+# 本席唯一可控的阅读面：SKILL.md 会连同工具面一起注入给模型，user_manual.js 是人读的那份。
+# 判例（本仓 §五十三 那族的教训）：改一处留两处＝模型照技能包读照样把 null 当 0。
+PROSE_SURFACES = {
+    "skills_bundle/insight/SKILL.md": os.path.join(
+        _SRC, "memory_agent", "skills_bundle", "insight", "SKILL.md"),
+    "static/js/pages/user_manual.js": os.path.join(
+        _SRC, "memory_agent", "static", "js", "pages", "user_manual.js"),
+}
+#: 形状六件套：两把键＋声明里的四个字段名（⛔ 只写键名不写读法——那是判例 2 的反面）
+SHAPE_TOKENS = ("degraded", "degraded_scans", "site", "code", "fields", "reason")
+
+
+@pytest.mark.parametrize("surface", sorted(PROSE_SURFACES))
+def test_出货文案面点名降级声明的形状并给出null的读法(surface):
+    with open(PROSE_SURFACES[surface], encoding="utf-8") as fh:
+        text = fh.read()
+    missing = [token for token in SHAPE_TOKENS if token not in text]
+    assert not missing, "%s 没点名降级声明的形状：%s" % (surface, missing)
+    assert "没扫" in text, "%s 说了键名却没说 null 的含义是「没扫」" % surface
+    assert ("不得" in text) or ("不等于" in text), (
+        "%s 说了「没扫」却没禁止把 null 读成 0／空／干净——那与没给等价（判例 2）" % surface)

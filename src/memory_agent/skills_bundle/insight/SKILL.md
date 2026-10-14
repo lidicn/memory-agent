@@ -80,6 +80,11 @@ updated_at: 2026-10-08T00:00:00
 ## 取数避坑
 - 调 `search_events` / `get_behavior_insights` 前，先 `get_data_coverage` 确认窗口真的有数据，
   避免把「空白区间」误当「一切正常」。
+- **降级声明是必读的，不是可选的**：`merge_agent_memory` / `evaluate_creativity` / `list_device_health`
+  这类载荷恒带 `degraded`（布尔）与 `degraded_scans`（数组，每项 `site` / `code` / `fields` / `reason`）。
+  `degraded=true` 时，`fields` 里点名的那些字段是**没扫成**——它们的值是 `null`，
+  **不得**把 `null` 转述成「0 条 / 没有重复 / 没有质量问题 / 一切正常」，也不得拿它当分数；
+  要重发一次，或按 `site`＋`code` 说清哪一格没做成（`code` 是 ADM 契约码，与三条发布路径同源）。
 - 设备没数据先 `get_device_health` 区分是「从未启用」还是「最近失联」。
 - 别一上来就 `query_events`：它要精确 `entity_id`，先用 catalog 或 search_events。
 - 功率/温湿度每分钟一条会把小时分布拍平。洞察工具默认 `behavior_only=true`，除非要看遥测否则别关。
