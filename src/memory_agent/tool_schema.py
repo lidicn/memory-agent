@@ -777,7 +777,11 @@ TOOL_SPECS: list = [
             _p("member_id", "string", "成员归属（WO-MA-005）；写入时记录该记忆属于哪个成员"),
         ],
         example="add_semantic_memory(text='书房电脑通常 23:50 关机', source_refs=['insight:...'], dry_run=False)",
-        pitfall="dry_run 默认 True 不落库；要真正写入需显式 dry_run=False。写入恒为 staging。",
+        pitfall="dry_run 默认 True 不落库；要真正写入需显式 dry_run=False。写入恒为 staging。"
+                "★ 降级必读：只有 dry_run=False 走合并管线时载荷才带 degraded / degraded_scans"
+                "（每项 site、code、fields、reason），dry_run 自检路径⛔ 带这两把键；"
+                "degraded=true 时 fields 点名的 similarity / action 是 null＝那一格没扫成，"
+                "⛔ 把 null 读成「0 条 / 没有重复 / 一切正常」，按 site＋code 说清缺哪一格。",
     ),
     ToolSpec(
         name="promote_memory",
@@ -1152,7 +1156,10 @@ TOOL_SPECS: list = [
             _p("entity_ids", "array", "涉及的设备标识列表（建议用灵感里的 entity_hints）", required=True),
         ],
         example="evaluate_creativity(arena_id='study_room', title='夜间护眼模式', description='...', entity_ids=['设备1'])",
-        pitfall="entity_ids 用灵感返回的 entity_hints（脱敏通用名），不要传真实 entity_id。",
+        pitfall="entity_ids 用灵感返回的 entity_hints（脱敏通用名），不要传真实 entity_id。"
+                "★ 降级必读：载荷恒带 degraded / degraded_scans（每项 site、code、fields、reason）；"
+                "degraded=true 时 fields 点名的 creativity_score / novelty_score / is_duplicate 是 null＝那一格没扫成，"
+                "⛔ 当成 0、1.0 或「不重复」读，也不得拿它当分数；ok=False 是题库写入失败（真失败），按 code 定位。",
     ),
     ToolSpec(
         name="record_arena_result",

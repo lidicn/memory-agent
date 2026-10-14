@@ -13,7 +13,9 @@ R2 的分数出 `null`＝判例 1（"降级反而更乐观"的值是最坏的形
 """
 
 import asyncio
+import ast
 import os
+import re
 import sys
 
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
@@ -347,3 +349,125 @@ def test_出货文案面点名降级声明的形状并给出null的读法(surfac
     assert "没扫" in text, "%s 说了键名却没说 null 的含义是「没扫」" % surface
     assert ("不得" in text) or ("不等于" in text), (
         "%s 说了「没扫」却没禁止把 null 读成 0／空／干净——那与没给等价（判例 2）" % surface)
+
+
+# ── 第四、第五枚阅读面：随**每一次调用**出货的工具面 ──────────────────────────
+# 两面人读文案之外，模型真正读到的是 handler docstring 与 ToolSpec 的 summary/description/pitfall
+# （同时随 MCP schema 与 caps 出货）。本机 mcp SDK 版本不匹配时 `mcp_server` 导不进来 ⇒ 一律
+# AST 读源码、⛔ import（同 `test_vma_promised_keys_runtime_contract.py` 的理由）。
+_MCP_SOURCE = os.path.join(_SRC, "memory_agent", "mcp_server.py")
+_SPEC_SOURCE = os.path.join(_SRC, "memory_agent", "tool_schema.py")
+
+
+def _read_text(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _handler_doc(func_name):
+    tree = ast.parse(_read_text(_MCP_SOURCE), filename=_MCP_SOURCE)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
+            doc = ast.get_docstring(node)
+            assert doc, "%s 没有 docstring，工具描述对客户端是空的" % func_name
+            return doc
+    raise AssertionError("mcp_server.py 里没有 handler %r" % func_name)
+
+
+def _spec_field(tool_name, field):
+    tree = ast.parse(_read_text(_SPEC_SOURCE), filename=_SPEC_SOURCE)
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "ToolSpec"):
+            kw = {k.arg: k.value for k in node.keywords}
+            if isinstance(kw.get("name"), ast.Constant) and kw["name"].value == tool_name:
+                value = kw.get(field)
+                return value.value if isinstance(value, ast.Constant) else ""
+    raise AssertionError("tool_schema.py 里没有 ToolSpec(name=%r)" % tool_name)
+
+
+# 载荷里**真的**带这两把键的工具面（`with_degradation()` 现读调用点：merge_semantic_memory
+# 六处 return／arena.evaluate_creativity 单 return／insights_legacy.device_health 单 return）。
+# `add_semantic_memory` 只在 dry_run=False 走合并管线时才是载体，dry_run 自检路径⛔ 带 ⇒
+# 文案必须写明这层条件，⛔ 对它说"恒带"。
+TOOL_SURFACES = {
+    "mcp_server.py:get_device_health(docstring)":
+        lambda: _handler_doc("get_device_health"),
+    "tool_schema.py:evaluate_creativity(pitfall)":
+        lambda: _spec_field("evaluate_creativity", "pitfall"),
+    "tool_schema.py:add_semantic_memory(pitfall)":
+        lambda: _spec_field("add_semantic_memory", "pitfall"),
+}
+
+
+@pytest.mark.parametrize("surface", sorted(TOOL_SURFACES))
+def test_tool_face_names_the_degradation_shape_and_the_null_reading(surface):
+    text = TOOL_SURFACES[surface]()
+    missing = [token for token in SHAPE_TOKENS if token not in text]
+    assert not missing, "%s 没点名降级声明的形状：%s" % (surface, missing)
+    assert "没扫" in text, "%s 说了键名却没说 null 的含义是「没扫」" % surface
+    assert ("⛔" in text) or ("不得" in text), (
+        "%s 说了「没扫」却没禁止把 null 读成 0／空／干净" % surface)
+
+
+# ★ 本批真正的病：上一轮写两面文案时把工具名写错了——`merge_agent_memory` 根本⛔ 是注册名，
+# 而 `list_device_health` 那面⛔ 带这两把键却被列进"恒带"清单。形状词表全命中、腿照样绿 ⇒
+# **形状锁吃不到工具名真假**。下面两条是把这一族钉死的反向锁。
+CARRIER_TOOLS = ("get_device_health", "evaluate_creativity", "add_semantic_memory")
+# 每面**该**点到哪几枚载体：人读手册里根本没有竞技场条目 ⇒ 那一面⛔ 适用 evaluate_creativity，
+# 为它新造一节反而是一条凭空承诺（台账 §五十二 记着这一判断）。
+SURFACE_CARRIERS = {
+    "skills_bundle/insight/SKILL.md": CARRIER_TOOLS,
+    "static/js/pages/user_manual.js": ("get_device_health", "add_semantic_memory"),
+}
+NOT_CARRIERS = ("list_device_health", "merge_agent_memory")
+# 段落里允许出现的非工具名（两把键的形状词、条件词与取值词）
+SHAPE_ALLOWLIST = set(SHAPE_TOKENS) | {"dry_run", "null"}
+
+
+def _degraded_block(path, anchor):
+    """从锚句起取这段"降级必读"的连续行（遇新条目／模板串收尾即止）。"""
+    lines = _read_text(path).splitlines()
+    idx = next(i for i, ln in enumerate(lines) if anchor in ln)
+    block = [lines[idx]]
+    for ln in lines[idx + 1:idx + 12]:
+        if ln.startswith("- ") or "`," in ln or ln.startswith("  }"):
+            break
+        block.append(ln)
+    return "\n".join(block)
+
+
+def test_prose_only_names_registered_tools():
+    """SKILL.md 降级段里每个反引号 snake 词，要么是键名／条件词，要么必须是注册工具名。
+
+    注册口径取 `TOOL_SPECS`（全 95 枚）而⛔ `TOOL_NAMES`（92 枚＝只 MCP 暴露面）：
+    `evaluate_creativity` 的 `expose=("arena",)`，拿后者当"注册名"会把**真名**判成幻觉
+    ——本腿首跑正是被这个混用打红的，两把口径差 3 枚。
+    """
+    from memory_agent.tool_schema import TOOL_SPECS
+
+    registered = {spec.name for spec in TOOL_SPECS}
+    block = _degraded_block(
+        PROSE_SURFACES["skills_bundle/insight/SKILL.md"], "降级声明是必读")
+    cited = re.findall(r"`([a-z][a-z0-9_]{2,})`", block)
+    assert cited, "降级段一个反引号词都没有，取法失效"
+    invented = [t for t in cited if t not in SHAPE_ALLOWLIST and t not in registered]
+    assert not invented, "SKILL.md 降级段点名了⛔ 注册的工具名：%s" % (invented,)
+    assert len(registered) < len(TOOL_SPECS) + 1, "注册名有重名，两把口径都会失真"
+
+
+@pytest.mark.parametrize("surface,anchor", [
+    ("skills_bundle/insight/SKILL.md", "降级声明是必读"),
+    ("static/js/pages/user_manual.js", "降级时怎么读"),
+])
+def test_prose_does_not_claim_degradation_on_non_carrying_faces(surface, anchor):
+    """⛔ 载体面只许出现在否定句里；旧假名 ⛔ 再现；真载体在本面适用的清单里点名齐。"""
+    block = _degraded_block(PROSE_SURFACES[surface], anchor)
+    assert "merge_agent_memory" not in block, (
+        "%s 还在点名一枚⛔ 存在的工具（R1 的注册名是 add_semantic_memory）" % surface)
+    for line in block.splitlines():
+        if "list_device_health" in line:
+            assert "⛔" in line, (
+                "%s 把⛔ 载体面 list_device_health 写成了带降级声明的那一面" % surface)
+    for tool in SURFACE_CARRIERS[surface]:
+        assert tool in block, "%s 的降级段没点名真载体 %r" % (surface, tool)

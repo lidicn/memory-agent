@@ -1205,6 +1205,10 @@ def _build_server():
         stale=最近 stale_days 天无数据（可能没电或离线）。
         另返回 data_quality_issues：电量倒灌 / state 与属性单位冲突 / 心跳计数器。
         only_enabled 默认 True，与 get_entity_catalog 口径一致；传 False 看全量实体。
+
+        降级必读：载荷恒带 `degraded`（布尔）与 `degraded_scans`（数组，每项 `site` / `code` / `fields` /
+        `reason`）。`degraded=true` 时 `fields` 点名的那些字段是 null＝那一格**没扫成**，⛔ 把 null 读成
+        「0 条 / 没有质量问题」，也不得当分数；按 `site`＋`code` 说清缺哪一格，或重发一次。
         """
         rt = get_runtime()
         return await asyncio.to_thread(

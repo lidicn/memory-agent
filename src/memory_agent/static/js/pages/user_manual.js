@@ -142,7 +142,8 @@ metric 可选：duration（时长）/ count（次数）/ numeric_sum（数值累
 - list_device_health 里 referenced=1 的实体仍被洞察模板引用，**失效会让洞察失真，优先处理**。
 另返回 data_quality_issues：电量倒灌 / 单位冲突 / 心跳计数器异常。
 
-降级时怎么读：这类载荷恒带 degraded（布尔）与 degraded_scans（数组，每处写 site / code / fields / reason）。
+降级时怎么读：get_device_health 的载荷恒带 degraded（布尔）与 degraded_scans（数组，每处写 site / code / fields / reason）；
+上面那行 list_device_health 是身份层视角，它和 add_semantic_memory 的 dry_run 自检路径都⛔ 带这两把键，别去那里找。
 某一格没扫成时，它的数值或列表是 null —— null 的意思是「这一格没扫」，不等于「0 条」，也不等于「没有问题」；
 例如 data_quality_issues 为 null 表示这轮扫描失败，请重新发起，或按 degraded_scans 里的 site 与 code 定位是哪一处出的问题。`,
   },
