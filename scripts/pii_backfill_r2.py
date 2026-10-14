@@ -9,6 +9,10 @@
      窗口是 SP 排的，脚本不替人决定"现在是不是停机窗"。
   3. **回填后逐条验证** → 全表重扫名册姓名，命中即 RC=1（残留 = 这次回填没做成，别当成功报）。
 
+⚠️ 第 3 条那句"✅ 通过"的射程**只有 ``--db`` 指向的那一个库文件**。第 1 条要求的备份本身就是一份
+还含明文姓名的快照，而且它落在同一个目录里（``<db>.preR2-<戳>.db``）——所以"生产盘上干净"与
+"这台机器上没有明文姓名"是两件事。本工具**只列不删**：删退路是不可逆动作，处置口径不在这里定。
+
 脱敏走的是**生产写入用的同一条 sanitizer**（``Store.sanitize_feedback_text`` → ``_sanitize_pii``），
 不在这里另造一套规则：另造的存量口径会和增量长期不一致。
 
@@ -19,6 +23,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import os
 import sqlite3
@@ -67,6 +72,20 @@ def find_hits(conn: sqlite3.Connection, names: list) -> list:
 def count_leftover(conn: sqlite3.Connection, names: list) -> int:
     """验证步：回填后全表还剩几行明文姓名（不含 sha 之外的任何内容）。"""
     return len(find_hits(conn, names))
+
+
+def find_carriers(db_path: str) -> list:
+    """同目录里那些仍含明文姓名的 R2 退路快照。**只列，不删。**"""
+    return sorted(glob.glob(f"{db_path}.preR2-*.db"))
+
+
+def report_carriers(db_path: str) -> int:
+    n = len(find_carriers(db_path))
+    print(f"[R2] 射程外快照（退路备份，仍含明文姓名）={n} 枚"
+          f"{'：' + ', '.join(os.path.basename(p) for p in find_carriers(db_path)) if n else ''}")
+    if n:
+        print("[R2] ↑ 这些是裁定第 1 条要求的退路，本工具不删；删是不可逆动作，处置口径等裁定。")
+    return n
 
 
 def make_backup(db_path: str) -> tuple:
@@ -153,6 +172,7 @@ def main(argv=None) -> int:
 
     if not args.apply:
         print("[R2] 只读模式（未带 --apply）：一条都没改。")
+        report_carriers(store.db_path)
         return 0
     if not args.window_ok:
         print("[R2] 拒绝写入：裁定第 2 条要求停机窗口，缺 --window-ok 视为窗口未开。")
@@ -179,7 +199,9 @@ def main(argv=None) -> int:
     if leftover:
         print("[R2] ❌ 未通过：仍有明文姓名，按裁定这不算完成。")
         return 1
-    print("[R2] ✅ 通过：全表已无明文成员姓名。")
+    print(f"[R2] ✅ 通过：{store.db_path} 的 agent_memories.text 已无明文成员姓名"
+          f"（射程＝这一个库文件）")
+    report_carriers(store.db_path)
     return 0
 
 

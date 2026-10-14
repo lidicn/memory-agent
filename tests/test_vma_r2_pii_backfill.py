@@ -155,3 +155,41 @@ def test_hits_are_scoped_to_agent_memories_text_only(tmp_path):
     hits = r2.find_hits(conn, r2.roster_names(conn))
     assert {h["memory_id"] for h in hits} == {"a1", "a2", "a4"}
     assert all(3 not in h["roster_idx"] for h in hits)       # 单字"王"不参与替换
+
+
+def test_success_line_pins_its_scope_and_names_the_snapshot_carriers(tmp_path, capsys):
+    """"✅ 通过"只允许读成"这一个库干净"，同目录那份含明文的退路必须被点名。"""
+    db = str(tmp_path / "ma.db")
+    _seed(db)
+
+    assert r2.main(["--db", db, "--apply", "--window-ok"]) == 0
+    out = capsys.readouterr().out
+    assert "射程＝这一个库文件" in out
+    assert "仍含明文姓名" in out
+    assert os.path.basename(_backup_files(db)[0]) in out
+
+
+def test_the_tool_reports_carriers_but_never_deletes_them(tmp_path, capsys):
+    """退路快照是裁定第 1 条要求的东西：列出来 ≠ 顺手删掉（删是不可逆动作，本工具无此权）。"""
+    db = str(tmp_path / "ma.db")
+    _seed(db)
+    assert r2.main(["--db", db, "--apply", "--window-ok"]) == 0
+    assert capsys.readouterr().out.count("射程外快照") == 1
+    backups = _backup_files(db)
+    assert len(backups) == 1, backups           # 跑完两遍报告，备份仍在
+    assert os.path.getsize(backups[0]) > 0
+
+
+def test_dry_run_surveys_carriers_already_on_disk(tmp_path, capsys):
+    """窗口前的只读点数就得看见旧快照，否则"这次很干净"会把上一次的退路藏起来。"""
+    db = str(tmp_path / "ma.db")
+    _seed(db)
+    stale = f"{db}.preR2-20260101-000000.db"
+    with open(stale, "wb") as fh:
+        fh.write(b"not-a-real-db")
+
+    assert r2.main(["--db", db]) == 0
+    out = capsys.readouterr().out
+    assert "射程外快照（退路备份，仍含明文姓名）=1 枚" in out
+    assert os.path.basename(stale) in out
+    assert os.path.exists(stale)                # 只读模式连列带的都不动
