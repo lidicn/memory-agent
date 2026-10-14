@@ -82,6 +82,37 @@ def is_adm_err(value: Any) -> bool:
     return value in _CONTRACT_CODES
 
 
+DEGRADED_KEY = "degraded"
+DEGRADED_SCANS_KEY = "degraded_scans"
+
+
+def degrade_scan(site: str, code_name: str, fields, reason: str = "") -> dict:
+    """一处"没做成的扫描"的结构化声明（DCD 20261014《print 布尔出口五处修法》裁甲）。
+
+    `site` 是消费方定位"哪一格没扫"的锚；`fields` 点名被这处失败影响的载荷字段；
+    `reason` 只放异常类型名，⛔ 异常原文（原文里可能有路径／主机，那是出境面）。
+    码走 `code()`，所以降级声明用的码与三条发布路径用的是同一份词表。
+    """
+    return {
+        "site": site,
+        "code": code(code_name),
+        "fields": [str(f) for f in (fields or [])],
+        "reason": (reason or "")[:200],
+    }
+
+
+def with_degradation(payload: dict, scans) -> dict:
+    """把降级声明并进载荷。两把键恒在：干净时 `degraded=False`、`degraded_scans=[]`。
+
+    恒在的理由：只在出事时给键 ⇒ 消费方得先猜"这条路径有没有这一格"，那与没给等价。
+    旧键一个不动（判例「旧键语义不动，新键承载新语义」）。
+    """
+    out = dict(payload)
+    out[DEGRADED_KEY] = bool(scans)
+    out[DEGRADED_SCANS_KEY] = list(scans or [])
+    return out
+
+
 class LinkageJournal:
     """联动失败留痕：码 + 主题 + 原因，环形缓冲，只给进程内读。
 

@@ -46,6 +46,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Optional
 
+from . import adm_linkage
 from .day_bounds import clamp_days
 from .store import TELEMETRY_DOMAINS, Store, now_local, parse_ts, safe_json_loads
 
@@ -1649,7 +1650,11 @@ class InsightService:
 
         # 被模板引用标记：哪些实体被行为洞察模板（run_template）引用，优先修。
         # 引用来源 = 模板实体的 entity_id（裸实体）+ logical_id 经身份层解析出的候选实体。
-        referenced_set = set()
+        referenced_set: set = set()
+        ref_scan_failed = False
+        ref_resolve_errors = 0
+        # 降级声明（DCD 20261014 裁甲）：这一格没扫成 ⇒ 载荷点名，⛔ 让"整段跳过"读成"没被引用"
+        scans: list[dict] = []
         try:
             rt = self._get_rt()
             if rt is not None and getattr(rt, "templates", None) is not None:
@@ -1664,9 +1669,19 @@ class InsightService:
                                 resolved, _ = rt.identity.resolve(lid)
                                 referenced_set.update(resolved or [])
                             except Exception:
-                                pass
+                                ref_resolve_errors += 1
         except Exception as exc:
             print(f"[Insights] 设备健康引用标记跳过: {exc}")
+            ref_scan_failed = True
+            scans.append(adm_linkage.degrade_scan(
+                "insights.device_health_reference_marks", "ADM_ERR_INTERNAL",
+                ("referenced_entities", "referenced_entity_ids", "referenced"),
+                type(exc).__name__))
+        if ref_resolve_errors:
+            scans.append(adm_linkage.degrade_scan(
+                "insights.device_health_reference_marks", "ADM_ERR_INTERNAL",
+                ("referenced_entities", "referenced_entity_ids", "referenced"),
+                f"身份层部分解析失败 {ref_resolve_errors} 处"))
 
         healthy, no_data, stale = [], [], []
         for e in entities:
@@ -1682,13 +1697,19 @@ class InsightService:
         # 数据质量问题（电量倒灌 / 单位冲突 / 心跳计数器）随健康报告一起给出，
         # 避免用户看着「电量 57→65」还以为设备真的在回血。
         quality: list[dict] = []
+        quality_scan_failed = False
         try:
             start_iso, end_iso, _m = self.resolve_range(days, "", "")
             quality = self.data_quality_issues(start_iso, end_iso, self.store)
         except Exception as exc:
             print(f"[Insights] 健康报告的数据质量扫描跳过: {exc}")
+            quality_scan_failed = True
+            scans.append(adm_linkage.degrade_scan(
+                "insights.device_health_quality_scan", "ADM_ERR_INTERNAL",
+                ("data_quality_issues", "data_quality_count"), type(exc).__name__))
 
-        return {
+        ref_degraded = ref_scan_failed or ref_resolve_errors > 0
+        return adm_linkage.with_degradation({
             "ok": True,
             "window_days": days,
             "stale_threshold_days": stale_days,
@@ -1700,8 +1721,10 @@ class InsightService:
             ),
             "total_entities": len(entities),
             "catalog_total": catalog.get("total"),
-            "referenced_entities": sum(1 for e in entities if e.get("referenced")),
-            "referenced_entity_ids": sorted(
+            # 判例 1（20261014）：扫描没做成时这两把是"不知道"，⛔ 报 0／[]（"没有设备被模板引用"）
+            "referenced_entities": None if ref_degraded else sum(
+                1 for e in entities if e.get("referenced")),
+            "referenced_entity_ids": None if ref_degraded else sorted(
                 e["entity_id"] for e in entities if e.get("referenced")
             ),
             "healthy": len(healthy),
@@ -1710,11 +1733,11 @@ class InsightService:
             "no_data_entities": no_data,
             "stale_entities": stale,
             "healthy_entities": healthy,
-            "data_quality_issues": quality,
-            "data_quality_count": len(quality),
+            "data_quality_issues": None if quality_scan_failed else quality,
+            "data_quality_count": None if quality_scan_failed else len(quality),
             "hint": "no_data=从未采集到；stale=最近 N 天无数据，可能是没电/失联/长期关闭；"
             "data_quality_issues=源数据本身有问题（电量倒灌/单位冲突/心跳计数器）",
-        }
+        }, scans)
 
     def data_coverage(self, days=7, start="", end="") -> dict:
         """[FROZEN-LEGACY] [FROZEN-LEGACY] 数据覆盖报告：明确指出窗口内实际「有数据」的日期，避免误以为前几天也有数据。"""

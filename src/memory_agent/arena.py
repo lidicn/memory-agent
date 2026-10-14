@@ -24,6 +24,7 @@ import json
 import re
 from collections import Counter
 
+from . import adm_linkage
 from .store import safe_json_loads
 from datetime import datetime
 
@@ -179,6 +180,12 @@ class ArenaService:
         col = self.history.arena_collection
         nearest = None
         sim = 0.0
+        # 降级声明（DCD 20261014 裁甲）：向量查重没做成 ⇒ 新颖度是"不知道"，⛔ 报成满分
+        scans: list[dict] = []
+        if col is None:
+            scans.append(adm_linkage.degrade_scan(
+                "arena.vector_recall", "ADM_ERR_INTERNAL",
+                ("creativity_score", "novelty_score", "is_duplicate"), "题目库集合缺席"))
         if col is not None:
             try:
                 r = col.query(
@@ -200,6 +207,10 @@ class ArenaService:
             except Exception as exc:
                 print(f"[Arena] chroma 查询失败: {exc}")
                 nearest = None
+                scans.append(adm_linkage.degrade_scan(
+                    "arena.vector_recall", "ADM_ERR_INTERNAL",
+                    ("creativity_score", "novelty_score", "is_duplicate"),
+                    type(exc).__name__))
 
         # 文本 / 实体重叠（与最近一条比对）
         text_sim = 0.0
@@ -229,12 +240,20 @@ class ArenaService:
             except Exception as exc:
                 reason = f"模糊区间 LLM 判定失败，按启发式放行（{exc}）"
 
-        creativity = round(0.6 * (1 - sim) + 0.4 * relevance, 3)
-        novelty = round(1 - sim, 3)
-        feedback = self._feedback(is_dup, reason, relevance, novelty, nearest)
+        if scans:
+            # 判例 1（20261014）：查重没做成时 novelty/creativity 是"不知道"，⛔ 让 round(1-0.0)=1.0
+            # 冒充"全新题"——这种乐观读数不会被任何"值看着不对"的检查抓住。
+            creativity = None
+            novelty = None
+        else:
+            creativity = round(0.6 * (1 - sim) + 0.4 * relevance, 3)
+            novelty = round(1 - sim, 3)
+        feedback = self._feedback(is_dup, reason, relevance, novelty, nearest, bool(scans))
         duplicate_of = (nearest.get("metadata") or {}).get("tid") if is_dup else None
 
         # 锁定题目库：非重复则写入（幂等 upsert，tid 由内容哈希决定）
+        locked_ok = True
+        lock_error = ""
         if not is_dup and col is not None:
             try:
                 tid = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
@@ -249,9 +268,13 @@ class ArenaService:
                 )
             except Exception as exc:
                 print(f"[Arena] 题目库写入失败: {exc}")
+                # R3（DCD 20261014 §三 单独切分）：这里本来就有一枚真失败，只是被吞了。
+                # ⇒ 把假回执改真，⛔ 新键、⛔ 走 Q1 那一档的语义变更。
+                locked_ok = False
+                lock_error = f"题目库写入失败，题未锁定：{type(exc).__name__}"
 
-        return {
-            "ok": True,
+        return adm_linkage.with_degradation({
+            "ok": locked_ok,
             "arena_id": arena_id,
             "creativity_score": creativity,
             "novelty_score": novelty,
@@ -259,7 +282,9 @@ class ArenaService:
             "is_duplicate": is_dup,
             "duplicate_of": duplicate_of,
             "feedback": feedback,
-        }
+            **({"error": lock_error, "code": adm_linkage.code("ADM_ERR_INTERNAL")}
+               if not locked_ok else {}),
+        }, scans)
 
     async def _llm_same(self, title, description, other_doc) -> bool:
         if not other_doc:
@@ -276,13 +301,15 @@ class ArenaService:
         return ans.startswith("yes") or ans.startswith("是")
 
     @staticmethod
-    def _feedback(is_dup, reason, relevance, novelty, nearest) -> str:
+    def _feedback(is_dup, reason, relevance, novelty, nearest, degraded=False) -> str:
         if is_dup:
             return f"该题目已被提交过（{reason}），建议换一个切入点或合并改进。"
         parts = []
+        if degraded:
+            parts.append("向量查重未完成，新颖度无法评估（载荷带 degraded_scans 声明）。")
         if relevance < 0.3:
             parts.append("题目涉及的设备与该竞技场分区的可用设备关联较弱，建议更贴合场景数据。")
-        if novelty < 0.3:
+        if novelty is not None and novelty < 0.3:
             parts.append("题目与已有题目相似度偏高，可尝试更独特的视角。")
         if not parts:
             parts.append("题目与场景数据贴合且具备新意，可继续细化 flow。")

@@ -17,6 +17,7 @@ import json
 import logging
 from typing import List, Optional, Tuple
 
+from . import adm_linkage
 from .store import safe_json_loads
 
 AGENT_COLLECTION = "agent_memory"
@@ -268,6 +269,10 @@ class AgentMemoryService:
 
         安全闸：live 是高置信已晋升事实，绝不自动撤；与之矛盾只挂起待人工裁决。
         chroma 不可用时退化为纯 ADD（不合并），与 add_semantic_memory 降级一致。
+
+        降级留痕（DCD 20261014 裁甲）：chroma 缺席或近邻召回抛异常这两条路，载荷带
+        `degraded=True` ＋ `degraded_scans`（每项带契约码与被影响的字段名），`similarity`
+        出 `null`——"这一格没扫成"⛔ 读成"完全不像"（判例 1：降级⛔ 许让数值看起来更好）。
         """
         tags = tags or []
         source_refs = source_refs or []
@@ -284,6 +289,8 @@ class AgentMemoryService:
         tk = topic_key or (tags[0] if tags else "general")
         tags_json = json.dumps(tags, ensure_ascii=False)
         refs_json = json.dumps(source_refs, ensure_ascii=False)
+        # 降级声明（DCD 20261014 裁甲）：这一格没做成的事，写进载荷而不是只打到 stdout。
+        scans: list[dict] = []
         col = self._col
         if col is None:
             # chroma 不可用 → 退化纯 ADD，mirror 稍后由 reconcile 补
@@ -293,9 +300,14 @@ class AgentMemoryService:
                 ttl_days=ttl_days, state="staging", source=source,
                 member_id=member_id, auto_promote_blocked=auto_promote_blocked,
             )
-            return {"ok": True, "action": "added", "memory_id": mid, "state": "staging",
-                    "similarity": 0.0, "source": source, "note": "chroma 不可用，未合并",
-                    "auto_promote_blocked": auto_promote_blocked}
+            scans.append(adm_linkage.degrade_scan(
+                "agent_memory.vector_recall", "ADM_ERR_INTERNAL",
+                ("similarity", "action"), "chroma 不可用，未做近邻合并"))
+            return adm_linkage.with_degradation({
+                "ok": True, "action": "added", "memory_id": mid, "state": "staging",
+                # 判例 1（20261014）：这一格没扫成 ⇒ 相似度是"不知道"，⛔ 报 0.0（"最不像"＝乐观读数）
+                "similarity": None, "source": source, "note": "chroma 不可用，未合并",
+                "auto_promote_blocked": auto_promote_blocked}, scans)
 
         # 近邻召回：有 topic_key 则同 topic 过滤（更准），否则全局最近
         where = {"topic_key": tk} if tk != "general" else {}
@@ -304,6 +316,9 @@ class AgentMemoryService:
         except Exception as exc:  # pragma: no cover
             print(f"[AgentMemory] merge 召回失败: {exc}")
             res = None
+            scans.append(adm_linkage.degrade_scan(
+                "agent_memory.vector_recall", "ADM_ERR_INTERNAL",
+                ("similarity", "action"), type(exc).__name__))
         nearest_id, nearest_sim, nearest_state = "", 0.0, ""
         if res:
             ids = (res.get("ids") or [[]])[0]
@@ -327,9 +342,11 @@ class AgentMemoryService:
                 member_id=member_id, auto_promote_blocked=auto_promote_blocked,
             )
             self._upsert_mirror(self.store.get_agent_memory(mid))
-            return {"ok": True, "action": "added", "memory_id": mid, "state": "staging",
-                    "similarity": round(nearest_sim, 3), "source": source,
-                    "auto_promote_blocked": auto_promote_blocked}
+            return adm_linkage.with_degradation({
+                "ok": True, "action": "added", "memory_id": mid, "state": "staging",
+                # 召回失败时 nearest_sim 停在初值 0.0 ⇒ 那是"不知道"，⛔ 当成"完全不像"（判例 1）
+                "similarity": None if scans else round(nearest_sim, 3), "source": source,
+                "auto_promote_blocked": auto_promote_blocked}, scans)
 
         # 分支 2：相似（≥ dup_sim）→ 兼容/补充 → UPDATE 旧（保留演变链）
         if nearest_state == "live":
@@ -338,8 +355,9 @@ class AgentMemoryService:
                     nearest_id, text, tags_json, refs_json,
                     prev_id=nearest_id, ttl_days=ttl_days)
                 self._upsert_mirror(self.store.get_agent_memory(nearest_id))
-                return {"ok": True, "action": "updated", "memory_id": nearest_id,
-                        "state": "live", "similarity": round(nearest_sim, 3), "source": source}
+                return adm_linkage.with_degradation({
+                    "ok": True, "action": "updated", "memory_id": nearest_id,
+                    "state": "live", "similarity": round(nearest_sim, 3), "source": source}, scans)
             # 分支 3：与 live 矛盾 → 新进 pending_review（不自动 INVALIDATE live，安全闸）
             mid = self.store.add_agent_memory(
                 session_id=session_id, text=text, topic_key=tk,
@@ -347,9 +365,10 @@ class AgentMemoryService:
                 ttl_days=ttl_days, state="pending_review", source=source,
                 member_id=member_id, auto_promote_blocked=auto_promote_blocked)
             self._upsert_mirror(self.store.get_agent_memory(mid))
-            return {"ok": True, "action": "conflict_pending", "memory_id": mid,
-                    "state": "pending_review", "conflict_with": nearest_id,
-                    "similarity": round(nearest_sim, 3), "source": source}
+            return adm_linkage.with_degradation({
+                "ok": True, "action": "conflict_pending", "memory_id": mid,
+                "state": "pending_review", "conflict_with": nearest_id,
+                "similarity": round(nearest_sim, 3), "source": source}, scans)
 
         # 分支 4：旧是 staging/pending_review（未进 live）
         if nearest_sim >= dup_sim:
@@ -357,8 +376,10 @@ class AgentMemoryService:
                 nearest_id, text, tags_json, refs_json,
                 prev_id=nearest_id, ttl_days=ttl_days)
             self._upsert_mirror(self.store.get_agent_memory(nearest_id))
-            return {"ok": True, "action": "updated", "memory_id": nearest_id,
-                    "state": nearest_state, "similarity": round(nearest_sim, 3), "source": source}
+            return adm_linkage.with_degradation({
+                "ok": True, "action": "updated", "memory_id": nearest_id,
+                "state": nearest_state, "similarity": round(nearest_sim, 3),
+                "source": source}, scans)
         # 矛盾且新更可信（时间更新）→ INVALIDATE 旧 + ADD 新（prev_id=旧）
         # v0.9 时间有效性：旧记忆 valid_to = 新记忆 valid_from（时间切片，演变可回溯）
         from .store import now_local as _now_local
@@ -373,10 +394,11 @@ class AgentMemoryService:
             valid_from=new_valid_from, observed_at=observed_at or new_valid_from,
             member_id=member_id, auto_promote_blocked=auto_promote_blocked)  # P1-13: 分支4同样携带 blocked 标志
         self._upsert_mirror(self.store.get_agent_memory(mid))
-        return {"ok": True, "action": "invalidated_added", "memory_id": mid,
-                "state": "staging", "invalidated": nearest_id,
-                "valid_from": new_valid_from, "valid_to": "",
-                "similarity": round(nearest_sim, 3), "source": source}
+        return adm_linkage.with_degradation({
+            "ok": True, "action": "invalidated_added", "memory_id": mid,
+            "state": "staging", "invalidated": nearest_id,
+            "valid_from": new_valid_from, "valid_to": "",
+            "similarity": round(nearest_sim, 3), "source": source}, scans)
 
     # ── 晋升条件评估（v2 #1 / #6；修复：前缀归一化 + 误导性报错）────────────
     def _evaluate_promotion(self, mem: dict, corroborating_insight_id: str = "") -> Tuple[bool, str]:
