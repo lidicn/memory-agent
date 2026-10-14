@@ -243,13 +243,19 @@ async def behaviors_query(request: Request):
         return err
     params = request.query_params
     rt = runtime(request)
+    # MA60/MA53b：limit 参数加校验——非数字回落 100，下界 1 上界 500
+    try:
+        limit = int(params.get("limit") or 100)
+    except (ValueError, TypeError):
+        limit = 100
+    limit = max(1, min(limit, 500))
     events = await asyncio.to_thread(
         rt.store.list_behavior_events,
         (params.get("room") or "").strip() or None,
         (params.get("member") or "").strip() or None,
         (params.get("from") or "").strip()[:10] or None,
         (params.get("to") or "").strip()[:10] or None,
-        min(int(params.get("limit") or 100), 500),
+        limit,
     )
     return ok({"count": len(events), "events": events})
 

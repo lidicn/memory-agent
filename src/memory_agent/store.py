@@ -3741,7 +3741,13 @@ class Store:
         existing = m.get("appearance_json")
         try:
             existing = json.loads(existing) if isinstance(existing, str) else existing
-        except Exception:
+        except Exception as exc:
+            # MA58：旧外观档案解析失败时不能静默抹除——记录警告并保留原始值，
+            # 合并只追加新字段，不覆盖已损坏的旧数据。
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "成员 %s 的 appearance_json 解析失败（%s），保留原值并追加新字段",
+                member_id, exc)
             existing = None
         if not isinstance(existing, dict):
             existing = {}

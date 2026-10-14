@@ -1392,25 +1392,38 @@ class CandidatePromoter:
         """判断该候选是否在证据窗口内已晋升过（避免重复写入长期记忆）。
 
         存储层不支持该查询时静默返回 False，退化为不跳过。
+        MA50 修复：原 SQL 引用 behavior_events 不存在的列（kind/source/payload_json/persons），
+        导致恒抛异常被 except 吞掉，去重守卫永久失效。改为查 action + persons_json。
         """
         moment = _parse_ts(server_ts)
         if moment is None:
             return False
         cutoff = (moment - timedelta(hours=self.policy.evidence_window_hours)).isoformat()
+        action_text = self._kind_to_action(kind)
         try:
             with self.store._db() as conn:
                 rows = conn.execute(
-                    "SELECT server_ts, payload_json, persons FROM behavior_events "
-                    "WHERE kind = ? AND room = ? AND source = ? AND server_ts >= ? "
+                    "SELECT server_ts, persons_json FROM behavior_events "
+                    "WHERE action = ? AND room = ? AND server_ts >= ? "
                     "ORDER BY server_ts DESC LIMIT 50",
-                    (kind, room, "perception_ingest", cutoff),
+                    (action_text, room, cutoff),
                 ).fetchall()
-        except Exception:
+        except Exception as exc:
+            logger.warning("去重守卫查询失败（退化为不跳过）: %s", exc)
             return False
 
+        import json as _json
         for row in rows:
-            payload = _as_mapping(_row_get(row, "payload_json"))
-            label = self._person_label(kind, payload)
+            # persons_json 是序列化后的 [{name, member_id, detail}, ...]
+            raw = _row_get(row, "persons_json")
+            label: Optional[str] = None
+            if isinstance(raw, str) and raw:
+                try:
+                    plist = _json.loads(raw)
+                    if isinstance(plist, list) and plist:
+                        label = (plist[0] or {}).get("name")
+                except (ValueError, TypeError):
+                    pass
             if self._person_matches(kind, person_name, label):
                 return True
         return False

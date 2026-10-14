@@ -692,15 +692,21 @@ class VisionService:
             reg.mark_error(node.node_id, str(exc)[:200])
             return None
         # 兼容两种节点返回：{name, confidence} 或 {faces:[{name, confidence, box?}]}
+        # MA62：confidence 可能是 "high" 等非数字字符串，安全转换防 ValueError
+        def _safe_conf(v) -> float:
+            try:
+                return float(v or 0)
+            except (ValueError, TypeError):
+                return 0.0
         name, conf = None, 0.0
         if isinstance(data, dict):
             if data.get("faces"):
                 faces = [f for f in data["faces"] if isinstance(f, dict)]
                 if faces:
-                    best_face = max(faces, key=lambda f: float(f.get("confidence", 0) or 0))
-                    name, conf = best_face.get("name"), float(best_face.get("confidence", 0) or 0)
+                    best_face = max(faces, key=lambda f: _safe_conf(f.get("confidence", 0)))
+                    name, conf = best_face.get("name"), _safe_conf(best_face.get("confidence", 0))
             else:
-                name, conf = data.get("name"), float(data.get("confidence", 0) or 0)
+                name, conf = data.get("name"), _safe_conf(data.get("confidence", 0))
         if not name or conf < min_conf:
             return None
         return {"name": name, "confidence": conf, "node": node.node_id, "via": "arcface"}

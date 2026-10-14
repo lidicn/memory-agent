@@ -70,6 +70,53 @@ def _is_loopback(ip_str: str) -> bool:
     return False
 
 
+def _normalize_ip_literal(host: str) -> str:
+    """把各种 IP 字面量变体规范化为标准点分十进制，无法识别则原样返回。
+
+    MA57：支持十进制整数（3232235777）、十六进制（0xc0a80101）、
+    八进制（0300.0250.0001.0001）、短点分（192.168.1）。
+    """
+    import socket
+    import struct
+
+    h = host.strip()
+    # 已经是标准格式就直接返回
+    try:
+        ipaddress.ip_address(h)
+        return h
+    except ValueError:
+        pass
+
+    # 纯整数（十进制/十六进制/八进制）→ IPv4
+    try:
+        base = 16 if h.lower().startswith("0x") else (8 if h.startswith("0") and len(h) > 1 else 10)
+        if base == 16 and h.lower().startswith("0x"):
+            num = int(h, 16)
+        elif base == 8 and h.startswith("0") and "." not in h:
+            num = int(h, 8)
+        else:
+            num = int(h, 10)
+        if 0 <= num <= 0xFFFFFFFF:
+            return socket.inet_ntoa(struct.pack("!I", num))
+    except (ValueError, struct.error):
+        pass
+
+    # 短点分：192.168.1 → 192.168.1.0
+    if "." in h and not h.count(".") == 3:
+        parts = h.split(".")
+        if all(p.isdigit() for p in parts):
+            while len(parts) < 4:
+                parts.append("0")
+            try:
+                candidate = ".".join(parts)
+                ipaddress.ip_address(candidate)
+                return candidate
+            except ValueError:
+                pass
+
+    return h
+
+
 def validate_outbound_url(url: str) -> str | None:
     """校验出站 URL。返回 None 表示通过，返回错误字符串表示拒绝。
 
@@ -87,9 +134,12 @@ def validate_outbound_url(url: str) -> str | None:
     host = parts.hostname
     if not host:
         return "无法解析主机名"
+    # MA57 修复：规范化各种 IP 字面量变体（整数/十六进制/八进制/短点分），
+    # 否则 3232235777、0xc0a80101、192.168.1 等会落到 ValueError 分支被当域名放行。
+    normalized = _normalize_ip_literal(host)
     # IP 字面量：直接判定
     try:
-        ip = ipaddress.ip_address(host)
+        ip = ipaddress.ip_address(normalized)
         if _is_loopback(str(ip)):
             return "不允许访问环回地址"
         if _is_link_local(str(ip)):

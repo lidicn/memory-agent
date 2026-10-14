@@ -351,7 +351,15 @@ class Config:
     # ── 持久化 ────────────────────────────────────────────────────────────
 
     def save(self) -> None:
-        """原子写入：先写临时文件再 os.replace，避免中断导致配置损坏。"""
+        """原子写入：先写临时文件再 os.replace，避免中断导致配置损坏。
+
+        MA48 修复：如果本次启动时 config.json 读取失败（load 返回了默认值），
+        拒绝覆盖写入——否则一次 JSON 损坏就会把真实凭据全部抹成空值。
+        """
+        if getattr(self, "_load_failed", False):
+            raise RuntimeError(
+                "配置文件读取失败，拒绝用默认值覆盖真实配置。"
+                "请人工修复 config.json 后重启服务。")
         directory = os.path.dirname(CONFIG_FILE) or "."
         os.makedirs(directory, exist_ok=True)
         payload = json.dumps(asdict(self), ensure_ascii=False, indent=2)
@@ -382,7 +390,9 @@ class Config:
                 data = json.load(f)
         except Exception as exc:
             print(f"[Config] 读取配置失败，使用默认值: {exc}")
-            return cls()
+            inst = cls()
+            object.__setattr__(inst, "_load_failed", True)
+            return inst
         if not isinstance(data, dict):
             return cls()
 
@@ -394,7 +404,9 @@ class Config:
             return cls(**{k: v for k, v in data.items() if k in known})
         except Exception as exc:
             print(f"[Config] 配置字段类型异常，使用默认值: {exc}")
-            return cls()
+            inst = cls()
+            object.__setattr__(inst, "_load_failed", True)
+            return inst
 
 
 # ── HTTP 可写数值键的合法区间（第二期审计 MA-18/MA-19）────────────────────────
