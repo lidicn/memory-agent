@@ -549,7 +549,7 @@ def test_config_exemption_is_two_hops_not_one():
                         for r in rows
                         if r["detail"].startswith(("writable-config:", "not-app-config:"))))
     assert by_detail == [
-        ("vision_service.py", 504, "external", "bounded", "writable-config"),  # 可写键，已按保留期收口
+        ("vision_service.py", 516, "external", "bounded", "writable-config"),  # 可写键，已按保留期收口
     ], by_detail
     # 残余的 `config` 站点必须逐条是真·应用配置字段，且不在可写白名单里
     # （`attr:` 只列键名，携带键名的局部变量在 `var:` 段，别混进来）
