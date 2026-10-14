@@ -21,6 +21,7 @@
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -53,7 +54,12 @@ def full_days(conn, limit: int) -> list[str]:
 
 
 def mask_factory(store, names: dict):
-    """实体 id 打码：命中成员姓名或设备友好名的部分换成 **。"""
+    """实体 id 打码：命中成员姓名或设备友好名的部分换成 **。
+
+    ★ 命中用**小写折叠**、替换也必须**大小写无关**：HA 的 entity_id 按约定是小写，
+    而姓名／友好名常带大写或混合写（本席 2026-10-14 现跑实测：token="Amy" 对
+    `sensor.amy_phone` **原样返回**＝一枚⛔ 打码的姓名跟着读数出了仓）。
+    """
     tokens = {str(m.get("name") or "") for m in store.list_members() if m.get("name")}
     tokens |= {str(v or "") for v in names.values() if v}
     ordered = sorted((t for t in tokens if len(t) >= 2), key=len, reverse=True)
@@ -62,7 +68,7 @@ def mask_factory(store, names: dict):
         low = eid.lower()
         for token in ordered:
             if token.lower() in low:
-                return eid.replace(token, "**")
+                return re.sub(re.escape(token), "**", eid, flags=re.I)
         return eid
     return mask
 
