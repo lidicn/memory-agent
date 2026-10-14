@@ -18,11 +18,11 @@
 		flush_interval -1
 		transport http {
 			compression off
+			# 长连接超时（助手流式可能较久）
+			response_header_timeout 30m
+			dial_timeout 10s
+			keepalive 2m
 		}
-		# 长连接超时（助手流式可能较久）
-		response_header_timeout 30m
-		dial_timeout 10s
-		keepalive 2m
 	}
 }
 
