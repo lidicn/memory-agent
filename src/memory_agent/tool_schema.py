@@ -770,7 +770,7 @@ TOOL_SPECS: list = [
             _p("text", "string", "记忆正文（行为洞察/结论）", required=True),
             _p("source_refs", "array", "真实引用列表，如 ['event:xxx','insight:yyy']"),
             _p("tags", "array", "标签列表"),
-            _p("ttl_days", "integer", "存活天数，默认 0（不过期）", default=0),
+            _p("ttl_days", "integer", "存活天数，默认 0（＝按 agent_default_ttl_days，现读 30 天）", default=0),
             _p("topic_key", "string", "主题键（可选）"),
             _p("dry_run", "boolean", "True（默认）只自检不落库；False 才写入", default=True),
             _p("session_id", "string", "会话 ID，默认 'mcp'", default="mcp"),

@@ -117,11 +117,13 @@ def _writable_numeric_keys() -> set:
 
 
 def test_bounds_table_is_exactly_the_writable_numeric_surface():
-    """表 = HTTP 写得动的数值键全集，不多不少（实测 24 个；`Config` 共 72 个数值字段）。
+    """表 ⊇ HTTP 写得动的数值键全集（实测 24 个；`Config` 共 72 个数值字段）。
 
     新增一个可写数值键却忘了配区间 ⇒ 这条先响，而不是留到下一个审计轮。
+    ★ DCD 20261015 后：表还额外覆盖 config.json/env 面的保留期键（B/C 型），
+      故断言改为"必须包含所有可写键"而非"精确等于"。
     """
-    assert set(NUMERIC_BOUNDS) == _writable_numeric_keys()
+    assert _writable_numeric_keys() <= set(NUMERIC_BOUNDS)
 
 
 @pytest.mark.parametrize("key", sorted(NUMERIC_BOUNDS))
@@ -259,7 +261,7 @@ def _collect_rt():
     ({"polling_interval": -5}, 900),
     ({"polling_interval": 10 ** 12}, 86400),
     ({"data_retention_days": -1}, 0),
-    ({"data_retention_days": 10 ** 9}, 3650),
+    ({"data_retention_days": 10 ** 9}, NUMERIC_BOUNDS["data_retention_days"][1]),
 ])
 def test_collect_config_clamps_to_the_shared_table(body, expected):
     rt, cfg = _collect_rt()

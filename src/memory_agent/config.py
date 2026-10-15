@@ -440,15 +440,23 @@ NUMERIC_BOUNDS: dict = {
     "tv_capture_timeout_s": (1, 600),
     "tv_mqtt_timeout_s": (0.1, 600.0),
     "polling_interval": (900, 86400),              # 下界对齐 collect_routes:158；上界=一天
-    "data_retention_days": (0, 3650),              # 下界对齐 collect_routes:163；上界=DAY_WINDOW_MAX
+    "data_retention_days": (0, 200000),           # A型：0=真关闭；上界=LONG_WINDOW_MAX（DCD 20261015 钉）
     "first_run_lookback_hours": (1, 720),          # 30 天；改前 1e9 = 首跑回溯全部历史
     "mcp_response_max_bytes": (1024, 50_000_000),   # 改前 -1 = 裁剪阈值失效
     "ha_assist_memory_top_k": (0, 100),
     "vision_cooldown_s": (0, 3600),
     "vision_max_per_hour": (0, 10000),              # 改前 1e9 = 限流失效
     "vision_no_tv_interval_s": (1, 3600),
-    "vision_snapshot_retention_days": (0, 3650),
+    "vision_snapshot_retention_days": (0, 200000), # A型：0=真关闭；上界=LONG_WINDOW_MAX
     "scene_graph_sample_rate": (0.0, 1.0),          # 采样比例，不是计数
+    # --- DCD 20261015 保留期区间钉数（decisions/20261015-MA-保留期合法区间钉数与关闭档分型-裁定.md）---
+    "drift_retention_days": (1, 200000),           # B型：0被or90吃回，下界钉1
+    "process_mining_retention_days": (1, 200000),  # B型：同drift
+    "agent_default_ttl_days": (1, 200000),         # B型：0被or30吃回，下界钉1
+    "backup_retention": (1, 90),                   # B型：量纲=份数（非天数），上界90份
+    "data_retention_interval_seconds": (60, 604800),  # C型：下界=max(60,..)夹紧值；上界=7天
+    "researcher_staging_ttl_days": (1, 200000),     # C型：落进agent_default_ttl的or链被顶
+    # vlm_bad_case_retention_days：死键零消费点，P4甲不加区间
 }
 
 
