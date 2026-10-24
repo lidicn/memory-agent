@@ -1371,7 +1371,10 @@ class VisionService:
                 "last_result": self._last_result.get(room),
             }
 
-        rooms = await asyncio.gather(*[_room_status(cam) for cam in self.cameras])
+        rooms = await asyncio.wait_for(
+            asyncio.gather(*[_room_status(cam) for cam in self.cameras]),
+            timeout=15.0,
+        )
         return {
             "enabled": bool(cfg.vision_enabled),
             "light_gate": bool(cfg.vision_light_gate),

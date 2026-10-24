@@ -197,7 +197,7 @@ async def retrieve(request: Request):
         return error("缺少 question")
     rt = runtime(request)
     trust_min = body.get("trust_min")
-    top_k = int(body.get("top_k", 5))
+    top_k = max(1, min(int(body.get("top_k", 5)), 100))
     source = (body.get("source") or "").strip()
     hits = await asyncio.to_thread(
         rt.agent_memory.retrieve,
