@@ -217,7 +217,7 @@ class Config:
     tv_mqtt_port: int = 1883
     tv_mqtt_user: str = ""
     tv_mqtt_pass: str = ""
-    tv_mqtt_topic: str = "tv/livingroom/state"
+    tv_mqtt_topic: str = "tv/livingroom/status"  # MA-001: 与 butler/bus/topics.py SUB_TV_STATUS 对齐（原为 state）
 
     # ── MQTT 实时推送（v0.4：向 TVPilot / DeskPilot 推事件，见 docs/交接卡_v0.4_MQTT实时推送.md）──
     # broker 连接参数复用上面的 tv_mqtt_host/port/user/pass（与 TV Cam 同一 broker）。

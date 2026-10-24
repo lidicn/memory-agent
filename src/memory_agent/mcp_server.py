@@ -718,7 +718,11 @@ async def _tracked_call_tool(server, name, arguments, context=None):
     is_err = False
     err_text = None
     try:
-        result = await MCPServer.call_tool(server, name, arguments, context)
+        # MA-002: 加 wait_for 防挂起工具永久占幂等槽（120s 与部署超时保护一致）
+        result = await asyncio.wait_for(
+            MCPServer.call_tool(server, name, arguments, context),
+            timeout=120.0,
+        )
         # v0.9 契约完善：把工具的朴素 {"ok": false} 结果升级为 isError=True + 结构化错误码，
         # 终结「ok:false 被模型当正文」。
         result = normalize_tool_result(result, name)
