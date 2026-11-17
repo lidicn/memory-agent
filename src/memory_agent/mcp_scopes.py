@@ -88,6 +88,10 @@ REGISTERED_TOOLS = frozenset({
     "read_self_diary",
     # 三路径缺口B：recipe 召回（读工具，查询已晋升 live 的查询剧本）
     "match_recipe",
+    # AF 联动门面（DCD 20261117 Q2/Q4 全甲，契约 §二）：三枚只读
+    "get_automation_context",
+    "get_automation_opportunities",
+    "get_member_habits",
 })
 
 # 会改变系统状态的工具（写入库 / 改配置 / 触发采集 / 变更记忆状态）
@@ -139,6 +143,8 @@ WRITE_TOOLS = frozenset({
     "execute_intent_actions",
     # 三路径缺口B：recipe 回填（写工具，将探索出的工具序列提交为 staging recipe）
     "submit_recipe",
+    # AF 联动写门面（DCD 20261117 Q2 一等件，契约 §二 2.3）：写 staging 记忆
+    "report_automation_outcome",
 })
 
 _REPORTED_UNKNOWN: set[str] = set()

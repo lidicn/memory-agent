@@ -1773,6 +1773,96 @@ TOOL_SPECS: list = [
         pitfall="会调用付费 LLM。runtime 里已有每天 23:00（家庭墙钟）的常驻生成任务，"
                 "手动再调会多写一条 staging 日记——同一天可能不止一篇。LLM 失败返回 ok=false 且不落库。",
     ),
+# ── AF 联动门面（DCD 20261117 七问全甲，契约 doc/架构设计/MA-AF联动契约-v1草稿）────
+    ToolSpec(
+        name="get_automation_context",
+        summary="AF 联动·自动上下文：一次取齐当前行为状态/在场/预测/意图/数据质量，供自动化条件与中段取数。",
+        description=(
+            "AF 深度联动读门面（契约 2.1）：四个来源并发一次取回——行为状态机（behavior_state：state/confidence/since）、"
+            "在场快照（presence：各成员最近识别时间/方式/位置，来源 store.recent_presence）、行为预测（prediction）、"
+            "意图推断（intent，按置信度排序）。数据不足时**不抛错**，返回 200 + data_quality.sufficient=false 与 "
+            "code=DATA_INSUFFICIENT 的事实，由调用方降级/跳过。返回均带 as_of（取数时刻）与 stale_after_s"
+            "（建议最大陈旧秒数）：AF 超阈值**不得采信该条件**，可收紧不可放宽（契约 2.5）。"
+        ),
+        group="联动",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("room", "string", "房间名，限定在场/状态查询范围（可选）"),
+            _p("member_id", "string", "成员 UUID，用于解析预测/意图的目标人（可选）"),
+            _p("window_minutes", "integer", "回顾窗口分钟数，默认 30", default=30),
+        ],
+        example="get_automation_context(room='书房') → 行为状态/在场/预测/意图一次取齐",
+        pitfall="prediction/intent 需要目标人名（member_id 或在场推导）；未知时对应来源 available=false，⛔ 当取数失败。",
+    ),
+    ToolSpec(
+        name="get_automation_opportunities",
+        summary="AF 联动·机会面：一次取齐召回缺口/候选规则/数据覆盖，供自动化起草素材。",
+        description=(
+            "AF 深度联动读门面（契约 2.2）：召回缺口（audit_rule_recall『该判没判』场景）、候选规则"
+            "（list_candidate_rules status=staging）、数据覆盖（get_data_coverage，规则上线前准入闸）三源一次取回。"
+            "candidates 中 confirm_state=needs_confirm 的条目**仅可供起草 IR，⛔ 视为已生效**；"
+            "数据覆盖不足时 data_gate.blocked_reasons 非空，应停止自动起草。"
+        ),
+        group="联动",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("room", "string", "房间名，限定召回审计范围（可选）"),
+            _p("top_k", "integer", "每类最多返回条数，默认 10", default=10),
+            _p("min_samples", "integer", "最小样本数过滤，默认 5", default=5),
+        ],
+        example="get_automation_opportunities() → 缺口/候选/数据覆盖",
+        pitfall="needs_confirm 候选只能起草，⛔ 当成生效规则；data_gate 不足时停止自动起草。",
+    ),
+    ToolSpec(
+        name="get_member_habits",
+        summary="AF 联动·跨周习惯：取成员的周期性习惯（典型时段/房间/活动/观测天数，带稳定度口径）。",
+        description=(
+            "AF 深度联动读门面（契约 2.4）：暴露内部 activity.infer_habits 的跨周习惯聚合——典型时段、房间、活动与观测天数。"
+            "min_days=3 沿用 infer_habits 现参（DCD 裁定 ⛔ 放宽到 1-2 天）：观测天数不足时显式返回 insufficient_data=true、"
+            "sufficient=false（⛔ 静默返回空表）；样本够但真无规律时 habits=[] 且 sufficient=true（两者可区分）。"
+        ),
+        group="联动",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("member_id", "string", "成员 UUID，限定查询目标（可选；缺省返回全成员）"),
+            _p("room", "string", "房间名过滤（可选）"),
+            _p("entity", "string", "实体/设备过滤（可选）"),
+            _p("granularity", "string", "week|day，默认 week", default="week"),
+            _p("weeks", "integer", "跨周窗口数，默认 4（≈28 天）", default=4),
+            _p("min_days", "integer", "最少观测天数才出规律，默认 3（DCD 裁定 ⛔ 放宽）", default=3),
+        ],
+        example="get_member_habits(member_id='...', weeks=4) → 判断『这周此时都开空调』的依据",
+        pitfall="min_days 是防伪规律底线（裁定 ⛔ 放宽）；insufficient_data=true 时应引导式询问，⛔ 直接断言习惯。",
+    ),
+    ToolSpec(
+        name="report_automation_outcome",
+        summary="AF 联动·写回：把自动化执行结果与用户选择写回 MA 记忆（恒 staging，⛔ 直接晋升）。",
+        description=(
+            "AF 深度联动写门面（契约 2.3）：自动化终态（asked/executed/skipped/failed/false_positive）＋automation_decision＋"
+            "user_response（choice=accepted/declined/modified/no_response + value + via）写回 staging 记忆面。"
+            "user_response 是「记录用户选择」的核心字段（出资人③层一等件）；choice 缺失按 no_response 记。"
+            "须持 write 作用域令牌调用；返回 memory_id 与 staging=true。"
+        ),
+        group="联动",
+        service="static", method="",
+        expose=("mcp",),
+        params=[
+            _p("rule_ref", "string", "自动化规则引用（AF 侧规则标识）", required=True),
+            _p("outcome", "string", "asked|executed|skipped|failed|false_positive", required=True,
+               enum=["asked", "executed", "skipped", "failed", "false_positive"]),
+            _p("at", "string", "执行时刻 ISO（缺省取服务端墙钟）"),
+            _p("automation_decision", "string", "本次自动化做了什么（开/关/询问…）"),
+            _p("user_response", "string", "用户应答：JSON 字符串，如 {\"choice\":\"accepted\",\"via\":\"voice\"}"),
+            _p("context_ref", "string", "源自哪次 get_automation_context 的 as_of/event_id（可选）"),
+            _p("evidence", "array", "证据字符串列表"),
+            _p("note", "string", "备注"),
+        ],
+        example="report_automation_outcome(rule_ref='wy-001', outcome='asked', user_response='{\"choice\":\"accepted\",\"via\":\"voice\"}')",
+        pitfall="outcome 枚举外值返回 INVALID_PARAM；写向只落 staging，晋升走 MA 人工闸（⛔ AF 直写 live）。",
+    ),
 ]
 
 SPEC_BY_NAME: dict = {s.name: s for s in TOOL_SPECS}

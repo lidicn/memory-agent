@@ -2985,6 +2985,277 @@ def _build_server():
             "4. 汇总「异常设备清单 + 建议」（重建集成 / 检查供电 / 网络）。"
         )
 
+    # ── AF 联动门面（DCD 20261117 七问全甲，契约 doc/架构设计/MA-AF联动契约-v1草稿 §二）──
+
+    @mcp.tool()
+    async def get_automation_context(
+        room: str = "", member_id: str = "", window_minutes: int = 30,
+    ) -> dict:
+        """AF 联动读门面（契约 2.1）：一次取齐行为状态/在场/预测/意图/数据质量。
+
+        - behavior_state：canonical 行为状态机最新值（state/confidence/since，来源 list_behavior_states）。
+        - presence：在场快照（各成员最近识别时间/方式/位置，来源 store.recent_presence）。
+        - prediction：行为预测（需目标人名，member_id 或在场推导；未知时 available=false）。
+        - intent：最近行为意图（按置信度排序）。
+        - data_quality：数据覆盖诊断；不足时 sufficient=false 且返回 code=DATA_INSUFFICIENT 的事实
+          （⛔ 抛错），由调用方降级/跳过。返回均带 as_of 与 stale_after_s（超阈值 ⛔ 采信）。
+        """
+        rt = get_runtime()
+        import datetime as _dt
+        import json as _json
+        _tz = _dt.timezone(_dt.timedelta(hours=float(getattr(rt.config, "tz_offset_hours", 8) or 8)))
+        now = _dt.datetime.now(_tz)
+        as_of = now.isoformat(timespec="seconds")
+        since_presence = (now - _dt.timedelta(hours=24)).isoformat(timespec="seconds")
+        since_states = (now - _dt.timedelta(hours=2)).isoformat(timespec="seconds")
+
+        person = ""
+        if member_id:
+            m = await asyncio.to_thread(rt.store.get_member, member_id)
+            if m:
+                person = m.get("name") or ""
+
+        async def _safe(coro, key):
+            try:
+                return await coro
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": f"{key} 取数失败: {exc}"}
+
+        behavior_f, presence_f, cov_f = await asyncio.gather(
+            _safe(asyncio.to_thread(rt.store.list_behavior_states, since_states, 200), "behavior"),
+            _safe(asyncio.to_thread(rt.store.recent_presence, since_presence, room or None, 200), "presence"),
+            _safe(get_data_coverage(), "coverage"),
+        )
+        behavior_state = {"state": "unknown", "confidence": None, "since": None, "source_ok": False}
+        if isinstance(behavior_f, list) and behavior_f:
+            latest = max(behavior_f, key=lambda s: str(s.get("ts") or ""))
+            behavior_state = {
+                "state": latest.get("activity") or latest.get("state") or "unknown",
+                "confidence": latest.get("confidence"),
+                "since": latest.get("ts"),
+                "room": latest.get("room"),
+                "source_ok": True,
+            }
+        in_home, last_change = [], None
+        if isinstance(presence_f, list):
+            for p in presence_f:
+                if p.get("name"):
+                    in_home.append({"name": p.get("name"), "via": p.get("via"),
+                                    "confidence": p.get("confidence"), "room": p.get("room"),
+                                    "last_seen": p.get("last_seen")})
+            if in_home:
+                last_change = in_home[0].get("last_seen")
+        prediction = {"available": False}
+        if person:
+            pr = await _safe(get_behavior_prediction(person=person), "prediction")
+            if pr.get("ok"):
+                prediction = {"available": True, **{k: v for k, v in pr.items() if k not in ("ok",)}}
+            else:
+                prediction = {"available": False, "note": pr.get("error")}
+        intent = await _safe(infer_behavior_intent(person=person, limit=3), "intent")
+        if not isinstance(intent, dict) or not intent.get("ok"):
+            intent = {"available": False, "note": (intent or {}).get("error") if isinstance(intent, dict) else "意图取数失败"}
+
+        cov_ok = isinstance(cov_f, dict) and cov_f.get("ok") is not False
+        sufficient = bool(cov_ok) and bool(in_home is not None)
+        result = {
+            "ok": True,
+            "as_of": as_of,
+            "stale_after_s": 120,
+            "behavior_state": behavior_state,
+            "presence": {"in_home": in_home, "last_change": last_change, "source_ok": isinstance(presence_f, list)},
+            "prediction": prediction,
+            "intent": intent,
+            "data_quality": {"coverage": cov_f if isinstance(cov_f, dict) else {}, "sufficient": sufficient, "stale_after_s": 120},
+        }
+        if not sufficient:
+            result["code"] = "DATA_INSUFFICIENT"
+        return result
+
+    @mcp.tool()
+    async def get_automation_opportunities(
+        room: str = "", top_k: int = 10, min_samples: int = 5,
+    ) -> dict:
+        """AF 联动读门面（契约 2.2）：一次取齐召回缺口/候选规则/数据覆盖。
+
+        - gaps：「该判没判」场景（audit_rule_recall）。
+        - candidates：候选规则（list_candidate_rules status=staging）；confirm_state=needs_confirm 的条目
+          **仅可供起草 IR，⛔ 视为已生效**。
+        - data_gate：数据覆盖准入；blocked_reasons 非空时应停止自动起草。
+        """
+        rt = get_runtime()
+        import datetime as _dt
+        _tz = _dt.timezone(_dt.timedelta(hours=float(getattr(rt.config, "tz_offset_hours", 8) or 8)))
+        as_of = _dt.datetime.now(_tz).isoformat(timespec="seconds")
+
+        async def _safe(coro, key):
+            try:
+                return await coro
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": f"{key} 取数失败: {exc}"}
+
+        recall = await _safe(audit_rule_recall(days=14, rooms=room), "recall")
+        rules = await _safe(list_candidate_rules(status="staging"), "rules")
+        cov = await _safe(get_data_coverage(), "coverage")
+
+        gaps = []
+        if isinstance(recall, dict) and recall.get("ok"):
+            src = recall.get("gaps") or recall.get("near_misses") or []
+            if isinstance(src, list):
+                for g in src[: max(1, int(top_k))]:
+                    if not isinstance(g, dict):
+                        continue
+                    sample = g.get("sample_count") or g.get("count") or g.get("samples")
+                    try:
+                        sample = int(sample) if sample is not None else 0
+                    except (TypeError, ValueError):
+                        sample = 0
+                    if sample < max(1, int(min_samples)):
+                        continue
+                    gaps.append({
+                        "kind": g.get("kind") or g.get("rule") or "recall_gap",
+                        "description": g.get("description") or g.get("reason") or "",
+                        "evidence": g.get("evidence") or [],
+                        "sample_count": sample,
+                        "suggested_trigger": g.get("suggested_trigger") or g.get("blocker") or "",
+                    })
+
+        candidates = []
+        if isinstance(rules, dict) and rules.get("ok"):
+            src = rules.get("rules") or []
+            if isinstance(src, list):
+                for c in src[: max(1, int(top_k))]:
+                    if not isinstance(c, dict):
+                        continue
+                    status = str(c.get("status") or "staging")
+                    candidates.append({
+                        "rule_id": c.get("id") or c.get("rule_id"),
+                        "description": c.get("summary") or c.get("description") or c.get("name") or "",
+                        "confidence": c.get("confidence"),
+                        "confirm_state": "needs_confirm" if status in ("staging", "confirmed") else status,
+                    })
+
+        cov_ok = isinstance(cov, dict) and cov.get("ok") is not False
+        blocked = [] if cov_ok else ["data_coverage 不足（get_data_coverage 未 ok）"]
+        if not gaps and not candidates and cov_ok:
+            blocked.append("无召回缺口且无候选（可能数据面已收敛，或本需要求 min_samples 过滤掉了）")
+        return {
+            "ok": True,
+            "as_of": as_of,
+            "stale_after_s": 3600,
+            "gaps": gaps,
+            "candidates": candidates,
+            "data_gate": {"coverage": cov if isinstance(cov, dict) else {}, "blocked_reasons": blocked, "stale_after_s": 3600},
+        }
+
+    @mcp.tool()
+    async def get_member_habits(
+        member_id: str = "", room: str = "", entity: str = "",
+        granularity: str = "week", weeks: int = 4, min_days: int = 3,
+    ) -> dict:
+        """AF 联动读门面（契约 2.4）：取成员跨周周期习惯（暴露内部 activity.infer_habits）。
+
+        观测天数 < min_days（默认 3，DCD 裁定 ⛔ 放宽）时显式返回 insufficient_data=true/sufficient=false
+        （⛔ 静默返回空表）；样本够但真无规律时 habits=[] 且 sufficient=true（两者可区分）。
+        """
+        rt = get_runtime()
+        import datetime as _dt
+        _tz = _dt.timezone(_dt.timedelta(hours=float(getattr(rt.config, "tz_offset_hours", 8) or 8)))
+        now = _dt.datetime.now(_tz)
+        as_of = now.isoformat(timespec="seconds")
+        days = max(7, min(int(weeks or 4) * 7, 90))
+        min_days = max(1, int(min_days or 3))
+
+        target = ""
+        if member_id:
+            m = await asyncio.to_thread(rt.store.get_member, member_id)
+            target = (m or {}).get("name") or ""
+
+        since = (now - _dt.timedelta(days=days)).isoformat(timespec="seconds")
+        obs_days = 0
+        try:
+            states = await asyncio.to_thread(rt.store.list_behavior_states, since, 3000)
+            if isinstance(states, list):
+                obs_days = len({str(s.get("ts") or "")[:10] for s in states
+                                if (not target or (s.get("member") or "") == target)})
+        except Exception:  # noqa: BLE001
+            obs_days = 0
+
+        res = await asyncio.to_thread(rt.activity.infer_habits, days, min_days)
+        if not isinstance(res, dict) or not res.get("ok"):
+            return {"ok": False, "code": "INTERNAL",
+                    "error": (res or {}).get("error", "习惯聚合失败")}
+        habits = res.get("habits") or []
+        if target:
+            habits = [h for h in habits if (h.get("member") or "") == target]
+        if room:
+            habits = [h for h in habits if (h.get("room") or "") == room]
+        sufficient = obs_days >= min_days
+        return {
+            "ok": True,
+            "as_of": as_of,
+            "member_id": member_id,
+            "granularity": granularity,
+            "weeks": weeks,
+            "observed_days": obs_days,
+            "min_days": min_days,
+            "habits": habits,
+            "sufficient": sufficient,
+            "insufficient_data": not sufficient,
+        }
+
+    @mcp.tool()
+    async def report_automation_outcome(
+        rule_ref: str,
+        outcome: str,
+        at: str = "",
+        automation_decision: str = "",
+        user_response: str = "",
+        context_ref: str = "",
+        evidence: list = None,
+        note: str = "",
+    ) -> dict:
+        """AF 联动写门面（契约 2.3）：把自动化执行结果与用户选择写回 MA 记忆（恒 staging）。
+
+        outcome ∈ asked|executed|skipped|failed|false_positive；user_response 为 JSON 字符串，
+        choice=accepted|declined|modified|no_response（缺失按 no_response 记）。须持 write 作用域
+        令牌调用；⛔ 直接晋升（晋升走 MA 人工闸）。
+        """
+        rt = get_runtime()
+        import datetime as _dt
+        import json as _json
+        valid = {"asked", "executed", "skipped", "failed", "false_positive"}
+        if outcome not in valid:
+            return {"ok": False, "code": "INVALID_PARAM",
+                    "error": f"outcome 必须 ∈ {sorted(valid)}，收到 {outcome!r}"}
+        user = {}
+        if user_response:
+            try:
+                parsed = _json.loads(user_response) if isinstance(user_response, str) else user_response
+                user = parsed if isinstance(parsed, dict) else {"raw": user_response}
+            except Exception:
+                user = {"raw": user_response}
+        choice = user.get("choice")
+        if choice not in ("accepted", "declined", "modified", "no_response"):
+            choice = "no_response"  # 契约：缺失按 no_response 记
+        _tz = _dt.timezone(_dt.timedelta(hours=float(getattr(rt.config, "tz_offset_hours", 8) or 8)))
+        at_iso = at or _dt.datetime.now(_tz).isoformat(timespec="seconds")
+
+        text = (f"自动化执行结果[{outcome}] rule_ref={rule_ref} "
+                f"decision={automation_decision or '未记录'} user_choice={choice} "
+                f"via={(user.get('via') or '')} at={at_iso}"
+                + (f" note={note}" if note else ""))
+        tags = ["automation", f"outcome:{outcome}", f"rule:{rule_ref}"]
+        source_refs = ([f"context:{context_ref}"] if context_ref else []) + \
+                      (evidence if isinstance(evidence, list) else [])
+        mem = await asyncio.to_thread(
+            rt.agent_memory.add_semantic_memory,
+            "automation", text, tags, source_refs, 90, f"automation:{rule_ref}",
+            False, "ma", True, "", "", "",
+        )
+        mem_id = (mem or {}).get("memory_id") or (mem or {}).get("id")
+        return {"ok": True, "memory_id": mem_id or None, "staging": True, "at": at_iso}
+
     return mcp
 
 
