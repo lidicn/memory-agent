@@ -984,8 +984,12 @@ async def behaviors_predictions(request: Request):
         return err
     rt = runtime(request)
     person = (request.query_params.get("person") or "").strip()
-    if not person:
-        return error("缺少 person 参数")
+    # C2（AF 联调实测 2026-11-17）：空值/'all' 显式拒绝，与 MCP 工具共用同一个守卫。
+    from ..behavior_predictor import validate_prediction_person
+
+    bad_person = validate_prediction_person(person)
+    if bad_person is not None:
+        return error(bad_person["error"]["message"])
     weekday_str = (request.query_params.get("weekday") or "").strip()
     weekday = None
     if weekday_str:

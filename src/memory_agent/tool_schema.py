@@ -1422,20 +1422,27 @@ TOOL_SPECS: list = [
     ),
     ToolSpec(
         name="audit_rule_recall",
-        summary="序列规则召回审计（只读）：找出『该判没判』的场景并诊断卡在哪一步。",
+        summary="序列规则召回审计（只读）：找出『该判没判』的场景并诊断卡在哪一步；可选附意图规则匹配率（B 档）。",
         description="以「房间·天」为单位：当天出现了规则所有步骤所需的标签（eligible）却没命中，记为召回缺口"
                     "（near_miss），给出第一个匹配不上的步骤（blocker）与估计召回率。"
-                    "适用『就寝识别是不是漏了很多』『房间移动规则为什么很少触发』。",
+                    "适用『就寝识别是不是漏了很多』『房间移动规则为什么很少触发』。"
+                    "include_behavior=true 时同批返回 behavior_intent_match：意图规则按事件时间戳离线回放的匹配率"
+                    "（分母=可解析时间戳的行为事件数，分子=至少命中一条规则的事件数，分 device_state/scene_graph/both 路径，"
+                    "附 TOP 未命中事件模式）。两把尺数据源与粒度不同，⛔ 混读。",
         group="洞察",
         service="static", method="",
         expose=("mcp",),
         params=[
             _p("days", "integer", "回溯天数，默认 14", default=14),
             _p("rooms", "string", "逗号分隔房间白名单，留空=全部"),
+            _p("include_behavior", "boolean", "是否同批附意图规则匹配率（B 档），默认 false", default=False),
+            _p("behavior_days", "integer", "意图匹配率回放窗口天数，默认 7", default=7),
         ],
-        example="audit_rule_recall(days=30, rooms='卧室') → 就寝规则 near_miss 清单",
+        example="audit_rule_recall(days=30, rooms='卧室') → 就寝规则 near_miss 清单；"
+                "audit_rule_recall(days=14, include_behavior=true) → 再附意图规则匹配率",
         pitfall="只审计内置序列规则（书房工作/就寝/房间移动），persist=False 不落库；"
-                "要产出放宽建议并落库用 refresh_rule_recall_gaps。",
+                "要产出放宽建议并落库用 refresh_rule_recall_gaps。B 档的数据源是 behavior_events（意图推断的真实输入），"
+                "⛔ 与序列规则的 near_miss 合并成一条召回率。",
     ),
     ToolSpec(
         name="refresh_rule_recall_gaps",

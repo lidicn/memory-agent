@@ -18,9 +18,10 @@
 
 from __future__ import annotations
 
+import bisect
 import logging
-
-from datetime import datetime, timedelta
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 
 from .day_bounds import clamp_minutes
 
@@ -226,6 +227,202 @@ def _extract_event_labels(events: list[dict]) -> tuple[set, set]:
     return behavior_labels, sg_labels
 
 
+def _event_has_person(ev: dict, person: str) -> bool:
+    """该事件是否归属 `person`（`persons` 现行形状与 `persons_json` 旧形状都认）。"""
+    raw = ev.get("persons_json")
+    if raw is None:
+        raw = ev.get("persons") or "[]"
+    try:
+        import json
+        persons = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return False
+    return any(
+        isinstance(p, dict) and (p.get("name") == person or p.get("member_id") == person)
+        for p in persons
+    )
+
+
+def _latest_dt(events: list[dict]) -> datetime | None:
+    """库内 `server_ts` 的最大值；解析不出来的行只废它自己。"""
+    stamps = [dt for dt in (_event_dt(ev.get("server_ts")) for ev in (events or []))
+              if dt is not None]
+    return max(stamps) if stamps else None
+
+
+def _filter_window(events: list[dict], window_min: int,
+                   person: str | None) -> tuple[list[dict], datetime | None]:
+    """按「最新事件时刻」回溯 `window_min` 分钟取窗口内事件（可限定成员）。
+
+    基准取库内 max(server_ts) 而不是墙钟 now：行为事件库以离散快照为主，
+    用墙钟会在"此刻无事件"时把整窗判空（2026-11-17 AF 六档全零即是这种读法）。
+    """
+    latest_ts = _latest_dt(events)
+    if latest_ts is None:
+        return [], None
+    window_start = latest_ts - timedelta(minutes=window_min)
+    recent: list[dict] = []
+    for ev in events or []:
+        ev_dt = _event_dt(ev.get("server_ts"))
+        if ev_dt is None or ev_dt < window_start:
+            continue
+        if person and not _event_has_person(ev, person):
+            continue
+        recent.append(ev)
+    return recent, latest_ts
+
+
+def diagnose_intent_windows(
+    events: list[dict],
+    person: str | None = None,
+    windows: tuple[int, ...] | list[int] = (5, 15, 30),
+) -> dict:
+    """意图空转归因：把「没出结果」拆成可行动的四类（C3）。
+
+    2026-11-17 AF 联调：六档窗口全零，与"规则面全坏"长得一模一样，调用方
+    无法判断该换时段再测还是该修规则。本函数给出：
+    ``no_events``（库空/时间戳全解析不出）｜``person_empty``（该成员无事件）｜
+    ``window_empty``（窗口内事件为 0）｜``insufficient_events``（窗口内 <2 条）｜
+    ``no_rule_match``（有事件、无规则命中）｜``matched``（有命中）。
+
+    返回 ``{as_of, events_total, person, windows[], reason, matched_any}``，
+    每窗带 ``events_in_window``／``matched``／``confidence``。纯函数，⛔ 依赖 MCP SDK。
+    """
+    who = (person or "").strip() or None
+    data = list(events or [])
+    latest_ts = _latest_dt(data)
+    detail: dict = {
+        "as_of": latest_ts.isoformat() if latest_ts else "",
+        "events_total": len(data),
+        "person": who or "",
+        "windows": [],
+        "reason": "",
+        "matched_any": False,
+    }
+    if latest_ts is None:
+        detail["reason"] = "no_events"
+        return detail
+
+    any_events = False
+    any_match = False
+    max_count = 0
+    for raw_window in windows:
+        window = clamp_minutes(raw_window)
+        recent, _ = _filter_window(data, window, who)
+        count = len(recent)
+        max_count = max(max_count, count)
+        any_events = any_events or count > 0
+        # recent 已按人过滤，这里 person=None 防二次过滤把结果再削一遍
+        intent = infer_intent(recent, window_min=window, person=None) if recent else None
+        if intent:
+            any_match = True
+        detail["windows"].append({
+            "window_min": window,
+            "events_in_window": count,
+            "matched": intent.get("intent") if intent else None,
+            "confidence": intent.get("confidence") if intent else None,
+            "path": intent.get("path") if intent else None,
+        })
+
+    if any_match:
+        detail["reason"] = "matched"
+    elif not any_events:
+        detail["reason"] = "person_empty" if who else "window_empty"
+    elif max_count < 2:
+        detail["reason"] = "insufficient_events"
+    else:
+        detail["reason"] = "no_rule_match"
+    detail["matched_any"] = any_match
+    return detail
+
+
+def replay_intent_match(
+    events: list[dict],
+    windows: tuple[int, ...] | list[int] = (5, 15, 30),
+    person: str | None = None,
+    top_n: int = 10,
+) -> dict:
+    """离线回放：把**每个事件时刻当作窗口末端**跑一遍意图规则，量规则面匹配率（B 档）。
+
+    为什么不是实时调用：`infer_behavior_intent` 的窗口基准是"库内最新事件"，实时
+    调用只能看到"此刻"一个切面；2026-11-17 AF 六档全零实测就是这种读法（那一刻
+    没有落在窗口里的行为序列）——**正确空转，但量不出匹配率**。按事件时间戳回放
+    才是"规则面到底薄不薄"的可比读数。
+
+    口径（与链主 2026-11-17 定的 B 档一致）：
+    * 分母 = 可解析时间戳的行为事件数（可限定成员）；
+    * 分子 = 以该事件为窗口末端时，至少命中一条意图规则的**事件数**（逐窗口各算）；
+    * 分路径 = 命中时走的是 device_state / scene_graph / both；
+    * TOP 未命中 = 所有窗口都没命中的窗口末端事件，按 `action|scene` 签名计数（⛔ 人名）。
+
+    `server_ts` 的 aware/naive 混排按"aware 折 UTC 再去 tzinfo"归一后排序；
+    坏行只废它自己。纯函数，⛔ 依赖 MCP SDK / store。
+    """
+    entries: list[tuple[datetime, dict]] = []
+    for ev in events or []:
+        dt = _event_dt(ev.get("server_ts"))
+        if dt is None:
+            continue
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        if person and not _event_has_person(ev, person):
+            continue
+        entries.append((dt, ev))
+    entries.sort(key=lambda item: item[0])
+
+    total = len(entries)
+    detail: dict = {
+        "as_of": entries[-1][0].isoformat() if entries else "",
+        "events_total": total,
+        "person": (person or "").strip() or "",
+        "windows": [],
+        "paths": {},
+        "top_unmatched": [],
+    }
+    if not total:
+        detail["windows"] = [
+            {"window_min": clamp_minutes(w), "matched_end_events": 0, "match_rate": 0.0}
+            for w in windows
+        ]
+        return detail
+
+    times = [dt for dt, _ in entries]
+    paths: Counter = Counter()
+    matched_any: set[int] = set()
+
+    for raw_window in windows:
+        window = clamp_minutes(raw_window)
+        matched = 0
+        for idx, (dt, _ev) in enumerate(entries):
+            start = dt - timedelta(minutes=window)
+            lo = bisect.bisect_left(times, start)
+            slice_events = [e for _, e in entries[lo:idx + 1]]
+            intent = infer_intent(slice_events, window_min=window, person=None)
+            if intent:
+                matched += 1
+                matched_any.add(idx)
+                paths[intent.get("path") or "unknown"] += 1
+        detail["windows"].append({
+            "window_min": window,
+            "matched_end_events": matched,
+            "match_rate": round(matched / total, 3),
+        })
+
+    unmatched = Counter()
+    for idx, (_dt, ev) in enumerate(entries):
+        if idx in matched_any:
+            continue
+        sig = str(ev.get("action") or ev.get("scene") or "unknown").strip() or "unknown"
+        if ev.get("scene_graph_json"):
+            sig += "+scene_graph"
+        unmatched[sig] += 1
+    detail["paths"] = dict(paths)
+    detail["top_unmatched"] = [
+        {"pattern": sig, "count": count} for sig, count in unmatched.most_common(top_n)
+    ]
+    return detail
+
+
 def infer_intent(
     events: list[dict],
     window_min: int = 10,
@@ -251,38 +448,8 @@ def infer_intent(
         return None
 
     # 基准取库内 max(server_ts)：解析不出来的行只废它自己，不牵动整批基准
-    stamped = [(_event_dt(ev.get("server_ts")), ev) for ev in events]
-    stamps = [dt for dt, _ in stamped if dt is not None]
-    if not stamps:
-        return None
-    latest_ts = max(stamps)
-
-    window_start = latest_ts - timedelta(minutes=window_min)
-
-    # 过滤时间窗口内的事件
-    recent_events = []
-    for ev_dt, ev in stamped:
-        if ev_dt is None or ev_dt < window_start:
-            continue
-        # 如果限定了 person，只看该人的事件
-        if person:
-            persons_raw = ev.get("persons_json")
-            if persons_raw is None:
-                # list_behavior_events 已把 persons_json 反序列化成 persons
-                persons_raw = ev.get("persons") or "[]"
-            try:
-                import json
-                persons = json.loads(persons_raw) if isinstance(persons_raw, str) else persons_raw
-            except (ValueError, TypeError):
-                persons = []
-            if not any(
-                p.get("name") == person or p.get("member_id") == person
-                for p in persons if isinstance(p, dict)
-            ):
-                continue
-        recent_events.append(ev)
-
-    if not recent_events:
+    recent_events, latest_ts = _filter_window(events, window_min, person)
+    if not recent_events or latest_ts is None:
         return None
 
     behavior_labels, scene_graph_labels = _extract_event_labels(recent_events)

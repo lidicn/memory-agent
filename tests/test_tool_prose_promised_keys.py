@@ -73,7 +73,9 @@ PROBE_MUST_HAVE_ROWS = ("search_events", "query_behavior_events", "get_device_us
 
 #: 未罩住的 service ⇒ 登记为什么罩不住（离线跑不出读数），条数由门自己核对
 NOT_PROBED = {
-    "static": (44, "静态说明类工具，无后端载荷可探"),
+    "static": (48, "静态说明类工具，无后端载荷可探（44 基础 + 2026-11-17 联动门面 4 枚：get_automation_context／"
+                    "get_automation_opportunities／get_member_habits／report_automation_outcome，实现都在 mcp_server 手写体，"
+                    "载荷由各自契约 §二 罩）"),
     "agent_memory": (15, "要 chroma/向量库与写侧状态，离线探不出稳定读数"),
     "templates": (5, "要模板库与调度态"),
     "history": (3, "要 HA 历史 API"),

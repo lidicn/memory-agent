@@ -277,3 +277,42 @@ def detect_pattern_deviation(
             "within_range": False,
             "predicted_range": [lower, upper],
         }
+
+
+# ── 契约 v1 §2.1 参数守卫（C2）───────────────────────────────────────────
+# 放在文件末尾是刻意的：`tests/test_vma_task64_behavior_predictor.py` 有一条
+# 行号锁（「偏离检测」函数未接线＝`behavior_predictor.py:246`），在文件中部
+# 插入函数会让那条锁漂号。新增内容一律追加在末尾，⛔ 中间插入。
+
+def validate_prediction_person(person: str) -> dict | None:
+    """预测类接口的 person 参数守卫（纯函数，MCP 工具与 HTTP 路由共用）。
+
+    2026-11-17 AF 联调实测：`person="all"` 走统计层时谁都匹配不上 ⇒ 返回
+    `ok:true + data_days=0 + 全 null` —— 与"没数据"同形，正是本模块
+    `person_names` 注释里记过的那族"恒空但 ok:true"假绿（第二例）。
+
+    ⛔ 支持聚合语义：聚合会立刻引出"按谁聚合/置信度怎么合并"的新口径，
+    而本工具是"某人的预测"，回归它自己的字面语义。调用方要全员就按
+    `list_members` 逐个调（每人一次，读面便宜、失败可分离）。
+
+    返回 ``None`` 表示参数可用；否则返回结构化错误体
+    （``{ok: false, error: {code, message}}``，对齐契约 v1 §2.1 三族）。
+    """
+    name = (person or "").strip()
+    if not name:
+        return {
+            "ok": False,
+            "error": {
+                "code": "INVALID_PARAM",
+                "message": "person 必填：真实成员名（list_members 取）；空值不作'全部'解释",
+            },
+        }
+    if name.lower() in ("all", "*", "全部", "any"):
+        return {
+            "ok": False,
+            "error": {
+                "code": "INVALID_PARAM",
+                "message": "person 不支持聚合值（all/*/全部）；请按成员逐个调用（list_members 取真实成员名）",
+            },
+        }
+    return None

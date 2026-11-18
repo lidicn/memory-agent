@@ -1638,7 +1638,9 @@ def _build_server():
         return {"ok": True, "count": len(rows), "day_from": day_from, "drifts": rows}
 
     @mcp.tool()
-    async def audit_rule_recall(days: int = 14, rooms: str = "") -> dict:
+    async def audit_rule_recall(days: int = 14, rooms: str = "",
+                                include_behavior: bool = False,
+                                behavior_days: int = 7) -> dict:
         """序列规则**召回审计**（只读）：找出"该判没判"的场景，并诊断卡在哪一步。
 
         回答的是『哪条规则可能漏了、漏在哪里』。口径：以「房间·天」为单位，
@@ -1648,13 +1650,27 @@ def _build_server():
         适用『就寝识别是不是漏了很多』『房间移动规则为什么很少触发』。
         注：只审计内置序列规则（书房工作/就寝/房间移动）。不落库。
 
+        B 档扩展（2026-11-17，链主定）：`include_behavior=true` 时同批附上
+        `behavior_intent_match` —— **意图规则**的离线回放匹配率（分母＝可解析时间戳
+        的行为事件数；分子＝以该事件为窗口末端时至少命中一条意图规则的事件数；
+        分 device_state/scene_graph/both 路径；TOP 未命中事件模式）。⛔ 与序列规则
+        的 near_miss 混读：两者数据源与粒度都不同。
+
         :param days: 回溯天数，默认 14
         :param rooms: 逗号分隔房间白名单，留空=全部
+        :param include_behavior: 是否附意图规则匹配率（B 档）
+        :param behavior_days: 意图匹配率回放窗口天数，默认 7
         """
         rt = get_runtime()
         room_list = [r.strip() for r in (rooms or "").split(",") if r.strip()] or None
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             rt.activity.audit_rule_recall, None, None, days, room_list, persist=False)
+        if include_behavior and isinstance(result, dict):
+            behavior = await asyncio.to_thread(
+                rt.activity.audit_intent_match, behavior_days)
+            result = dict(result)
+            result["behavior_intent_match"] = behavior
+        return result
 
     @mcp.tool()
     async def refresh_rule_recall_gaps(days: int = 14) -> dict:
@@ -2434,21 +2450,59 @@ def _build_server():
             weekday: 0=周一, 6=周日。-1=用所有日期统计（默认）。
         """
         rt = get_runtime()
+        from .behavior_predictor import (
+            predict_daily_routine,
+            predict_arrival_time,
+            validate_prediction_person,
+        )
+
+        # C2（AF 联调实测 2026-11-17）：`person` 空值/'all'/'*' 一律显式拒绝——
+        # 改前它们会被统计层当成人名，谁都匹配不上，回 `ok:true + data_days=0 + 全 null`，
+        # 与"没数据"同形（本仓第二例"恒空但 ok:true"的假绿形状）。
+        bad_person = validate_prediction_person(person)
+        if bad_person is not None:
+            return bad_person
+        person = person.strip()
         # HTTP 侧 `/api/behaviors/predict` 校 0-6，MCP 侧原先只判 `<0`：传 7~99 不报错，
         # 而是每一天都被 weekday 过滤掉 ⇒ 扫完 5000 行事件回一句"没有那一天"（静默空答）。
         if weekday is not None and not (-1 <= weekday <= 6):
-            return {"ok": False, "error": "weekday 必须是 -1（全部）或 0-6（周一到周日）"}
+            return {
+                "ok": False,
+                "error": {
+                    "code": "INVALID_PARAM",
+                    "message": "weekday 必须是 -1（全部）或 0-6（周一到周日）",
+                },
+            }
         events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
         if not events:
-            return {"ok": False, "error": "无历史行为事件数据"}
-
-        from .behavior_predictor import predict_daily_routine, predict_arrival_time
+            return {
+                "ok": False,
+                "error": {
+                    "code": "DATA_INSUFFICIENT",
+                    "message": "无历史行为事件数据",
+                },
+                "person": person,
+            }
 
         wd = None if weekday < 0 else weekday
         arrival = predict_arrival_time(events, person, weekday=wd,
                                        tz_offset_hours=rt.config.tz_offset_hours)
         routine = predict_daily_routine(events, person,
                                         tz_offset_hours=rt.config.tz_offset_hours)
+
+        # 空数据显式化：该人在整库没有任何出现日 ⇒ DATA_INSUFFICIENT；
+        # 而"有数据但单周几样本不足"仍如实回 null（见 test_vma_task64 的反例锁）。
+        if not arrival and isinstance(routine, dict) and int(routine.get("data_days") or 0) == 0:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "DATA_INSUFFICIENT",
+                    "message": "该成员在行为事件库中无出现记录（请核对成员名，或用 list_members 取真实成员名）",
+                },
+                "person": person,
+                "weekday": wd,
+                "data_days": 0,
+            }
 
         return {
             "ok": True,
@@ -2476,9 +2530,19 @@ def _build_server():
         rt = get_runtime()
         events = await asyncio.to_thread(rt.store.list_behavior_events, limit=5000)
         if not events:
-            return {"ok": False, "error": "无历史行为事件数据"}
+            return {
+                "ok": False,
+                "error": {
+                    "code": "DATA_INSUFFICIENT",
+                    "message": "无历史行为事件数据",
+                },
+            }
 
-        from .intent_inference import infer_intent_sequence, get_intent_suggestions
+        from .intent_inference import (
+            diagnose_intent_windows,
+            get_intent_suggestions,
+            infer_intent_sequence,
+        )
 
         p = (person or "").strip() or None
         intents = infer_intent_sequence(
@@ -2487,7 +2551,19 @@ def _build_server():
         for intent in intents:
             intent["suggestions"] = get_intent_suggestions(intent)
 
-        return {"ok": True, "intents": intents, "count": len(intents)}
+        outcome: dict = {"ok": True, "intents": intents, "count": len(intents)}
+        if not intents:
+            # C3（2026-11-17 AF 联调实测）：六档窗口全零时，"无事件/只此人无事件/
+            # 窗口内无事件/事件太少/有事件但规则无命中"五种状态此前长得一样。
+            # 空转必须带归因，调用方才知道该换时段再测还是该修规则面。
+            diag = diagnose_intent_windows(
+                events, person=p,
+                windows=(window_min,) if window_min is not None else (5, 15, 30),
+            )
+            outcome["reason"] = diag["reason"]
+            outcome["as_of"] = diag["as_of"]
+            outcome["diagnostics"] = diag
+        return outcome
 
     @mcp.tool()
     async def execute_intent_actions(

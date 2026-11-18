@@ -543,6 +543,40 @@ class ActivityInferenceService:
                 return k
         return None
 
+    def audit_intent_match(self, days: int = 7, windows: tuple = (5, 15, 30),
+                           person: str | None = None,
+                           max_events: int = 5000) -> dict:
+        """B 档：意图规则面**匹配率**审计（离线回放，只读、⛔ 落库）。
+
+        与 `audit_rule_recall` 的分工：那一把量的是**序列规则**（房间·天 粒度，
+        eligible/matched/near_miss）；这一把量的是**意图规则**（行为事件粒度，
+        每个事件时刻当窗口末端回放）。两者口径不同，⛔ 混用读数。
+
+        数据源＝``behavior_events``（意图推断的真实输入），⛔ 原始 ``events``。
+        ``truncated=True`` 表示取数触到 ``max_events`` 上限，读数只覆盖最近那段。
+        """
+        from .intent_inference import replay_intent_match
+
+        cfg = self.config
+        now = now_local(cfg.tz_offset_hours)
+        window_days = int(clamp_days(days))
+        start = (now - timedelta(days=window_days)).strftime("%Y-%m-%d")
+        try:
+            events = self.store.list_behavior_events(
+                day_from=start, limit=int(max_events))
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False,
+                    "error": {"code": "INTERNAL",
+                              "message": f"行为事件查询失败: {exc}"}}
+        res = replay_intent_match(events, windows=windows, person=person)
+        res.update({
+            "ok": True,
+            "window_days": window_days,
+            "query_start": start,
+            "truncated": len(events) >= int(max_events),
+        })
+        return res
+
     def audit_rule_recall(self, start: str | None = None, end: str | None = None,
                           days: int = 14, rooms: list | None = None, *,
                           persist: bool = False, min_near_miss: int = 2,
