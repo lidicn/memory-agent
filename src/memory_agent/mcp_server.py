@@ -1541,6 +1541,8 @@ def _build_server():
         **突变**（"最近作息/活跃度变了"）。适用『最近作息是不是变了』『有没有异常的时段』。
         与 mine_behavior_process 互补：后者按天做**事后**一致性检验，本工具看**时序突变**。
         只算不落库；要落库请用 refresh_behavior_drift。
+        **river 缺失时退化**：返回 ``degraded=true`` + ``degraded_reason``，只给"同一小时
+        历史分布偏离"这一维（``anomalies``），``drift.detected`` 恒 false —— ⛔ 当全量结果读。
 
         :param days: 回溯天数，默认 14（1 小时分桶，14 天 ≈ 336 点）
         """

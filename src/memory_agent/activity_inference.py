@@ -960,9 +960,19 @@ class ActivityInferenceService:
         if min_score is None:
             min_score = float(getattr(cfg, "drift_min_score", 0.9) or 0.9)
         det = algo_kernel.OnlineAnomalyDetector(window_size=ws)
-        res = det.score_stream(series, min_score=min_score)
-        if not res.get("ok"):
-            return {"ok": False, "error": res.get("error"), "points": len(series)}
+        # C1 退化基线（DCD 20261004 §七十五「或确定性退化基线」）：river 缺失时**不整体失败**
+        # —— HST/ADWIN 那两维跳过，仍跑纯 Python 的「同一小时历史分布偏离」。
+        # 否则一调就 INTERNAL，连不需要 river、且可解释的那一维也拿不到。
+        # ⚠️ 只对「缺依赖」退化：其它失败照旧如实上报，不吞成退化（吞了就是假绿）。
+        degraded = not det.available
+        if degraded:
+            res = {"ok": True, "score_mean": None, "score_max": None,
+                   "anomalies": [], "drift": {"detected": False, "count": 0, "points": []}}
+        else:
+            res = det.score_stream(series, min_score=min_score)
+            if not res.get("ok"):
+                return {"ok": False, "error": res.get("error"),
+                        "points": len(series), "degraded": False}
 
         drifts = (res.get("drift") or {}).get("points") or []
         # 主判据 = 「同一小时的历史分布偏离」：可解释、可核对（给出 expected/z）；
@@ -1020,6 +1030,10 @@ class ActivityInferenceService:
             "anomalies": anomalies[:10],
             # HST 相对排名（区分度饱和，仅供参考，不作为异常判据）
             "relative_top": relative_top,
+            # C1：river 缺失时只跑了「同一小时历史分布偏离」这一维，⛔ 当全量结果读
+            "degraded": degraded,
+            **({"degraded_reason": "river 未安装：跳过 HST/ADWIN，仅输出同一小时历史分布偏离"}
+               if degraded else {}),
         }
 
     # ── 意图/习惯层（任务 D：重复活动 → 长期意图）───────────────────────
