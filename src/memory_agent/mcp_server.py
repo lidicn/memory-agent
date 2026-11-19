@@ -3080,7 +3080,6 @@ def _build_server():
         """
         rt = get_runtime()
         import datetime as _dt
-        import json as _json
         _tz = _dt.timezone(_dt.timedelta(hours=float(getattr(rt.config, "tz_offset_hours", 8) or 8)))
         now = _dt.datetime.now(_tz)
         as_of = now.isoformat(timespec="seconds")
