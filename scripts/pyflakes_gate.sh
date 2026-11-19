@@ -58,7 +58,13 @@ CUR_COUNT=$(wc -l < "$TMP_NORM")
 echo "[gates] pyflakes: 当前 $CUR_COUNT 条，基线 $(wc -l < "$BASELINE") 条，新增 $NEW_COUNT，已修 $FIXED_COUNT"
 if [ "$NEW_COUNT" -gt 0 ]; then
     echo "[gates] ❌ 新增 pyflakes 问题（必须为零）："
-    comm -13 <(sort "$BASELINE") <(sort "$TMP_NORM")
+    # 逐条打印，并同时发成 GitHub check-run annotation —— 不然失败原因只躺在日志里，
+    # 不开通日志权限的人（含 MA 席位）看不到到底是哪条。
+    comm -13 <(sort "$BASELINE") <(sort "$TMP_NORM") | while IFS= read -r line; do
+        echo "[gates] $line"
+        f="${line%%:*}"; f="${f%%: *}"
+        echo "::error file=${f}::pyflakes: ${line}"
+    done
     exit 1
 fi
 echo "[gates] ✅ pyflakes 门禁通过（无新增）"
