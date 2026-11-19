@@ -29,6 +29,9 @@ jobs:
           pip install pytest pytest-asyncio pytest-timeout
           pip install -e .
 
+      - name: Prepare writable /data (app 默认数据目录；runner 上根目录需 sudo)
+        run: sudo mkdir -p /data && sudo chown "$(id -u):$(id -g)" /data
+
       - name: Syntax check
         run: |
           python -m compileall src/ -q
