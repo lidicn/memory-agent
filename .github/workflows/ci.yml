@@ -35,12 +35,20 @@ jobs:
 
       - name: Run unit tests
         run: |
+          set +e
           python -m pytest tests/ -q \
             --ignore=tests/test_mqtt_bridge.py \
             --ignore=tests/test_ha_assist.py \
             --ignore=tests/test_quality_gates.py \
             --ignore=tests/test_vlm_gate.py \
-            -x --timeout=60
+            -x --timeout=60 > /tmp/pytest.out 2>&1
+          rc=$?
+          tail -n 60 /tmp/pytest.out
+          # 失败条目进 annotation：不开日志权限也能看到是哪条红的
+          grep -E '^(FAILED|ERROR) |^E   ' /tmp/pytest.out | head -n 40 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+          exit $rc
         env:
           PYTHONPATH: src
           JWT_SECRET: ci-test-secret-do-not-use-in-production
