@@ -397,7 +397,6 @@ class HistoryManager:
         marker = uuid.uuid4().hex[:8]
         probe_text = f"Memory Agent向量库自检探针 {marker}：书房 空调 开启"
         before = 0
-        hit_id = ""
 
         def _count():
             nonlocal before
@@ -416,10 +415,8 @@ class HistoryManager:
         )
 
         def _query():
-            nonlocal hit_id
             res = col.query(query_texts=["书房空调自检探针"], n_results=3)
             ids = (res.get("ids") or [[]])[0]
-            hit_id = probe_id if probe_id in ids else (ids[0] if ids else "")
             if probe_id not in ids:
                 raise RuntimeError(f"检索未命中刚写入的探针，返回 ids={ids}")
             return f"命中 {len(ids)} 条，探针排名第 {ids.index(probe_id) + 1}"
