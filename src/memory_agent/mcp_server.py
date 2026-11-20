@@ -3271,6 +3271,7 @@ def _build_server():
         return {
             "ok": True,
             "as_of": as_of,
+            "stale_after_s": 3600,
             "member_id": member_id,
             "granularity": granularity,
             "weeks": weeks,
