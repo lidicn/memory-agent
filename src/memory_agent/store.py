@@ -31,6 +31,11 @@ from .env_cfg import env_float, env_int
 
 SCHEMA_VERSION = 1
 
+#: 三路径缺口C 未命中埋点（route_misses）的保留口径：
+#: DCD 20261120 Q4 甲 —— 保留 30 天或 10 万行，先到先 purge（观测记录，无豁免行）。
+ROUTE_MISS_RETENTION_DAYS = 30
+ROUTE_MISS_MAX_ROWS = 100_000
+
 # candidate_rules 的"人已确认"状态字（DCD 裁定 7 红线位 user_confirmed 由它推导）。
 # HTTP 与 MCP 两条入口必须写同一个字面量，否则确认结果互不可见。
 CANDIDATE_ACCEPTED = "accepted"
@@ -1335,6 +1340,27 @@ class Store:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_behavior_states_ts ON behavior_states(ts)"
+            )
+            # 三路径缺口C（DCD 20261120 Q4 甲）：路由未命中埋点。
+            # 记录每次 route_question 的「原始说法 + 已抽槽位 + 是否命中 + 时间戳」，
+            # 供跑 2–3 周后设计 C（同义词映射自动提议）与导出 badcase 候选。
+            # 保留 30 天/10 万行，先到先 purge（见 purge_route_misses）。
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS route_misses (
+                    miss_id     TEXT PRIMARY KEY,
+                    question    TEXT NOT NULL DEFAULT '',
+                    slots_json  TEXT NOT NULL DEFAULT '{}',
+                    hit         INTEGER NOT NULL DEFAULT 0,
+                    intent      TEXT NOT NULL DEFAULT '',
+                    ts          TEXT NOT NULL,
+                    created_at  TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_route_misses_ts ON route_misses(ts)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_route_misses_hit ON route_misses(hit)"
             )
             # v0.9.5 主动感知：候选序列规则（低置信/待审核，采纳后回灌管家规则库）
             conn.execute(
@@ -5508,6 +5534,131 @@ class Store:
             "deleted_over_cap": over_cap,
             "remaining": remaining,
             "kept_labeled": labeled,
+        }
+
+    # ── 三路径缺口C：route_question 未命中埋点（DCD 20261120 Q4 甲）─────────────
+    def add_route_miss(self, question: str, slots: dict | None = None,
+                       hit: bool = False, intent: str = "",
+                       ts: str | None = None) -> str:
+        """写一条路由埋点（原始说法 + 已抽槽位 + 是否命中 + 时间戳），返回 miss_id。
+
+        埋点是观测记录、不是用户数据：主键用随机 uuid（每次调用都是一条新行，不去重），
+        保留期与行数上限由 ``purge_route_misses`` 裁。
+        """
+        miss_id = uuid.uuid4().hex
+        now = ts or now_local(self.tz_offset_hours).isoformat(sep="T")
+        conn = self.connect()
+        with self._lock:
+            conn.execute(
+                """INSERT INTO route_misses(
+                     miss_id, question, slots_json, hit, intent, ts, created_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (miss_id, str(question or ""),
+                 json.dumps(slots or {}, ensure_ascii=False),
+                 1 if hit else 0, str(intent or ""), now, now),
+            )
+            conn.commit()
+        return miss_id
+
+    def list_route_misses(self, hit: bool | None = None,
+                          since: str | None = None, limit: int = 100) -> list[dict]:
+        """查询路由埋点（按 ts 倒序）。``hit`` 为 None 时不按是否命中过滤。"""
+        sql = "SELECT * FROM route_misses"
+        conds: list[str] = []
+        args: list = []
+        if hit is not None:
+            conds.append("hit = ?")
+            args.append(1 if hit else 0)
+        if since:
+            conds.append("ts >= ?")
+            args.append(since)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        args.append(int(limit))
+        conn = self.connect()
+        with self._lock:
+            rows = conn.execute(sql, args).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["slots"] = json.loads(d.pop("slots_json") or "{}")
+            except Exception:  # noqa: BLE001 — 单行 slot JSON 脏了只丢这一格，不拖垮整张列表
+                d["slots"] = {}
+                d.pop("slots_json", None)
+            d["hit"] = bool(d.get("hit"))
+            out.append(d)
+        return out
+
+    def count_route_misses(self, hit: bool | None = None,
+                           since: str | None = None) -> int:
+        """数路由埋点行数（可按是否命中 / 起始时间过滤），用于算命中率。"""
+        sql = "SELECT COUNT(*) FROM route_misses"
+        conds: list[str] = []
+        args: list = []
+        if hit is not None:
+            conds.append("hit = ?")
+            args.append(1 if hit else 0)
+        if since:
+            conds.append("ts >= ?")
+            args.append(since)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        with self._db() as conn:
+            return int(conn.execute(sql, args).fetchone()[0])
+
+    def export_route_miss_badcases(self, since: str | None = None,
+                                   limit: int = 500) -> list[dict]:
+        """把未命中样本（hit=0）导出成 badcase 候选：原始说法 + 已抽槽位 + 时间戳。"""
+        rows = self.list_route_misses(hit=False, since=since, limit=limit)
+        return [
+            {
+                "miss_id": r.get("miss_id", ""),
+                "question": r.get("question", ""),
+                "slots": r.get("slots", {}),
+                "intent": r.get("intent", ""),
+                "ts": r.get("ts", ""),
+            }
+            for r in rows
+        ]
+
+    def purge_route_misses(self, days: int = ROUTE_MISS_RETENTION_DAYS,
+                           max_rows: int = ROUTE_MISS_MAX_ROWS,
+                           *, now_ts: str | None = None) -> dict:
+        """裁剪路由埋点：先删超过 ``days`` 天的，再把超额的最旧行删掉（先到先 purge）。
+
+        DCD 20261120 Q4 甲：保留 30 天或 10 万行。埋点是机器观测记录，没有需要豁免的行，
+        过期与超额一并裁；``now_ts`` 仅测试注入固定"当前时刻"用，产品路径不传。
+        """
+        base = now_ts or now_local(self.tz_offset_hours).isoformat(sep="T")
+        cutoff = (datetime.fromisoformat(base) - timedelta(days=int(days))).isoformat(sep="T")
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute("DELETE FROM route_misses WHERE ts < ?", (cutoff,))
+            expired = int(cur.rowcount or 0)
+            total = int(conn.execute("SELECT COUNT(*) FROM route_misses").fetchone()[0] or 0)
+            over_cap = 0
+            if total > max_rows:
+                cur = conn.execute(
+                    """
+                    DELETE FROM route_misses WHERE miss_id IN (
+                        SELECT miss_id FROM route_misses
+                        ORDER BY ts ASC, miss_id ASC LIMIT ?
+                    )
+                    """,
+                    (total - max_rows,),
+                )
+                over_cap = int(cur.rowcount or 0)
+            conn.commit()
+            remaining = int(conn.execute(
+                "SELECT COUNT(*) FROM route_misses").fetchone()[0] or 0)
+        return {
+            "cutoff": cutoff,
+            "max_rows": int(max_rows),
+            "deleted_expired": expired,
+            "deleted_over_cap": over_cap,
+            "remaining": remaining,
         }
 
     def get_detected_activity(self, activity_id: str):

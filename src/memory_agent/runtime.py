@@ -160,9 +160,13 @@ class AppRuntime:
                 # B-MA-05: 定期清理幂等键和 MCP 审计表，防止无限增长
                 idem = await asyncio.to_thread(self.store.purge_idempotency)
                 audit = await asyncio.to_thread(self.store.purge_mcp_audit, 30)
+                # 三路径C 未命中埋点过期清理（DCD 20261120 Q4 甲：30 天/10 万行，先到先 purge）
+                rmiss = await asyncio.to_thread(self.store.purge_route_misses)
                 print(
                     f"[Runtime] 数据清理完成：events={removed} idempotency={idem} "
-                    f"mcp_audit={audit}（下一轮 {interval}s 后）"
+                    f"mcp_audit={audit} "
+                    f"route_misses={rmiss.get('deleted_expired', 0) + rmiss.get('deleted_over_cap', 0)}"
+                    f"（下一轮 {interval}s 后）"
                 )
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:

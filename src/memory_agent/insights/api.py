@@ -879,7 +879,32 @@ class InsightService:
         data = plan.to_dict()
         data.update({"total": 1, "offset": 0, "has_more": False})
         data["window"] = plan.time_range.to_dict() if plan.time_range else {}
+        # 三路径缺口C（DCD 20261120 Q4 甲）：埋点。每次 route_question 记一条，
+        # hit=意图是否被确定性分类器认出（unknown ⇒ 未命中）。写埋点失败不许影响查询。
+        self._record_route_miss(plan, data)
         return data
+
+    def _record_route_miss(self, plan: Any, slots: Dict[str, Any]) -> None:
+        """把一次 route_question 的规划结果写进 route_misses（原始说法／已抽槽位／是否命中／时间戳）。
+
+        旁路埋点：store 缺失（无库门面）或写库失败，都只记一条告警，绝不把一次正常的
+        查询规划打成失败；但也**不静默吞**——留 LOG.warning，否则"没埋成"会和"没命中"
+        长得一模一样（同一族自欺缺陷）。
+        """
+        store = getattr(self, "store", None)
+        if store is None:
+            return
+        try:
+            intent = str(getattr(plan, "intent", "") or "")
+            hit = intent not in ("", "unknown")
+            store.add_route_miss(
+                question=getattr(plan, "question", "") or "",
+                slots=slots,
+                hit=hit,
+                intent=intent,
+            )
+        except Exception as exc:  # noqa: BLE001 — 埋点是旁路，失败只降级为告警
+            LOG.warning("route_misses 埋点写入失败（不影响查询）：%r", exc)
 
     # ------------------------------------------------------------------
     # 5.8 数据质量
