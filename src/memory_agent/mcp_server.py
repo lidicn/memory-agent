@@ -3234,6 +3234,7 @@ def _build_server():
 
         观测天数 < min_days（默认 3，DCD 裁定 ⛔ 放宽）时显式返回 insufficient_data=true/sufficient=false
         （⛔ 静默返回空表）；样本够但真无规律时 habits=[] 且 sufficient=true（两者可区分）。
+        传了 member_id 但成员不存在 ⇒ 结构化 `NOT_FOUND`（⛔ 回落成全成员聚合、⛔ 与 DATA_INSUFFICIENT 混）。
         """
         rt = get_runtime()
         import datetime as _dt
@@ -3246,7 +3247,11 @@ def _build_server():
         target = ""
         if member_id:
             m = await asyncio.to_thread(rt.store.get_member, member_id)
-            target = (m or {}).get("name") or ""
+            if not m:
+                # 契约 2.1 错误族：业务「成员不存在」＝结构化 NOT_FOUND（≠ 数据不足 DATA_INSUFFICIENT）。
+                return {"ok": False, "code": "NOT_FOUND",
+                        "error": f"成员 {member_id} 不存在（get_member_habits 按成员维度查询，不存在时不回落全成员）"}
+            target = m.get("name") or ""
 
         since = (now - _dt.timedelta(days=days)).isoformat(timespec="seconds")
         obs_days = 0

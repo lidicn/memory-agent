@@ -1829,6 +1829,7 @@ TOOL_SPECS: list = [
             "AF 深度联动读门面（契约 2.4）：暴露内部 activity.infer_habits 的跨周习惯聚合——典型时段、房间、活动与观测天数。"
             "min_days=3 沿用 infer_habits 现参（DCD 裁定 ⛔ 放宽到 1-2 天）：观测天数不足时显式返回 insufficient_data=true、"
             "sufficient=false（⛔ 静默返回空表）；样本够但真无规律时 habits=[] 且 sufficient=true（两者可区分）。"
+            "传 member_id 但成员不存在返回结构化 NOT_FOUND（⛔ 回落全成员、⛔ 与 DATA_INSUFFICIENT 混）。"
         ),
         group="联动",
         service="static", method="",
