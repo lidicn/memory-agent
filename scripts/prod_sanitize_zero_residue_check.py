@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from pathlib import Path
 
 # 合成样例：号码/邮箱/证件号都是文档用的假值，不是任何真实实体的数据。
 SAMPLES = [
@@ -37,9 +38,19 @@ def main() -> int:
 
     sys.path.insert(0, args.src)
     try:
+        import memory_agent
         from memory_agent.store import Store
     except Exception as exc:
         print(f"IMPORT_FAIL {type(exc).__name__}: {exc}")
+        return 2
+
+    # 归属断言：验的必须是指给我（--src）的那棵树，⛔ 环境里先到/回退到的那棵。
+    # 尺的整个存在理由＝"验证**这一棵**树上的掩码真生效"；只插 sys.path 不校验来源时，
+    # 空 --src ＋ 环境里可导入的包（如 CI `pip install -e .`）会静默回退，把别处的码当读数。
+    src_root = Path(args.src).resolve()
+    pkg_file = Path(getattr(memory_agent, "__file__", "") or "").resolve()
+    if src_root != pkg_file.parent and src_root not in pkg_file.parents:
+        print(f"IMPORT_FAIL not_from_src: memory_agent 来自 {pkg_file}，不在 --src {src_root} 之下")
         return 2
 
     ok = True

@@ -130,6 +130,22 @@ def test_the_probe_reports_import_failure_rather_than_traceback(tmp_path):
     assert "PROD_SANITIZE_ZERO_RESIDUE" not in out, out   # ⛔ 跑到函数就⛔ 出结论行
 
 
+def test_the_probe_refuses_a_fallback_import_not_from_the_pointed_tree(tmp_path):
+    """⑤b 空 `--src` 但环境里有可导入的 `memory_agent`（如 CI `pip install -e .`）⇒ 仍必须 RC=2。
+
+    这是尺子自己的洞（Chief 20261120 现读复现）：只做 `sys.path.insert(0, --src)` 不校验来源时，
+    空树会回退到环境里的包，拿别处的码当"你指给我的那棵树"跑出 PASS。归属断言必须把它拒掉。
+    """
+    empty = tmp_path / "nothing2"
+    empty.mkdir()
+    decoy = _tree(tmp_path / "envdecoy", STRONG_STORE)   # 环境里有强掩码包（可回退）
+    rc, out = _run(str(empty), pythonpath=decoy)
+    assert rc == 2, out
+    assert "IMPORT_FAIL" in out, out
+    assert "not_from_src" in out, out
+    assert "PROD_SANITIZE_ZERO_RESIDUE" not in out, out   # ⛔ 回退树跑出结论行
+
+
 def test_the_probe_reads_the_tree_it_was_pointed_at_not_the_one_that_arrives_first(tmp_path):
     """⑥ 尺的整个存在理由＝"验证**这一棵**树上的掩码真生效"。
 
