@@ -521,6 +521,12 @@ class _PurgeStore:
         self.calls.append(("mcp_audit", keep_days))
         return 2
 
+    def purge_route_misses(self):
+        # 三路径C 未命中埋点清理（DCD 20261120 Q4 甲）：runtime 每轮调它、并读返回的两键。
+        # 产品实现见 store.purge_route_misses；此处只补桩，保持与真实返回形状一致。
+        self.calls.append(("route_misses", None))
+        return {"deleted_expired": 0, "deleted_over_cap": 0}
+
 
 def _cleanup_rt(store, interval=3600):
     return types.SimpleNamespace(
