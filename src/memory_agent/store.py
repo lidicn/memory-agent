@@ -5632,7 +5632,10 @@ class Store:
         过期与超额一并裁；``now_ts`` 仅测试注入固定"当前时刻"用，产品路径不传。
         """
         base = now_ts or now_local(self.tz_offset_hours).isoformat(sep="T")
-        cutoff = (datetime.fromisoformat(base) - timedelta(days=int(days))).isoformat(sep="T")
+        # days 来自外部/配置：按保留期口径收界（同 purge_old/TTL 用 LONG_WINDOW_MAX落地），
+        # 负值/超大值不得进入 timedelta（负值会把 cutoff 推到未来→误删全表）。
+        cutoff = (datetime.fromisoformat(base)
+                  - timedelta(days=clamp_days(days, hi=LONG_WINDOW_MAX))).isoformat(sep="T")
         conn = self.connect()
         with self._lock:
             cur = conn.execute("DELETE FROM route_misses WHERE ts < ?", (cutoff,))
