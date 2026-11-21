@@ -31,9 +31,10 @@ if _SRC not in sys.path:
 from memory_agent import adm_linkage  # noqa: E402
 from memory_agent import mqtt_bridge as mb  # noqa: E402
 
-# 契约 §七 B 的六枚码（逐字，顺序即表里的顺序）
+# 契约 §七 B 的七枚码（逐字，顺序即表里的顺序；第 7 枚 PUBLISH_REFUSED 由 DCD 20261010 §一 Q1 甲定稿）
 CONTRACT_CODES = (
     "ADM_ERR_BROKER_UNREACHABLE",
+    "ADM_ERR_PUBLISH_REFUSED",
     "ADM_ERR_PEER_OFFLINE",
     "ADM_ERR_PAYLOAD_INVALID",
     "ADM_ERR_AUTH_REQUIRED",
@@ -95,7 +96,7 @@ def _no_library(monkeypatch):
 
 # ── 1. 词表：库与仓两份必须同键同值 ─────────────────────────────────────────
 
-def test_contract_vocabulary_is_the_six_codes_verbatim():
+def test_contract_vocabulary_is_the_seven_codes_verbatim():
     assert adm_linkage._CONTRACT_CODES == CONTRACT_CODES
     for name in CONTRACT_CODES:
         # 契约把码名本身就当值用（homesdk 那份同形），改名等于给对端换词表
@@ -112,10 +113,10 @@ def test_unknown_code_name_degrades_to_internal_instead_of_raising():
 
 
 def test_library_and_fallback_agree_on_every_code():
-    """库在场时两那份必须逐字相等——"装没装库"不能改变对端在 `inbox_events` 里看到的码。
+    """库在场时两份必须逐字相等——"装没装库"不能改变对端在 `inbox_events` 里看到的码。
 
-    这条同时是 vendored 0.3.1 的当前实况锁：运行面没有 `homesdk.adm` ⇒ 库路径探测为假，
-    走本仓词表；窗内升到 0.3.2 后同一条件改为逐枚比对库常量。两种环境下都必须绿。
+    这条同时是库版本的实况锁：运行面没有 `homesdk.adm` ⇒ 库路径探测为假，走本仓词表；
+    库升到 0.3.5（含第 7 枚 PUBLISH_REFUSED）后同一条件改为逐枚比对库常量。两种环境下都必须绿。
     """
     try:
         from homesdk.adm import errors as lib_errors
@@ -182,6 +183,27 @@ def test_publish_reports_false_when_paho_rejects_the_message():
 
     bad = _Client(publish_rc=4)          # MQTT_ERR_NO_CONN
     br = _bridge(bad)
+    assert br.publish_raw("ma/presence", {"trace_id": "t"}) is False
+    assert br.status()["adm_reasons"] == ["ADM_ERR_BROKER_UNREACHABLE"]
+
+
+def test_publish_rc_refusal_uses_the_library_translation(monkeypatch):
+    """DCD 20261010 §一 Q1/Q2 甲：rc→码只认库侧 `classify_publish_rc`，本仓⛔自建映射表。"""
+    monkeypatch.setattr(
+        mb, "homesdk_mqtt",
+        lambda: types.SimpleNamespace(
+            classify_publish_rc=lambda rc: "ADM_ERR_PUBLISH_REFUSED"))
+    client = _Client(publish_rc=12)      # MQTT_ERR_ACL_DENIED
+    br = _bridge(client)
+    assert br.publish_raw("ma/presence", {"trace_id": "t"}) is False
+    assert br.status()["adm_reasons"] == ["ADM_ERR_PUBLISH_REFUSED"]
+
+
+def test_publish_rc_without_library_falls_back_to_broker_unreachable(monkeypatch):
+    """库缺席（运行面仍是 0.3.1）时落保守档，⛔ 猜成"拒发"。"""
+    monkeypatch.setattr(mb, "homesdk_mqtt", lambda: False)
+    client = _Client(publish_rc=12)
+    br = _bridge(client)
     assert br.publish_raw("ma/presence", {"trace_id": "t"}) is False
     assert br.status()["adm_reasons"] == ["ADM_ERR_BROKER_UNREACHABLE"]
 

@@ -40,7 +40,7 @@ from .researcher import ResearcherService
 from .activity_inference import ActivityInferenceService
 from .llm_client import LLMRouter
 from .mcp_tokens import MCPTokenStore
-from .mqtt_bridge import MqttBridge, conn_params, reset_presence_probe
+from .mqtt_bridge import MqttBridge, conn_params, reset_mqtt_probe, reset_presence_probe
 from .backup import BackupManager
 from .template_validate import validate_all
 from .poller import CollectService
@@ -1125,6 +1125,7 @@ class AppRuntime:
             print("[Runtime] MQTT 建连参数变更，已丢弃缓存客户端，下次发布用新凭据重连")
         # homesdk 可能是热更新之后才到位的（与 house_time 同一口径：探测缓存必须可解）
         reset_presence_probe()
+        reset_mqtt_probe()
         adm_linkage.reset_errors_probe()
         self.insights.reload_config(self.config)
         self.analysis.config = self.config

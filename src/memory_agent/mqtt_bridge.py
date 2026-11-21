@@ -160,6 +160,30 @@ def reset_presence_probe() -> None:
     _presence_probe = None
 
 
+#: `homesdk.mqtt` 探测缓存：None=未探测，False=不可用，Module=可用。
+#: 它只用来取 `classify_publish_rc`（rc→码的唯一翻译面，DCD 20261010 §一 Q2 甲）。
+_mqtt_probe: Any = None
+
+
+def homesdk_mqtt() -> Any:
+    """返回 ``homesdk.mqtt``，缺席或没有 ``classify_publish_rc`` 时 ``False``。"""
+    global _mqtt_probe
+    if _mqtt_probe is None:
+        try:
+            from homesdk import mqtt as _mqtt  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 - 可选依赖，缺席只是落保守档
+            _mqtt_probe = False
+        else:
+            _mqtt_probe = _mqtt if getattr(_mqtt, "classify_publish_rc", None) else False
+    return _mqtt_probe
+
+
+def reset_mqtt_probe() -> None:
+    """清掉 `homesdk.mqtt` 探测缓存（热更新后库可能才到位，与 presence 同口径）。"""
+    global _mqtt_probe
+    _mqtt_probe = None
+
+
 def _bounded(text: Any, limit: int, field: str) -> str:
     """按契约上限收口：库的口径是"超长即拒绝投递"，MA 先截断再发，
     好让告警不会因为一句话超长就整条消失（截断会打日志，不静默）。"""
@@ -340,7 +364,17 @@ class MqttBridge:
         if rc in (0, None):
             return True
         print(f"[MQTT] 发布 {topic} 被 paho 拒绝: rc={rc}")
-        self._note("ADM_ERR_BROKER_UNREACHABLE", f"paho 拒绝投递 rc={rc}", topic=topic)
+        # DCD 20261010 §一 Q1/Q2 甲：rc→码的唯一翻译面在 `homesdk.mqtt.classify_publish_rc`
+        # （本仓⛔自建 rc→码 映射表＝第二份真值）。库缺席时落保守档 BROKER_UNREACHABLE——
+        # 把"说不清的失败"指去修 broker，至少不会让人对着一条 ACL 配置空转。
+        code_name = "ADM_ERR_BROKER_UNREACHABLE"
+        lib = homesdk_mqtt()
+        if lib:
+            try:
+                code_name = str(lib.classify_publish_rc(rc))
+            except Exception as exc:  # noqa: BLE001 - 翻译失败落保守档，不打死发布路径
+                print(f"[MQTT] classify_publish_rc 失败，落保守档: {exc}")
+        self._note(code_name, f"paho 拒绝投递 rc={rc}", topic=topic)
         return False
 
     def publish_presence(self, members: list[dict], ts: str) -> bool:

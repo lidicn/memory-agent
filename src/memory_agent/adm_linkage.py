@@ -1,8 +1,9 @@
 """契约 v2.0 §B/§C 的本仓出口：统一错误码 + 联动失败的留痕。
 
-真源是 homesdk 0.3.2 的 `homesdk.adm.errors`。**仓里的 vendored wheel 已换 0.3.2，但线上镜像
-还没重烤**（DCD 20261007 §四 Q2：重烤搭下一次既有变更窗，不单独开窗）⇒ 运行面装的仍是 0.3.1，
-那份没有 `adm` 子包 ⇒ 库缺席时这里按契约 §B **逐字**自带一份同键同值的词表。
+真源是 homesdk `homesdk.adm.errors`（0.3.3 起含第 7 枚 `ADM_ERR_PUBLISH_REFUSED`）。
+**仓里的 vendored wheel 已换 0.3.5，但线上镜像还没重烤**（DCD 20261007 §四 Q2：重烤搭下一次
+既有变更窗，不单独开窗）⇒ 运行面装的仍是 0.3.1，那份没有 `adm` 子包 ⇒ 库缺席时这里按契约 §B
+**逐字**自带一份同键同值的词表。
 两条路产出的码字符串必须一致，否则"装没装库"会改变对端在 `inbox_events` 里看到的码——
 这正是裁定 §四 判例 1 警告的那类静默漂移。
 
@@ -24,9 +25,11 @@ import time
 from collections import deque
 from typing import Any
 
-#: 契约表 §七 B 的六枚码；键名与值都逐字照抄（值就是名字本身，homesdk 那份同形）。
+#: 契约表 §七 B 的七枚码；键名与值都逐字照抄（值就是名字本身，homesdk 那份同形）。
+#: 第 7 枚 `ADM_ERR_PUBLISH_REFUSED`（DCD 20261010 §一 Q1 甲）：链路在、这一条没发出去。
 _CONTRACT_CODES = (
     "ADM_ERR_BROKER_UNREACHABLE",
+    "ADM_ERR_PUBLISH_REFUSED",
     "ADM_ERR_PEER_OFFLINE",
     "ADM_ERR_PAYLOAD_INVALID",
     "ADM_ERR_AUTH_REQUIRED",
