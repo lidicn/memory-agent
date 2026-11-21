@@ -123,6 +123,13 @@ class Config:
     pir_debounce_sec: int = 30                        # PIR/同实体连续触发去抖窗口（秒）
     activity_conf_threshold: float = 0.6              # 写权威状态的最低置信度（低于仅进候选）
 
+    # ── 事件族（契约 §1.2：ma/behavior-state 边沿 + ma/prediction 跨阈值）──────────
+    # 真源常量在 homesdk.events（0.3.5）；库缺席时整族显式降级，开关不改变"降级可见"。
+    event_family_enabled: bool = True                 # 事件族发布总开关
+    event_state_interval_seconds: int = 60            # 行为状态边沿检查间隔（秒）
+    event_prediction_interval_seconds: int = 900      # 预测跨阈值轮询间隔（秒，15min）
+    event_prediction_drift_min: int = 15              # next_arrival 漂移阈值（分钟）
+
     # ── P1.1 过程挖掘（行为过程模型 + 一致性检验 → 行为异常）──────────────────
     process_mining_enabled: bool = True               # 每日一次过程挖掘（异常落库）
     process_mining_days: int = 7                      # 过程挖掘回溯天数
@@ -455,6 +462,10 @@ NUMERIC_BOUNDS: dict = {
     "agent_default_ttl_days": (1, 200000),         # B型：0被or30吃回，下界钉1
     "backup_retention": (1, 90),                   # B型：量纲=份数（非天数），上界90份
     "data_retention_interval_seconds": (60, 604800),  # C型：下界=max(60,..)夹紧值；上界=7天
+    # 事件族（契约 §1.2）：边沿检查不低于 30s；预测轮询 5min–1d；漂移阈值 1min–12h
+    "event_state_interval_seconds": (30, 3600),
+    "event_prediction_interval_seconds": (300, 86400),
+    "event_prediction_drift_min": (1, 720),
     "researcher_staging_ttl_days": (1, 200000),     # C型：落进agent_default_ttl的or链被顶
     # vlm_bad_case_retention_days：死键零消费点，P4甲不加区间
 }

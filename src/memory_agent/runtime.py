@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -24,7 +25,7 @@ from .analysis import AnalysisService
 from .auth import AuthManager
 from .config import Config, get_config
 from .env_cfg import env_float
-from . import adm_linkage, house_time
+from . import adm_linkage, event_family, house_time
 from .face_node_registry import FaceNodeRegistry
 from .ha_client import HAClient
 from .ha_db import HADBClient
@@ -243,6 +244,11 @@ class AppRuntime:
         if self.mqtt.enabled:
             self._mqtt_task = task_registry.create(
                 self._periodic_mqtt_presence(), name="runtime.mqtt_presence"
+            )
+            # 事件族（契约 §1.2）：行为状态边沿 + 预测跨阈值（DCD 20261117 §三 / 20261120 Q3）。
+            # 库缺席（重烤前）时任务内部显式降级并打一行理由，不静默。
+            self._event_family_task = task_registry.create(
+                self._periodic_event_family(), name="runtime.event_family"
             )
             # 启动即尝试建连并登记 LWT：connect() 是异步的，此刻多半还没连上，
             # 这次返回 False 不要紧——周期任务里的 ensure_advertised 会补发，
@@ -589,6 +595,113 @@ class AppRuntime:
                 break
             except Exception as exc:  # noqa: BLE001
                 print(f"[MQTT] 在场推送异常: {exc}")
+
+    async def _periodic_event_family(self) -> None:
+        """常驻任务：事件族发布（契约 §1.2）。
+
+        - `ma/behavior-state`：状态机**变更边沿**才发（⛔ 周期心跳）；时长类边沿带 `duration`。
+        - `ma/prediction`：`next_arrival` **跨阈值**才发（≥`event_prediction_drift_min` 分钟）
+          ＋ 15–30min 轮询。
+        真源常量在 `homesdk.events`；库缺席（重烤前运行面还是 0.3.1）整族显式降级并打一行理由。
+        """
+        if not getattr(self.config, "event_family_enabled", True):
+            print("[EventFamily] 总开关关闭（event_family_enabled=false）")
+            return
+        if not event_family.events_available():
+            print(f"[EventFamily] 事件族降级：{event_family.unavailable_reason()}")
+            return
+        state_interval = max(
+            30, int(getattr(self.config, "event_state_interval_seconds", 60) or 60))
+        pred_interval = max(
+            300, int(getattr(self.config, "event_prediction_interval_seconds", 900) or 900))
+        drift_min = float(getattr(self.config, "event_prediction_drift_min", 15) or 15)
+        print(
+            f"[EventFamily] 已启用：边沿检查 {state_interval}s／预测轮询 {pred_interval}s"
+            f"／漂移阈值 {drift_min:g}min；真源 payload_version="
+            f"{event_family.status().get('payload_version')}"
+        )
+        prev_states: dict = {}
+        prev_predictions: dict = {}
+        last_prediction = 0.0
+        first_round = True
+        while True:
+            try:
+                states = await asyncio.to_thread(
+                    self.store.list_behavior_states, limit=500)
+                if first_round:
+                    # 首次只建基线、不发：避免进程重启时把全屋当前状态当"边沿"喷一遍。
+                    prev_states = event_family.seed_behavior_states(states)
+                    first_round = False
+                else:
+                    old_prev = prev_states
+                    edges, new_prev = event_family.diff_behavior_states(
+                        old_prev, states)
+                    for edge in edges:
+                        ok = await asyncio.to_thread(self._publish_behavior_edge, edge)
+                        if not ok:
+                            # 发失败：回退该房间的基线，下一轮重试（不把"没发出去"读成"已发"）。
+                            room = str(edge.get("room") or "")
+                            if room in old_prev:
+                                new_prev[room] = old_prev[room]
+                            else:
+                                new_prev.pop(room, None)
+                    prev_states = new_prev
+                now_mono = time.monotonic()
+                if now_mono - last_prediction >= pred_interval:
+                    last_prediction = now_mono
+                    prev_predictions = await asyncio.to_thread(
+                        self._publish_prediction_snapshot, prev_predictions, drift_min)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 事件族是旁路，单轮失败不得打死常驻任务
+                print(f"[EventFamily] 发布轮次异常: {exc}")
+            await asyncio.sleep(state_interval)
+
+    def _publish_behavior_edge(self, edge: dict) -> bool:
+        """把一条状态边沿发成 `ma/behavior-state`（同步，调用方走 to_thread）。"""
+        return event_family.publish_behavior_state(
+            self.mqtt,
+            state=edge.get("activity") or "",
+            confidence=edge.get("confidence") or 0.0,
+            member=edge.get("member") or "",
+            room=edge.get("room") or "",
+            since=edge.get("ts") or "",
+            duration_s=edge.get("duration"),
+            trigger="edge",
+        )
+
+    def _publish_prediction_snapshot(self, prev: dict, drift_min: float) -> dict:
+        """算一遍全员到家预测，按跨阈值口径发 `ma/prediction`，返回新的 prev 表。
+
+        `upcoming_device_hints` 首版留空（设备级下一步预测尚未落码，契约允许空列表）。
+        发失败不更新 prev ⇒ 下一轮还会重试（不把失败读成已发）。
+        """
+        from .behavior_predictor import person_names, predict_arrival_time
+
+        events = self.store.list_behavior_events(limit=5000)
+        if not events:
+            return prev
+        persons: set[str] = set()
+        for ev in events:
+            persons.update(person_names(ev))
+        new_prev = dict(prev)
+        for person in sorted(persons):
+            arrival = predict_arrival_time(
+                events, person, tz_offset_hours=self.config.tz_offset_hours)
+            if not arrival:
+                continue
+            next_iso = event_family.next_arrival_iso(arrival.get("predicted_hour"))
+            if not next_iso:
+                continue
+            if not event_family.should_publish_prediction(
+                    prev.get(person), next_iso, drift_min):
+                continue
+            if event_family.publish_prediction(
+                    self.mqtt, next_arrival=next_iso,
+                    upcoming_device_hints=[], confidence=arrival.get("confidence"),
+                    room=""):
+                new_prev[person] = next_iso
+        return new_prev
 
     async def _periodic_backup(self) -> None:
         """常驻任务：每日一次 SQLite VACUUM 快照 + chroma 目录快照，保留 N 份轮转。
